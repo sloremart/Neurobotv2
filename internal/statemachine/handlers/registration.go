@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -697,6 +698,12 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 
 		patientID, err := patientSvc.Create(ctx, input)
 		if err != nil {
+			slog.Error("patient_create_failed",
+				"doc", input.DocumentNumber,
+				"doc_type", input.DocumentType,
+				"entity", input.EntityCode,
+				"error", err.Error(),
+			)
 			return buildAutoCloseResult("Lo siento, hubo un error al crear tu registro. Por favor intenta más tarde o contacta a un agente.").
 				WithEvent("registration_failed", map[string]interface{}{"error": err.Error()}), nil
 		}
