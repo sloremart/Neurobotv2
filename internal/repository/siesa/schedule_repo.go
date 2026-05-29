@@ -232,11 +232,11 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 		return nil, nil
 
 	default:
-		// Consultas/exámenes: acepta asuntos 1-16 (excluye sedación=17).
-		// Asunto 15 (PROCEDIMIENTOS FISIATRIA) es válido para resonancias/imágenes
-		// agendadas en contexto de fisiatría, aunque el asunto de la cita sea 4.
+		// Consultas/exámenes: requiere al menos un asunto 1-12.
+		// Agendas con solo asuntos 13-16 (procedimientos puros) quedan excluidas,
+		// evitando que CUPS de consulta aparezcan en agendas de procedimientos.
 		for _, a := range asuntos {
-			if a >= 1 && a <= 16 {
+			if a >= 1 && a <= 12 {
 				return &s, nil
 			}
 		}
