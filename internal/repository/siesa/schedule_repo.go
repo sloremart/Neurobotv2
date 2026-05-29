@@ -287,6 +287,30 @@ func (r *ScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID i
 	return false, nil
 }
 
+// FindAsuntoForCups retorna el asunto SIESA para un CUPS consultando AsuntoPctos.
+// Fallback: historial de citas_procedimientos_asuntos. Retorna 0 si no se encuentra.
+func (r *ScheduleRepo) FindAsuntoForCups(ctx context.Context, cupsCode string) int {
+	var asunto int
+	// Fuente primaria: catálogo AsuntoPctos
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT TOP 1 Asunto FROM AsuntoPctos WHERE CodProcedimiento = @p1`, cupsCode,
+	).Scan(&asunto)
+	if asunto > 0 {
+		return asunto
+	}
+	// Fallback: historial de consultas previas
+	_ = r.db.QueryRowContext(ctx, `
+		SELECT TOP 1 c.asunto
+		FROM citas c
+		JOIN citas_procedimientos_asuntos cpa ON cpa.IdCita = c.id
+		WHERE cpa.CodProcedimiento = @p1
+		  AND c.asunto IN (SELECT id FROM sis_asunto)
+		  AND c.estado != 'C'
+		ORDER BY c.fecha DESC`, cupsCode,
+	).Scan(&asunto)
+	return asunto
+}
+
 // addMinutesToHHMM suma N minutos a una hora "HH:mm" y devuelve el resultado como "HH:mm".
 func addMinutesToHHMM(hhmm string, minutes int) string {
 	if len(hhmm) < 5 {

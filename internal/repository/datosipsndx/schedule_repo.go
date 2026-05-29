@@ -253,3 +253,6 @@ func (r *ScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID i
 	rows, _ := result.RowsAffected()
 	return rows > 0, nil
 }
+
+// FindAsuntoForCups no aplica en Antares (datosipsndx no tiene AsuntoPctos).
+func (r *ScheduleRepo) FindAsuntoForCups(_ context.Context, _ string) int { return 0 }

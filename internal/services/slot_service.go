@@ -121,10 +121,20 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		return nil, nil
 	}
 
-	// 6. Calculate available slots per working day
+	// 6. Calculate available slots per working day.
+	// Determine agenda type from SIESA AsuntoPctos — NOT from Antares cups_procedimientos.tipo.
+	// Sedation (patient-declared) always overrides the CUPS-based type.
+	asunto := s.scheduleRepo.FindAsuntoForCups(ctx, query.CupsCode)
+	agendaType := asuntoToScheduleType(asunto)
+	if query.IsSedated {
+		agendaType = "sedacion"
+	}
+	slog.Debug("slot_agenda_type_resolved",
+		"cups_code", query.CupsCode, "asunto", asunto, "agenda_type", agendaType, "is_sedated", query.IsSedated)
+
 	var allSlots []AvailableSlot
 	configCache := make(map[string]*domain.ScheduleConfig)
-	agendaCache := make(map[int]bool)   // agendaID → matches procedure type
+	agendaCache := make(map[int]bool)   // agendaID → matches agenda type
 	monthCache := make(map[string]bool) // "YYYY-MM" → allowed
 
 	for _, day := range workingDays {
@@ -165,23 +175,17 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			}
 		}
 
-		// Agenda type filter: always applied.
-		// Default to "consulta" when ProcedureType is empty so pure procedure
-		// agendas (asuntos 13-16 only) are never shown for consultation CUPS.
-		agendaType := query.ProcedureType
-		if agendaType == "" {
-			agendaType = "consulta"
-		}
+		// Agenda type filter: always applied using agendaType derived from SIESA above.
 		if allowed, ok := agendaCache[day.AgendaID]; ok {
 			if !allowed {
-				slog.Debug("slot_skip_agenda_type_cached", "agenda_id", day.AgendaID, "procedure_type", agendaType)
+				slog.Debug("slot_skip_agenda_type_cached", "agenda_id", day.AgendaID, "agenda_type", agendaType)
 				continue
 			}
 		} else {
 			schedule, err2 := s.scheduleRepo.FindByScheduleID(ctx, day.AgendaID, agendaType)
 			match := schedule != nil
 			agendaCache[day.AgendaID] = match
-			slog.Debug("slot_agenda_type_check", "agenda_id", day.AgendaID, "procedure_type", agendaType, "match", match, "err", err2)
+			slog.Debug("slot_agenda_type_check", "agenda_id", day.AgendaID, "agenda_type", agendaType, "match", match, "err", err2)
 			if !match {
 				continue
 			}
@@ -355,4 +359,17 @@ func parseHHMMToMinutes(t string) int {
 	hour, _ := strconv.Atoi(t[:2])
 	minute, _ := strconv.Atoi(t[3:5])
 	return hour*60 + minute
+}
+
+// asuntoToScheduleType maps a SIESA asunto number to the FindByScheduleID schedule type.
+// 13-16 = procedimientos, 17 = sedación, anything else = consulta (default).
+func asuntoToScheduleType(asunto int) string {
+	switch {
+	case asunto == 17:
+		return "sedacion"
+	case asunto >= 13 && asunto <= 16:
+		return "procedimiento"
+	default:
+		return "consulta"
+	}
 }

@@ -146,14 +146,13 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 		var successfulCupsCode string
 
 		for _, code := range cupsCodesToTry {
-			// Look up procedure details (address, preparation, video, type)
+			// Look up procedure details from Antares: address, preparation, video only.
+			// Agenda type is determined from SIESA (AsuntoPctos) inside SlotService — not from Antares.
 			var address string
-			var procedureType string
 			if procRepo != nil {
 				proc, _ := procRepo.FindByCode(ctx, code)
 				if proc != nil {
 					address = proc.Address
-					procedureType = proc.Type
 					if proc.Preparation != "" {
 						sess.SetContext("cups_preparation", proc.Preparation)
 					}
@@ -164,11 +163,6 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 						sess.SetContext("cups_audio_url", proc.AudioURL)
 					}
 				}
-			}
-
-			// Sedation override: force agenda type to "sedacion" (same as Laravel)
-			if isSedated {
-				procedureType = "sedacion"
 			}
 
 			// Bloqueo (053105): set preferred doctor from last neurology consultation
@@ -186,11 +180,6 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				}
 			}
 
-			// Store procedure type in session for waiting list entries
-			if procedureType != "" {
-				sess.SetContext("procedure_type", procedureType)
-			}
-
 			query := services.SlotQuery{
 				CupsCode:        code,
 				PatientAge:      age,
@@ -201,7 +190,6 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				AfterDate:       sess.GetContext("slots_after_date"),
 				MaxSlots:        5,
 				ClinicAddress:   address,
-				ProcedureType:   procedureType,
 			}
 
 			// MRC monthly limit filter (SAN02 + mrcGroup CUPS)
@@ -228,16 +216,12 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 		if len(slots) == 0 && sess.GetContext("preferred_doctor_doc") != "" {
 			slog.Debug("slots_preferred_doctor_fallback", "cups_code", cupsCode, "preferred_doctor", sess.GetContext("preferred_doctor_doc"))
 			for _, code := range cupsCodesToTry {
-				var address, procedureType string
+				var address string
 				if procRepo != nil {
 					proc, _ := procRepo.FindByCode(ctx, code)
 					if proc != nil {
 						address = proc.Address
-						procedureType = proc.Type
 					}
-				}
-				if isSedated {
-					procedureType = "sedacion"
 				}
 				query := services.SlotQuery{
 					CupsCode:      code,
@@ -248,7 +232,6 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 					AfterDate:     sess.GetContext("slots_after_date"),
 					MaxSlots:      5,
 					ClinicAddress: address,
-					ProcedureType: procedureType,
 				}
 				if sess.GetContext("mrc_limit_check") == "1" && apptSvc != nil {
 					entity := sess.GetContext("patient_entity")

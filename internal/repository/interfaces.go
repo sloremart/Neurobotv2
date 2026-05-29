@@ -56,6 +56,9 @@ type ScheduleRepository interface {
 	FindWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
 	UpdateWorkingDayExceptionDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
 	DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error)
+	// FindAsuntoForCups retorna el asunto SIESA para un CUPS (de AsuntoPctos/citas historial).
+	// 0 si no se encuentra. Usado por SlotService para filtrar agendas sin depender de Antares.
+	FindAsuntoForCups(ctx context.Context, cupsCode string) int
 }
 
 // SoatRepository — búsqueda de precios por CUPS según tarifa.
