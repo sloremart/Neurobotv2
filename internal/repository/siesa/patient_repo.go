@@ -117,17 +117,10 @@ func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInpu
 	}
 	maritalStatusInt, _ := strconv.Atoi(input.MaritalStatus)
 
-	// Usamos transacción + SCOPE_IDENTITY() en lugar de OUTPUT INTO @ids.
-	// En producción con el trigger updatenro_historia (que hace UPDATE en sis_paci),
-	// el OUTPUT INTO @table_variable puede no devolver filas al driver por la forma
-	// en que go-mssqldb procesa múltiples result sets del batch.
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("siesa create patient tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	insertQuery := `
+	// OUTPUT INTO @table_variable funciona con triggers (a diferencia de OUTPUT directo).
+	// nro_historia = tipo_id + num_id es requerido por el constraint sis_paci_uq(nro_historia, tipo_id).
+	query := `
+	DECLARE @ids TABLE (autoid INT);
 	INSERT INTO sis_paci (
 		tipo_id, num_id, nro_historia,
 		primer_ape, segundo_ape, primer_nom, segundo_nom,
@@ -136,7 +129,8 @@ func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInpu
 		telefono, celular, email,
 		entidad, fecha_crea,
 		tipo_usuario, tipo_afilia, estadoCivil
-	) VALUES (
+	) OUTPUT INSERTED.autoid INTO @ids
+	VALUES (
 		@p1, @p2, @p1 + @p2,
 		@p3, @p4, @p5, @p6,
 		@p7, @p8,
@@ -144,9 +138,11 @@ func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInpu
 		@p13, @p13, @p14,
 		@p15, GETDATE(),
 		@p16, @p17, @p18
-	)`
+	);
+	SELECT autoid FROM @ids;`
 
-	_, err = tx.ExecContext(ctx, insertQuery,
+	var newID string
+	err := r.db.QueryRowContext(ctx, query,
 		input.DocumentType, input.DocumentNumber,
 		truncateSIESA(input.FirstSurname, 250), truncateSIESA(input.SecondSurname, 250),
 		truncateSIESA(input.FirstName, 250), truncateSIESA(input.SecondName, 250),
@@ -155,7 +151,7 @@ func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInpu
 		input.Phone, input.Email,
 		input.EntityCode,
 		userTypeInt, affiliationTypeInt(input.AffiliationType), maritalStatusInt,
-	)
+	).Scan(&newID)
 	if err != nil {
 		slog.Error("siesa_create_patient_failed",
 			"doc_type", input.DocumentType,
@@ -166,19 +162,6 @@ func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInpu
 			"error", err.Error(),
 		)
 		return "", fmt.Errorf("siesa create patient: %w", err)
-	}
-
-	// SCOPE_IDENTITY() en la misma transacción/conexión devuelve el autoid del INSERT anterior.
-	var newID string
-	if err = tx.QueryRowContext(ctx, `SELECT ISNULL(CAST(SCOPE_IDENTITY() AS VARCHAR(20)), '')`).Scan(&newID); err != nil {
-		return "", fmt.Errorf("siesa create patient scope_identity: %w", err)
-	}
-	if newID == "" {
-		return "", fmt.Errorf("siesa create patient: SCOPE_IDENTITY returned NULL")
-	}
-
-	if err = tx.Commit(); err != nil {
-		return "", fmt.Errorf("siesa create patient commit: %w", err)
 	}
 	return newID, nil
 }
