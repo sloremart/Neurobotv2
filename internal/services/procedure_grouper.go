@@ -468,23 +468,30 @@ func applyFisiatriaRules(g CUPSGroup) CUPSGroup {
 		}
 	}
 
-	// No EMG procedures → remove NC/dependent codes, keep the rest.
-	// Espacios = 1 por cada tipo de procedimiento distinto (la cantidad es
-	// repeticiones clínicas, no slots adicionales).
+	// No EMG procedures → remove NC/dependent codes only if hay otros procedimientos.
+	// Si el grupo es SOLO NC/dependientes (neuroconducción u onda F sin EMG),
+	// mantenerlos como procedimiento independiente en agenda de Fisiatría.
 	if totalEMG == 0 {
-		valid := make([]CUPSEntry, 0, len(g.Cups))
-		espacios := 0
+		var valid, ncAndDeps []CUPSEntry
 		for _, c := range g.Cups {
-			if !ncCodes[c.Code] && !emgDependentCodes[c.Code] {
+			if ncCodes[c.Code] || emgDependentCodes[c.Code] {
+				ncAndDeps = append(ncAndDeps, c)
+			} else {
 				valid = append(valid, c)
-				espacios++
 			}
 		}
-		if espacios < 1 {
-			espacios = 1
+		if len(valid) > 0 {
+			// Hay otros procedimientos — descartar NC/dependientes sin EMG
+			g.Cups = valid
+			g.Espacios = len(valid)
+			if g.Espacios < 1 {
+				g.Espacios = 1
+			}
+			return g
 		}
-		g.Cups = valid
-		g.Espacios = espacios
+		// Solo NC/dependientes sin EMG → procedimiento independiente (1 slot)
+		g.Cups = ncAndDeps
+		g.Espacios = 1
 		return g
 	}
 
