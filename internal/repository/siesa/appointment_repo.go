@@ -390,7 +390,6 @@ func (r *AppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreateP
 
 	if isConsultaAsunto(asunto) {
 		// Buscar Servicio y NomProcedimiento desde historial de SIESA para este CUPS+asunto.
-		// No usamos ServiceID de Antares — ese campo es interno de Antares, no válido en SIESA.
 		var servicio int
 		var nomProc string
 		_ = r.db.QueryRowContext(ctx, `
@@ -401,11 +400,19 @@ func (r *AppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreateP
 			ORDER BY c.fecha DESC`,
 			input.CupCode, asunto).Scan(&servicio, &nomProc)
 
-		if nomProc == "" {
-			// Fallback: nombre desde AsuntoPctos
+		// Fallback: AsuntoPctos tiene Servicio y NomProcedimiento canónicos (sin depender de historial)
+		if servicio == 0 || nomProc == "" {
+			var svcFb int
+			var nomFb string
 			_ = r.db.QueryRowContext(ctx,
-				`SELECT TOP 1 ISNULL(NomProcedimiento,'') FROM AsuntoPctos WHERE Asunto = @p1`, asunto,
-			).Scan(&nomProc)
+				`SELECT TOP 1 ISNULL(Servicio,0), ISNULL(NomProcedimiento,'') FROM AsuntoPctos WHERE Asunto = @p1`, asunto,
+			).Scan(&svcFb, &nomFb)
+			if servicio == 0 && svcFb > 0 {
+				servicio = svcFb
+			}
+			if nomProc == "" && nomFb != "" {
+				nomProc = nomFb
+			}
 		}
 		if nomProc == "" {
 			nomProc = input.CupCode
