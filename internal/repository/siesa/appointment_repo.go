@@ -282,10 +282,21 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		tipoUsuario = "02"
 	}
 
-	// tipo_servicio: NULL para consultas (asuntos 7-11), código servicio para procedimientos/imágenes
+	// tipo_servicio: NULL para consultas (asuntos 7-11); para procedimientos buscar en historial SIESA.
 	var tipoServicio interface{}
-	if !isConsultaAsunto(asunto) && len(input.Procedures) > 0 && input.Procedures[0].ServiceID > 0 {
-		tipoServicio = input.Procedures[0].ServiceID
+	if !isConsultaAsunto(asunto) && len(input.Procedures) > 0 {
+		baseCupTS := strings.SplitN(input.Procedures[0].CupCode, "-", 2)[0]
+		var svcID int
+		_ = r.db.QueryRowContext(ctx, `
+			SELECT TOP 1 ISNULL(cp.Servicio,0)
+			FROM citas_procedimientos cp
+			JOIN citas c ON c.id = cp.id_cita
+			WHERE LEFT(cp.id_procedimiento, @p2) = @p1 AND cp.Servicio > 0
+			ORDER BY c.fecha DESC`,
+			baseCupTS, len(baseCupTS)).Scan(&svcID)
+		if svcID > 0 {
+			tipoServicio = svcID
+		}
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -378,19 +389,33 @@ func (r *AppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreateP
 	}
 
 	if isConsultaAsunto(asunto) {
-		// Consultas: siempre cantidad=1, código base sin alterno
+		// Buscar Servicio y NomProcedimiento desde historial de SIESA para este CUPS+asunto.
+		// No usamos ServiceID de Antares — ese campo es interno de Antares, no válido en SIESA.
+		var servicio int
 		var nomProc string
-		_ = r.db.QueryRowContext(ctx,
-			`SELECT TOP 1 ISNULL(NomProcedimiento,'') FROM AsuntoPctos WHERE Asunto = @p1`, asunto,
-		).Scan(&nomProc)
+		_ = r.db.QueryRowContext(ctx, `
+			SELECT TOP 1 ISNULL(cpa.Servicio,0), ISNULL(cpa.NomProcedimiento,'')
+			FROM citas_procedimientos_asuntos cpa
+			JOIN citas c ON c.id = cpa.IdCita
+			WHERE cpa.CodProcedimiento = @p1 AND c.asunto = @p2 AND cpa.Servicio > 0
+			ORDER BY c.fecha DESC`,
+			input.CupCode, asunto).Scan(&servicio, &nomProc)
+
+		if nomProc == "" {
+			// Fallback: nombre desde AsuntoPctos
+			_ = r.db.QueryRowContext(ctx,
+				`SELECT TOP 1 ISNULL(NomProcedimiento,'') FROM AsuntoPctos WHERE Asunto = @p1`, asunto,
+			).Scan(&nomProc)
+		}
 		if nomProc == "" {
 			nomProc = input.CupCode
 		}
+
 		_, err := r.db.ExecContext(ctx, `
 		INSERT INTO citas_procedimientos_asuntos
 		    (IdCita, IdSisDeta, Asunto, Servicio, TipoManual, CodProcedimiento, NomProcedimiento, Valor, FechaRegistro)
 		VALUES (@p1, 0, @p2, @p3, '256', @p4, @p5, @p6, GETDATE())`,
-			apptID, asunto, input.ServiceID, input.CupCode, nomProc, input.UnitValue)
+			apptID, asunto, servicio, input.CupCode, nomProc, input.UnitValue)
 		return err
 	}
 
@@ -406,6 +431,16 @@ func (r *AppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreateP
 		}
 	}
 
+	// Buscar Servicio desde historial de SIESA para este código de procedimiento.
+	var servicio int
+	_ = r.db.QueryRowContext(ctx, `
+		SELECT TOP 1 ISNULL(cp.Servicio,0)
+		FROM citas_procedimientos cp
+		JOIN citas c ON c.id = cp.id_cita
+		WHERE LEFT(cp.id_procedimiento, @p2) = @p1 AND cp.Servicio > 0
+		ORDER BY c.fecha DESC`,
+		baseCup, len(baseCup)).Scan(&servicio)
+
 	// Construir código interno SIESA: "{base}-{qty}" solo cuando qty > 4.
 	// Cantidades 1-4 usan el código base con el campo Cantidad.
 	cupCode := baseCup
@@ -416,7 +451,7 @@ func (r *AppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreateP
 	_, err := r.db.ExecContext(ctx, `
 	INSERT INTO citas_procedimientos (id_procedimiento, tipo, id_cita, Servicio, Cantidad)
 	VALUES (@p1, '256', @p2, @p3, @p4)`,
-		cupCode, apptID, input.ServiceID, qty)
+		cupCode, apptID, servicio, qty)
 	return err
 }
 
