@@ -906,7 +906,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 		var anyPricingFailed bool
 		procedures := make([]domain.CreateProcedureInput, 0, len(currentGroup.Cups))
 		for _, cupEntry := range currentGroup.Cups {
-			// Get procedure data to obtain service_id
+			// Get procedure data to obtain service_id and service_name
 			var serviceID int
 			if procRepo != nil {
 				procData, err := procRepo.FindByCode(ctx, cupEntry.Code)
@@ -921,7 +921,6 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 					slog.Debug("FindByCode result for pxcita",
 						"cup_code", cupEntry.Code,
 						"service_id", procData.ServiceID,
-						"service_name", procData.ServiceName,
 					)
 				} else {
 					slog.Warn("FindByCode returned nil for pxcita",
@@ -1034,10 +1033,14 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 		"current_group_cups", currentGroup.Cups,
 	)
 
+		doctorID := slot.DoctorSiesaCode
+		if doctorID == "" {
+			doctorID = slot.DoctorDoc // fallback: cédula si no hay código SIESA
+		}
 		input := domain.CreateAppointmentInput{
 			Date:         date,
 			TimeSlot:     slot.TimeSlot,
-			DoctorID:     slot.DoctorDoc,
+			DoctorID:     doctorID,
 			PatientID:    sess.GetContext("patient_id"),
 			Entity:       entity,
 			AgendaID:     slot.AgendaID,

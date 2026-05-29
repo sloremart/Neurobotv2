@@ -13,13 +13,25 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 )
 
+// ConfirmationLogger persiste registros estructurados de confirmación localmente.
+// Implementado por local.ConfirmationLogRepo.
+type ConfirmationLogger interface {
+	InsertBatch(ctx context.Context, entries []domain.ConfirmationEntry) error
+}
+
 type AppointmentService struct {
-	repo repository.AppointmentRepository
-	cfg  *config.Config
+	repo        repository.AppointmentRepository
+	cfg         *config.Config
+	confirmLog  ConfirmationLogger
 }
 
 func NewAppointmentService(repo repository.AppointmentRepository, cfg *config.Config) *AppointmentService {
 	return &AppointmentService{repo: repo, cfg: cfg}
+}
+
+// SetConfirmationLog conecta el log local de confirmaciones. Llamar una vez tras construir el servicio.
+func (s *AppointmentService) SetConfirmationLog(logger ConfirmationLogger) {
+	s.confirmLog = logger
 }
 
 // GetUpcomingAppointments retorna las citas futuras no canceladas del paciente
@@ -112,13 +124,35 @@ func (s *AppointmentService) FindConsecutiveBlock(appointments []domain.Appointm
 	return []domain.Appointment{*mainAppt}
 }
 
-// ConfirmBlock confirma todas las citas del bloque atómicamente
+// ConfirmBlock confirma todas las citas del bloque atómicamente.
+// Also writes a structured record to the local confirmation_log if configured —
+// this replaces the Antares citas.MedioConfirmacion / FechaConfirmacion fields
+// that SIESA's citas table does not have.
 func (s *AppointmentService) ConfirmBlock(ctx context.Context, block []domain.Appointment, channel, channelID string) error {
 	ids := make([]string, len(block))
 	for i, appt := range block {
 		ids[i] = appt.ID
 	}
-	return s.repo.ConfirmBatch(ctx, ids, channel, channelID)
+	if err := s.repo.ConfirmBatch(ctx, ids, channel, channelID); err != nil {
+		return err
+	}
+	if s.confirmLog != nil {
+		entries := make([]domain.ConfirmationEntry, len(block))
+		now := time.Now()
+		for i, appt := range block {
+			entries[i] = domain.ConfirmationEntry{
+				AppointmentID: appt.ID,
+				PatientID:     appt.PatientID,
+				ConfirmedAt:   now,
+				Channel:       channel,
+				ChannelID:     channelID,
+			}
+		}
+		if err := s.confirmLog.InsertBatch(ctx, entries); err != nil {
+			slog.Warn("confirmation log insert failed", "error", err, "ids", ids)
+		}
+	}
+	return nil
 }
 
 // CancelBlock cancela todas las citas del bloque atómicamente
@@ -190,6 +224,20 @@ var mrcGroups = map[string]struct {
 	"otros_procedimientos":      {MaxPerMonth: 932, CupsCodes: []string{"891515", "891514", "930820", "891511", "891509", "930860", "891530", "952303", "954626", "952302", "930103", "930821", "954624", "954625", "952301", "930801", "891503", "891508"}},
 }
 
+// mrcEntities son los códigos de entidad sujetos a validación MRC.
+// Aplica a contratos 5 y 6 (SANITAS MRC SUBSIDIADO y MRC CONTRIBUTIVO).
+// "SAN02" = código Antares legacy (backward compat).
+var mrcEntities = map[string]bool{
+	"SAN02": true,
+	"5":     true, // SANITAS MRC SUBSIDIADO
+	"6":     true, // SANITAS MRC CONTRIBUTIVO
+}
+
+// IsMRCEntity determina si un código de entidad está sujeto a validación MRC.
+func IsMRCEntity(entityCode string) bool {
+	return mrcEntities[entityCode]
+}
+
 // IsMRCGroupCups returns the group name, max per month, and whether the CUPS code belongs to an MRC group.
 func IsMRCGroupCups(cupsCode string) (groupName string, maxPerMonth int, found bool) {
 	for name, group := range mrcGroups {
@@ -248,7 +296,7 @@ func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, entity
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
 		return false, "", nil
 	}
-	if entity != "SAN02" {
+	if !IsMRCEntity(entity) {
 		return false, "", nil
 	}
 
@@ -276,7 +324,7 @@ func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
 		return false, nil
 	}
-	if entity != "SAN02" {
+	if !IsMRCEntity(entity) {
 		return false, nil
 	}
 
@@ -348,11 +396,6 @@ func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input do
 
 		consecutiveInput := input
 		consecutiveInput.TimeSlot = timeSlot
-
-		// Only include procedures in the first appointment
-		if i > 0 {
-			consecutiveInput.Procedures = nil
-		}
 
 		appt, err := s.repo.Create(ctx, consecutiveInput)
 		if err != nil {

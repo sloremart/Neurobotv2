@@ -31,7 +31,15 @@ type Config struct {
 	ExtDBPassword string
 
 	// External DB Driver — R-ARQ-01
-	ExternalDBDriver string // "datosipsndx" | "nuevo_software"
+	ExternalDBDriver string // "datosipsndx" | "siesa"
+
+	// Antares DB (MySQL) — usado solo cuando ExternalDBDriver="siesa" para
+	// mantener cups_procedimientos y cup_medico accesibles desde Antares.
+	AntaresDBHost     string
+	AntaresDBPort     string
+	AntaresDBDatabase string
+	AntaresDBUser     string
+	AntaresDBPassword string
 
 	// Bird
 	BirdAPIURL        string
@@ -157,6 +165,13 @@ func Load() *Config {
 
 		// External DB Driver
 		ExternalDBDriver: getEnv("EXTERNAL_DB_DRIVER", "datosipsndx"),
+
+		// Antares DB (solo cuando EXTERNAL_DB_DRIVER=siesa)
+		AntaresDBHost:     getEnv("ANTARES_DB_HOST", "host.docker.internal"),
+		AntaresDBPort:     getEnv("ANTARES_DB_PORT", "3306"),
+		AntaresDBDatabase: getEnv("ANTARES_DB_DATABASE", "datosipsndx"),
+		AntaresDBUser:     os.Getenv("ANTARES_DB_USER"),
+		AntaresDBPassword: os.Getenv("ANTARES_DB_PASSWORD"),
 
 		// Bird
 		BirdAPIURL:        os.Getenv("BIRD_API_URL"),

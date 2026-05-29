@@ -484,9 +484,18 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 		// Selección desde lista (postback con código de municipio)
 		if msg.IsPostback {
 			sess.RetryCount = 0
+			// payload es "depCod-muniCod" (ej: "50-606") para evitar colisiones
+			parts := strings.SplitN(msg.PostbackPayload, "-", 2)
+			muniCode := msg.PostbackPayload
+			deptCode := ""
+			if len(parts) == 2 {
+				deptCode = parts[0]
+				muniCode = parts[1]
+			}
 			displayName := sess.GetContext("muni_" + msg.PostbackPayload)
 			return sm.NewResult(sm.StateRegZone).
-				WithContext("reg_municipality", msg.PostbackPayload).
+				WithContext("reg_municipality", muniCode).
+				WithContext("reg_department", deptCode).
 				WithContext("reg_municipality_name", displayName).
 				WithButtons(fmt.Sprintf("Municipio seleccionado: *%s*\n\nSelecciona tu *zona*:", displayName),
 					sm.Button{Text: "Urbana", Payload: "U"},
@@ -500,10 +509,29 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 				WithText("Nombre completo de tu municipio y departamento de residencia. Ejemplo: Villavicencio - Meta:"), nil
 		}
 
+		// Atajo: si el paciente escribe "0" usa Villavicencio por defecto
+		if input == "0" {
+			sess.RetryCount = 0
+			return sm.NewResult(sm.StateRegZone).
+				WithContext("reg_municipality", "001").
+				WithContext("reg_department", "50").
+				WithContext("reg_municipality_name", "VILLAVICENCIO - META").
+				WithButtons("Municipio seleccionado: *VILLAVICENCIO - META*\n\nSelecciona tu *zona*:",
+					sm.Button{Text: "Urbana", Payload: "U"},
+					sm.Button{Text: "Rural", Payload: "R"},
+				), nil
+		}
+
 		results, err := municipalityRepo.Search(ctx, input)
 		if err != nil {
 			return sm.NewResult(sess.CurrentState).
 				WithText("No pudimos buscar el municipio en este momento. Intenta de nuevo escribiendo el nombre de tu municipio:"), nil
+		}
+
+		if len(results) == 0 {
+			sess.RetryCount++
+			return sm.NewResult(sess.CurrentState).
+				WithText("No encontré ese municipio. Escribe el nombre completo (ej: *Villavicencio*, *Acacias*) o escribe *0* para usar Villavicencio por defecto:"), nil
 		}
 
 		outcome, errResult := sm.ValidateSearchCount(sess, len(results), 5,
@@ -519,6 +547,7 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 			muniDisplay := fmt.Sprintf("%s - %s", results[0].MunicipalityName, results[0].DepartmentName)
 			return sm.NewResult(sm.StateRegZone).
 				WithContext("reg_municipality", results[0].MunicipalityCode).
+				WithContext("reg_department", results[0].DepartmentCode).
 				WithContext("reg_municipality_name", muniDisplay).
 				WithButtons(fmt.Sprintf("Municipio seleccionado: *%s*\n\nSelecciona tu *zona*:", muniDisplay),
 					sm.Button{Text: "Urbana", Payload: "U"},
@@ -528,13 +557,15 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 			rows := make([]sm.ListRow, len(results))
 			r := sm.NewResult(sess.CurrentState)
 			for i, res := range results {
+				// ID compuesto "depCod-muniCod" para evitar colisiones cuando dos
+				// municipios tienen el mismo codigo en departamentos distintos
+				compositeID := res.DepartmentCode + "-" + res.MunicipalityCode
 				rows[i] = sm.ListRow{
-					ID:          res.MunicipalityCode,
+					ID:          compositeID,
 					Title:       res.MunicipalityName,
 					Description: res.DepartmentName,
 				}
-				// Cache name so postback handler can retrieve it
-				r.WithContext("muni_"+res.MunicipalityCode, fmt.Sprintf("%s - %s", res.MunicipalityName, res.DepartmentName))
+				r.WithContext("muni_"+compositeID, fmt.Sprintf("%s - %s", res.MunicipalityName, res.DepartmentName))
 			}
 			return r.WithList("Selecciona tu municipio:", "Municipios",
 				sm.ListSection{Title: "Resultados", Rows: rows}), nil
@@ -653,6 +684,7 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 			Phone:              sess.GetContext("reg_phone"),
 			Email:              sess.GetContext("reg_email"),
 			Address:            sess.GetContext("reg_address"),
+			DepartmentCode:     sess.GetContext("reg_department"),
 			CityCode:           sess.GetContext("reg_municipality"),
 			Zone:               sess.GetContext("reg_zone"),
 			EntityCode:         entityCode,

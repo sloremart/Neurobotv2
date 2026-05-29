@@ -77,6 +77,18 @@ var resonanciaCombinations = []resonanciaCombination{
 // sedacionResonanciaCode adds extra slots when combined with resonancia.
 const sedacionResonanciaCode = "998702"
 
+// SpacesForCUPS returns the number of consecutive slots required for a resonancia CUPS code.
+// Returns (spaces, true) if the code is in the resonancia map; (1, false) otherwise.
+func SpacesForCUPS(code string, isContrasted bool) (int, bool) {
+	if slots, ok := resonanciaCodes[code]; ok {
+		if isContrasted {
+			return slots.Contrasted, true
+		}
+		return slots.Simple, true
+	}
+	return 1, false
+}
+
 // ── Fisiatría EMG code groups (from institutional rules) ─────────────────────
 var emgCodes = map[string]bool{
 	"29120": true, "930810": true, "892302": true, "892301": true,
@@ -434,35 +446,38 @@ func applyResonanciaRules(g CUPSGroup) CUPSGroup {
 }
 
 // applyFisiatriaRules implements institutional EMG/NC grouping rules:
-// - NC quantity = total EMG quantity × 4
-// - If no NC in order, add 891509
-// - If NC/dependent codes exist without EMG, remove them
-// - Espacios: ≤3 EMG → 1, ≥4 → 2
+//   - Max 4 EMG (one per extremity). If order has EMG > 4 and NC is present,
+//     NC qty is the ground truth: correctedEMG = NCqty / 4.
+//     If no NC, cap at 4.
+//   - NC quantity = correctedEMG × 4
+//   - If no NC in order, add 891509
+//   - If NC/dependent codes exist without EMG, remove them
+//   - Espacios: correctedEMG ≤ 3 → 1, ≥ 4 → 2
 func applyFisiatriaRules(g CUPSGroup) CUPSGroup {
 	totalEMG := 0
 	hasNC := false
-	ncIdx := -1
+	orderNCQty := 0
 
-	for i, c := range g.Cups {
+	for _, c := range g.Cups {
 		if emgCodes[c.Code] {
 			totalEMG += c.Quantity
 		}
-		if ncCodes[c.Code] {
+		if ncCodes[c.Code] && !hasNC {
 			hasNC = true
-			if ncIdx == -1 {
-				ncIdx = i
-			}
+			orderNCQty = c.Quantity
 		}
 	}
 
-	// No EMG procedures → remove NC/dependent codes, keep the rest
+	// No EMG procedures → remove NC/dependent codes, keep the rest.
+	// Espacios = 1 por cada tipo de procedimiento distinto (la cantidad es
+	// repeticiones clínicas, no slots adicionales).
 	if totalEMG == 0 {
 		valid := make([]CUPSEntry, 0, len(g.Cups))
 		espacios := 0
 		for _, c := range g.Cups {
 			if !ncCodes[c.Code] && !emgDependentCodes[c.Code] {
 				valid = append(valid, c)
-				espacios += c.Quantity
+				espacios++
 			}
 		}
 		if espacios < 1 {
@@ -473,36 +488,59 @@ func applyFisiatriaRules(g CUPSGroup) CUPSGroup {
 		return g
 	}
 
-	ncQuantity := totalEMG * 4
+	// Correct EMG if physiologically impossible (max 4 extremities).
+	// When order has EMG > 4, NC quantity is the authoritative source:
+	// correctedEMG = orderNCQty / 4. Without NC, cap at 4.
+	correctedEMG := totalEMG
+	if totalEMG > 4 {
+		if hasNC && orderNCQty >= 4 {
+			correctedEMG = orderNCQty / 4
+			if correctedEMG < 1 {
+				correctedEMG = 1
+			}
+			if correctedEMG > 4 {
+				correctedEMG = 4
+			}
+		} else {
+			correctedEMG = 4
+		}
+	}
 
-	if !hasNC {
-		// Add NC procedure
-		g.Cups = append(g.Cups, CUPSEntry{
+	ncQuantity := correctedEMG * 4
+
+	// Rebuild g.Cups: one EMG entry (corrected qty), one NC entry (ncQuantity),
+	// keep all other non-EMG/NC codes (dependents, etc). Skip duplicates.
+	rebuilt := make([]CUPSEntry, 0, len(g.Cups))
+	emgAdded := false
+	ncAdded := false
+	for _, c := range g.Cups {
+		switch {
+		case emgCodes[c.Code]:
+			if !emgAdded {
+				c.Quantity = correctedEMG
+				rebuilt = append(rebuilt, c)
+				emgAdded = true
+			}
+		case ncCodes[c.Code]:
+			if !ncAdded {
+				c.Quantity = ncQuantity
+				rebuilt = append(rebuilt, c)
+				ncAdded = true
+			}
+		default:
+			rebuilt = append(rebuilt, c)
+		}
+	}
+	if !ncAdded {
+		rebuilt = append(rebuilt, CUPSEntry{
 			Code:     "891509",
 			Name:     "NEUROCONDUCCION (CADA NERVIO)",
 			Quantity: ncQuantity,
 		})
-	} else {
-		// Adjust first NC quantity, remove duplicates
-		adjusted := false
-		filtered := make([]CUPSEntry, 0, len(g.Cups))
-		for _, c := range g.Cups {
-			if ncCodes[c.Code] {
-				if !adjusted {
-					c.Quantity = ncQuantity
-					adjusted = true
-					filtered = append(filtered, c)
-				}
-				// Skip duplicate NC codes
-			} else {
-				filtered = append(filtered, c)
-			}
-		}
-		g.Cups = filtered
 	}
+	g.Cups = rebuilt
 
-	// Espacios based on total EMG count
-	if totalEMG <= 3 {
+	if correctedEMG <= 3 {
 		g.Espacios = 1
 	} else {
 		g.Espacios = 2

@@ -300,6 +300,13 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				return buildAutoCloseResult("No se puede reprogramar: no se encontró el procedimiento."), nil
 			}
 
+			// Resolver nombre cuando SIESA solo almacena el código (puede ser "891509-16" → buscar "891509")
+			if (cupsName == "" || cupsName == cupsCode) && procRepo != nil {
+				if p, lookupErr := procRepo.FindByCode(ctx, utils.BaseCupCode(cupsCode)); lookupErr == nil && p != nil && p.Name != "" {
+					cupsName = p.Name
+				}
+			}
+
 			isContrasted := "0"
 			if strings.Contains(selectedAppt.Observations, "Contrastada") {
 				isContrasted = "1"
@@ -314,12 +321,23 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 			if espacios == 0 {
 				espacios = 1
 			}
+			// Para resonancias: recalcular espacios según código y contraste en lugar del bloque anterior
+			if calculated, ok := services.SpacesForCUPS(cupsCode, isContrasted == "1"); ok {
+				espacios = calculated
+			}
 
 			// Build procedures_json required by createAppointmentHandler
 			cups := make([]services.CUPSEntry, 0, len(selectedAppt.Procedures))
 			for _, p := range selectedAppt.Procedures {
+				name := p.CupName
+				if (name == "" || name == p.CupCode) && procRepo != nil {
+					if proc, lookupErr := procRepo.FindByCode(ctx, utils.BaseCupCode(p.CupCode)); lookupErr == nil && proc != nil && proc.Name != "" {
+						name = proc.Name
+					}
+				}
 				cups = append(cups, services.CUPSEntry{
-					Code: p.CupCode, Name: p.CupName, Quantity: 1,
+					Code: p.CupCode, Name: name, Quantity: 1,
+					IsContrasted: isContrasted == "1",
 				})
 			}
 			groups := []services.CUPSGroup{{
@@ -720,7 +738,7 @@ func buildNotifConfirmDetail(allAppts []domain.Appointment, appt *domain.Appoint
 					continue
 				}
 				seenCup[proc.CupCode] = true
-				p, err := procRepo.FindByCode(ctx, proc.CupCode)
+				p, err := procRepo.FindByCode(ctx, utils.BaseCupCode(proc.CupCode))
 				if err != nil || p == nil {
 					continue
 				}
@@ -794,7 +812,7 @@ func executeConfirmAppointment(ctx context.Context, sess *session.Session, apptS
 				if proc.CupCode == "" {
 					continue
 				}
-				p, err := procRepo.FindByCode(ctx, proc.CupCode)
+				p, err := procRepo.FindByCode(ctx, utils.BaseCupCode(proc.CupCode))
 				if err != nil || p == nil {
 					continue
 				}
@@ -930,7 +948,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 				continue
 			}
 			seen[proc.CupCode] = true
-			p, err := procRepo.FindByCode(ctx, proc.CupCode)
+			p, err := procRepo.FindByCode(ctx, utils.BaseCupCode(proc.CupCode))
 			if err != nil || p == nil {
 				continue
 			}

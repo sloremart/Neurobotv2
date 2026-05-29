@@ -213,13 +213,29 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 				WithEvent("ocr_parse_error", map[string]interface{}{"error": err.Error()}), nil
 		}
 
-		// Validar CUPS contra la BD — filtrar inactivos, enriquecer nombres
+		// Validar CUPS contra la BD — filtrar inactivos, enriquecer nombres.
+		// Si el código tiene sufijo numérico (ej "891509-16"), busca el código base interno.
+		// Si el código no existe en el catálogo → se descarta; si no quedan procedimientos, pasa a agente.
 		var skipped []string
 		valid := cups[:0]
 		for _, cup := range cups {
 			if cup.Code != "" {
-				proc, err := procedureRepo.FindByCode(ctx, cup.Code)
-				if err != nil || proc == nil || !proc.IsActive {
+				proc, _ := procedureRepo.FindByCode(ctx, cup.Code)
+
+				// Código base sin sufijo numérico (ej "891509-16" → "891509")
+				if proc == nil || !proc.IsActive {
+					if idx := strings.LastIndex(cup.Code, "-"); idx > 0 {
+						if _, err2 := strconv.Atoi(cup.Code[idx+1:]); err2 == nil {
+							baseCode := cup.Code[:idx]
+							if p, e := procedureRepo.FindByCode(ctx, baseCode); e == nil && p != nil && p.IsActive {
+								proc = p
+								cup.Code = baseCode
+							}
+						}
+					}
+				}
+
+				if proc == nil || !proc.IsActive {
 					skipped = append(skipped, cup.Code)
 					continue
 				}

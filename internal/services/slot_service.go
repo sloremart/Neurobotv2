@@ -39,14 +39,15 @@ type SlotQuery struct {
 }
 
 type AvailableSlot struct {
-	Date          string `json:"date"`
-	TimeSlot      string `json:"time_slot"`
-	TimeDisplay   string `json:"time_display"`
-	DoctorName    string `json:"doctor_name"`
-	DoctorDoc     string `json:"doctor_doc"`
-	AgendaID      int    `json:"agenda_id"`
-	ClinicAddress string `json:"clinic_address"`
-	Duration      int    `json:"duration"` // Minutes per slot
+	Date            string `json:"date"`
+	TimeSlot        string `json:"time_slot"`
+	TimeDisplay     string `json:"time_display"`
+	DoctorName      string `json:"doctor_name"`
+	DoctorDoc       string `json:"doctor_doc"`        // Cédula Antares — para matching preferred_doctor
+	DoctorSiesaCode string `json:"doctor_siesa_code"` // sis_medi.codigo — para cod_medi en citas SIESA
+	AgendaID        int    `json:"agenda_id"`
+	ClinicAddress   string `json:"clinic_address"`
+	Duration        int    `json:"duration"` // Minutes per slot
 }
 
 // GetAvailableSlots searches for available appointment slots with all filters applied.
@@ -326,14 +327,15 @@ func calculateDaySlots(cfg *domain.ScheduleConfig, day domain.WorkingDay, query 
 			}
 
 			slots = append(slots, AvailableSlot{
-				Date:          day.Date,
-				TimeSlot:      timeSlot,
-				TimeDisplay:   FormatTimeSlot(timeSlot),
-				DoctorName:    doctor.FullName,
-				DoctorDoc:     doctor.Document,
-				AgendaID:      day.AgendaID,
-				ClinicAddress: query.ClinicAddress,
-				Duration:      duration,
+				Date:            day.Date,
+				TimeSlot:        timeSlot,
+				TimeDisplay:     FormatTimeSlot(timeSlot),
+				DoctorName:      doctor.FullName,
+				DoctorDoc:       doctor.Document,
+				DoctorSiesaCode: day.DoctorSiesaCode,
+				AgendaID:        day.AgendaID,
+				ClinicAddress:   query.ClinicAddress,
+				Duration:        duration,
 			})
 		}
 	}

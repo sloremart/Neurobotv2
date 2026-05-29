@@ -112,7 +112,7 @@ DOCUMENTO DEL PACIENTE (solo dígitos):
 PROCEDIMIENTOS — PROCESO DE DECISIÓN (OBLIGATORIO):
 1) PRIORIDAD ABSOLUTA: CÓDIGO EN LA ORDEN
    - Si en la fila del procedimiento existe un número de 4 a 6 dígitos, ese ES el cups_code.
-   - Si el código trae sufijo no numérico (ej: "891509-1"), usa solo los dígitos: "891509".
+   - Si el código tiene cualquier sufijo tras un guion (ej: "891509-16", "891509-1", "891509-4"), usa SOLO los dígitos del código base: "891509". El número del sufijo indica cantidad; captúrala usando (#N) o la regla 2, nunca en cups_code.
    - Copia la descripción tal cual de la orden en cups_name.
 
 2) SOLO SI NO HAY CÓDIGO EN LA ORDEN:
@@ -129,6 +129,10 @@ DATOS POR PROCEDIMIENTO:
   2. Si no hay (#N) pero hay un número explícito de sesiones/extremidades/nervios al final (ej: "/ 4 EXTREMIDADES", "4 SESIONES"), usa ese número.
   3. Si no hay ningún indicador de cantidad, usa 1.
   IMPORTANTE: En órdenes colombianas, (#N) es la notación estándar para indicar la cantidad del procedimiento. Siempre tiene prioridad sobre cualquier otro texto numérico en la misma fila.
+  CASO CRÍTICO EMG/NEUROCONDUCCIÓN: En filas de EMG y NC, "#N" y "extremidades" son conceptos distintos.
+  - "ELECTROMIOGRAFÍA (#4) / 4 EXTREMIDADES" → quantity=4 (del #4). Las 4 extremidades indican dónde se aplica, no cuántas sesiones.
+  - "NEUROCONDUCCIÓN (#16) / 4 EXTREMIDADES" → quantity=16 (del #16). Son 4 nervios × 4 extremidades = 16 estudios.
+  NUNCA uses el número de extremidades como quantity cuando haya un (#N) en la misma fila.
 - observations: texto adicional o marcadores del procedimiento como "AMB", "SUPERIORES", "BILATERAL", lateralidad, etc. Aplica corrección OCR mínima (ej: "CIN"→"SIN"). Si no hay observaciones, usa "".
 - is_sedated: busca en descripción y observaciones del procedimiento:
   "sedación", "sedacion", "bajo sedación", "bajo anestesia", "con anestesia", "anestesia general", "sedado", "sedada", "anestesiado", "anestesiada"

@@ -1,10 +1,11 @@
 package domain
 
 type Doctor struct {
-	Document string
-	FullName string
-	CupID    int
-	IsActive bool
+	Document      string
+	FullName      string
+	CupID         int
+	IsActive      bool
+	ConsultorioID int // SIESA: id_consultorio from programacion_medico_relacion (0 = not applicable)
 }
 
 type Schedule struct {
@@ -29,6 +30,7 @@ type ScheduleConfig struct {
 
 type WorkingDay struct {
 	DoctorDocument   string
+	DoctorSiesaCode  string // sis_medi.codigo (código interno SIESA), usado como cod_medi en citas
 	Date             string // YYYY-MM-DD
 	MorningEnabled   bool
 	AfternoonEnabled bool

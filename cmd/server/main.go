@@ -26,6 +26,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/repository/datosipsndx"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
+	"github.com/neuro-bot/neuro-bot/internal/repository/siesa"
 	"github.com/neuro-bot/neuro-bot/internal/scheduler"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -103,6 +104,18 @@ func main() {
 		defer externalDB.Close()
 	}
 
+	// Cuando el driver es SIESA, abrir también Antares (MySQL datosipsndx) para
+	// cups_procedimientos y cup_medico.
+	var antaresDB *sql.DB
+	if cfg.ExternalDBDriver == "siesa" {
+		antaresDB, err = database.NewAntaresDB(cfg)
+		if err != nil {
+			slog.Warn("antares db not available; CUPS catalog will be unavailable", "error", err)
+		} else {
+			defer antaresDB.Close()
+		}
+	}
+
 	// Migraciones (BD local)
 	if err := database.RunMigrations(localDB, "migrations"); err != nil {
 		log.Fatalf("migrations: %v", err)
@@ -111,7 +124,7 @@ func main() {
 	// Repositorios — selección por EXTERNAL_DB_DRIVER (R-ARQ-01)
 	var repos *repository.Repositories
 	if externalDB != nil {
-		repos = initRepositories(cfg.ExternalDBDriver, externalDB)
+		repos = initRepositories(cfg.ExternalDBDriver, externalDB, antaresDB)
 	}
 
 	// Session manager (BD local + phone mutex)
@@ -148,6 +161,7 @@ func main() {
 	if repos != nil {
 		patientSvc = services.NewPatientService(repos.Patient)
 		appointmentSvc = services.NewAppointmentService(repos.Appointment, cfg)
+		appointmentSvc.SetConfirmationLog(localrepo.NewConfirmationLogRepo(localDB))
 	}
 
 	// State machine (interceptores + handlers se registran por fase)
@@ -369,8 +383,8 @@ func main() {
 
 	// HTTP Server
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB))
-	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB))))
+	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, antaresDB))
+	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, antaresDB))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -478,7 +492,10 @@ func initLogger(level, logDir string) {
 	slog.SetDefault(slog.New(handler))
 }
 
-func initRepositories(driver string, externalDB *sql.DB) *repository.Repositories {
+// initRepositories construye los repositorios según el driver configurado.
+// externalDB = SIESA (SQL Server) cuando driver="siesa", datosipsndx (MySQL) en otro caso.
+// antaresDB  = Antares MySQL (cups_procedimientos, cup_medico) solo cuando driver="siesa".
+func initRepositories(driver string, externalDB, antaresDB *sql.DB) *repository.Repositories {
 	switch driver {
 	case "datosipsndx":
 		return &repository.Repositories{
@@ -491,18 +508,33 @@ func initRepositories(driver string, externalDB *sql.DB) *repository.Repositorie
 			Municipality: datosipsndx.NewMunicipalityRepo(externalDB),
 			Soat:         datosipsndx.NewSoatRepo(externalDB),
 		}
+	case "siesa":
+		// Datos clínicos → SIESA SQL Server (externalDB)
+		// Catálogo CUPS y médicos → Antares MySQL (antaresDB)
+		repos := &repository.Repositories{
+			Patient:      siesa.NewPatientRepo(externalDB),
+			Appointment:  siesa.NewAppointmentRepo(externalDB),
+			Schedule:     siesa.NewScheduleRepo(externalDB),
+			Entity:       repository.NewCachedEntityRepo(siesa.NewEntityRepo(externalDB), 30*time.Minute),
+			Soat:         siesa.NewSoatRepo(externalDB),
+			Municipality: siesa.NewMunicipalityRepo(externalDB),
+		}
+		if antaresDB != nil {
+			repos.Doctor = datosipsndx.NewDoctorRepo(antaresDB)
+			repos.Procedure = repository.NewCachedProcedureRepo(datosipsndx.NewProcedureRepo(antaresDB), 60*time.Minute)
+		}
+		return repos
 	default:
 		log.Fatalf("unknown EXTERNAL_DB_DRIVER: %s", driver)
 		return nil
 	}
 }
 
-func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
+func healthHandler(localDB, externalDB, antaresDB *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		health := map[string]string{"status": "ok"}
 		critical := false
 
-		// Local DB is critical — if down, bot cannot function
 		if err := localDB.Ping(); err != nil {
 			health["local_db"] = "error"
 			health["status"] = "critical"
@@ -511,7 +543,6 @@ func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 			health["local_db"] = "ok"
 		}
 
-		// External DB is non-critical — bot can survive temporary outages (e.g. backups)
 		if externalDB == nil {
 			health["external_db"] = "not connected"
 			if health["status"] == "ok" {
@@ -526,10 +557,18 @@ func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 			health["external_db"] = "ok"
 		}
 
+		if antaresDB != nil {
+			if err := antaresDB.Ping(); err != nil {
+				health["antares_db"] = "error"
+				if health["status"] == "ok" {
+					health["status"] = "degraded"
+				}
+			} else {
+				health["antares_db"] = "ok"
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		// Only return 503 for critical failures (local DB).
-		// External DB degradation returns 200 so Docker doesn't restart the container
-		// (e.g. during nightly backups).
 		if critical {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
@@ -557,7 +596,7 @@ func safeGo(name string, f func()) {
 	}()
 }
 
-func debugHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
+func debugHandler(localDB, externalDB, antaresDB *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
@@ -575,7 +614,6 @@ func debugHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 			"gc_last":         time.Since(time.Unix(0, int64(m.LastGC))).String(),
 		}
 
-		// DB pool stats
 		localStats := localDB.Stats()
 		info["local_db"] = map[string]interface{}{
 			"open_connections": localStats.OpenConnections,
@@ -591,6 +629,16 @@ func debugHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 				"in_use":           extStats.InUse,
 				"idle":             extStats.Idle,
 				"max_open":         extStats.MaxOpenConnections,
+			}
+		}
+
+		if antaresDB != nil {
+			antStats := antaresDB.Stats()
+			info["antares_db"] = map[string]interface{}{
+				"open_connections": antStats.OpenConnections,
+				"in_use":           antStats.InUse,
+				"idle":             antStats.Idle,
+				"max_open":         antStats.MaxOpenConnections,
 			}
 		}
 

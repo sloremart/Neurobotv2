@@ -138,15 +138,36 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			continue
 		}
 
-		// Build unique procedure names (multiple slots for same procedure = 1 entry)
+		// Construir lista única de nombres de procedimientos.
+		// En SIESA, CupName puede ser igual al código si el catálogo de Antares no está cargado;
+		// en ese caso se resuelve el nombre real consultando ProcedureRepo (Antares).
 		seen := make(map[string]bool)
 		var procedures []string
 		for _, appt := range group {
-			cupName := services.GetFirstCupName(appt)
-			if !seen[cupName] {
-				seen[cupName] = true
-				procedures = append(procedures, cupName)
+			for _, proc := range appt.Procedures {
+				code := proc.CupCode
+				if code == "" || seen[code] {
+					continue
+				}
+				seen[code] = true
+				name := proc.CupName
+				if name == "" || name == code {
+					if t.ProcedureRepo != nil {
+						// Usar código base para lookup en Antares (SIESA almacena "891509-16", Antares solo tiene "891509")
+						lookupCode := utils.BaseCupCode(code)
+						if p, err := t.ProcedureRepo.FindByCode(ctx, lookupCode); err == nil && p != nil && p.Name != "" {
+							name = p.Name
+						}
+					}
+				}
+				if name == "" {
+					name = code
+				}
+				procedures = append(procedures, name)
 			}
+		}
+		if len(procedures) == 0 {
+			procedures = []string{"Procedimiento"}
 		}
 		proceduresText := strings.Join(procedures, " y ")
 
@@ -258,7 +279,7 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 				if proc.CupCode == "" {
 					continue
 				}
-				if p, err := t.ProcedureRepo.FindByCode(ctx, proc.CupCode); err == nil && p != nil && p.Address != "" {
+				if p, err := t.ProcedureRepo.FindByCode(ctx, utils.BaseCupCode(proc.CupCode)); err == nil && p != nil && p.Address != "" {
 					clinicAddress = p.Address
 					break
 				}
@@ -377,8 +398,8 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 			MaxSlots:      20, // Buscar más slots para saber cuántos pacientes notificar
 		}
 
-		// MRC monthly limit filter for SAN02 (Sanitas Modelo de Riesgo Compartido) WL entries
-		if t.AppointmentSvc != nil && firstEntry.PatientEntity == "SAN02" {
+		// MRC monthly limit filter: solo para entidades Sanitas (SAN02/EPS005)
+		if t.AppointmentSvc != nil && services.IsMRCEntity(firstEntry.PatientEntity) {
 			if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 				query.MonthFilter = func(year, month int) (bool, error) {
 					blocked, err := t.AppointmentSvc.CheckMRCLimitForMonth(ctx, cupsCode, firstEntry.PatientEntity, year, month)
@@ -420,15 +441,14 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 				continue
 			}
 
-			// 5b. Para pacientes SAN02 con CUPS de grupo MRC, verificar que el mes actual
-			// tenga cupo disponible antes de notificar
-			if t.AppointmentSvc != nil && entry.PatientEntity == "SAN02" {
+			// 5b. Solo para Sanitas (SAN02/EPS005): verificar cupo MRC antes de notificar
+			if t.AppointmentSvc != nil && services.IsMRCEntity(entry.PatientEntity) {
 				if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 					blocked, _, err := t.AppointmentSvc.CheckMRCLimit(ctx, cupsCode, entry.PatientEntity)
 					if err != nil {
 						slog.Warn("wl_check: mrc limit error", "cups_code", cupsCode, "entry_id", entry.ID, "error", err)
 					} else if blocked {
-						slog.Info("wl_check: mrc limit reached for patient, skipping", "cups_code", cupsCode, "entry_id", entry.ID)
+						slog.Info("wl_check: mrc limit reached, skipping", "cups_code", cupsCode, "entry_id", entry.ID)
 						continue
 					}
 				}
@@ -505,3 +525,4 @@ func groupAppointmentsByPatient(appointments []domain.Appointment) map[string][]
 	}
 	return groups
 }
+

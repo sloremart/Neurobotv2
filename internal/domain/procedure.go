@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 type Procedure struct {
 	ID               int
 	Code             string // Código CUPS
@@ -60,6 +62,17 @@ var EntityCategoryLabels = map[int]string{
 	4: "REGIMEN ESPECIAL",
 	5: "ARL",
 	6: "POLIZA",
+}
+
+// ConfirmationEntry es un registro de confirmación de cita (canal + ID de mensaje/llamada).
+// Se persiste localmente en confirmation_log ya que SIESA no tiene campos equivalentes
+// a los que tenía Antares (MedioConfirmacion, IdMedioConfirmacion).
+type ConfirmationEntry struct {
+	AppointmentID string
+	PatientID     string
+	ConfirmedAt   time.Time
+	Channel       string // "whatsapp" | "ivr"
+	ChannelID     string // Bird message ID o call ID
 }
 
 type Municipality struct {

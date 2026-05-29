@@ -67,8 +67,8 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 		query.PreferredDoctor = entry.PreferredDoctorDoc
 	}
 
-	// MRC monthly limit filter for SAN02 (Sanitas Modelo de Riesgo Compartido) WL entries
-	if m.apptSvc != nil && entry.PatientEntity == "SAN02" {
+	// MRC monthly limit filter: solo para entidades Sanitas (SAN02/EPS005)
+	if m.apptSvc != nil && services.IsMRCEntity(entry.PatientEntity) {
 		if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 			query.MonthFilter = func(year, month int) (bool, error) {
 				blocked, err := m.apptSvc.CheckMRCLimitForMonth(ctx, cupsCode, entry.PatientEntity, year, month)

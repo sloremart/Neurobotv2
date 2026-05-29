@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -108,9 +109,11 @@ func showEntityListHandler(entityRepo repository.EntityRepository) sm.StateHandl
 			entities, err = entityRepo.FindActive(ctx)
 		}
 		if err != nil {
+			slog.Error("entity_query_error", "category", category, "err", err)
 			return sm.NewResult(sm.StateAskEntityNumber).
 				WithText("Error al obtener entidades. Escribe el número de tu entidad:"), nil
 		}
+		slog.Debug("entity_query_result", "category", category, "count", len(entities))
 
 		if len(entities) == 0 {
 			return sm.NewResult(sm.StateEscalateToAgent).
@@ -205,9 +208,8 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			}
 		}
 
-		// Sanitas submenu: trigger for known codes or any entity whose name contains "SANITAS"
-		if entityCode == "SAN01" || entityCode == "SAN02" ||
-			strings.Contains(strings.ToUpper(entityName), "SANITAS") {
+		// Sanitas submenu: solo para códigos Antares SAN01/SAN02 (no aplica en SIESA)
+		if entityCode == "SAN01" || entityCode == "SAN02" {
 			return sm.NewResult(sm.StateAskSanitasPlan).
 				WithContext("entity_number", fmt.Sprintf("%d", index)).
 				WithContext("menu_option", "agendar").

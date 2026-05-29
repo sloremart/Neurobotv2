@@ -68,22 +68,10 @@ func (c *CachedEntityRepo) FindActive(ctx context.Context) ([]domain.Entity, err
 }
 
 func (c *CachedEntityRepo) FindActiveByCategory(ctx context.Context, category string) ([]domain.Entity, error) {
-	c.mu.RLock()
-	if !c.isStale() {
-		defer c.mu.RUnlock()
-		return c.byCategory[category], nil
-	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.isStale() {
-		return c.byCategory[category], nil
-	}
-	if err := c.refresh(ctx); err != nil {
-		return nil, err
-	}
-	return c.byCategory[category], nil
+	// Delegamos al inner repo directamente: cada categoría usa filtros SQL específicos
+	// (es_prepagado, TipoAseguramiento) que no se pueden derivar solo del campo regimen
+	// que usa el caché global. El caché byCategory queda solo para compatibilidad.
+	return c.inner.FindActiveByCategory(ctx, category)
 }
 
 func (c *CachedEntityRepo) FindByCode(ctx context.Context, code string) (*domain.Entity, error) {

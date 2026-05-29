@@ -42,14 +42,15 @@ type CreatePatientInput struct {
 	Phone              string
 	Email              string
 	Address            string
-	CityCode           string
+	DepartmentCode     string // cod_dep en SIESA (ej: "50")
+	CityCode           string // cod_muni en SIESA (ej: "001")
 	Zone               string
 	EntityCode         string
-	AffiliationType    string
-	UserType           string
+	AffiliationType    string // C=Cotizante, B=Beneficiario, O=Otro → tipo_afilia 1/2/3
+	UserType           string // "1"-"9" → tipo_usuario
 	Occupation         string
 	Level              string
-	MaritalStatus      string
+	MaritalStatus      string // "1"-"6" → estadoCivil
 	BirthPlace         string
 	EducationLevel     string
 	CountryCode        string

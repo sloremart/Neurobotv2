@@ -1,0 +1,33 @@
+# Compose de PRUEBAS locales con SIESA
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.testing.yml up --build
+#
+# Diferencias vs producción:
+#   - Usa .env.testing (EXTERNAL_DB_DRIVER=siesa, servidor de pruebas)
+#   - Puerto 8090 en vez de 8080
+#   - Ngrok con hostname de plan free
+
+services:
+  bot:
+    env_file:
+      - .env.testing
+    ports:
+      - "8090:8090"
+    container_name: neuro_bot_testing
+
+  db:
+    env_file:
+      - .env.testing
+    container_name: neuro_bot_db_testing
+
+  ngrok:
+    container_name: neuro_bot_ngrok_testing
+    command:
+      - "http"
+      - "bot:8090"
+      - "--hostname=endodermal-prearticulate-teodora.ngrok-free.dev"
+      - "--log=stdout"
+
+  watcher:
+    environment:
+      IGNORE_CONTAINERS: "neuro_bot_watcher,neuro_bot_testing,neuro_bot_db_testing,neuro_bot_ngrok_testing"
