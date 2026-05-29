@@ -165,21 +165,25 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			}
 		}
 
-		// Agenda name type filter: skip days whose agenda doesn't match the procedure type
-		if query.ProcedureType != "" {
-			if allowed, ok := agendaCache[day.AgendaID]; ok {
-				if !allowed {
-					slog.Debug("slot_skip_agenda_type_cached", "agenda_id", day.AgendaID, "procedure_type", query.ProcedureType)
-					continue
-				}
-			} else {
-				schedule, err2 := s.scheduleRepo.FindByScheduleID(ctx, day.AgendaID, query.ProcedureType)
-				match := schedule != nil
-				agendaCache[day.AgendaID] = match
-				slog.Debug("slot_agenda_type_check", "agenda_id", day.AgendaID, "procedure_type", query.ProcedureType, "match", match, "err", err2)
-				if !match {
-					continue
-				}
+		// Agenda type filter: always applied.
+		// Default to "consulta" when ProcedureType is empty so pure procedure
+		// agendas (asuntos 13-16 only) are never shown for consultation CUPS.
+		agendaType := query.ProcedureType
+		if agendaType == "" {
+			agendaType = "consulta"
+		}
+		if allowed, ok := agendaCache[day.AgendaID]; ok {
+			if !allowed {
+				slog.Debug("slot_skip_agenda_type_cached", "agenda_id", day.AgendaID, "procedure_type", agendaType)
+				continue
+			}
+		} else {
+			schedule, err2 := s.scheduleRepo.FindByScheduleID(ctx, day.AgendaID, agendaType)
+			match := schedule != nil
+			agendaCache[day.AgendaID] = match
+			slog.Debug("slot_agenda_type_check", "agenda_id", day.AgendaID, "procedure_type", agendaType, "match", match, "err", err2)
+			if !match {
+				continue
 			}
 		}
 
