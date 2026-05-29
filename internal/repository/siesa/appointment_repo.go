@@ -294,6 +294,11 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 			WHERE LEFT(cp.id_procedimiento, @p2) = @p1 AND cp.Servicio > 0
 			ORDER BY c.fecha DESC`,
 			baseCupTS, len(baseCupTS)).Scan(&svcID)
+		if svcID == 0 {
+			_ = r.db.QueryRowContext(ctx,
+				`SELECT TOP 1 ISNULL(Servicio,0) FROM AsuntoPctos WHERE CodProcedimiento = @p1`, baseCupTS,
+			).Scan(&svcID)
+		}
 		if svcID > 0 {
 			tipoServicio = svcID
 		}
@@ -447,6 +452,11 @@ func (r *AppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreateP
 		WHERE LEFT(cp.id_procedimiento, @p2) = @p1 AND cp.Servicio > 0
 		ORDER BY c.fecha DESC`,
 		baseCup, len(baseCup)).Scan(&servicio)
+	if servicio == 0 {
+		_ = r.db.QueryRowContext(ctx,
+			`SELECT TOP 1 ISNULL(Servicio,0) FROM AsuntoPctos WHERE CodProcedimiento = @p1`, baseCup,
+		).Scan(&servicio)
+	}
 
 	// Construir código interno SIESA: "{base}-{qty}" solo cuando qty > 4.
 	// Cantidades 1-4 usan el código base con el campo Cantidad.

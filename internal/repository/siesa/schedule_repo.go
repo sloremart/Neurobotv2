@@ -288,7 +288,9 @@ func (r *ScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID i
 }
 
 // FindAsuntoForCups retorna el asunto SIESA para un CUPS consultando AsuntoPctos.
-// Fallback: historial de citas_procedimientos_asuntos. Retorna 0 si no se encuentra.
+// Fallback 1: historial en citas_procedimientos (procedimientos/imágenes).
+// Fallback 2: historial en citas_procedimientos_asuntos (consultas).
+// Retorna 0 si no se encuentra.
 func (r *ScheduleRepo) FindAsuntoForCups(ctx context.Context, cupsCode string) int {
 	var asunto int
 	// Fuente primaria: catálogo AsuntoPctos
@@ -298,7 +300,20 @@ func (r *ScheduleRepo) FindAsuntoForCups(ctx context.Context, cupsCode string) i
 	if asunto > 0 {
 		return asunto
 	}
-	// Fallback: historial de consultas previas
+	// Fallback 1: historial de procedimientos (citas_procedimientos)
+	_ = r.db.QueryRowContext(ctx, `
+		SELECT TOP 1 c.asunto
+		FROM citas c
+		JOIN citas_procedimientos cp ON cp.id_cita = c.id
+		WHERE LEFT(cp.id_procedimiento, @p2) = @p1
+		  AND c.asunto IN (SELECT id FROM sis_asunto)
+		  AND c.estado != 'C'
+		ORDER BY c.fecha DESC`, cupsCode, len(cupsCode),
+	).Scan(&asunto)
+	if asunto > 0 {
+		return asunto
+	}
+	// Fallback 2: historial de consultas (citas_procedimientos_asuntos)
 	_ = r.db.QueryRowContext(ctx, `
 		SELECT TOP 1 c.asunto
 		FROM citas c
