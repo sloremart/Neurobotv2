@@ -865,6 +865,15 @@ func (r *AppointmentRepo) lookupAsuntoFromHistory(ctx context.Context, procs []d
 		if asunto > 0 {
 			return asunto
 		}
+
+		// Sin historial: consultar AsuntoPctos (catálogo SIESA).
+		// Evita el default incorrecto: 890274 → asunto 8 (neurología), no 1 (fisiatría).
+		_ = r.db.QueryRowContext(ctx,
+			`SELECT TOP 1 Asunto FROM AsuntoPctos WHERE CodProcedimiento = @p1`, baseCup,
+		).Scan(&asunto)
+		if asunto > 0 {
+			return asunto
+		}
 	}
-	return 1 // default: asunto RX (cuando no hay historial previo para los CUPS)
+	return 1 // default: fisiatría (solo cuando no hay historial ni entrada en AsuntoPctos)
 }
