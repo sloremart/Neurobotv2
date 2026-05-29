@@ -144,7 +144,7 @@ func main() {
 
 	// Build CUPS context for OCR prompt (reference table for AI matching)
 	cupsContext := ""
-	if repos != nil {
+	if repos != nil && repos.Procedure != nil {
 		if allProcs, err := repos.Procedure.FindAllActive(ctx); err == nil {
 			entries := make([]struct{ Code, Name string }, len(allProcs))
 			for i, p := range allProcs {

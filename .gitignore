@@ -2,7 +2,7 @@
 .env.*
 !.env.example
 neuro-bot
-server
+/server
 *.exe
 vendor/
 .idea/
