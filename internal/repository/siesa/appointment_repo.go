@@ -528,6 +528,26 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 	if len(ids) == 0 {
 		return nil
 	}
+
+	// PK_citas es compuesta: (cod_medi, fecha, hora, meridiano, estado, horacan, CodGrupo).
+	// Al cambiar estado 'P'→'C', si ya existe una fila con estado='C' en ese mismo slot
+	// (cita previa cancelada y reagendada), SQL Server viola la PK.
+	// Solución: eliminar la fila cancelada previa del mismo slot antes de actualizar.
+	clause0, idArgs0 := inParams(ids, 1)
+	_, _ = r.db.ExecContext(ctx,
+		fmt.Sprintf(`DELETE c_old
+		FROM citas c_old
+		INNER JOIN citas c_new
+		    ON c_new.cod_medi  = c_old.cod_medi
+		   AND c_new.fecha     = c_old.fecha
+		   AND c_new.hora      = c_old.hora
+		   AND c_new.meridiano = c_old.meridiano
+		   AND c_new.horacan   = c_old.horacan
+		   AND c_new.CodGrupo  = c_old.CodGrupo
+		   AND c_old.estado    = 'C'
+		WHERE c_new.id IN (%s) AND c_new.estado = 'P'`, clause0),
+		idArgs0...)
+
 	obs := fmt.Sprintf(" [Cancelada via WhatsApp: %s]", reason)
 	// @p1 = reason, @p2 = obs; IDs empiezan en @p3
 	clause, idArgs := inParams(ids, 3)
