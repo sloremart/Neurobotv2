@@ -77,6 +77,7 @@ func (m *mockScheduleRepo) UpdateWorkingDayExceptionDate(ctx context.Context, ag
 func (m *mockScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error) {
 	return false, nil
 }
+func (m *mockScheduleRepo) FindAsuntoForCups(_ context.Context, _ string) int { return 0 }
 
 func makeConfig(duration int, morningStart, morningEnd string) *domain.ScheduleConfig {
 	cfg := &domain.ScheduleConfig{

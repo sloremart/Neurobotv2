@@ -254,6 +254,7 @@ func (m *MockScheduleRepo) DeleteWorkingDayException(ctx context.Context, agenda
 	}
 	return false, nil
 }
+func (m *MockScheduleRepo) FindAsuntoForCups(_ context.Context, _ string) int { return 0 }
 
 // MockProcedureRepo implements repository.ProcedureRepository.
 type MockProcedureRepo struct {
