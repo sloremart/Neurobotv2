@@ -189,17 +189,13 @@ func FormatTimeSlot(timeSlot string) string {
 
 	ampm := "AM"
 	displayHour := hour
-	switch {
-	case hour >= 13:
+	if hour >= 12 {
 		ampm = "PM"
-		displayHour = hour - 12
-	case hour == 12:
-		ampm = "PM"
-	case hour >= 1 && hour <= 6:
-		// SIESA guarda slots PM (1-6 PM) en formato 12h en el campo datetime.
-		// Las clínicas no agendan a la 1-6 AM, por lo que estas horas siempre son PM.
-		ampm = "PM"
-	case hour == 0:
+		if hour > 12 {
+			displayHour = hour - 12
+		}
+	}
+	if hour == 0 {
 		displayHour = 12
 	}
 
