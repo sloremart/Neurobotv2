@@ -26,8 +26,8 @@ type CancellationCallback func(ctx context.Context, cupsCode string)
 func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
 	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo, doctorRepo))
 	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo, doctorRepo))
-	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper))
-	m.Register(sm.StateConfirmAppointment, confirmAppointmentHandler(apptSvc, procRepo, addrMapper))
+	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, doctorRepo, addrMapper))
+	m.Register(sm.StateConfirmAppointment, confirmAppointmentHandler(apptSvc, procRepo, doctorRepo, addrMapper))
 	m.Register(sm.StateCancelAppointment, cancelAppointmentHandler(apptSvc, procRepo, doctorRepo, onCancel))
 	m.Register(sm.StateNoAppointments, noAppointmentsHandler())
 
@@ -222,7 +222,7 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 }
 
 // APPOINTMENT_ACTION (interactivo, lista) — procesa acción seleccionada sobre la cita
-func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) sm.StateHandler {
+func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selectedID := sess.GetContext("selected_appointment_id")
 
@@ -366,7 +366,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				}), nil
 
 		case "appt_preparation":
-			return showAppointmentPreparation(ctx, sess, apptSvc, procRepo, addrMapper)
+			return showAppointmentPreparation(ctx, sess, apptSvc, procRepo, doctorRepo, addrMapper)
 
 		case "appt_back":
 			var appointments []domain.Appointment
@@ -393,7 +393,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 }
 
 // CONFIRM_APPOINTMENT (interactivo) — reconfirmación antes de confirmar la cita
-func confirmAppointmentHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) sm.StateHandler {
+func confirmAppointmentHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "confirm_yes", "confirm_no")
 		if result != nil {
@@ -921,7 +921,7 @@ func backToAppointmentAction(sess *session.Session, apptSvc *services.Appointmen
 }
 
 // showAppointmentPreparation looks up preparation instructions for the selected appointment's procedures.
-func showAppointmentPreparation(ctx context.Context, sess *session.Session, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) (*sm.StateResult, error) {
+func showAppointmentPreparation(ctx context.Context, sess *session.Session, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper) (*sm.StateResult, error) {
 	selectedID := sess.GetContext("selected_appointment_id")
 	var appointments []domain.Appointment
 	json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appointments)
