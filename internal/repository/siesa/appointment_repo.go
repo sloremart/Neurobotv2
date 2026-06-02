@@ -74,6 +74,19 @@ func timecodeFromFechaHora(fecha time.Time, hora, meridiano string) string {
 	return fmt.Sprintf("%s%02d%02d", fecha.Format("20060102"), h, m)
 }
 
+// timecodeFromCita construye el timecode "YYYYMMDDHHmm" priorizando la hora 24h obtenida
+// directamente de programacion_medico_detalle.Fecha (hhmm24 = HOUR*100+MINUTE).
+// Si hhmm24 == -1 (slot no encontrado), cae al cálculo por hora+meridiano.
+// Esto corrige citas creadas desde el UI de SIESA donde meridiano queda NULL.
+func timecodeFromCita(fecha time.Time, hora, meridiano string, hhmm24 int) string {
+	if hhmm24 >= 0 {
+		h := hhmm24 / 100
+		m := hhmm24 % 100
+		return fmt.Sprintf("%s%02d%02d", fecha.Format("20060102"), h, m)
+	}
+	return timecodeFromFechaHora(fecha, hora, meridiano)
+}
+
 // idSedeForAsunto: asuntos 1,2,3,4,5,12 = imágenes/RX (sede 3); resto = sede 2.
 func idSedeForAsunto(asunto int) int {
 	switch asunto {
@@ -139,6 +152,7 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 	var asistenciaConfirmada int
 
 	var meridiano string
+	var hhmm24 int
 	err := r.db.QueryRowContext(ctx, `
 	SELECT CAST(c.id AS VARCHAR(20)),
 	       CAST(c.fecha AS DATE),
@@ -150,13 +164,15 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 	       ISNULL(c.id_programacion,0),
 	       ISNULL(c.estado,'P'),
 	       ISNULL(c.observacion,''),
-	       CAST(ISNULL(c.AsistenciaConfirmada,0) AS INT)
+	       CAST(ISNULL(c.AsistenciaConfirmada,0) AS INT),
+	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
+	               FROM programacion_medico_detalle pmd WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1)
 	FROM citas c
 	WHERE c.id = @p1`, id,
 	).Scan(
 		&appt.ID, &fecha, &hora, &meridiano,
 		&appt.DoctorID, &appt.PatientID, &appt.Entity, &appt.AgendaID,
-		&estado, &appt.Observations, &asistenciaConfirmada,
+		&estado, &appt.Observations, &asistenciaConfirmada, &hhmm24,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -167,7 +183,7 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 
 	appt.Date = fecha
 	appt.DoctorName = appt.DoctorID
-	appt.TimeSlot = timecodeFromFechaHora(fecha, hora, meridiano)
+	appt.TimeSlot = timecodeFromCita(fecha, hora, meridiano, hhmm24)
 	appt.Canceled = strings.EqualFold(estado, "C")
 	appt.Confirmed = asistenciaConfirmada == 1 || strings.EqualFold(estado, "CC") || strings.EqualFold(estado, "A")
 
@@ -191,7 +207,9 @@ func (r *AppointmentRepo) FindUpcomingByPatient(ctx context.Context, patientID s
 	       ISNULL(c.id_programacion,0),
 	       ISNULL(c.estado,'P'),
 	       ISNULL(c.observacion,''),
-	       CAST(ISNULL(c.AsistenciaConfirmada,0) AS INT)
+	       CAST(ISNULL(c.AsistenciaConfirmada,0) AS INT),
+	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
+	               FROM programacion_medico_detalle pmd WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1)
 	FROM citas c
 	WHERE c.autoid = @p1
 	  AND c.fecha >= CAST(GETDATE() AS DATE)
@@ -221,7 +239,9 @@ func (r *AppointmentRepo) FindByAgendaAndDate(ctx context.Context, agendaID int,
 	       ISNULL(c.id_programacion,0),
 	       ISNULL(c.estado,'P'),
 	       ISNULL(c.observacion,''),
-	       CAST(ISNULL(c.AsistenciaConfirmada,0) AS INT)
+	       CAST(ISNULL(c.AsistenciaConfirmada,0) AS INT),
+	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
+	               FROM programacion_medico_detalle pmd WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1)
 	FROM citas c
 	WHERE c.id_programacion = @p1
 	  AND CAST(c.fecha AS DATE) = @p2
@@ -243,17 +263,17 @@ func (r *AppointmentRepo) scanAppointments(ctx context.Context, rows *sql.Rows) 
 		var appt domain.Appointment
 		var fecha time.Time
 		var hora, meridiano, estado string
-		var asistenciaConfirmada int
+		var asistenciaConfirmada, hhmm24 int
 		if err := rows.Scan(
 			&appt.ID, &fecha, &hora, &meridiano,
 			&appt.DoctorID, &appt.PatientID, &appt.Entity, &appt.AgendaID,
-			&estado, &appt.Observations, &asistenciaConfirmada,
+			&estado, &appt.Observations, &asistenciaConfirmada, &hhmm24,
 		); err != nil {
 			return nil, err
 		}
 		appt.Date = fecha
 		appt.DoctorName = appt.DoctorID
-		appt.TimeSlot = timecodeFromFechaHora(fecha, hora, meridiano)
+		appt.TimeSlot = timecodeFromCita(fecha, hora, meridiano, hhmm24)
 		appt.Canceled = strings.EqualFold(estado, "C")
 		appt.Confirmed = asistenciaConfirmada == 1 || strings.EqualFold(estado, "CC") || strings.EqualFold(estado, "A")
 		appointments = append(appointments, appt)
@@ -723,7 +743,9 @@ func (r *AppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([
 	           p.primer_nom,' ',ISNULL(p.segundo_nom,''),' ',
 	           p.primer_ape,' ',ISNULL(p.segundo_ape,'')
 	       ))), '') AS nombre_paciente,
-	       ISNULL(NULLIF(LTRIM(RTRIM(p.telefono)),''), ISNULL(p.celular,'')) AS telefono_paciente
+	       ISNULL(NULLIF(LTRIM(RTRIM(p.telefono)),''), ISNULL(p.celular,'')) AS telefono_paciente,
+	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
+	               FROM programacion_medico_detalle pmd WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1)
 	FROM citas c
 	INNER JOIN sis_paci p ON p.autoid = c.autoid
 	WHERE CAST(c.fecha AS DATE) = @p1 AND c.estado != 'C'
@@ -739,18 +761,18 @@ func (r *AppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([
 		var appt domain.Appointment
 		var fecha time.Time
 		var hora, meridiano, estado string
-		var asistenciaConfirmada int
+		var asistenciaConfirmada, hhmm24 int
 		if err := rows.Scan(
 			&appt.ID, &fecha, &hora, &meridiano,
 			&appt.DoctorID, &appt.PatientID, &appt.Entity, &appt.AgendaID,
 			&estado, &appt.Observations, &asistenciaConfirmada,
-			&appt.PatientName, &appt.PatientPhone,
+			&appt.PatientName, &appt.PatientPhone, &hhmm24,
 		); err != nil {
 			return nil, err
 		}
 		appt.Date = fecha
 		appt.DoctorName = appt.DoctorID
-		appt.TimeSlot = timecodeFromFechaHora(fecha, hora, meridiano)
+		appt.TimeSlot = timecodeFromCita(fecha, hora, meridiano, hhmm24)
 		appt.Canceled = strings.EqualFold(estado, "C")
 		appt.Confirmed = asistenciaConfirmada == 1 || strings.EqualFold(estado, "CC") || strings.EqualFold(estado, "A")
 		appointments = append(appointments, appt)
