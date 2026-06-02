@@ -495,3 +495,11 @@ func GetFirstCupName(appt domain.Appointment) string {
 	}
 	return "Procedimiento"
 }
+
+// GetFirstCupCode retorna el código del primer procedimiento de una cita
+func GetFirstCupCode(appt domain.Appointment) string {
+	if len(appt.Procedures) > 0 {
+		return appt.Procedures[0].CupCode
+	}
+	return ""
+}
