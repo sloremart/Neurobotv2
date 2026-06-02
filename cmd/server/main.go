@@ -203,10 +203,12 @@ func main() {
 	})
 	if appointmentSvc != nil {
 		var procRepoForAppts repository.ProcedureRepository
+		var doctorRepoForAppts repository.DoctorRepository
 		if repos != nil {
 			procRepoForAppts = repos.Procedure
+			doctorRepoForAppts = repos.Doctor
 		}
-		handlers.RegisterAppointmentHandlers(machine, appointmentSvc, procRepoForAppts, addrMapper, onCancel)
+		handlers.RegisterAppointmentHandlers(machine, appointmentSvc, procRepoForAppts, doctorRepoForAppts, addrMapper, onCancel)
 	}
 	// Fase 8: Orden Médica y OCR
 	waitingListRepo := localrepo.NewWaitingListRepo(localDB)

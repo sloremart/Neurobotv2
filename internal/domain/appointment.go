@@ -15,7 +15,8 @@ type Appointment struct {
 	RequestDate           time.Time
 	Date                  time.Time
 	TimeSlot              string // YYYYMMDDHHmm
-	DoctorID              string // Documento del médico
+	DoctorID              string // cod_medi SIESA (interno)
+	DoctorDocument        string // cédula real (sis_medi.cedula) para lookup en Antares
 	DoctorName            string
 	PatientID             string
 	PatientName           string

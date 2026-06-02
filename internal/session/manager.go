@@ -266,9 +266,6 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 		elapsedMin := int(elapsed.Minutes())
 
 		if elapsedMin >= deps.CloseMin && s.Reminders >= 1 {
-			// Send closure message before marking completed
-			deps.BirdClient.SendText(s.PhoneNumber, s.ConversationID,
-				"Se ha cerrado tu sesión por inactividad. Para continuar, envía un nuevo mensaje.")
 			if err := m.repo.UpdateStatus(ctx, s.ID, StatusCompleted); err != nil {
 				slog.Error("inactivity close failed", "session_id", s.ID, "error", err)
 				continue

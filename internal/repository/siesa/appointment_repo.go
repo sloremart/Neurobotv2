@@ -163,6 +163,7 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
 	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
 	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
 	       ISNULL(c.id_programacion,0),
@@ -175,7 +176,7 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 	WHERE c.id = @p1`, id,
 	).Scan(
 		&appt.ID, &fecha, &hora, &meridiano,
-		&appt.DoctorID, &appt.DoctorName, &appt.PatientID, &appt.Entity, &appt.AgendaID,
+		&appt.DoctorID, &appt.DoctorName, &appt.DoctorDocument, &appt.PatientID, &appt.Entity, &appt.AgendaID,
 		&estado, &appt.Observations, &asistenciaConfirmada, &hhmm24,
 	)
 	if err == sql.ErrNoRows {
@@ -209,6 +210,7 @@ func (r *AppointmentRepo) FindUpcomingByPatient(ctx context.Context, patientID s
 	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
 	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
 	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
 	       ISNULL(c.id_programacion,0),
@@ -245,6 +247,7 @@ func (r *AppointmentRepo) FindByAgendaAndDate(ctx context.Context, agendaID int,
 	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
 	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
 	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
 	       ISNULL(c.id_programacion,0),
@@ -277,7 +280,7 @@ func (r *AppointmentRepo) scanAppointments(ctx context.Context, rows *sql.Rows) 
 		var asistenciaConfirmada, hhmm24 int
 		if err := rows.Scan(
 			&appt.ID, &fecha, &hora, &meridiano,
-			&appt.DoctorID, &appt.DoctorName, &appt.PatientID, &appt.Entity, &appt.AgendaID,
+			&appt.DoctorID, &appt.DoctorName, &appt.DoctorDocument, &appt.PatientID, &appt.Entity, &appt.AgendaID,
 			&estado, &appt.Observations, &asistenciaConfirmada, &hhmm24,
 		); err != nil {
 			return nil, err
@@ -747,6 +750,7 @@ func (r *AppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([
 	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
 	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
 	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
 	       ISNULL(c.id_programacion,0),
@@ -778,7 +782,7 @@ func (r *AppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([
 		var asistenciaConfirmada, hhmm24 int
 		if err := rows.Scan(
 			&appt.ID, &fecha, &hora, &meridiano,
-			&appt.DoctorID, &appt.DoctorName, &appt.PatientID, &appt.Entity, &appt.AgendaID,
+			&appt.DoctorID, &appt.DoctorName, &appt.DoctorDocument, &appt.PatientID, &appt.Entity, &appt.AgendaID,
 			&estado, &appt.Observations, &asistenciaConfirmada,
 			&appt.PatientName, &appt.PatientPhone, &hhmm24,
 		); err != nil {

@@ -25,7 +25,7 @@ func TestFetchAppointments_WithAppts(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateFetchAppointments)
 	sess.Context["patient_id"] = "PAT001"
@@ -47,7 +47,7 @@ func TestFetchAppointments_NoAppts(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateFetchAppointments)
 	sess.Context["patient_id"] = "PAT001"
@@ -69,7 +69,7 @@ func TestFetchAppointments_Error(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateFetchAppointments)
 	sess.Context["patient_id"] = "PAT001"
@@ -91,7 +91,7 @@ func TestListAppointments_Selection(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateListAppointments)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -118,7 +118,7 @@ func TestAppointmentAction_ConfirmFlow(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateAppointmentAction)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -143,7 +143,7 @@ func TestAppointmentAction_CancelFlow(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateAppointmentAction)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -168,7 +168,7 @@ func TestAppointmentAction_Back(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateAppointmentAction)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -192,7 +192,7 @@ func TestAppointmentAction_Menu(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateAppointmentAction)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -222,7 +222,7 @@ func TestConfirmAppointment_Yes(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateConfirmAppointment)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -249,7 +249,7 @@ func TestConfirmAppointment_No(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateConfirmAppointment)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -279,7 +279,7 @@ func TestCancelAppointment_Yes(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateCancelAppointment)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -306,7 +306,7 @@ func TestCancelAppointment_No(t *testing.T) {
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil)
+	RegisterAppointmentHandlers(m, apptSvc, nil, nil, nil, nil)
 
 	sess := testSess(sm.StateCancelAppointment)
 	sess.Context["appointments_json"] = string(apptsJSON)
@@ -323,7 +323,7 @@ func TestCancelAppointment_No(t *testing.T) {
 
 func TestNoAppointments_Menu(t *testing.T) {
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, services.NewAppointmentService(&testutil.MockAppointmentRepo{}, nil), nil, nil, nil)
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(&testutil.MockAppointmentRepo{}, nil), nil, nil, nil, nil)
 
 	sess := testSess(sm.StateNoAppointments)
 	result, err := m.Process(context.Background(), sess, postbackM("no_appt_menu"))
@@ -337,7 +337,7 @@ func TestNoAppointments_Menu(t *testing.T) {
 
 func TestNoAppointments_End(t *testing.T) {
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, services.NewAppointmentService(&testutil.MockAppointmentRepo{}, nil), nil, nil, nil)
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(&testutil.MockAppointmentRepo{}, nil), nil, nil, nil, nil)
 
 	sess := testSess(sm.StateNoAppointments)
 	result, err := m.Process(context.Background(), sess, postbackM("no_appt_end"))
