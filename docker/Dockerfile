@@ -23,6 +23,9 @@ COPY --from=builder /app/neuro-bot .
 COPY --from=builder /app/migrations ./migrations
 
 ENV TZ=America/Bogota
+# Tell Go GC to stay under 90% of the container memory limit (1024M → ~920MiB).
+# Without this, Go can allocate beyond the cgroup limit before GC runs, causing OOM kills.
+ENV GOMEMLIMIT=920MiB
 
 EXPOSE 8080
 
