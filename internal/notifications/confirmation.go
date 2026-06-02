@@ -156,7 +156,14 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 //	Step 3 → Post-IVR timeout (normal escalation to agent)
 //
 // NOTE: Caller (handleTimeout) already removed pending from sync.Map and DB via LoadAndDelete.
+// When ConfirmFollowupEnabled=false, the timer fires after the 1 PM IVR call and no further
+// action is taken — the pending was already handled by the IVR task or expires silently.
 func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotification) {
+	if !m.cfg.ConfirmFollowupEnabled {
+		slog.Debug("confirmation followup disabled, timeout silently cleaned up",
+			"phone", utils.MaskPhone(pending.Phone))
+		return
+	}
 	switch pending.RetryCount {
 	case 0:
 		// Step 1: Follow-up #1 — friendly text, NO agent assignment

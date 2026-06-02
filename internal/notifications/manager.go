@@ -183,11 +183,16 @@ func (m *NotificationManager) SetWaitingListCheckDeps(ss SlotSearcher, ac Future
 func (m *NotificationManager) RegisterPending(notif PendingNotification) {
 	notif.CreatedAt = time.Now()
 
-	// Confirmation/reschedule: configurable escalation chain
+	// Confirmation/reschedule: when followup disabled, keep pending alive until after 1 PM IVR
+	// (timer fires at 8h to not interfere); when enabled, use configurable follow-up hours.
 	var duration time.Duration
 	switch notif.Type {
 	case "confirmation", "reschedule":
-		duration = time.Duration(safeHours(m.cfg.ConfirmFollowup1Hours, 3)) * time.Hour
+		if m.cfg.ConfirmFollowupEnabled {
+			duration = time.Duration(safeHours(m.cfg.ConfirmFollowup1Hours, 3)) * time.Hour
+		} else {
+			duration = 8 * time.Hour // fires at ~3 PM, well after 1 PM IVR
+		}
 	default:
 		duration = 6 * time.Hour
 	}
@@ -404,13 +409,18 @@ func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) b
 	return true
 }
 
-// GetPendingForIVR returns pending confirmations/reschedules that completed
-// the WA follow-up chain (RetryCount==2) and are ready for IVR escalation.
+// GetPendingForIVR returns pending confirmations/reschedules ready for IVR call.
+// When followup chain is disabled: returns anyone who received the initial reminder (RetryCount==0).
+// When followup chain is enabled: returns those who completed the WA chain (RetryCount==2).
 func (m *NotificationManager) GetPendingForIVR() []*PendingNotification {
+	targetRetry := 2
+	if !m.cfg.ConfirmFollowupEnabled {
+		targetRetry = 0
+	}
 	var result []*PendingNotification
 	m.pending.Range(func(_, val interface{}) bool {
 		p := val.(*PendingNotification)
-		if (p.Type == "confirmation" || p.Type == "reschedule") && p.RetryCount == 2 {
+		if (p.Type == "confirmation" || p.Type == "reschedule") && p.RetryCount == targetRetry {
 			result = append(result, p)
 		}
 		return true
@@ -430,6 +440,19 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 		p.Timer.Stop()
 	}
 	p.RetryCount = 3
+
+	if !m.cfg.ConfirmFollowupEnabled {
+		// Followup chain disabled: IVR was the last step, no post-IVR escalation.
+		m.pending.Delete(phone)
+		if m.persister != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			m.persister.Delete(ctx, phone)
+		}
+		slog.Info("IVR sent (followup disabled), pending cleared", "phone", utils.MaskPhone(phone))
+		return
+	}
+
 	duration := time.Duration(safeMinutes(m.cfg.ConfirmPostIVRMinutes, 30)) * time.Minute
 	p.Timer = time.AfterFunc(duration, func() {
 		m.handleTimeout(phone)

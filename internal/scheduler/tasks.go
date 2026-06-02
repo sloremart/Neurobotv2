@@ -82,11 +82,11 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 		Fn: t.checkWaitingList,
 	})
 
-	// 15:00 — IVR calls for non-responders
+	// 13:00 — IVR calls for non-responders
 	// Sunday included: follows up WA reminders sent earlier that day
 	s.AddTask(ScheduledTask{
 		Name: "voice_reminders",
-		Hour: 15, Minute: 0,
+		Hour: 13, Minute: 0,
 		Weekdays: []time.Weekday{
 			time.Sunday, time.Monday, time.Tuesday, time.Wednesday,
 			time.Thursday, time.Friday, time.Saturday,
@@ -238,7 +238,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 // then sets post-IVR timer for final agent escalation.
 
 func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
-	// Get patients who completed WA follow-up chain (RetryCount==2)
+	// Get patients ready for IVR: RetryCount==0 (followup disabled) or RetryCount==2 (followup enabled)
 	targets := t.NotifyManager.GetPendingForIVR()
 	if len(targets) == 0 {
 		slog.Info("voice reminders: no targets")

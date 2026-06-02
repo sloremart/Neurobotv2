@@ -114,9 +114,10 @@ type Config struct {
 	TeamRoutingEnabled       bool // Route to specialty teams (Grupo A/B); false → all to Call Center
 
 	// Confirmation escalation chain
-	ConfirmFollowup1Hours  int // First follow-up after WA template (hours)
-	ConfirmFollowup2Hours  int // Second follow-up after first (hours)
-	ConfirmPostIVRMinutes  int // Agent escalation after IVR (minutes)
+	ConfirmFollowupEnabled bool // Enable follow-up messages + IVR after initial reminder (default false)
+	ConfirmFollowup1Hours  int  // First follow-up after WA template (hours)
+	ConfirmFollowup2Hours  int  // Second follow-up after first (hours)
+	ConfirmPostIVRMinutes  int  // Agent escalation after IVR (minutes)
 
 	// Telegram error alerts (optional — empty means disabled)
 	TelegramBotToken string
@@ -247,6 +248,7 @@ func Load() *Config {
 		TeamRoutingEnabled:     getEnv("TEAM_ROUTING_ENABLED", "true") == "true",
 
 		// Confirmation escalation
+		ConfirmFollowupEnabled: getEnv("CONFIRMATION_FOLLOWUP_ENABLED", "false") == "true",
 		ConfirmFollowup1Hours:  getEnvInt("CONFIRMATION_FOLLOWUP_1_HOURS", 3),
 		ConfirmFollowup2Hours:  getEnvInt("CONFIRMATION_FOLLOWUP_2_HOURS", 3),
 		ConfirmPostIVRMinutes:  getEnvInt("CONFIRMATION_POST_IVR_MINUTES", 30),
