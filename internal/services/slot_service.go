@@ -304,6 +304,26 @@ func calculateDaySlots(cfg *domain.ScheduleConfig, day domain.WorkingDay, query 
 		ranges = filtered
 	}
 
+	// CUPS-specific time restrictions (preparation time constraints).
+	// 879420 (TAC) requires 3h prep → only 10AM–3PM allowed.
+	if minHour, maxHour, ok := cupTimeRestriction(query.CupsCode); ok {
+		var filtered []timeRange
+		for _, r := range ranges {
+			start := r.start
+			end := r.end
+			if start < minHour*60 {
+				start = minHour * 60
+			}
+			if end > maxHour*60 {
+				end = maxHour * 60
+			}
+			if start < end {
+				filtered = append(filtered, timeRange{start, end})
+			}
+		}
+		ranges = filtered
+	}
+
 	var slots []AvailableSlot
 	for _, r := range ranges {
 		for minutes := r.start; minutes+duration <= r.end; minutes += duration {
@@ -352,6 +372,18 @@ func calculateDaySlots(cfg *domain.ScheduleConfig, day domain.WorkingDay, query 
 }
 
 // parseHHMMToMinutes converts "HH:mm" to minutes since midnight.
+// cupTimeRestriction returns the allowed hour window (minHour, maxHour) for CUPS codes
+// that require preparation time, limiting when appointments can be scheduled.
+// Returns ok=false if no restriction applies.
+func cupTimeRestriction(cupsCode string) (minHour, maxHour int, ok bool) {
+	base := strings.SplitN(cupsCode, "-", 2)[0]
+	switch base {
+	case "879420": // TAC con prep 3h → solo 10:00 AM – 3:00 PM
+		return 10, 15, true
+	}
+	return 0, 0, false
+}
+
 func parseHHMMToMinutes(t string) int {
 	if len(t) < 5 {
 		return 0
