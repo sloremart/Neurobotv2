@@ -159,10 +159,8 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 	       ISNULL(c.hora,''),
 	       ISNULL(c.meridiano,''),
 	       CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20)),
-	       ISNULL(NULLIF(LTRIM(RTRIM(
-	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
-	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
-	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),
+	           CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
 	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
@@ -206,10 +204,8 @@ func (r *AppointmentRepo) FindUpcomingByPatient(ctx context.Context, patientID s
 	       ISNULL(c.hora,''),
 	       ISNULL(c.meridiano,''),
 	       CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20)),
-	       ISNULL(NULLIF(LTRIM(RTRIM(
-	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
-	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
-	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),
+	           CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
 	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
@@ -243,10 +239,8 @@ func (r *AppointmentRepo) FindByAgendaAndDate(ctx context.Context, agendaID int,
 	       ISNULL(c.hora,''),
 	       ISNULL(c.meridiano,''),
 	       CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20)),
-	       ISNULL(NULLIF(LTRIM(RTRIM(
-	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
-	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
-	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),
+	           CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
 	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
@@ -746,10 +740,8 @@ func (r *AppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([
 	       ISNULL(c.hora,''),
 	       ISNULL(c.meridiano,''),
 	       CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20)),
-	       ISNULL(NULLIF(LTRIM(RTRIM(
-	           (SELECT TOP 1 LTRIM(RTRIM(ISNULL(sm.primer_nom,'')+' '+ISNULL(sm.primer_ape,'')))
-	            FROM sis_medi sm WHERE sm.codigo=c.cod_medi)
-	       )),''), CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),
+	           CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
 	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
 	       CAST(c.autoid AS VARCHAR(20)),
 	       ISNULL(c.contrato,''),
