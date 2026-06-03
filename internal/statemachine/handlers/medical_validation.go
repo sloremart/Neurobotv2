@@ -44,8 +44,11 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 // --- Helpers ---
 
 // isContrastable determina si un CUPS puede ser contrastado (resonancias, tomografías).
+// 883xxx = Resonancia Magnética, 871xxx/879xxx = Tomografía (TAC).
 func isContrastable(cupsCode string) bool {
-	return strings.HasPrefix(cupsCode, "883") || strings.HasPrefix(cupsCode, "871")
+	return strings.HasPrefix(cupsCode, "883") ||
+		strings.HasPrefix(cupsCode, "871") ||
+		strings.HasPrefix(cupsCode, "879")
 }
 
 // isSedatable determina si un CUPS puede requerir sedación (resonancias).
