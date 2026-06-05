@@ -285,7 +285,7 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 			// Single reminder with close warning
 			closeIn := deps.CloseMin - deps.ReminderMin
 			deps.BirdClient.SendText(s.PhoneNumber, s.ConversationID,
-				fmt.Sprintf("¿Sigues ahí? Si no respondes en %d minutos se cerrará la sesión.\n\nPuedes volver al menú principal enviando *0* o *menú*.", closeIn))
+				fmt.Sprintf("¿Sigues ahí? Si no respondes en %s se cerrará la sesión.\n\nPuedes volver al menú principal enviando *0* o *menú*.", formatMinutes(closeIn)))
 			if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
 				slog.Error("set reminder failed", "session_id", s.ID, "error", err)
 			}
@@ -317,4 +317,23 @@ func (m *SessionManager) checkExpiredEscalations(ctx context.Context, deps Inact
 			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
 			"conversation_id", fmt.Sprintf("%.8s", s.ConversationID))
 	}
+}
+
+// formatMinutes convierte minutos a texto legible: "1 hora", "2 horas", "1 hora 30 minutos", etc.
+func formatMinutes(m int) string {
+	if m < 60 {
+		return fmt.Sprintf("%d minutos", m)
+	}
+	h := m / 60
+	rem := m % 60
+	var hText string
+	if h == 1 {
+		hText = "1 hora"
+	} else {
+		hText = fmt.Sprintf("%d horas", h)
+	}
+	if rem == 0 {
+		return hText
+	}
+	return fmt.Sprintf("%s %d minutos", hText, rem)
 }
