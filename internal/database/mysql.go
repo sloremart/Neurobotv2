@@ -113,8 +113,8 @@ func NewSIESADB(cfg *config.Config) (*sql.DB, error) {
 
 	db.SetMaxOpenConns(cfg.ExternalDBMaxOpen)
 	db.SetMaxIdleConns(cfg.ExternalDBMaxIdle)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetConnMaxIdleTime(3 * time.Minute)
+	db.SetConnMaxLifetime(2 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("siesa db ping: %w", err)

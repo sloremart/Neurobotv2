@@ -119,6 +119,20 @@ func inParams(values []string, startAt int) (clause string, args []interface{}) 
 	return strings.Join(parts, ","), args
 }
 
+// inParamsAsInt es igual a inParams pero convierte los IDs de string a int64.
+// Usar para comparaciones con columnas INT como IdCita/id_cita: evita CAST en la columna
+// que destruye el uso de índices y genera full table scans con locks prolongados.
+func inParamsAsInt(ids []string, startAt int) (clause string, args []interface{}) {
+	parts := make([]string, len(ids))
+	args = make([]interface{}, len(ids))
+	for i, v := range ids {
+		parts[i] = fmt.Sprintf("@p%d", startAt+i)
+		n, _ := strconv.ParseInt(v, 10, 64)
+		args[i] = n
+	}
+	return strings.Join(parts, ","), args
+}
+
 // lookupContrato resuelve empresa, codigo de contrato y regimen a partir de:
 //   - un código numérico de contrato ("4") → busca directamente por contratos.codigo
 //   - un código de empresa ("EPS005") → toma el primer contrato activo de esa empresa
@@ -556,8 +570,10 @@ func (r *AppointmentRepo) Cancel(ctx context.Context, id string, reason, channel
 		return err
 	}
 	// Liberar slot en programacion_medico_detalle
-	_, _ = r.db.ExecContext(ctx,
-		`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE CAST(IdCita AS VARCHAR(20)) = @p1`, id)
+	if idInt, err2 := strconv.ParseInt(id, 10, 64); err2 == nil {
+		_, _ = r.db.ExecContext(ctx,
+			`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita = @p1`, idInt)
+	}
 	return nil
 }
 
@@ -618,9 +634,9 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 		return fmt.Errorf("siesa cancel batch: %w", err)
 	}
 	// Liberar slots
-	clause2, idArgs2 := inParams(ids, 1)
+	clause2, idArgs2 := inParamsAsInt(ids, 1)
 	_, _ = r.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE CAST(IdCita AS VARCHAR(20)) IN (%s)`, clause2),
+		fmt.Sprintf(`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita IN (%s)`, clause2),
 		idArgs2...)
 	return nil
 }
@@ -629,9 +645,9 @@ func (r *AppointmentRepo) DeleteBatch(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	clause, args := inParams(ids, 1)
+	clause, args := inParamsAsInt(ids, 1)
 	_, _ = r.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE CAST(IdCita AS VARCHAR(20)) IN (%s)`, clause),
+		fmt.Sprintf(`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita IN (%s)`, clause),
 		args...)
 	clause2, args2 := inParams(ids, 1)
 	_, err := r.db.ExecContext(ctx,
@@ -823,13 +839,14 @@ func (r *AppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doct
 
 func (r *AppointmentRepo) fetchProcedures(ctx context.Context, apptID string) ([]domain.AppointmentProcedure, error) {
 	var procs []domain.AppointmentProcedure
+	apptIDInt, _ := strconv.ParseInt(apptID, 10, 64)
 
 	// Tabla de procedimientos/imágenes
 	rows, err := r.db.QueryContext(ctx, `
 	SELECT CAST(cp.id AS VARCHAR(20)), @p1,
 	       ISNULL(cp.id_procedimiento,''), ISNULL(cp.id_procedimiento,''),
 	       ISNULL(cp.Cantidad,1), CAST(0.0 AS FLOAT), ISNULL(cp.Servicio,0)
-	FROM citas_procedimientos cp WHERE CAST(cp.id_cita AS VARCHAR(20)) = @p2`, apptID, apptID)
+	FROM citas_procedimientos cp WHERE cp.id_cita = @p2`, apptID, apptIDInt)
 	if err != nil {
 		return nil, err
 	}
@@ -848,7 +865,7 @@ func (r *AppointmentRepo) fetchProcedures(ctx context.Context, apptID string) ([
 	SELECT CAST(cpa.id AS VARCHAR(20)), @p1,
 	       ISNULL(cpa.CodProcedimiento,''), ISNULL(cpa.NomProcedimiento,''),
 	       1, ISNULL(cpa.Valor,0.0), ISNULL(cpa.Servicio,0)
-	FROM citas_procedimientos_asuntos cpa WHERE CAST(cpa.IdCita AS VARCHAR(20)) = @p2`, apptID, apptID)
+	FROM citas_procedimientos_asuntos cpa WHERE cpa.IdCita = @p2`, apptID, apptIDInt)
 	if err != nil {
 		return procs, err
 	}
@@ -885,25 +902,25 @@ func (r *AppointmentRepo) fetchProceduresBatch(ctx context.Context, apptIDs []st
 		return rows.Err()
 	}
 
-	clause, args := inParams(apptIDs, 1)
+	clause, args := inParamsAsInt(apptIDs, 1)
 
 	q1 := fmt.Sprintf(`
 	SELECT CAST(cp.id AS VARCHAR(20)), CAST(cp.id_cita AS VARCHAR(20)),
 	       ISNULL(cp.id_procedimiento,''), ISNULL(cp.id_procedimiento,''),
 	       ISNULL(cp.Cantidad,1), CAST(0.0 AS FLOAT), ISNULL(cp.Servicio,0)
 	FROM citas_procedimientos cp
-	WHERE CAST(cp.id_cita AS VARCHAR(20)) IN (%s)`, clause)
+	WHERE cp.id_cita IN (%s)`, clause)
 	if err := fetchTable(q1, args); err != nil {
 		return result, err
 	}
 
-	clause2, args2 := inParams(apptIDs, 1)
+	clause2, args2 := inParamsAsInt(apptIDs, 1)
 	q2 := fmt.Sprintf(`
 	SELECT CAST(cpa.id AS VARCHAR(20)), CAST(cpa.IdCita AS VARCHAR(20)),
 	       ISNULL(cpa.CodProcedimiento,''), ISNULL(cpa.NomProcedimiento,''),
 	       1, ISNULL(cpa.Valor,0.0), ISNULL(cpa.Servicio,0)
 	FROM citas_procedimientos_asuntos cpa
-	WHERE CAST(cpa.IdCita AS VARCHAR(20)) IN (%s)`, clause2)
+	WHERE cpa.IdCita IN (%s)`, clause2)
 	if err := fetchTable(q2, args2); err != nil {
 		return result, err
 	}
