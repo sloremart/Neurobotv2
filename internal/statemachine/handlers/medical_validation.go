@@ -97,7 +97,7 @@ func askContrastedHandler() sm.StateHandler {
 				})
 			} else {
 				r.NextState = sm.StateGfrCreatinine
-				r.Messages = append(r.Messages, &sm.TextMessage{Text: "Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 3 meses) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*"})
+				r.Messages = append(r.Messages, &sm.TextMessage{Text: "Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*"})
 			}
 
 			return r, nil
@@ -148,7 +148,7 @@ func askContrastedHandler() sm.StateHandler {
 			} else {
 				// Hombre >= 1 → directo a creatinina
 				r.NextState = sm.StateGfrCreatinine
-				r.WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 3 meses) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*")
+				r.WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*")
 			}
 
 			return r, nil
@@ -180,7 +180,7 @@ func askPregnancyHandler() sm.StateHandler {
 				nextState = sm.StateAskBabyWeight
 				r.NextState = nextState
 			} else {
-				r.WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 3 meses) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*")
+				r.WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*")
 			}
 			return r, nil
 		}
@@ -217,7 +217,7 @@ func askPregnancyHandler() sm.StateHandler {
 			r := sm.NewResult(sm.StateGfrCreatinine).
 				WithContext("is_pregnant", "0").
 				WithClearCtx("_prompted_pregnancy").
-				WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 3 meses) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*").
+				WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*").
 				WithEvent("pregnant_selected", map[string]interface{}{"pregnant": false})
 			return r, nil
 		}

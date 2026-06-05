@@ -197,14 +197,36 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 		return nil, err
 	}
 
-	// Agenda sin asuntos configurados: permitir siempre.
-	// Agenda 254 (resonancias) no tiene programacion_medico_relacion_asunto configurado
-	// pero tiene 31 citas reales con asunto=4. El contexto CUPS ya garantiza el tipo correcto.
+	st := strings.ToLower(scheduleType)
+
+	// Agenda sin asuntos configurados en programacion_medico_relacion_asunto:
+	// consultar el asunto más reciente de citas reales para determinar el tipo real.
+	// Agenda 254 (resonancias) tiene asunto=4 en citas → tipo consulta → se permite correctamente.
+	// Agendas de procedimientos (asuntos 13-16 en citas) quedan excluidas de búsquedas de consulta.
 	if len(asuntos) == 0 {
-		return &s, nil
+		var lastAsunto int
+		_ = r.db.QueryRowContext(ctx, `
+			SELECT TOP 1 asunto FROM citas
+			WHERE id_programacion = @p1 AND asunto > 0 AND estado != 'C'
+			ORDER BY fecha DESC`, scheduleID).Scan(&lastAsunto)
+
+		isProcAgenda := lastAsunto >= 13
+		switch st {
+		case "procedimiento", "nocturno":
+			if isProcAgenda {
+				return &s, nil
+			}
+			return nil, nil
+		case "sedacion":
+			return nil, nil
+		default: // consulta/imagen
+			if isProcAgenda {
+				return nil, nil
+			}
+			return &s, nil
+		}
 	}
 
-	st := strings.ToLower(scheduleType)
 	switch st {
 	case "sedacion":
 		// Requiere asunto 17 (SOPORTE SEDACION)

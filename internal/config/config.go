@@ -222,8 +222,8 @@ func Load() *Config {
 		SessionTimeoutMinutes: getEnvInt("SESSION_TIMEOUT_MINUTES", 120),
 
 		// Inactivity
-		InactivityReminderMin: getEnvInt("INACTIVITY_REMINDER_MIN", 5),
-		InactivityCloseMin:    getEnvInt("INACTIVITY_CLOSE_MIN", 15),
+		InactivityReminderMin: getEnvInt("INACTIVITY_REMINDER_MIN", 20),
+		InactivityCloseMin:    getEnvInt("INACTIVITY_CLOSE_MIN", 120),
 
 		// Center
 		CenterKey:  getEnv("CENTER_KEY", "datosipsndx"),
