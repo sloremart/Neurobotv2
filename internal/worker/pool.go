@@ -91,6 +91,8 @@ type MessageWorkerPool struct {
 	wg             sync.WaitGroup // tracks all goroutines for graceful shutdown
 	ctx            context.Context // stored from Start() for overflow goroutines
 
+	botEnabled bool // BOT_ENABLED=false → escala directo sin tocar SIESA/Antares
+
 	// Dependencias (inyectadas después de creación)
 	sessionManager  SessionManagement
 	birdClient      MessageSender
@@ -141,6 +143,13 @@ func (p *MessageWorkerPool) SetInboxRepo(repo InboxMarker) {
 // SetNotifyResponder injects the notification responder for NOTIF_PENDING agent commands.
 func (p *MessageWorkerPool) SetNotifyResponder(nr NotificationResponder) {
 	p.notifyResponder = nr
+}
+
+// SetBotEnabled activa o desactiva la autogestión del bot.
+// Con false, el primer mensaje de cualquier sesión activa escala directo a un agente
+// sin consultar SIESA, Antares ni ejecutar ningún flujo del bot.
+func (p *MessageWorkerPool) SetBotEnabled(enabled bool) {
+	p.botEnabled = enabled
 }
 
 // QueueStats returns the current queue size and capacity.
@@ -424,7 +433,14 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		"is_new", isNew,
 	)
 
-	// 4. If session is escalated, log but DO NOT process through state machine
+	// 4. Kill switch: BOT_ENABLED=false → escalar inmediatamente sin pasar por la state machine.
+	// Solo actúa sobre sesiones activas; sesiones ya escaladas siguen su flujo normal.
+	if !p.botEnabled && sess.Status == session.StatusActive {
+		sess.CurrentState = statemachine.StateEscalateToAgent
+		slog.Info("bot_disabled_escalating", "session_id", sess.ID, "phone", utils.MaskPhone(msg.Phone))
+	}
+
+	// 4b. If session is escalated, log but DO NOT process through state machine
 	// Check BEFORE RenewTimeout to avoid race with agent ResumeFromEscalation
 	if sess.Status == session.StatusEscalated {
 		slog.Info("msg during escalation (ignored by bot)",

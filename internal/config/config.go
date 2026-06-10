@@ -84,6 +84,9 @@ type Config struct {
 	OpenAIAPIKey string
 	OpenAIModel  string
 
+	// Bot kill switch: false = escala inmediatamente sin tocar SIESA/Antares
+	BotEnabled bool
+
 	// Session
 	SessionTimeoutMinutes int
 
@@ -217,6 +220,9 @@ func Load() *Config {
 		// OpenAI
 		OpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+
+		// Bot kill switch
+		BotEnabled: getEnvBool("BOT_ENABLED", true),
 
 		// Session
 		SessionTimeoutMinutes: getEnvInt("SESSION_TIMEOUT_MINUTES", 120),
@@ -381,6 +387,17 @@ func getEnvInt(key string, fallback int) int {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
 		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "true" || v == "1" {
+		return true
+	}
+	if v == "false" || v == "0" {
+		return false
 	}
 	return fallback
 }

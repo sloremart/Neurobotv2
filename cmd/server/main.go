@@ -275,6 +275,7 @@ func main() {
 	workerPool.SetTracker(tracker)
 	workerPool.SetOCRService(ocrSvc)
 	workerPool.SetInboxRepo(inboxRepo)
+	workerPool.SetBotEnabled(cfg.BotEnabled)
 	if notifyManager != nil {
 		workerPool.SetNotifyResponder(notifyManager)
 	}
