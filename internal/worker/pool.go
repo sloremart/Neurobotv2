@@ -437,6 +437,8 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 	// Solo actúa sobre sesiones activas; sesiones ya escaladas siguen su flujo normal.
 	if !p.botEnabled && sess.Status == session.StatusActive {
 		sess.CurrentState = statemachine.StateEscalateToAgent
+		sess.Context["_pre_auto_state"] = "BOT_DISABLED"
+		sess.Context["escalation_note"] = "Bot desactivado — atender al paciente directamente desde el inicio."
 		slog.Info("bot_disabled_escalating", "session_id", sess.ID, "phone", utils.MaskPhone(msg.Phone))
 	}
 

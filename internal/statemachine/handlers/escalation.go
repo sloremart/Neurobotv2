@@ -679,6 +679,14 @@ func buildAgentCommands(sess *session.Session, cupsCode string) string {
 			"  /bot resume NOTIF_RESCHEDULE_FALLBACK confirm — Confirmar la cita\n" +
 			"  /bot resume NOTIF_RESCHEDULE_FALLBACK cancel — Cancelar la cita"
 
+	// --- Bot desactivado (BOT_ENABLED=false) ---
+	case "BOT_DISABLED":
+		return "Situacion: Bot desactivado. El paciente aún no fue atendido.\n\n" +
+			"Acciones sugeridas:\n" +
+			"- Atiende al paciente directamente desde el inicio.\n\n" +
+			"/bot cerrar — Cerrar conversacion\n" +
+			"/bot info — Ver contexto completo"
+
 	// --- Post-Accion y Cierre ---
 	case sm.StatePostActionMenu:
 		situation = "El paciente solicito hablar con un agente directamente."
