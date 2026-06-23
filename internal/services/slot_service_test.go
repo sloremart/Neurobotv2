@@ -394,6 +394,37 @@ func TestGetAvailableSlots_PreferredDoctorAgeRestricted(t *testing.T) {
 	}
 }
 
+// TestGetAvailableSlots_ConsecutiveRealInterval prueba el fix del intervalo real (bug B):
+// los slots están a 20 min, pero DurationMin viene en 30 (el default falso de SIESA, pm.intervalo
+// NULL). La verificación de consecutivos debe usar el intervalo DERIVADO (20) de los gaps, no 30.
+// Espacios=2: 08:00 (necesita 08:20) y 08:20 (necesita 08:40) son válidos; 08:40 no (no hay 09:00).
+func TestGetAvailableSlots_ConsecutiveRealInterval(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:00", 1, 30), // DurationMin=30 (falso)
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:20", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:40", 1, 30),
+			}, nil
+		},
+	}
+	svc := NewSlotService(&mockProcedureRepo{}, scheduleRepo)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "890271", Espacios: 2, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 2 {
+		t.Fatalf("esperaba 2 starts válidos (08:00, 08:20) con intervalo real 20min, got %d: %+v", len(slots), slots)
+	}
+	if slots[0].TimeSlot != "202603160800" || slots[1].TimeSlot != "202603160820" {
+		t.Errorf("starts inesperados: %+v", slots)
+	}
+	// La duración reportada debe ser el intervalo real derivado (20), no 30.
+	if slots[0].Duration != 20 {
+		t.Errorf("esperaba Duration=20 (intervalo real), got %d", slots[0].Duration)
+	}
+}
+
 func TestGetAvailableSlots_FindSlotsError(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
 		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {

@@ -513,7 +513,7 @@ func TestCreateWithConsecutive_Single(t *testing.T) {
 	svc := NewAppointmentService(repo, nil)
 
 	input := domain.CreateAppointmentInput{TimeSlot: "202603150800"}
-	id, err := svc.CreateWithConsecutive(context.Background(), input, 1, 30)
+	id, err := svc.CreateWithConsecutive(context.Background(), input, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -691,14 +691,13 @@ func TestFindBlockByAppointmentID_NotFound(t *testing.T) {
 // =============================================================================
 
 func TestCreateWithConsecutive_Error(t *testing.T) {
+	// Nuevo modelo: 1 sola cita. Si repo.Create falla (p.ej. no caben los N slots consecutivos),
+	// CreateWithConsecutive propaga el error y NO reintenta (Create se llama una vez).
 	callCount := 0
 	repo := &mockAppointmentRepo{
 		createFn: func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 			callCount++
-			if callCount == 2 {
-				return nil, fmt.Errorf("insert failed on 2nd slot")
-			}
-			return &domain.Appointment{ID: fmt.Sprintf("%d", 100+callCount)}, nil
+			return nil, fmt.Errorf("slots_consecutivos_insuficientes")
 		},
 	}
 	svc := NewAppointmentService(repo, nil)
@@ -709,22 +708,27 @@ func TestCreateWithConsecutive_Error(t *testing.T) {
 			{CupCode: "890271", Quantity: 1},
 		},
 	}
-	_, err := svc.CreateWithConsecutive(context.Background(), input, 3, 30)
+	_, err := svc.CreateWithConsecutive(context.Background(), input, 3)
 	if err == nil {
-		t.Error("expected error on 2nd consecutive creation")
+		t.Error("expected error when repo.Create fails")
 	}
-	if callCount != 2 {
-		t.Errorf("expected Create to be called 2 times before failure, got %d", callCount)
+	if callCount != 1 {
+		t.Errorf("expected Create called once (single cita model), got %d", callCount)
 	}
 }
 
 func TestCreateWithConsecutive_Multiple(t *testing.T) {
-	var createdSlots []string
+	// Nuevo modelo: una sola cita que ocupa N slots. repo.Create se llama UNA vez con
+	// input.Espacios = N; el reclamo de los N slots contiguos ocurre dentro de repo.Create
+	// (atómico, validado contra BD), no creando N citas.
 	callIdx := 0
+	var gotEspacios int
+	var gotTimeSlot string
 	repo := &mockAppointmentRepo{
 		createFn: func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 			callIdx++
-			createdSlots = append(createdSlots, input.TimeSlot)
+			gotEspacios = input.Espacios
+			gotTimeSlot = input.TimeSlot
 			return &domain.Appointment{ID: fmt.Sprintf("%d", 200+callIdx)}, nil
 		},
 	}
@@ -736,21 +740,20 @@ func TestCreateWithConsecutive_Multiple(t *testing.T) {
 			{CupCode: "890271", Quantity: 1},
 		},
 	}
-	id, err := svc.CreateWithConsecutive(context.Background(), input, 3, 30)
+	id, err := svc.CreateWithConsecutive(context.Background(), input, 3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if id != "201" {
-		t.Errorf("expected first appointment ID '201', got %q", id)
+		t.Errorf("expected appointment ID '201', got %q", id)
 	}
-	if len(createdSlots) != 3 {
-		t.Fatalf("expected 3 slots created, got %d", len(createdSlots))
+	if callIdx != 1 {
+		t.Errorf("expected repo.Create called once (single cita), got %d", callIdx)
 	}
-	// Verify time slots: 0800, 0830, 0900
-	expected := []string{"202603150800", "202603150830", "202603150900"}
-	for i, exp := range expected {
-		if createdSlots[i] != exp {
-			t.Errorf("slot %d: expected %q, got %q", i, exp, createdSlots[i])
-		}
+	if gotEspacios != 3 {
+		t.Errorf("expected input.Espacios=3 passed to repo.Create, got %d", gotEspacios)
+	}
+	if gotTimeSlot != "202603150800" {
+		t.Errorf("expected start timeslot preserved, got %q", gotTimeSlot)
 	}
 }

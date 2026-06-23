@@ -350,75 +350,34 @@ func GetDoctorAgeRestriction(doctorDoc string) (minAge int, reason string, exist
 	return r.MinAge, r.Reason, true
 }
 
-// CreateWithConsecutive creates N consecutive appointments.
-// For consecutive blocks, appointment procedure is only inserted on the first appointment.
-// Duration is the slot length in minutes (from ScheduleConfig.AppointmentDuration).
-func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input domain.CreateAppointmentInput, espacios, durationMinutes int) (string, error) {
-	// Single appointment case
-	if espacios <= 1 || durationMinutes <= 0 {
-		appt, err := s.repo.Create(ctx, input)
-		if err != nil {
-			return "", err
-		}
+// CreateWithConsecutive crea UNA sola cita que ocupa `espacios` slots contiguos.
+// Modelo correcto de SIESA (validado contra BD): una cita se asocia a N slots vía
+// programacion_medico_detalle.IdCita; NO se crean N citas. repo.Create reclama el slot inicial
+// y los espacios-1 adicionales de forma atómica (input.Espacios). No requiere intervalo: los
+// slots ya existen con su espaciado real y se toman los próximos N por Fecha.
+func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input domain.CreateAppointmentInput, espacios int) (string, error) {
+	if espacios < 1 {
+		espacios = 1
+	}
+	input.Espacios = espacios
 
-		// Create appointment procedure records for each procedure. The citas row + slot were already
-		// committed by repo.Create; if procedure insertion fails we must compensate by
-		// cancelling the appointment (INTEG-02), otherwise SIESA is left with an orphan
-		// cita (no procedures → confused operator, wrong MRC count).
-		if err := s.createAppointmentProcedureRecords(ctx, appt.ID, input.Procedures); err != nil {
-			if cancelErr := s.repo.CancelBatch(ctx, []string{appt.ID}, "appointment procedure creation failed", "system", ""); cancelErr != nil {
-				slog.Error("appointment procedure compensation failed — orphan appointment", "appointment_id", appt.ID, "cancel_error", cancelErr, "procedure_error", err)
-			}
-			return "", fmt.Errorf("create appointment procedure: %w", err)
-		}
-
-		return appt.ID, nil
+	appt, err := s.repo.Create(ctx, input)
+	if err != nil {
+		return "", err
 	}
 
-	baseMinutes := ParseTimeSlotToMinutes(input.TimeSlot)
-	dateStr := input.TimeSlot[:8] // YYYYMMDD
-
-	var firstID string
-	var createdIDs []string // track committed IDs so we can cancel on partial failure
-
-	cancelCreated := func(reason string) {
-		if len(createdIDs) > 0 {
-			if err := s.repo.CancelBatch(ctx, createdIDs, reason, "system", ""); err != nil {
-				slog.Error("consecutive_booking_compensation_failed", "appointment_ids", createdIDs, "reason", reason, "error", err)
-			}
+	// Create appointment procedure records (CUPS) on the single cita. The citas row + its N slots
+	// were already committed atomically by repo.Create; if procedure insertion fails we compensate
+	// by cancelling the appointment (INTEG-02) — CancelBatch libera los N slots por IdCita —,
+	// si no SIESA queda con una cita sin procedimientos (operador confundido, conteo MRC errado).
+	if err := s.createAppointmentProcedureRecords(ctx, appt.ID, input.Procedures); err != nil {
+		if cancelErr := s.repo.CancelBatch(ctx, []string{appt.ID}, "appointment procedure creation failed", "system", ""); cancelErr != nil {
+			slog.Error("appointment procedure compensation failed — orphan appointment", "appointment_id", appt.ID, "cancel_error", cancelErr, "procedure_error", err)
 		}
+		return "", fmt.Errorf("create appointment procedure: %w", err)
 	}
 
-	for i := 0; i < espacios; i++ {
-		minutes := baseMinutes + (i * durationMinutes)
-		if minutes/60 >= 24 {
-			cancelCreated("consecutive slot exceeds 24h")
-			return "", fmt.Errorf("consecutive slot %d/%d exceeds 24h (minute %d)", i+1, espacios, minutes)
-		}
-		timeSlot := fmt.Sprintf("%s%02d%02d", dateStr, minutes/60, minutes%60)
-
-		consecutiveInput := input
-		consecutiveInput.TimeSlot = timeSlot
-
-		appt, err := s.repo.Create(ctx, consecutiveInput)
-		if err != nil {
-			cancelCreated("slot conflict during consecutive booking")
-			return "", fmt.Errorf("create consecutive %d/%d: %w", i+1, espacios, err)
-		}
-
-		createdIDs = append(createdIDs, appt.ID)
-
-		if i == 0 {
-			firstID = appt.ID
-			// Create appointment procedure records only for the FIRST appointment
-			if err := s.createAppointmentProcedureRecords(ctx, appt.ID, input.Procedures); err != nil {
-				cancelCreated("appointment procedure creation failed")
-				return "", fmt.Errorf("create appointment procedure: %w", err)
-			}
-		}
-	}
-
-	return firstID, nil
+	return appt.ID, nil
 }
 
 // createAppointmentProcedureRecords creates a appointment procedure record for each procedure in the appointment

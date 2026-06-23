@@ -64,7 +64,11 @@ type CreateAppointmentInput struct {
 	// ContractCode is the patient's contract (sis_paci.contrato, e.g. "6"). When set, the
 	// appointment is booked under that contract (correct billing manual for MRC vs Evento).
 	ContractCode string
-	Procedures   []CreateProcedureInput
+	// Espacios is the number of consecutive slots the procedure occupies (duration-based).
+	// >1 → the single cita is linked to N contiguous slots (programacion_medico_detalle.IdCita).
+	// 0/1 → single slot. The N slots are claimed atomically inside Create.
+	Espacios   int
+	Procedures []CreateProcedureInput
 }
 
 type CreateProcedureInput struct {
