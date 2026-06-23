@@ -490,6 +490,36 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		return nil, fmt.Errorf("slot_taken")
 	}
 
+	// Multi-slot (procedimiento que ocupa N slots por duración): vincular los espacios-1 slots
+	// adicionales CONTIGUOS a ESTA misma cita, en la MISMA transacción (atómico). No se calcula
+	// ningún "intervalo": se toman las próximas `Espacios` filas de slot por Fecha (la rejilla ya
+	// existe con su espaciado real) y se exige que las adicionales estén libres. Si no caben todas
+	// (alguna ocupada/bloqueada en medio), se retorna error y la tx hace rollback (no quedan slots
+	// medio-reservados ni cita huérfana). Reemplaza el modelo viejo de crear N citas.
+	if input.Espacios > 1 {
+		start := fmt.Sprintf("%s %s:00", fecha, hora) // fecha=YYYY-MM-DD, hora=HH:MM (24h)
+		extra, err := tx.ExecContext(ctx, `
+		WITH win AS (
+		    SELECT TOP (@p3) Id
+		    FROM programacion_medico_detalle WITH (NOLOCK)
+		    WHERE IdProgramacionMedico = @p2 AND Fecha >= @p4
+		    ORDER BY Fecha
+		)
+		UPDATE pmd SET IdCita = @p1
+		FROM programacion_medico_detalle pmd
+		JOIN win ON win.Id = pmd.Id
+		WHERE pmd.IdCita IS NULL AND pmd.Bloqueado = 0 AND pmd.SinProgramacion = 0`,
+			newID, input.AgendaID, input.Espacios, start)
+		if err != nil {
+			return nil, fmt.Errorf("claim consecutive slots: %w", err)
+		}
+		// Se esperan Espacios-1 adicionales (la fila inicial ya quedó reclamada arriba, así que
+		// dentro de la ventana de Espacios filas solo restan las Espacios-1 siguientes).
+		if n, _ := extra.RowsAffected(); int(n) != input.Espacios-1 {
+			return nil, fmt.Errorf("slots_consecutivos_insuficientes: reservados %d de %d", n+1, input.Espacios)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}

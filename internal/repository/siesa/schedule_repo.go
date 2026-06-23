@@ -27,12 +27,16 @@ func NewScheduleRepo(db *sql.DB) *ScheduleRepo {
 // FindAvailableSlots returns every free SIESA slot for agendas that serve the given
 // subject (asunto_id), within the 3h..90-day window. Each row is one bookable slot.
 //
-// Agenda eligibility is the UNION of two sets (validated against real SIESA data):
-//  1. Agendas with an explicit programacion_medico_relacion_asunto row for @asuntoId.
-//  2. "Orphan" agendas that have NO relacion_asunto rows at all (≈10 of 55 active
-//     agendas) whose most recent non-cancelled cita has asunto = @asuntoId. Without
-//     this fallback an INNER JOIN would silently drop those agendas (RX, resonancia,
-//     EEG, procedures, etc.).
+// Agenda eligibility = agendas whose programacion_medico_relacion (el CONSULTORIO elegido al
+// crear la agenda en SIESA) declara el @asuntoId en programacion_medico_relacion_asunto.
+//
+// ⚠️ CLAVE (validado contra BD): la relación se une por `pmr.id_programacion = pm.id_programacion`,
+// NO por `pm.id`. En programacion_medico, `id` (PK del detalle/citas) e `id_programacion`
+// DIVERGEN en el 64% de las agendas (349/544). Unir por `pm.id` agarra la relación de OTRA
+// agenda vecina → asunto equivocado. Con el join correcto, el médico real atiende el asunto en
+// el 100% de las agendas (532/532 vía sis_asuntoMedico) y coincide con el consultorio.
+// NO se usa el historial de citas como fallback: con el join correcto hay 0 agendas huérfanas,
+// y `citas.asunto` histórico es poco fiable (lo llenó el bot con un catálogo viejo).
 //
 // The 3h floor and 90-day ceiling are range predicates on pmd.Fecha (no CAST on the
 // column) so the datetime index is preserved. afterDate (YYYY-MM-DD) paginates forward.
@@ -42,24 +46,13 @@ func (r *ScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, aft
 
 	sb.WriteString(`
 WITH eligible AS (
-    SELECT pmr.id_programacion AS aid
-    FROM programacion_medico_relacion pmr WITH (NOLOCK)
-    JOIN programacion_medico_relacion_asunto pmra WITH (NOLOCK)
-        ON pmra.IdProgramacionMedicoRelacion = pmr.Id
-    WHERE pmra.IdAsunto = @p1
-    UNION
     SELECT pm.id AS aid
     FROM programacion_medico pm WITH (NOLOCK)
-    WHERE pm.activo = 1
-      AND NOT EXISTS (
-          SELECT 1 FROM programacion_medico_relacion pmr2 WITH (NOLOCK)
-          JOIN programacion_medico_relacion_asunto pmra2 WITH (NOLOCK)
-              ON pmra2.IdProgramacionMedicoRelacion = pmr2.Id
-          WHERE pmr2.id_programacion = pm.id)
-      AND (
-          SELECT TOP 1 c.asunto FROM citas c WITH (NOLOCK)
-          WHERE c.id_programacion = pm.id AND c.asunto > 0 AND c.estado <> 'C'
-          ORDER BY c.fecha DESC) = @p1
+    JOIN programacion_medico_relacion pmr WITH (NOLOCK)
+        ON pmr.id_programacion = pm.id_programacion
+    JOIN programacion_medico_relacion_asunto pmra WITH (NOLOCK)
+        ON pmra.IdProgramacionMedicoRelacion = pmr.Id
+    WHERE pm.activo = 1 AND pmra.IdAsunto = @p1
 )
 SELECT
     pmd.Fecha,
@@ -121,12 +114,16 @@ WHERE pmd.IdCita IS NULL
 //   - "sedacion": agenda tiene asunto 17 (soporte sedación)
 //   - default: agenda tiene al menos un asunto 1-12 (consultas/imágenes)
 func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error) {
+	// Se trae también id_programacion: la relación (consultorio/asuntos) se une por
+	// pm.id_programacion, NO por pm.id (divergen en el 64% de las agendas). Ver nota en
+	// FindAvailableSlots.
 	var s domain.Schedule
+	var idProgramacion int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT pm.id, CAST(ISNULL(pm.id_medico, 0) AS VARCHAR(20))
+		`SELECT pm.id, pm.id_programacion, CAST(ISNULL(pm.id_medico, 0) AS VARCHAR(20))
 		 FROM programacion_medico pm WITH (NOLOCK)
 		 WHERE pm.id = @p1 AND pm.activo = 1`,
-		scheduleID).Scan(&s.ID, &s.DoctorDocument)
+		scheduleID).Scan(&s.ID, &idProgramacion, &s.DoctorDocument)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -138,13 +135,13 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 		return &s, nil
 	}
 
-	// Obtener asuntos asignados a esta agenda via programacion_medico_relacion_asunto
+	// Asuntos de esta agenda via programacion_medico_relacion_asunto (join por id_programacion).
 	subjectRows, err := r.db.QueryContext(ctx,
 		`SELECT pmra.IdAsunto
 		 FROM programacion_medico_relacion pmr WITH (NOLOCK)
 		 JOIN programacion_medico_relacion_asunto pmra WITH (NOLOCK) ON pmra.IdProgramacionMedicoRelacion = pmr.Id
 		 WHERE pmr.id_programacion = @p1`,
-		scheduleID)
+		idProgramacion)
 	if err != nil {
 		return nil, fmt.Errorf("FindByScheduleID asuntos %d: %w", scheduleID, err)
 	}
@@ -164,32 +161,11 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 
 	st := strings.ToLower(scheduleType)
 
-	// Agenda sin asuntos configurados en programacion_medico_relacion_asunto:
-	// consultar el asunto más reciente de citas reales para determinar el tipo real.
-	// Agenda 254 (resonancias) tiene asunto=4 en citas → tipo consulta → se permite correctamente.
-	// Agendas de procedimientos (asuntos 13-16 en citas) quedan excluidas de búsquedas de consulta.
+	// Con el join correcto no hay agendas huérfanas (toda agenda activa tiene relacion_asunto).
+	// Si excepcionalmente no hubiera asuntos, no se asume tipo desde el historial (poco fiable):
+	// se rechaza para no ofrecer un tipo equivocado.
 	if len(subjectTypes) == 0 {
-		var lastAsunto int
-		_ = r.db.QueryRowContext(ctx, `
-			SELECT TOP 1 asunto FROM citas WITH (NOLOCK)
-			WHERE id_programacion = @p1 AND asunto > 0 AND estado != 'C'
-			ORDER BY fecha DESC`, scheduleID).Scan(&lastAsunto)
-
-		isProcAgenda := lastAsunto >= 13
-		switch st {
-		case "procedimiento", "nocturno":
-			if isProcAgenda {
-				return &s, nil
-			}
-			return nil, nil
-		case "sedacion":
-			return nil, nil
-		default: // consulta/imagen
-			if isProcAgenda {
-				return nil, nil
-			}
-			return &s, nil
-		}
+		return nil, nil
 	}
 
 	switch st {

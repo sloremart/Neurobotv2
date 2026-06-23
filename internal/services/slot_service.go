@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -96,6 +97,7 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		date   string
 	}
 	freeByAgendaDay := make(map[agendaDay]map[int]bool)
+	minutesByAgendaDay := make(map[agendaDay][]int)
 	for _, row := range rows {
 		date := row.SlotTime.Format("2006-01-02")
 		minutes := row.SlotTime.Hour()*60 + row.SlotTime.Minute()
@@ -103,7 +105,26 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		if freeByAgendaDay[key] == nil {
 			freeByAgendaDay[key] = make(map[int]bool)
 		}
-		freeByAgendaDay[key][minutes] = true
+		if !freeByAgendaDay[key][minutes] {
+			freeByAgendaDay[key][minutes] = true
+			minutesByAgendaDay[key] = append(minutesByAgendaDay[key], minutes)
+		}
+	}
+
+	// Intervalo REAL por (agenda, día) = menor gap entre slots libres consecutivos.
+	// SIESA no almacena el intervalo (pm.intervalo y pmd.intervalo son NULL); el real varía
+	// por agenda (8/10/20 min). Usar el gap real evita el bug de asumir 30: para multi-slot,
+	// la verificación de consecutivos debe mirar minutes+i*intervaloReal, no +i*30.
+	intervalByAgendaDay := make(map[agendaDay]int)
+	for key, mins := range minutesByAgendaDay {
+		sort.Ints(mins)
+		best := 0
+		for i := 1; i < len(mins); i++ {
+			if g := mins[i] - mins[i-1]; g > 0 && (best == 0 || g < best) {
+				best = g
+			}
+		}
+		intervalByAgendaDay[key] = best // 0 si solo hay un slot ese día
 	}
 
 	// If the preferred doctor has any slot, restrict to them; otherwise keep everyone.
@@ -175,12 +196,18 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			}
 		}
 
+		// Intervalo real de esta agenda/día (fallback a DurationMin si no se pudo derivar).
+		interval := intervalByAgendaDay[agendaDay{row.AgendaID, date}]
+		if interval <= 0 {
+			interval = row.DurationMin
+		}
+
 		// Consecutive-slot availability for multi-space procedures.
 		if query.Espacios > 1 {
 			free := freeByAgendaDay[agendaDay{row.AgendaID, date}]
 			allFree := true
 			for i := 1; i < query.Espacios; i++ {
-				slotMin := minutes + i*row.DurationMin
+				slotMin := minutes + i*interval
 				if !free[slotMin] {
 					allFree = false
 					break
@@ -213,7 +240,7 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			AgendaID:        row.AgendaID,
 			AgendaSede:      row.AgendaSede,
 			ClinicAddress:   query.ClinicAddress,
-			Duration:        row.DurationMin,
+			Duration:        interval, // intervalo real de la agenda (no el default 30)
 		})
 
 		if len(out) >= query.MaxSlots {

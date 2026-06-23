@@ -1072,7 +1072,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 		}
 
 		espacios, _ := strconv.Atoi(sess.GetContext("espacios"))
-		apptID, err := apptSvc.CreateWithConsecutive(ctx, input, espacios, slot.Duration)
+		apptID, err := apptSvc.CreateWithConsecutive(ctx, input, espacios)
 		if err != nil {
 			errMsg := err.Error()
 			// Detect slot taken: explicit check OR MySQL duplicate/constraint violation
