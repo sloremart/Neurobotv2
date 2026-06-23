@@ -84,11 +84,11 @@ type InboxMarker interface {
 type MessageWorkerPool struct {
 	queue          chan bird.InboundMessage
 	agentCmds      chan AgentCommand
-	recentMessages sync.Map // messageID -> time.Time (dedup)
+	recentMessages sync.Map     // messageID -> time.Time (dedup)
 	dedupCount     atomic.Int64 // approximate count for safety cap
 	workers        int
 	activeOverflow atomic.Int32
-	wg             sync.WaitGroup // tracks all goroutines for graceful shutdown
+	wg             sync.WaitGroup  // tracks all goroutines for graceful shutdown
 	ctx            context.Context // stored from Start() for overflow goroutines
 
 	botEnabled bool // BOT_ENABLED=false → escala directo sin tocar SIESA/Antares
@@ -194,7 +194,9 @@ func (p *MessageWorkerPool) Stop() {
 	for {
 		select {
 		case msg := <-p.queue:
-			p.processMessage(drainCtx, msg)
+			// safeProcess (no processMessage directo): un panic durante el drain de apagado no
+			// debe crashear el proceso; los mensajes se replayan vía WAL al reiniciar (N-35).
+			p.safeProcess(drainCtx, msg)
 			drained++
 		case <-drainCtx.Done():
 			dropped := len(p.queue)
@@ -653,7 +655,9 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			ReceivedAt:  time.Now(),
 		}
 		result, err := p.machine.Process(ctx, sess, virtualMsg)
-		if err == nil && result != nil {
+		if err != nil {
+			slog.Error("process virtual resume message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
+		} else if result != nil {
 			p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
 		}
 	}

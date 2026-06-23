@@ -383,7 +383,9 @@ func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input do
 
 	cancelCreated := func(reason string) {
 		if len(createdIDs) > 0 {
-			_ = s.repo.CancelBatch(ctx, createdIDs, reason, "system", "")
+			if err := s.repo.CancelBatch(ctx, createdIDs, reason, "system", ""); err != nil {
+				slog.Error("consecutive_booking_compensation_failed", "appointment_ids", createdIDs, "reason", reason, "error", err)
+			}
 		}
 	}
 

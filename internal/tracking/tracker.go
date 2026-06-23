@@ -43,7 +43,7 @@ func (t *EventTracker) LogEvent(ctx context.Context, sessionID, phone, eventType
 // LogMessageSent persists a message_sent event.
 func (t *EventTracker) LogMessageSent(ctx context.Context, sessionID, phone, msgType, birdMsgID string) {
 	t.LogEvent(ctx, sessionID, phone, "message_sent", map[string]interface{}{
-		"message_type":   msgType,
+		"message_type":    msgType,
 		"bird_message_id": birdMsgID,
 	})
 }

@@ -6,9 +6,26 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/session"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 var maxRetries = 3
+
+// sensitiveInputStates: estados donde el input del usuario es PII (número de documento) y NO
+// debe persistirse en claro en chat_events / logs (Ley 1581). El valor se enmascara antes de
+// adjuntarlo a los eventos (N-9). La validación sigue usando el valor real, solo se enmascara
+// lo que se registra.
+var sensitiveInputStates = map[string]bool{
+	StateAskDocument: true,
+}
+
+// maskInputForLog enmascara el input si el estado actual es sensible; si no, lo deja igual.
+func maskInputForLog(state, input string) string {
+	if sensitiveInputStates[state] {
+		return utils.MaskDocument(input)
+	}
+	return input
+}
 
 // SetMaxRetries configures the maximum retry count (called from main).
 func SetMaxRetries(n int) {
@@ -35,7 +52,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"retries":    maxRetries,
-				"last_input": input,
+				"last_input": maskInputForLog(sess.CurrentState, input),
 			})
 	}
 
@@ -44,7 +61,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 		WithEvent("invalid_input", map[string]interface{}{
 			"state": sess.CurrentState,
 			"retry": sess.RetryCount,
-			"input": input,
+			"input": maskInputForLog(sess.CurrentState, input),
 		})
 }
 

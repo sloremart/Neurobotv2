@@ -382,7 +382,11 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 	for _, cupsCode := range cupsCodes {
 		// 3. Buscar slots disponibles (usar primera entry como referencia)
 		entries, err := t.WaitingListRepo.GetWaitingByCups(ctx, cupsCode, 1)
-		if err != nil || len(entries) == 0 {
+		if err != nil {
+			slog.Warn("wl_check: get waiting by cups failed", "cups_code", cupsCode, "error", err)
+			continue
+		}
+		if len(entries) == 0 {
 			continue
 		}
 
@@ -403,6 +407,7 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 				query.MonthFilter = func(year, month int) (bool, error) {
 					blocked, err := t.AppointmentSvc.CheckMRCLimitForMonth(ctx, cupsCode, firstEntry.ContractCode, year, month)
 					if err != nil {
+						slog.Warn("wl_check: mrc month filter error (fail-open)", "cups_code", cupsCode, "year", year, "month", month, "error", err)
 						return true, nil // fail-open
 					}
 					return !blocked, nil
@@ -421,6 +426,7 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 		// 4. Obtener primeras N entries FIFO (N = slots disponibles)
 		entriesToNotify, err := t.WaitingListRepo.GetWaitingByCups(ctx, cupsCode, len(slots))
 		if err != nil {
+			slog.Warn("wl_check: get waiting entries to notify failed", "cups_code", cupsCode, "error", err)
 			continue
 		}
 
@@ -432,6 +438,7 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 			// 5. Verificar si ya tiene cita para este CUPS
 			hasFuture, err := t.AppointmentRepo.HasFutureForCup(ctx, entry.PatientID, cupsCode)
 			if err != nil {
+				slog.Warn("wl_check: has future for cup failed", "cups_code", cupsCode, "entry_id", entry.ID, "error", err)
 				continue
 			}
 			if hasFuture {

@@ -46,12 +46,12 @@ type AppointmentProcedure struct {
 }
 
 type CreateAppointmentInput struct {
-	Date         time.Time
-	TimeSlot     string // YYYYMMDDHHmm
-	DoctorID     string
-	PatientID    string
-	Entity       string
-	AgendaID     int
+	Date      time.Time
+	TimeSlot  string // YYYYMMDDHHmm
+	DoctorID  string
+	PatientID string
+	Entity    string
+	AgendaID  int
 	// AgendaSede is the selected slot's programacion_medico.id_sede (ground truth for
 	// citas.id_sede). 0 = unset (repo falls back to the subject-based location map).
 	AgendaSede   int

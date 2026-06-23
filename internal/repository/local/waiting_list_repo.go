@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 )
@@ -263,7 +264,13 @@ func (r *WaitingListRepo) List(ctx context.Context, filters domain.WaitingListFi
 	}
 	if filters.DateTo != "" {
 		where += " AND created_at <= ?"
-		args = append(args, filters.DateTo+" 23:59:59")
+		// N-24: solo añadir " 23:59:59" si DateTo es una fecha pura (YYYY-MM-DD). Si ya trae
+		// hora u otro formato, usarlo tal cual evita un datetime inválido coercionado a NULL/0.
+		dateTo := filters.DateTo
+		if _, err := time.Parse("2006-01-02", filters.DateTo); err == nil {
+			dateTo = filters.DateTo + " 23:59:59"
+		}
+		args = append(args, dateTo)
 	}
 
 	// Count total

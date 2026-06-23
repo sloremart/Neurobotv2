@@ -28,66 +28,81 @@ func (m *mockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.
 	}
 	return nil, nil
 }
+
 func (m *mockAppointmentRepo) FindUpcomingByPatient(ctx context.Context, patientID string) ([]domain.Appointment, error) {
 	if m.findUpcomingByPatientFn != nil {
 		return m.findUpcomingByPatientFn(ctx, patientID)
 	}
 	return nil, nil
 }
+
 func (m *mockAppointmentRepo) FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error) {
 	if m.findByAgendaAndDateFn != nil {
 		return m.findByAgendaAndDateFn(ctx, agendaID, date)
 	}
 	return nil, nil
 }
+
 func (m *mockAppointmentRepo) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, input)
 	}
 	return &domain.Appointment{ID: "100"}, nil
 }
+
 func (m *mockAppointmentRepo) Confirm(ctx context.Context, id, channel, channelID string) error {
 	return nil
 }
+
 func (m *mockAppointmentRepo) Cancel(ctx context.Context, id, reason, channel, channelID string) error {
 	return nil
 }
+
 func (m *mockAppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error {
 	return nil
 }
+
 func (m *mockAppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
 	return nil
 }
+
 func (m *mockAppointmentRepo) DeleteBatch(ctx context.Context, ids []string) error {
 	return nil
 }
+
 func (m *mockAppointmentRepo) HasFutureForCup(ctx context.Context, pid, cup string) (bool, error) {
 	if m.hasFutureForCupFn != nil {
 		return m.hasFutureForCupFn(ctx, pid, cup)
 	}
 	return false, nil
 }
+
 func (m *mockAppointmentRepo) FindLastDoctorForCups(ctx context.Context, pid string, cups []string) (string, error) {
 	if m.findLastDoctorForCupsFn != nil {
 		return m.findLastDoctorForCupsFn(ctx, pid, cups)
 	}
 	return "", nil
 }
+
 func (m *mockAppointmentRepo) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int) (int, error) {
 	if m.countMonthlyByGroupFn != nil {
 		return m.countMonthlyByGroupFn(ctx, cups, year, month)
 	}
 	return 0, nil
 }
+
 func (m *mockAppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([]domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockAppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	return 0, nil
 }
+
 func (m *mockAppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
+
 func (m *mockAppointmentRepo) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
@@ -518,6 +533,7 @@ func (ct *confirmTracker) Confirm(ctx context.Context, id, channel, channelID st
 	*ct.confirmed = append(*ct.confirmed, id)
 	return nil
 }
+
 func (ct *confirmTracker) ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error {
 	*ct.confirmed = append(*ct.confirmed, ids...)
 	return nil
@@ -532,6 +548,7 @@ func (ct *cancelTracker) Cancel(ctx context.Context, id, reason, channel, channe
 	*ct.cancelled = append(*ct.cancelled, id)
 	return nil
 }
+
 func (ct *cancelTracker) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
 	*ct.cancelled = append(*ct.cancelled, ids...)
 	return nil

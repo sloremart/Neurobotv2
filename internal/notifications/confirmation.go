@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -19,7 +20,10 @@ import (
 // handleConfirmation processes responses to the daily confirmation template.
 // NOTE: Caller (HandleResponse) already removed pending from sync.Map and DB via LoadAndDelete.
 func (m *NotificationManager) handleConfirmation(phone, action string, pending *PendingNotification) {
-	ctx := context.Background()
+	// Timeout para no colgar la goroutine si SIESA (BD compartida con la UI) tiene un lock
+	// contendido en citas/programacion_medico_detalle (N-20).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	switch action {
 	case "confirm":
@@ -36,7 +40,12 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 		}
 
 		if err := m.apptSvc.ConfirmBlock(ctx, allAppts, "whatsapp_bot", pending.ConversationID); err != nil {
-			slog.Error("confirm: confirm appointments", "error", err)
+			// N-15: si el UPDATE a SIESA falló NO debemos decirle al paciente "cita confirmada"
+			// (quedaría con confirmación falsa y sin reintento). Avisar + escalar a agente.
+			slog.Error("confirm: confirm appointments failed, escalating", "error", err, "appointment_id", pending.AppointmentID)
+			_, _ = m.birdClient.SendText(phone, pending.ConversationID, "Tuvimos un inconveniente al confirmar tu cita. Un agente te ayudará en un momento.")
+			m.escalateToAgent(pending, escalationSystemFailure)
+			return
 		}
 
 		// Build procedure names from ALL appointments (deduplicated)
@@ -216,36 +225,48 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 
 	case 2, 3:
 		// Step 3/4: Escalate to agent (step 2 = IVR didn't run, step 3 = post-IVR)
-		m.escalateToAgent(pending)
+		m.escalateToAgent(pending, escalationNoResponse)
 	}
 }
 
-// escalateToAgent sends an internal note to Bird Inbox, messages the patient,
-// and assigns the conversation to the best available agent. Called as the final
-// step of the confirmation escalation chain.
-func (m *NotificationManager) escalateToAgent(pending *PendingNotification) {
-	ctx := context.Background()
+// escalationReason distingue POR QUÉ se escala, para que la nota al agente y el mensaje al
+// paciente sean correctos (bug_004): no es lo mismo "el paciente no respondió" (cadena de
+// timeout) que "el paciente SÍ confirmó pero falló la persistencia en SIESA" (N-15).
+type escalationReason int
+
+const (
+	escalationNoResponse    escalationReason = iota // timeout: ni WhatsApp ni IVR
+	escalationSystemFailure                         // el paciente respondió, pero el UPDATE a SIESA falló
+)
+
+// escalateToAgent sends an internal note to Bird Inbox, optionally messages the patient,
+// and assigns the conversation to the best available agent.
+func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reason escalationReason) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// 1. Look up appointment details for the note
 	appt, _, _ := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
 
 	patientName := ""
-	var note string
+	apptInfo := fmt.Sprintf("Cita ID: %s", pending.AppointmentID)
 	if appt != nil {
 		patientName = appt.PatientName
-		cupName := services.GetFirstCupName(*appt)
-		note = fmt.Sprintf("Paciente %s NO confirmo cita de manana.\n"+
-			"Fecha: %s | Hora: %s\n"+
-			"Procedimiento: %s\n"+
-			"No respondio a: mensajes WhatsApp + llamada IVR.\n"+
-			"Cita ID: %s",
+		apptInfo = fmt.Sprintf("Paciente: %s\nFecha: %s | Hora: %s\nProcedimiento: %s\nCita ID: %s",
 			patientName,
 			utils.FormatFriendlyDate(appt.Date),
 			services.FormatTimeSlot(appt.TimeSlot),
-			cupName,
+			services.GetFirstCupName(*appt),
 			pending.AppointmentID)
-	} else {
-		note = fmt.Sprintf("Paciente NO confirmo cita.\nCita ID: %s", pending.AppointmentID)
+	}
+
+	var note string
+	switch reason {
+	case escalationSystemFailure:
+		note = "⚠️ El paciente CONFIRMÓ su cita vía WhatsApp, pero la persistencia en SIESA FALLÓ.\n" +
+			"Revisar y confirmar la cita manualmente en el sistema (NO re-pedir confirmación al paciente).\n" + apptInfo
+	default: // escalationNoResponse
+		note = "Paciente NO confirmo cita de manana.\nNo respondio a: mensajes WhatsApp + llamada IVR.\n" + apptInfo
 	}
 
 	// 2. Internal note — visible ONLY in Bird Inbox (patient doesn't see it on WhatsApp)
@@ -253,9 +274,12 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification) {
 		m.birdClient.SendInternalText(pending.ConversationID, note)
 	}
 
-	// 3. Message to patient
-	m.birdClient.SendText(pending.Phone, pending.ConversationID,
-		"Un asistente del centro se comunicará contigo para confirmar tu cita de mañana.")
+	// 3. Message to patient — solo en el caso de no-respuesta. En el fallo de sistema el paciente
+	// ya recibió "Tuvimos un inconveniente..." y NO se le debe pedir confirmar lo ya confirmado.
+	if reason == escalationNoResponse {
+		_, _ = m.birdClient.SendText(pending.Phone, pending.ConversationID,
+			"Un asistente del centro se comunicará contigo para confirmar tu cita de mañana.")
+	}
 
 	// 4. Assign to best available agent
 	if pending.ConversationID != "" {
@@ -283,7 +307,8 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification) {
 // startConfirmRescheduleSession creates a new session at CONFIRM_RESCHEDULE_NOTIF
 // so the state machine handles the "1/2" confirmation with proper retry logic.
 func (m *NotificationManager) startConfirmRescheduleSession(phone string, pending *PendingNotification) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	appt, block, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
 	if err != nil || appt == nil {
@@ -401,7 +426,8 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 // startConfirmCancelSession creates a new session at CONFIRM_CANCEL_NOTIF
 // so the state machine handles the "1/2" confirmation with proper retry logic.
 func (m *NotificationManager) startConfirmCancelSession(phone string, pending *PendingNotification) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
 	if err != nil || appt == nil {
@@ -465,8 +491,8 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 	}
 
 	sessCtx := map[string]string{
-		"patient_id":         appt.PatientID,
-		"patient_name":       appt.PatientName,
+		"patient_id":        appt.PatientID,
+		"patient_name":      appt.PatientName,
 		"notif_appt_id":     pending.AppointmentID,
 		"notif_appt_ids":    string(allIDsJSON),
 		"notif_cups_codes":  string(cupsJSON),

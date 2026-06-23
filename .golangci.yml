@@ -32,8 +32,10 @@ linters:
     # --- Calidad general ---
     - gocritic
     - revive
-    - misspell
     - unparam
+    # Nota: `misspell` se omite a propósito — el dominio del proyecto es en ESPAÑOL
+    # (chatbot médico colombiano) y misspell asume inglés, marcando como typos palabras
+    # válidas ("Comandos", "Neurologia", "CONTRIBUTIVO", etc.). Generaba solo falsos positivos.
   exclusions:
     # No hay código generado en el proyecto, pero dejamos el manejo por defecto.
     generated: lax

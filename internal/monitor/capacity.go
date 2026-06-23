@@ -23,9 +23,9 @@ const (
 	dbConnsLowPct = 20 // DB connection usage % below which scale-down is suggested
 
 	// Cooldowns — avoid spamming Telegram
-	alertCooldown     = 15 * time.Minute // Min time between same-type alerts
-	scaleDownDelay    = 30 * time.Minute // Must be below threshold for this long before suggesting scale-down
-	maxOverflowConst  = 20               // matches worker pool maxOverflowGoroutines
+	alertCooldown    = 15 * time.Minute // Min time between same-type alerts
+	scaleDownDelay   = 30 * time.Minute // Must be below threshold for this long before suggesting scale-down
+	maxOverflowConst = 20               // matches worker pool maxOverflowGoroutines
 )
 
 // QueueStater provides queue fill metrics.

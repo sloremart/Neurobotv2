@@ -14,10 +14,10 @@ import (
 
 // MockPatientRepo implements repository.PatientRepository.
 type MockPatientRepo struct {
-	FindByDocumentFn    func(ctx context.Context, docType, doc string) (*domain.Patient, error)
-	FindByIDFn          func(ctx context.Context, id string) (*domain.Patient, error)
-	CreateFn            func(ctx context.Context, input domain.CreatePatientInput) (string, error)
-	UpdateEntityFn      func(ctx context.Context, patientID, entityCode string) error
+	FindByDocumentFn     func(ctx context.Context, docType, doc string) (*domain.Patient, error)
+	FindByIDFn           func(ctx context.Context, id string) (*domain.Patient, error)
+	CreateFn             func(ctx context.Context, input domain.CreatePatientInput) (string, error)
+	UpdateEntityFn       func(ctx context.Context, patientID, entityCode string) error
 	UpdateContractFn     func(ctx context.Context, patientID, contractCode string) error
 	UpdateMunicipalityFn func(ctx context.Context, patientID, depCode, muniCode string) error
 	UpdateContactInfoFn  func(ctx context.Context, patientID, phone, email string) error
@@ -29,36 +29,42 @@ func (m *MockPatientRepo) FindByDocument(ctx context.Context, docType, doc strin
 	}
 	return nil, nil
 }
+
 func (m *MockPatientRepo) FindByID(ctx context.Context, id string) (*domain.Patient, error) {
 	if m.FindByIDFn != nil {
 		return m.FindByIDFn(ctx, id)
 	}
 	return nil, nil
 }
+
 func (m *MockPatientRepo) Create(ctx context.Context, input domain.CreatePatientInput) (string, error) {
 	if m.CreateFn != nil {
 		return m.CreateFn(ctx, input)
 	}
 	return "new-id", nil
 }
+
 func (m *MockPatientRepo) UpdateEntity(ctx context.Context, patientID, entityCode string) error {
 	if m.UpdateEntityFn != nil {
 		return m.UpdateEntityFn(ctx, patientID, entityCode)
 	}
 	return nil
 }
+
 func (m *MockPatientRepo) UpdateContract(ctx context.Context, patientID, contractCode string) error {
 	if m.UpdateContractFn != nil {
 		return m.UpdateContractFn(ctx, patientID, contractCode)
 	}
 	return nil
 }
+
 func (m *MockPatientRepo) UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error {
 	if m.UpdateMunicipalityFn != nil {
 		return m.UpdateMunicipalityFn(ctx, patientID, depCode, muniCode)
 	}
 	return nil
 }
+
 func (m *MockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phone, email string) error {
 	if m.UpdateContactInfoFn != nil {
 		return m.UpdateContactInfoFn(ctx, patientID, phone, email)
@@ -91,45 +97,53 @@ func (m *MockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.
 	}
 	return nil, nil
 }
+
 func (m *MockAppointmentRepo) FindUpcomingByPatient(ctx context.Context, patientID string) ([]domain.Appointment, error) {
 	if m.FindUpcomingByPatientFn != nil {
 		return m.FindUpcomingByPatientFn(ctx, patientID)
 	}
 	return nil, nil
 }
+
 func (m *MockAppointmentRepo) FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error) {
 	if m.FindByAgendaAndDateFn != nil {
 		return m.FindByAgendaAndDateFn(ctx, agendaID, date)
 	}
 	return nil, nil
 }
+
 func (m *MockAppointmentRepo) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	if m.CreateFn != nil {
 		return m.CreateFn(ctx, input)
 	}
 	return &domain.Appointment{ID: "apt-new"}, nil
 }
+
 func (m *MockAppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	if m.CreateAppointmentProcedureFn != nil {
 		return m.CreateAppointmentProcedureFn(ctx, input)
 	}
 	return nil
 }
+
 func (m *MockAppointmentRepo) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
+
 func (m *MockAppointmentRepo) Confirm(ctx context.Context, id string, channel, channelID string) error {
 	if m.ConfirmFn != nil {
 		return m.ConfirmFn(ctx, id, channel, channelID)
 	}
 	return nil
 }
+
 func (m *MockAppointmentRepo) Cancel(ctx context.Context, id string, reason, channel, channelID string) error {
 	if m.CancelFn != nil {
 		return m.CancelFn(ctx, id, reason, channel, channelID)
 	}
 	return nil
 }
+
 func (m *MockAppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error {
 	if m.ConfirmBatchFn != nil {
 		return m.ConfirmBatchFn(ctx, ids, channel, channelID)
@@ -141,6 +155,7 @@ func (m *MockAppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, ch
 	}
 	return nil
 }
+
 func (m *MockAppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
 	if m.CancelBatchFn != nil {
 		return m.CancelBatchFn(ctx, ids, reason, channel, channelID)
@@ -152,43 +167,48 @@ func (m *MockAppointmentRepo) CancelBatch(ctx context.Context, ids []string, rea
 	}
 	return nil
 }
+
 func (m *MockAppointmentRepo) DeleteBatch(ctx context.Context, ids []string) error {
 	if m.DeleteBatchFn != nil {
 		return m.DeleteBatchFn(ctx, ids)
 	}
 	return nil
 }
+
 func (m *MockAppointmentRepo) HasFutureForCup(ctx context.Context, patientID, cupCode string) (bool, error) {
 	if m.HasFutureForCupFn != nil {
 		return m.HasFutureForCupFn(ctx, patientID, cupCode)
 	}
 	return false, nil
 }
+
 func (m *MockAppointmentRepo) FindLastDoctorForCups(ctx context.Context, patientID string, cups []string) (string, error) {
 	if m.FindLastDoctorForCupsFn != nil {
 		return m.FindLastDoctorForCupsFn(ctx, patientID, cups)
 	}
 	return "", nil
 }
+
 func (m *MockAppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error) {
 	if m.CountMonthlyByGroupFn != nil {
 		return m.CountMonthlyByGroupFn(ctx, cupsCodes, year, month)
 	}
 	return 0, nil
 }
+
 func (m *MockAppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([]domain.Appointment, error) {
 	if m.FindPendingByDateFn != nil {
 		return m.FindPendingByDateFn(ctx, date)
 	}
 	return nil, nil
 }
+
 func (m *MockAppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	if m.RescheduleDateFn != nil {
 		return m.RescheduleDateFn(ctx, agendaID, doctorDoc, oldDate, newDate)
 	}
 	return 0, nil
 }
-
 
 // MockScheduleRepo implements repository.ScheduleRepository.
 type MockScheduleRepo struct {
@@ -212,18 +232,21 @@ func (m *MockScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int,
 	}
 	return nil, nil
 }
+
 func (m *MockScheduleRepo) FindWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error) {
 	if m.FindWorkingDayExceptionFn != nil {
 		return m.FindWorkingDayExceptionFn(ctx, agendaID, doctorDoc, date)
 	}
 	return nil, nil
 }
+
 func (m *MockScheduleRepo) UpdateWorkingDayExceptionDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error) {
 	if m.UpdateWorkingDayExceptionDateFn != nil {
 		return m.UpdateWorkingDayExceptionDateFn(ctx, agendaID, doctorDoc, oldDate, newDate)
 	}
 	return false, nil
 }
+
 func (m *MockScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error) {
 	if m.DeleteWorkingDayExceptionFn != nil {
 		return m.DeleteWorkingDayExceptionFn(ctx, agendaID, doctorDoc, date)
@@ -253,18 +276,21 @@ func (m *MockProcedureRepo) FindByCode(ctx context.Context, code string) (*domai
 	}
 	return nil, nil
 }
+
 func (m *MockProcedureRepo) FindByID(ctx context.Context, id int) (*domain.Procedure, error) {
 	if m.FindByIDFn != nil {
 		return m.FindByIDFn(ctx, id)
 	}
 	return nil, nil
 }
+
 func (m *MockProcedureRepo) SearchByName(ctx context.Context, name string) ([]domain.Procedure, error) {
 	if m.SearchByNameFn != nil {
 		return m.SearchByNameFn(ctx, name)
 	}
 	return nil, nil
 }
+
 func (m *MockProcedureRepo) FindAllActive(ctx context.Context) ([]domain.Procedure, error) {
 	if m.FindAllActiveFn != nil {
 		return m.FindAllActiveFn(ctx)
@@ -286,18 +312,21 @@ func (m *MockEntityRepo) FindActive(ctx context.Context) ([]domain.Entity, error
 	}
 	return nil, nil
 }
+
 func (m *MockEntityRepo) FindActiveByCategory(ctx context.Context, category string) ([]domain.Entity, error) {
 	if m.FindActiveByCategoryFn != nil {
 		return m.FindActiveByCategoryFn(ctx, category)
 	}
 	return nil, nil
 }
+
 func (m *MockEntityRepo) FindByCode(ctx context.Context, code string) (*domain.Entity, error) {
 	if m.FindByCodeFn != nil {
 		return m.FindByCodeFn(ctx, code)
 	}
 	return nil, nil
 }
+
 func (m *MockEntityRepo) GetCodeByIndexAndCategory(ctx context.Context, index int, category string) (string, error) {
 	if m.GetCodeByIndexAndCategoryFn != nil {
 		return m.GetCodeByIndexAndCategoryFn(ctx, index, category)
@@ -361,87 +390,104 @@ func (m *MockSessionRepo) FindActiveByPhone(ctx context.Context, phone string) (
 	}
 	return nil, nil
 }
+
 func (m *MockSessionRepo) Create(ctx context.Context, s *session.Session) error {
 	if m.CreateFn != nil {
 		return m.CreateFn(ctx, s)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) Save(ctx context.Context, s *session.Session) error {
 	if m.SaveFn != nil {
 		return m.SaveFn(ctx, s)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) UpdateStatus(ctx context.Context, sessionID, status string) error {
 	if m.UpdateStatusFn != nil {
 		return m.UpdateStatusFn(ctx, sessionID, status)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) RenewExpiry(ctx context.Context, sessionID string, expiresAt time.Time) error {
 	if m.RenewExpiryFn != nil {
 		return m.RenewExpiryFn(ctx, sessionID, expiresAt)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) ExpireSessions(ctx context.Context) (int64, error) {
 	if m.ExpireSessionsFn != nil {
 		return m.ExpireSessionsFn(ctx)
 	}
 	return 0, nil
 }
+
 func (m *MockSessionRepo) SetContext(ctx context.Context, sessionID, key, value string) error {
 	if m.SetContextFn != nil {
 		return m.SetContextFn(ctx, sessionID, key, value)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) SetContextBatch(ctx context.Context, sessionID string, kvs map[string]string) error {
 	if m.SetContextBatchFn != nil {
 		return m.SetContextBatchFn(ctx, sessionID, kvs)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) GetContext(ctx context.Context, sessionID, key string) (string, error) {
 	if m.GetContextFn != nil {
 		return m.GetContextFn(ctx, sessionID, key)
 	}
 	return "", nil
 }
+
 func (m *MockSessionRepo) GetAllContext(ctx context.Context, sessionID string) (map[string]string, error) {
 	if m.GetAllContextFn != nil {
 		return m.GetAllContextFn(ctx, sessionID)
 	}
 	return make(map[string]string), nil
 }
+
 func (m *MockSessionRepo) ClearContext(ctx context.Context, sessionID string, keys ...string) error {
 	if m.ClearContextFn != nil {
 		return m.ClearContextFn(ctx, sessionID, keys...)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) ClearAllContext(ctx context.Context, sessionID string) error {
 	if m.ClearAllContextFn != nil {
 		return m.ClearAllContextFn(ctx, sessionID)
 	}
 	return nil
 }
+
 func (m *MockSessionRepo) MarkEscalated(ctx context.Context, sessionID, teamID string) error {
 	return nil
 }
+
 func (m *MockSessionRepo) ResumeSession(ctx context.Context, sessionID, newState string, timeoutMinutes int) error {
 	return nil
 }
+
 func (m *MockSessionRepo) FindInactiveSessions(ctx context.Context, idleMinutes int) ([]session.InactiveSession, error) {
 	return nil, nil
 }
+
 func (m *MockSessionRepo) FindExpiredEscalatedSessions(ctx context.Context) ([]session.ExpiredEscalatedSession, error) {
 	return nil, nil
 }
+
 func (m *MockSessionRepo) MarkAbandoned(ctx context.Context, sessionID string) error {
 	return nil
 }
+
 func (m *MockSessionRepo) CompleteActiveByPhone(ctx context.Context, phone string) error {
 	return nil
 }
@@ -460,6 +506,7 @@ func (m *MockWaitingListCreator) Create(ctx context.Context, entry *domain.Waiti
 	}
 	return nil
 }
+
 func (m *MockWaitingListCreator) HasActiveForPatientAndCups(ctx context.Context, patientID, cupsCode string) (bool, error) {
 	if m.HasActiveForPatientAndCupsFn != nil {
 		return m.HasActiveForPatientAndCupsFn(ctx, patientID, cupsCode)
@@ -483,6 +530,7 @@ func (m *MockEventRepo) Insert(ctx context.Context, event *local.ChatEvent) erro
 	}
 	return nil
 }
+
 func (m *MockEventRepo) InsertBatch(ctx context.Context, events []local.ChatEvent) error {
 	m.InsertedEvents = append(m.InsertedEvents, events...)
 	if m.InsertBatchFn != nil {

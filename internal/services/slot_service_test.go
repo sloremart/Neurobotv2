@@ -18,15 +18,19 @@ type mockProcedureRepo struct {
 func (m *mockProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) FindByID(ctx context.Context, id int) (*domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) SearchByName(ctx context.Context, name string) ([]domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) FindAllActive(ctx context.Context) ([]domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
 	if m.findSubjectTypeForCupsFn != nil {
 		return m.findSubjectTypeForCupsFn(ctx, cupsCode)
@@ -45,15 +49,19 @@ func (m *mockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int,
 	}
 	return nil, nil
 }
+
 func (m *mockScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error) {
 	return nil, nil
 }
+
 func (m *mockScheduleRepo) FindWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error) {
 	return nil, nil
 }
+
 func (m *mockScheduleRepo) UpdateWorkingDayExceptionDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error) {
 	return false, nil
 }
+
 func (m *mockScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error) {
 	return false, nil
 }
@@ -294,6 +302,95 @@ func TestGetAvailableSlots_ConsecutiveSpaces(t *testing.T) {
 	}
 	if len(slots) != 1 || slots[0].TimeSlot != "202603160800" {
 		t.Errorf("expected only 08:00 valid for 2 consecutive spaces, got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_ContrastWindowConsecutive verifica el fix N1: en un bloque
+// consecutivo contrastado, NINGÚN slot del bloque puede caer fuera de la ventana 7–17h,
+// no solo el inicial. Slots de 30 min, Espacios=2, contraste:
+//   - inicio 16:00 → 2º slot 16:30 (<17:00) → VÁLIDO
+//   - inicio 16:30 → 2º slot 17:00 (>=17:00) → INVÁLIDO (antes del fix se aceptaba)
+//   - inicio 17:00 → el slot inicial ya cae fuera de ventana → INVÁLIDO
+func TestGetAvailableSlots_ContrastWindowConsecutive(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "16:00", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "16:30", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "17:00", 1, 30),
+			}, nil
+		},
+	}
+	svc := NewSlotService(&mockProcedureRepo{}, scheduleRepo)
+	// CUPS 890271 no tiene ventana propia → aísla la ventana de contraste.
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode: "890271", Espacios: 2, IsContrasted: true, MaxSlots: 20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161600" {
+		t.Errorf("esperaba solo 16:00 (bloque dentro de 7-17h), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_CupWindowConsecutive verifica el fix N9: la ventana específica de
+// CUPS (879420 TAC → 10–15h) también se aplica a cada slot del bloque consecutivo.
+// Slots de 30 min, Espacios=2:
+//   - inicio 14:00 → 2º slot 14:30 (<15:00) → VÁLIDO
+//   - inicio 14:30 → 2º slot 15:00 (>=15:00) → INVÁLIDO (antes del fix se aceptaba)
+//   - inicio 15:00 → slot inicial fuera de ventana → INVÁLIDO
+func TestGetAvailableSlots_CupWindowConsecutive(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "14:00", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "14:30", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "15:00", 1, 30),
+			}, nil
+		},
+	}
+	// El asunto debe resolver para que el flujo siga; TAC 879420 usa la ventana 10-15h.
+	procRepo := &mockProcedureRepo{findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 3, nil }}
+	svc := NewSlotService(procRepo, scheduleRepo)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode: "879420", Espacios: 2, MaxSlots: 20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161400" {
+		t.Errorf("esperaba solo 14:00 (bloque dentro de 10-15h), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_PreferredDoctorAgeRestricted verifica el fix N8: si el médico
+// preferido está descalificado por edad, NO debe activar el filtro "solo preferido" (que
+// dejaría 0 slots); deben devolverse los slots de los demás médicos elegibles.
+func TestGetAvailableSlots_PreferredDoctorAgeRestricted(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+			var rows []domain.AvailableSlotRow
+			rows = append(rows, dayRows("7178922", "Dr. Restringido", "2026-03-16", 1, 60, 8*60, 10*60)...) // min 18 años
+			rows = append(rows, dayRows("99999", "Dr. Libre", "2026-03-16", 2, 60, 8*60, 10*60)...)
+			return rows, nil
+		},
+	}
+	svc := NewSlotService(&mockProcedureRepo{}, scheduleRepo)
+	// Paciente de 10 años con el preferido = médico restringido por edad.
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode: "890271", PatientAge: 10, PreferredDoctor: "7178922", MaxSlots: 20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) == 0 {
+		t.Fatal("esperaba slots del médico libre; el preferido restringido por edad no debe vaciar el resultado")
+	}
+	for _, s := range slots {
+		if s.DoctorDoc == "7178922" {
+			t.Errorf("no debería haber slots del médico restringido por edad: %+v", s)
+		}
 	}
 }
 

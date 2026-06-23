@@ -4,10 +4,10 @@ import "testing"
 
 func TestResolveEPSContract(t *testing.T) {
 	cases := []struct {
-		name             string
-		entity, regimen  string
+		name              string
+		entity, regimen   string
 		depCode, muniCode string
-		want             string
+		want              string
 	}{
 		// SANITAS — MRC municipalities (dep 50)
 		{"sanitas mrc acacias contributivo", entitySanitas, "1", "50", "006", "6"},

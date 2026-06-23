@@ -321,13 +321,19 @@ func (h *WebhookHandler) HandleConversation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Verify signature only if a separate conversations webhook secret is configured.
-	// If not configured, skip validation (conversations webhook only caches conversation IDs).
-	if h.cfg.BirdWebhookSecretConversations != "" {
+	// Firma OBLIGATORIA cuando hay un secreto disponible (el de conversations o, como fallback,
+	// el principal). Cierra el envenenamiento de caché por teléfono cuando solo el conversations
+	// secret estaba vacío pero el principal sí configurado (N-13). Si NINGÚN secreto está
+	// configurado se omite (entorno sin configurar; este webhook solo cachea conversation IDs).
+	secret := h.cfg.BirdWebhookSecretConversations
+	if secret == "" {
+		secret = h.cfg.BirdWebhookSecret
+	}
+	if secret != "" {
 		signature := r.Header.Get("MessageBird-Signature")
 		timestamp := r.Header.Get("MessageBird-Request-Timestamp")
 		requestURL := reconstructFullURL(r)
-		if !bird.VerifySignatureWithKey(h.cfg.BirdWebhookSecretConversations, signature, timestamp, requestURL, body) {
+		if !bird.VerifySignatureWithKey(secret, signature, timestamp, requestURL, body) {
 			slog.Warn("invalid conversation webhook signature",
 				"has_signature", signature != "",
 				"has_timestamp", timestamp != "",
@@ -447,8 +453,8 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 			} `json:"callCommand"`
 		} `json:"payload"`
 		// Legacy format
-		Type    string `json:"type"`
-		LegacyCallID string `json:"callId"`
+		Type              string `json:"type"`
+		LegacyCallID      string `json:"callId"`
 		LegacyCallCommand struct {
 			Gather struct {
 				Keys string `json:"keys"`

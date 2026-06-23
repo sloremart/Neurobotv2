@@ -313,7 +313,6 @@ func (m *mockMunicipalityRepo) SearchBarrios(ctx context.Context, name, depCode,
 	return nil, nil
 }
 
-
 // =============================================================================
 // Tests for regOptionalFieldHandler (second surname / second name)
 // =============================================================================

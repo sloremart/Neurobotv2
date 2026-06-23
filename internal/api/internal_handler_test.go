@@ -26,21 +26,26 @@ type mockApptRepoAPI struct {
 func (m *mockApptRepoAPI) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoAPI) FindUpcomingByPatient(ctx context.Context, pid string) ([]domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoAPI) FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error) {
 	if m.findByAgendaAndDateFn != nil {
 		return m.findByAgendaAndDateFn(ctx, agendaID, date)
 	}
 	return nil, nil
 }
+
 func (m *mockApptRepoAPI) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoAPI) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
+
 func (m *mockApptRepoAPI) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
@@ -51,30 +56,38 @@ func (m *mockApptRepoAPI) Cancel(ctx context.Context, id, reason, ch, chID strin
 	}
 	return nil
 }
+
 func (m *mockApptRepoAPI) ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error {
 	return nil
 }
+
 func (m *mockApptRepoAPI) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
 	if m.cancelBatchFn != nil {
 		return m.cancelBatchFn(ctx, ids, reason, channel, channelID)
 	}
 	return nil
 }
+
 func (m *mockApptRepoAPI) DeleteBatch(ctx context.Context, ids []string) error {
 	return nil
 }
+
 func (m *mockApptRepoAPI) HasFutureForCup(ctx context.Context, pid, cup string) (bool, error) {
 	return false, nil
 }
+
 func (m *mockApptRepoAPI) FindLastDoctorForCups(ctx context.Context, pid string, cups []string) (string, error) {
 	return "", nil
 }
+
 func (m *mockApptRepoAPI) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int) (int, error) {
 	return 0, nil
 }
+
 func (m *mockApptRepoAPI) FindPendingByDate(ctx context.Context, date string) ([]domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoAPI) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	return 0, nil
 }
@@ -126,30 +139,35 @@ func (m *mockEventKPIReader) GetDailyKPIs(ctx context.Context, date time.Time) (
 	}
 	return &localrepo.DailyKPIs{}, nil
 }
+
 func (m *mockEventKPIReader) GetNotificationBreakdown(ctx context.Context, date time.Time) (*localrepo.NotificationBreakdown, error) {
 	if m.notifBreakdownFn != nil {
 		return m.notifBreakdownFn(ctx, date)
 	}
 	return &localrepo.NotificationBreakdown{}, nil
 }
+
 func (m *mockEventKPIReader) GetAppointmentBreakdown(ctx context.Context, date time.Time) (*localrepo.AppointmentBreakdown, error) {
 	if m.apptBreakdownFn != nil {
 		return m.apptBreakdownFn(ctx, date)
 	}
 	return &localrepo.AppointmentBreakdown{}, nil
 }
+
 func (m *mockEventKPIReader) GetFunnel(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error) {
 	if m.funnelFn != nil {
 		return m.funnelFn(ctx, from, to)
 	}
 	return &localrepo.FunnelData{}, nil
 }
+
 func (m *mockEventKPIReader) GetHealthMetrics(ctx context.Context) (*localrepo.HealthMetrics, error) {
 	if m.healthMetricsFn != nil {
 		return m.healthMetricsFn(ctx)
 	}
 	return &localrepo.HealthMetrics{}, nil
 }
+
 func (m *mockEventKPIReader) FindByPhone(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]localrepo.ChatEvent, error) {
 	if m.findByPhoneFn != nil {
 		return m.findByPhoneFn(ctx, phone, from, to, eventType, maxRows)
@@ -171,12 +189,14 @@ func (m *mockWaitingListReader) GetDistinctWaitingCups(ctx context.Context) ([]s
 	}
 	return nil, nil
 }
+
 func (m *mockWaitingListReader) GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error) {
 	if m.getWaitingByCupsFn != nil {
 		return m.getWaitingByCupsFn(ctx, cupsCode, limit)
 	}
 	return nil, nil
 }
+
 func (m *mockWaitingListReader) List(ctx context.Context, filters domain.WaitingListFilters, page, pageSize int) ([]domain.WaitingListEntry, int, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx, filters, page, pageSize)

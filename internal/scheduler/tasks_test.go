@@ -20,14 +20,13 @@ import (
 
 // ─── Local mocks for scheduler-specific interfaces ────────────────────────────
 
-
 // mockWaitingListRepo implements WaitingListRepo.
 type mockWaitingListRepo struct {
-	ExpireOldFn             func(ctx context.Context, days int) (int64, error)
+	ExpireOldFn              func(ctx context.Context, days int) (int64, error)
 	GetDistinctWaitingCupsFn func(ctx context.Context) ([]string, error)
-	GetWaitingByCupsFn      func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
-	UpdateStatusFn          func(ctx context.Context, id, status string) error
-	MarkNotifiedFn          func(ctx context.Context, id string) error
+	GetWaitingByCupsFn       func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
+	UpdateStatusFn           func(ctx context.Context, id, status string) error
+	MarkNotifiedFn           func(ctx context.Context, id string) error
 }
 
 func (m *mockWaitingListRepo) ExpireOld(ctx context.Context, days int) (int64, error) {
@@ -385,7 +384,7 @@ func TestSendWhatsAppReminders_InvalidPhone_Skipped(t *testing.T) {
 		{
 			ID: "apt-1", PatientID: "P001", PatientName: "Juan",
 			PatientPhone: "invalid-phone", // invalid
-			Date: tomorrow, TimeSlot: tomorrow.Format("200601021504"),
+			Date:         tomorrow, TimeSlot: tomorrow.Format("200601021504"),
 			Procedures: []domain.AppointmentProcedure{
 				{CupCode: "890271", CupName: "Test", Quantity: 1},
 			},
@@ -393,7 +392,7 @@ func TestSendWhatsAppReminders_InvalidPhone_Skipped(t *testing.T) {
 		{
 			ID: "apt-2", PatientID: "P002", PatientName: "Maria",
 			PatientPhone: "3109876543", // valid
-			Date: tomorrow, TimeSlot: tomorrow.Format("200601021504"),
+			Date:         tomorrow, TimeSlot: tomorrow.Format("200601021504"),
 			Procedures: []domain.AppointmentProcedure{
 				{CupCode: "890272", CupName: "Test2", Quantity: 1},
 			},
@@ -513,7 +512,7 @@ func TestSendWhatsAppReminders_MultipleAppts_SamePatient(t *testing.T) {
 		{
 			ID: "apt-1", PatientID: "P001", PatientName: "Juan",
 			PatientPhone: "3001234567",
-			Date: tomorrow, TimeSlot: tomorrow.Format("200601021504"),
+			Date:         tomorrow, TimeSlot: tomorrow.Format("200601021504"),
 			Procedures: []domain.AppointmentProcedure{
 				{CupCode: "890271", CupName: "Electromiografia", Quantity: 1},
 			},
@@ -521,7 +520,7 @@ func TestSendWhatsAppReminders_MultipleAppts_SamePatient(t *testing.T) {
 		{
 			ID: "apt-2", PatientID: "P001", PatientName: "Juan",
 			PatientPhone: "3001234567",
-			Date: tomorrow, TimeSlot: tomorrow.Format("200601021504"),
+			Date:         tomorrow, TimeSlot: tomorrow.Format("200601021504"),
 			Procedures: []domain.AppointmentProcedure{
 				{CupCode: "890272", CupName: "Potenciales Evocados", Quantity: 1},
 			},

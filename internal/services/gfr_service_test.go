@@ -138,12 +138,12 @@ func TestGFR_Eligibility(t *testing.T) {
 	svc := NewGFRService()
 
 	tests := []struct {
-		name        string
-		age         int
-		creatinine  float64
-		weight      float64
-		wantMin     float64
-		wantMax     float64
+		name         string
+		age          int
+		creatinine   float64
+		weight       float64
+		wantMin      float64
+		wantMax      float64
 		wantEligible bool
 	}{
 		// Male 40y, 80kg, low creatinine → high GFR (eligible, no hydration)

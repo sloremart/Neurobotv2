@@ -18,12 +18,13 @@ jobs:
     name: Build, lint, test, security
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Versiones con runtime Node 24 (las v4/v5/v8 usaban Node 20, ya deprecado en runners).
+      - uses: actions/checkout@v5
         with:
           # Necesario para que --new-from-rev / only-new-issues y git blame funcionen.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
           cache: true
@@ -34,7 +35,7 @@ jobs:
       # golangci-lint v2 'run' incluye gosec y staticcheck, y reporta también
       # los problemas de formato (gofumpt/goimports) declarados en formatters.
       - name: Lint + formato + seguridad estática
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.0
           # En pull requests, solo falla por problemas NUEVOS (baseline para legacy).

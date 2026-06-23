@@ -240,16 +240,23 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			}
 		}
 
+		// N-25: si no se pudo resolver la entidad (error de query o índice fuera de la lista),
+		// NO continuar a registro con entidad vacía (crearía paciente/cita sin entidad/contrato):
+		// escalar a un agente, como en la rama "sin entidades".
+		if entityCode == "" {
+			slog.Warn("entity_number: empty entity code, escalating", "index", index, "category", category)
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText("Lo siento, no pude identificar tu entidad. Te comunico con un agente para ayudarte.").
+				WithEvent("entity_resolution_failed", map[string]interface{}{"index": index, "category": category}), nil
+		}
+
 		r := sm.NewResult(sm.StateAskDocumentType).
 			WithContext("entity_number", fmt.Sprintf("%d", index)).
 			WithContext("menu_option", "agendar").
 			WithText(docTypeMenuText()).
-			WithEvent("entity_number_selected", map[string]interface{}{"index": index, "code": entityCode})
-
-		if entityCode != "" {
-			r.WithContext("selected_entity_code", entityCode)
-			r.WithContext("selected_entity_name", entityName)
-		}
+			WithEvent("entity_number_selected", map[string]interface{}{"index": index, "code": entityCode}).
+			WithContext("selected_entity_code", entityCode).
+			WithContext("selected_entity_name", entityName)
 
 		return r, nil
 	}
@@ -348,7 +355,9 @@ func changeEntityHandler(entityRepo repository.EntityRepository, patientRepo rep
 
 			patientID := sess.GetContext("patient_id")
 			if patientRepo != nil && patientID != "" {
-				_ = patientRepo.UpdateEntity(ctx, patientID, entityCode)
+				if err := patientRepo.UpdateEntity(ctx, patientID, entityCode); err != nil {
+					slog.Warn("update_entity_failed", "patient_id", patientID, "entity", entityCode, "error", err)
+				}
 			}
 
 			sess.PatientEntity = entityCode
@@ -396,7 +405,9 @@ func changeEntityHandler(entityRepo repository.EntityRepository, patientRepo rep
 			sess.RetryCount = 0
 			patientID := sess.GetContext("patient_id")
 			if patientRepo != nil && patientID != "" {
-				_ = patientRepo.UpdateEntity(ctx, patientID, matches[0].Code)
+				if err := patientRepo.UpdateEntity(ctx, patientID, matches[0].Code); err != nil {
+					slog.Warn("update_entity_failed", "patient_id", patientID, "entity", matches[0].Code, "error", err)
+				}
 			}
 			sess.PatientEntity = matches[0].Code
 

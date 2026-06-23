@@ -17,7 +17,7 @@ type mockRepo struct {
 	setContextFn        func(ctx context.Context, sessionID, key, value string) error
 	setContextBatchFn   func(ctx context.Context, sessionID string, kvs map[string]string) error
 	getContextFn        func(ctx context.Context, sessionID, key string) (string, error)
-	getAllContextFn      func(ctx context.Context, sessionID string) (map[string]string, error)
+	getAllContextFn     func(ctx context.Context, sessionID string) (map[string]string, error)
 	clearContextFn      func(ctx context.Context, sessionID string, keys ...string) error
 	clearAllContextFn   func(ctx context.Context, sessionID string) error
 	markEscalatedFn     func(ctx context.Context, sessionID, teamID string) error
@@ -30,87 +30,103 @@ func (r *mockRepo) FindActiveByPhone(ctx context.Context, phone string) (*Sessio
 	}
 	return nil, nil
 }
+
 func (r *mockRepo) Create(ctx context.Context, s *Session) error {
 	if r.createFn != nil {
 		return r.createFn(ctx, s)
 	}
 	return nil
 }
+
 func (r *mockRepo) Save(ctx context.Context, s *Session) error {
 	if r.saveFn != nil {
 		return r.saveFn(ctx, s)
 	}
 	return nil
 }
+
 func (r *mockRepo) UpdateStatus(ctx context.Context, sessionID, status string) error {
 	if r.updateStatusFn != nil {
 		return r.updateStatusFn(ctx, sessionID, status)
 	}
 	return nil
 }
+
 func (r *mockRepo) RenewExpiry(ctx context.Context, sessionID string, expiresAt time.Time) error {
 	if r.renewExpiryFn != nil {
 		return r.renewExpiryFn(ctx, sessionID, expiresAt)
 	}
 	return nil
 }
+
 func (r *mockRepo) FindInactiveSessions(ctx context.Context, idleMinutes int) ([]InactiveSession, error) {
 	return nil, nil
 }
+
 func (r *mockRepo) FindExpiredEscalatedSessions(ctx context.Context) ([]ExpiredEscalatedSession, error) {
 	return nil, nil
 }
+
 func (r *mockRepo) MarkAbandoned(ctx context.Context, sessionID string) error {
 	return nil
 }
+
 func (r *mockRepo) SetContext(ctx context.Context, sessionID, key, value string) error {
 	if r.setContextFn != nil {
 		return r.setContextFn(ctx, sessionID, key, value)
 	}
 	return nil
 }
+
 func (r *mockRepo) SetContextBatch(ctx context.Context, sessionID string, kvs map[string]string) error {
 	if r.setContextBatchFn != nil {
 		return r.setContextBatchFn(ctx, sessionID, kvs)
 	}
 	return nil
 }
+
 func (r *mockRepo) GetContext(ctx context.Context, sessionID, key string) (string, error) {
 	if r.getContextFn != nil {
 		return r.getContextFn(ctx, sessionID, key)
 	}
 	return "", nil
 }
+
 func (r *mockRepo) GetAllContext(ctx context.Context, sessionID string) (map[string]string, error) {
 	if r.getAllContextFn != nil {
 		return r.getAllContextFn(ctx, sessionID)
 	}
 	return make(map[string]string), nil
 }
+
 func (r *mockRepo) ClearContext(ctx context.Context, sessionID string, keys ...string) error {
 	if r.clearContextFn != nil {
 		return r.clearContextFn(ctx, sessionID, keys...)
 	}
 	return nil
 }
+
 func (r *mockRepo) ClearAllContext(ctx context.Context, sessionID string) error {
 	if r.clearAllContextFn != nil {
 		return r.clearAllContextFn(ctx, sessionID)
 	}
 	return nil
 }
+
 func (r *mockRepo) MarkEscalated(ctx context.Context, sessionID, teamID string) error {
 	if r.markEscalatedFn != nil {
 		return r.markEscalatedFn(ctx, sessionID, teamID)
 	}
 	return nil
 }
+
 func (r *mockRepo) ResumeSession(ctx context.Context, sessionID, newState string, timeoutMinutes int) error {
 	if r.resumeSessionFn != nil {
 		return r.resumeSessionFn(ctx, sessionID, newState, timeoutMinutes)
 	}
 	return nil
 }
+
 func (r *mockRepo) CompleteActiveByPhone(ctx context.Context, phone string) error {
 	return nil
 }

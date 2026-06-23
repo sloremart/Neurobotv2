@@ -22,7 +22,8 @@ func NewMunicipalityRepo(db *sql.DB) *MunicipalityRepo {
 
 // Search busca municipios en sis_muni por nombre.
 // Retorna DepartmentCode = sis_muni.id_dep (ej: "50"),
-//         MunicipalityCode = sis_muni.codigo (ej: "001") — formato que espera sis_paci.
+//
+//	MunicipalityCode = sis_muni.codigo (ej: "001") — formato que espera sis_paci.
 func (r *MunicipalityRepo) Search(ctx context.Context, name string) ([]domain.Municipality, error) {
 	// Acepta "Ciudad - Departamento" o "Ciudad, Departamento": busca por el nombre
 	// de la ciudad y, si se indica departamento, acota por él. Así "Cubarral - Meta"
@@ -40,6 +41,23 @@ func (r *MunicipalityRepo) Search(ctx context.Context, name string) ([]domain.Mu
 		city = strings.TrimSpace(name)
 	}
 
+	// Primer intento: nombre de ciudad + (si se dio) filtro de departamento.
+	municipalities, err := r.searchMunicipios(ctx, city, dept)
+	if err != nil {
+		return nil, err
+	}
+	// Fallback (N7): si el filtro de departamento no devolvió nada, reintentar SOLO por ciudad.
+	// El split por '-'/',' puede tomar como "departamento" algo que no lo es (p.ej. "Bogotá, D.C."
+	// o "Miriti - Parana"), dejando 0 filas aunque la ciudad exista. Sin filtro de dept recupera.
+	if len(municipalities) == 0 && dept != "" {
+		return r.searchMunicipios(ctx, city, "")
+	}
+	return municipalities, nil
+}
+
+// searchMunicipios ejecuta la consulta a sis_muni por nombre de ciudad y, opcionalmente,
+// filtrando por nombre de departamento.
+func (r *MunicipalityRepo) searchMunicipios(ctx context.Context, city, dept string) ([]domain.Municipality, error) {
 	query := `
 	SELECT TOP 10
 	    m.Id,

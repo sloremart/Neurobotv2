@@ -28,11 +28,11 @@ func NewScheduleRepo(db *sql.DB) *ScheduleRepo {
 // subject (asunto_id), within the 3h..90-day window. Each row is one bookable slot.
 //
 // Agenda eligibility is the UNION of two sets (validated against real SIESA data):
-//   1. Agendas with an explicit programacion_medico_relacion_asunto row for @asuntoId.
-//   2. "Orphan" agendas that have NO relacion_asunto rows at all (≈10 of 55 active
-//      agendas) whose most recent non-cancelled cita has asunto = @asuntoId. Without
-//      this fallback an INNER JOIN would silently drop those agendas (RX, resonancia,
-//      EEG, procedures, etc.).
+//  1. Agendas with an explicit programacion_medico_relacion_asunto row for @asuntoId.
+//  2. "Orphan" agendas that have NO relacion_asunto rows at all (≈10 of 55 active
+//     agendas) whose most recent non-cancelled cita has asunto = @asuntoId. Without
+//     this fallback an INNER JOIN would silently drop those agendas (RX, resonancia,
+//     EEG, procedures, etc.).
 //
 // The 3h floor and 90-day ceiling are range predicates on pmd.Fecha (no CAST on the
 // column) so the datetime index is preserved. afterDate (YYYY-MM-DD) paginates forward.

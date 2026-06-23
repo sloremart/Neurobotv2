@@ -113,12 +113,12 @@ func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 						sm.Button{Text: "Sí, registrarme", Payload: "register_yes"},
 						sm.Button{Text: "No, gracias", Payload: "register_no"},
 					).
-					WithEvent("patient_not_found", map[string]interface{}{"doc": doc, "can_register": true}), nil
+					WithEvent("patient_not_found", map[string]interface{}{"doc": utils.MaskDocument(doc), "can_register": true}), nil
 			}
 
 			// Menú consultar → no puede consultar sin estar registrado
 			return buildAutoCloseResult("No encontramos un paciente con el documento *"+doc+"*. Verifica que el número sea correcto.\n\nSi eres paciente nuevo, selecciona la opción *Agendar cita* para registrarte.").
-				WithEvent("patient_not_found", map[string]interface{}{"doc": doc, "can_register": false}), nil
+				WithEvent("patient_not_found", map[string]interface{}{"doc": utils.MaskDocument(doc), "can_register": false}), nil
 		}
 
 		// Paciente encontrado → guardar datos en sesión
@@ -199,7 +199,9 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 			// Persistir entidad en BD externa
 			patientID := sess.GetContext("patient_id")
 			if patientSvc != nil && patientID != "" {
-				_ = patientSvc.UpdateEntity(ctx, patientID, selectedEntity)
+				if err := patientSvc.UpdateEntity(ctx, patientID, selectedEntity); err != nil {
+					slog.Warn("update_entity_failed", "patient_id", patientID, "entity", selectedEntity, "error", err)
+				}
 			}
 		}
 
@@ -253,7 +255,11 @@ func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *servic
 	)
 	r.WithContext("patient_contract", contract)
 	if patientSvc != nil && patientID != "" {
-		_ = patientSvc.UpdateContract(ctx, patientID, contract)
+		// Best-effort: la cita usa el contrato del contexto en memoria, pero si el UPDATE a
+		// sis_paci falla queremos traza (Ley 1581 / diagnóstico de contención con la UI SIESA).
+		if err := patientSvc.UpdateContract(ctx, patientID, contract); err != nil {
+			slog.Warn("update_contract_failed", "patient_id", patientID, "contract", contract, "error", err)
+		}
 	}
 }
 

@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
-	"github.com/neuro-bot/neuro-bot/internal/testutil"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/testutil"
 )
 
 // --- ASK_CLIENT_TYPE ---

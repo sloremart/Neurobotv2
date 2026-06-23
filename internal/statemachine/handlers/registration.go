@@ -38,8 +38,9 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: registrationStartHandler(),
 	})
-	// Tipo de documento: 15 tipos del catálogo SIESA sis_tipo_documento. WhatsApp limita las
-	// listas interactivas a 10 filas, por eso se ofrece como menú de texto numerado.
+	// Tipo de documento: 12 tipos del catálogo SIESA sis_tipo_documento (de los 15 totales se
+	// excluyen AS/MS/SI "sin identificación"). WhatsApp limita las listas interactivas a 10
+	// filas, por eso se ofrece como menú de texto numerado.
 	m.Register(sm.StateRegDocumentType, withCorrectionRedirect(regDocumentTypeHandler()))
 	m.Register(sm.StateRegDocumentIssuePlace, regDocumentIssuePlaceHandler())
 	m.Register(sm.StateRegFirstSurname, withCorrectionRedirect(regFieldHandler("reg_first_surname", "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondSurname, "Si tienes *segundo apellido*, escríbelo. Si no, responde *NA*:")))
@@ -284,7 +285,7 @@ func docTypeMenuText() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// parseDocType resolves a user reply (a 1..15 number, or the code itself) to a catalog code,
+// parseDocType resolves a user reply (a 1..N number where N=len(documentTypeCatalog)=12, or the code itself) to a catalog code,
 // or "" when invalid.
 func parseDocType(input string) string {
 	s := strings.ToUpper(strings.TrimSpace(input))
@@ -299,7 +300,7 @@ func parseDocType(input string) string {
 	return ""
 }
 
-// REG_DOCUMENT_TYPE — menú de texto numerado (15 tipos del catálogo SIESA).
+// REG_DOCUMENT_TYPE — menú de texto numerado (12 tipos del catálogo SIESA).
 func regDocumentTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		retry := sm.ValidateWithRetry(sess, msg.Text,
@@ -604,7 +605,6 @@ func regZoneHandler() sm.StateHandler {
 	}
 }
 
-
 // REG_USER_TYPE — solo lógica de negocio (validación declarativa en RegisterWithConfig).
 func regUserTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
@@ -648,7 +648,6 @@ func regAffiliationTypeHandler() sm.StateHandler {
 			WithText("Escribe tu *municipio y departamento de residencia* (ej.: Villavicencio - Meta):"), nil
 	}
 }
-
 
 // CONFIRM_REGISTRATION — solo lógica de negocio (validación declarativa en RegisterWithConfig).
 func confirmRegistrationHandler() sm.StateHandler {
@@ -745,7 +744,10 @@ func finalizeSanitasMunicipality(ctx context.Context, sess *session.Session, pat
 	// Persistir municipio/departamento si el paciente los cambió.
 	changed := depCode != sess.GetContext("patient_dep") || muniCode != sess.GetContext("patient_muni")
 	if changed && patientSvc != nil && patientID != "" && depCode != "" && muniCode != "" {
-		_ = patientSvc.UpdateMunicipality(ctx, patientID, depCode, muniCode)
+		// Best-effort con traza si falla el UPDATE a sis_paci (observabilidad / Ley 1581).
+		if err := patientSvc.UpdateMunicipality(ctx, patientID, depCode, muniCode); err != nil {
+			slog.Warn("update_municipality_failed", "patient_id", patientID, "dep", depCode, "muni", muniCode, "error", err)
+		}
 		r.WithContext("patient_dep", depCode).
 			WithContext("patient_muni", muniCode)
 	}
@@ -865,7 +867,7 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 		patientID, err := patientSvc.Create(ctx, input)
 		if err != nil {
 			slog.Error("patient_create_failed",
-				"doc", input.DocumentNumber,
+				"doc", utils.MaskDocument(input.DocumentNumber),
 				"doc_type", input.DocumentType,
 				"entity", input.EntityCode,
 				"error", err.Error(),
@@ -1134,57 +1136,75 @@ func withCorrectionRedirect(handler sm.StateHandler) sm.StateHandler {
 
 // correctionField defines a correctable field with its target state and prompt builder.
 type correctionField struct {
-	ID    string
-	Title string
-	State string
+	ID     string
+	Title  string
+	State  string
 	Prompt func() sm.OutboundMessage // nil = full restart (no correction mode)
 }
 
 // correctionFields defines the 9 correctable fields + restart option (10 total for WhatsApp limit).
 func correctionFields() []correctionField {
 	return []correctionField{
-		{ID: "corr_first_name", Title: "Primer nombre", State: sm.StateRegFirstName,
+		{
+			ID: "corr_first_name", Title: "Primer nombre", State: sm.StateRegFirstName,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Por favor escribe tu primer nombre (solo letras, sin números, ni símbolos ni espacios)."}
-			}},
-		{ID: "corr_first_surname", Title: "Primer apellido", State: sm.StateRegFirstSurname,
+			},
+		},
+		{
+			ID: "corr_first_surname", Title: "Primer apellido", State: sm.StateRegFirstSurname,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios)."}
-			}},
-		{ID: "corr_birth_date", Title: "Fecha de nacimiento", State: sm.StateRegBirthDate,
+			},
+		},
+		{
+			ID: "corr_birth_date", Title: "Fecha de nacimiento", State: sm.StateRegBirthDate,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Ingresa tu fecha de nacimiento en formato *AAAA-MM-DD* (ejemplo: 1992-04-17):"}
-			}},
-		{ID: "corr_address", Title: "Dirección", State: sm.StateRegAddress,
+			},
+		},
+		{
+			ID: "corr_address", Title: "Dirección", State: sm.StateRegAddress,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Escribe tu dirección completa (calle, número, barrio):"}
-			}},
-		{ID: "corr_phone", Title: "Teléfono", State: sm.StateRegPhone,
+			},
+		},
+		{
+			ID: "corr_phone", Title: "Teléfono", State: sm.StateRegPhone,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Ingresa tu celular principal preferiblemente con WhatsApp (ej: 3001234567):"}
-			}},
-		{ID: "corr_email", Title: "Email", State: sm.StateRegEmail,
+			},
+		},
+		{
+			ID: "corr_email", Title: "Email", State: sm.StateRegEmail,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Indica tu correo electrónico o responde *NA*:"}
-			}},
-		{ID: "corr_document_type", Title: "Tipo de documento", State: sm.StateRegDocumentType,
+			},
+		},
+		{
+			ID: "corr_document_type", Title: "Tipo de documento", State: sm.StateRegDocumentType,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: docTypeMenuText()}
-			}},
-		{ID: "corr_marital_status", Title: "Estado civil", State: sm.StateRegMaritalStatus,
+			},
+		},
+		{
+			ID: "corr_marital_status", Title: "Estado civil", State: sm.StateRegMaritalStatus,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.ListMessage{
 					Body: "Selecciona tu *estado civil*:", Title: "Seleccionar",
 					Sections: []sm.ListSection{{Title: "Estado civil", Rows: maritalStatusListRows()}},
 				}
-			}},
-		{ID: "corr_user_type", Title: "Tipo de usuario", State: sm.StateRegUserType,
+			},
+		},
+		{
+			ID: "corr_user_type", Title: "Tipo de usuario", State: sm.StateRegUserType,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.ListMessage{
 					Body: "Selecciona tu *tipo de usuario*:", Title: "Tipo de usuario",
 					Sections: []sm.ListSection{{Title: "Tipo de usuario", Rows: userTypeListRows()}},
 				}
-			}},
+			},
+		},
 		{ID: "corr_restart", Title: "Empezar de nuevo", State: sm.StateRegDocumentType, Prompt: nil},
 	}
 }
@@ -1225,7 +1245,7 @@ func regSelectCorrectionHandler() sm.StateHandler {
 			// "Empezar de nuevo" = full restart without correction mode
 			if field.Prompt == nil {
 				return sm.NewResult(field.State).
-					WithText("Vamos a corregir tus datos. Comencemos de nuevo.\n\n" + docTypeMenuText()).
+					WithText("Vamos a corregir tus datos. Comencemos de nuevo.\n\n"+docTypeMenuText()).
 					WithClearCtx("reg_correction_mode").
 					WithEvent("registration_restart", nil), nil
 			}

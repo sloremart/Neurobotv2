@@ -27,21 +27,22 @@ var _ repository.PatientRepository = (*PatientRepo)(nil)
 // PatientRepo lee y escribe pacientes en ZeusSalud_Neuro.sis_paci.
 //
 // Mapeo de campos (sis_paci → domain.Patient):
-//   autoid       → Patient.ID
-//   tipo_id      → Patient.DocumentType
-//   num_id       → Patient.DocumentNumber
-//   primer_nom   → Patient.FirstName
-//   segundo_nom  → Patient.SecondName
-//   primer_ape   → Patient.FirstSurname
-//   segundo_ape  → Patient.SecondSurname
-//   fecha_naci   → Patient.BirthDate
-//   sexo         → Patient.Gender
-//   telefono     → Patient.Phone
-//   celular      → Patient.Phone (fallback si telefono vacío)
-//   email        → Patient.Email
-//   entidad      → Patient.EntityCode
-//   direccion    → Patient.Address
-//   cod_muni     → Patient.CityCode
+//
+//	autoid       → Patient.ID
+//	tipo_id      → Patient.DocumentType
+//	num_id       → Patient.DocumentNumber
+//	primer_nom   → Patient.FirstName
+//	segundo_nom  → Patient.SecondName
+//	primer_ape   → Patient.FirstSurname
+//	segundo_ape  → Patient.SecondSurname
+//	fecha_naci   → Patient.BirthDate
+//	sexo         → Patient.Gender
+//	telefono     → Patient.Phone
+//	celular      → Patient.Phone (fallback si telefono vacío)
+//	email        → Patient.Email
+//	entidad      → Patient.EntityCode
+//	direccion    → Patient.Address
+//	cod_muni     → Patient.CityCode
 type PatientRepo struct {
 	db *sql.DB
 }

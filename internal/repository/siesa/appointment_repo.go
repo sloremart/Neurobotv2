@@ -43,8 +43,11 @@ func NewAppointmentRepo(db *sql.DB) *AppointmentRepo {
 // ────────────────────────────────────────────────────────────────────────────
 
 // slotToDateTimeComponents converts "YYYYMMDDHHmm" → date "YYYY-MM-DD", timeStr "HH:mm", meridiem "am"|"pm".
-// SIESA may store PM slots (1-6 PM) as hours 1-6 in the datetime field (12h format).
-// To maintain consistency with the meridiano column in citas, hours 1-6 and ≥12 are marked "pm".
+// El slot SIEMPRE viene en 24h (lo arma SlotService desde pmd.Fecha), así que el meridiano se
+// deriva directamente: <12 → am, ≥12 → pm. (N-4: la heurística previa "1-6 → pm" marcaba como
+// PM los slots reales de 5–6 AM, p.ej. polisomnografía/EEG matutino, corrompiendo la UI/recordatorios.)
+// NOTA pendiente (no es este fix): timeStr queda en 24h ("13:00") mientras SIESA/staff usan 12h
+// ("01:00"+pm); es una discrepancia de convención separada, documentada para decisión.
 func slotToDateTimeComponents(slot string) (date, timeStr, meridiem string) {
 	if len(slot) < 12 {
 		return "", "", ""
@@ -52,7 +55,7 @@ func slotToDateTimeComponents(slot string) (date, timeStr, meridiem string) {
 	date = fmt.Sprintf("%s-%s-%s", slot[0:4], slot[4:6], slot[6:8])
 	timeStr = fmt.Sprintf("%s:%s", slot[8:10], slot[10:12])
 	hInt, _ := strconv.Atoi(slot[8:10])
-	if hInt >= 12 || (hInt >= 1 && hInt <= 6) {
+	if hInt >= 12 {
 		meridiem = "pm"
 	} else {
 		meridiem = "am"
@@ -643,6 +646,7 @@ const siesaBotUserID = 10006
 //   - CITA MODIFICADA (confirmaciones) → NO copia autoid/cod_medi/fecha/estado (van en blanco)
 //     y en su lugar llena las columnas *_anterior con el estado previo. Como confirmar no
 //     cambia esos campos, anterior = valor actual y observacion lleva el mensaje nuevo.
+//
 // En ambos casos fecha_evento = CONVERT(VARCHAR(50), GETDATE(), 100) → 'Jun 23 2026  6:53AM',
 // el mismo formato que la UI (style 100), que es lo que ese front usa para ordenar el historial.
 func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs string) {
@@ -699,6 +703,71 @@ func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs str
 		defer cancel()
 		if _, err := r.db.ExecContext(cctx, query, id, obs, evento, siesaBotUserID); err != nil {
 			slog.Warn("audit_log_write_failed", "appointment_id", id, "evento", evento, "error", err)
+		}
+	}()
+}
+
+// writeAuditLogBatch es la versión batch de writeAuditLog (N-34): inserta la auditoría de
+// VARIAS citas con UN solo INSERT ... SELECT ... WHERE id IN (...), en una única goroutine,
+// en vez de N goroutines (una por id) que saturaban el pool en cancelaciones masivas. Mismo
+// resultado observable (una fila de log por cita); obs/evento son uniformes en un batch.
+func (r *AppointmentRepo) writeAuditLogBatch(ctx context.Context, ids []string, evento, obs string) {
+	if len(ids) == 0 {
+		return
+	}
+	// @p1=obs, @p2=evento, @p3=usuario del bot; los ids empiezan en @p4.
+	clause, idArgs := inParams(ids, 4)
+	allArgs := append([]interface{}{obs, evento, siesaBotUserID}, idArgs...)
+
+	var query string
+	if evento == "CITA MODIFICADA" {
+		query = `
+		INSERT INTO log_citas (
+		    asunto, observacion, empresa, contrato, fecha_solicitud, fecha_evento,
+		    tipo_servicio, id_sede, primera_vez_control, formaSolicitud, lugarAtencion,
+		    tipoUsuario, EntornoAtencion,
+		    asunto_anterior, observacion_anterior, empresa_anterior, contrato_anterior,
+		    tipo_servicio_anterior, primera_vez_contrato_anterior,
+		    tipo_evento, usuario_evento, id_cita_modificada
+		)
+		SELECT
+		    asunto, @p1, empresa, contrato, fecha_solicitud, CONVERT(VARCHAR(50), GETDATE(), 100),
+		    tipo_servicio, id_sede, primera_vez_control, formaSolicitud, lugarAtencion,
+		    tipoUsuario, EntornoAtencion,
+		    asunto, observacion, empresa, contrato,
+		    tipo_servicio, primera_vez_control,
+		    @p2, @p3, id
+		FROM citas WHERE id IN (` + clause + `)`
+	} else {
+		query = `
+		INSERT INTO log_citas (
+		    autoid, cod_medi, fecha_usuario_desea_cita, fecha, hora, meridiano, estado,
+		    asunto, observacion, empresa, fecha_solicitud, motivo, horacan,
+		    cod_user_asigna_cita, tipo_servicio, id_sede, primera_vez_control, contrato,
+		    formaSolicitud, lugarAtencion, tipoUsuario, EntornoAtencion, es_terapia, fecha_evento,
+		    tipo_evento, usuario_evento, id_cita_modificada
+		)
+		SELECT
+		    autoid, cod_medi, fecha_usuario_desea_cita, fecha, hora, meridiano, estado,
+		    asunto, @p1, empresa, fecha_solicitud, motivo, horacan,
+		    cod_user_asigna_cita, tipo_servicio, id_sede, primera_vez_control, contrato,
+		    formaSolicitud, lugarAtencion, tipoUsuario, EntornoAtencion,
+		    CASE WHEN @p2 = 'CANCELAR CITA' THEN CAST(es_terapia AS VARCHAR(50)) ELSE NULL END,
+		    CONVERT(VARCHAR(50), GETDATE(), 100),
+		    @p2, @p3, id
+		FROM citas WHERE id IN (` + clause + `)`
+	}
+	bgCtx := context.WithoutCancel(ctx)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("audit_log_batch_panic", "evento", evento, "recover", rec)
+			}
+		}()
+		cctx, cancel := context.WithTimeout(bgCtx, 15*time.Second)
+		defer cancel()
+		if _, err := r.db.ExecContext(cctx, query, allArgs...); err != nil {
+			slog.Warn("audit_log_batch_write_failed", "evento", evento, "count", len(ids), "error", err)
 		}
 	}()
 }
@@ -779,9 +848,7 @@ func (r *AppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, channe
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		r.writeAuditLog(ctx, id, "CITA MODIFICADA", fmt.Sprintf("Confirmado via WhatsApp [conv: %s]", channelID))
-	}
+	r.writeAuditLogBatch(ctx, ids, "CITA MODIFICADA", fmt.Sprintf("Confirmado via WhatsApp [conv: %s]", channelID))
 	return nil
 }
 
@@ -819,9 +886,7 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 		idArgs2...); relErr != nil {
 		slog.Warn("slot_release_failed_batch", "ids", ids, "error", relErr)
 	}
-	for _, id := range ids {
-		r.writeAuditLog(ctx, id, "CANCELAR CITA", fmt.Sprintf("CANCELACION DE CITA - Motivo: %s [conv: %s]", reason, channelID))
-	}
+	r.writeAuditLogBatch(ctx, ids, "CANCELAR CITA", fmt.Sprintf("CANCELACION DE CITA - Motivo: %s [conv: %s]", reason, channelID))
 	return nil
 }
 
@@ -829,11 +894,10 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 // citas.id is referenced by FK constraints (CitasObservaciones, E_Payment, E_Payment_Logs,
 // Recordatorio_mail_deta), so a physical DELETE fails at runtime whenever a child row exists,
 // and SIESA itself never hard-deletes appointments. So this delegates to CancelBatch, which:
-//  1. removes any prior CANCELLED twin occupying the same composite PK slot (to avoid a PK
-//     collision when flipping estado→'C') — that is the only row physically deleted, and it
-//     is NOT the target appointment;
-//  2. marks the target appointments estado='C' (+ motivo_cancela / observacion);
-//  3. releases their slots (programacion_medico_detalle.IdCita = NULL).
+//  1. marks the target appointments estado='C' (+ motivo_cancela / observación) and sets
+//     horacan = hora actual, which keeps the composite PK unique and avoids a collision with a
+//     prior cancelled row of the same slot (this replaced the old "cancelled twin" DELETE);
+//  2. releases their slots (programacion_medico_detalle.IdCita = NULL).
 //
 // Net effect: the appointment stays in SIESA marked cancelled, exactly like Cancel/CancelBatch.
 // See the cancellation-flow NOTE above Cancel re: immediate slot release.

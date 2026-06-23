@@ -21,15 +21,19 @@ func (m *mockProcRepo) FindByCode(ctx context.Context, code string) (*domain.Pro
 	}
 	return nil, nil
 }
+
 func (m *mockProcRepo) FindByID(ctx context.Context, id int) (*domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcRepo) SearchByName(ctx context.Context, name string) ([]domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcRepo) FindAllActive(ctx context.Context) ([]domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
 	return 0, nil
 }
@@ -43,7 +47,8 @@ func newMock(entries ...struct {
 	name    string
 	service string
 	spaces  int
-}) *mockProcRepo {
+},
+) *mockProcRepo {
 	m := &mockProcRepo{procs: make(map[string]*domain.Procedure)}
 	for _, e := range entries {
 		m.procs[e.code] = &domain.Procedure{
@@ -271,8 +276,8 @@ func TestGroupByServiceFromDB_QuantityMultiplier(t *testing.T) {
 // Fisiatria rules tests (applyFisiatriaRules)
 // ===========================================================================
 
-// 8. EMG code without NC: NC (891509) is auto-added with Qty = totalEMG * 4.
-//    2 EMG (<=3) -> Espacios=1.
+//  8. EMG code without NC: NC (891509) is auto-added with Qty = totalEMG * 4.
+//     2 EMG (<=3) -> Espacios=1.
 func TestFisiatria_EMGWithoutNC(t *testing.T) {
 	mock := newMock(struct {
 		code, name, service string
@@ -351,7 +356,7 @@ func TestFisiatria_EMGWithNC(t *testing.T) {
 	}
 }
 
-// 10. NC code without EMG: kept as a standalone Fisiatria procedure (commit 7ce9774).
+//  10. NC code without EMG: kept as a standalone Fisiatria procedure (commit 7ce9774).
 //     Neuroconducción can be ordered on its own, so it is no longer discarded.
 func TestFisiatria_NCWithoutEMG(t *testing.T) {
 	mock := newMock(struct {
@@ -472,7 +477,7 @@ func TestFisiatria_EMGWithDependent(t *testing.T) {
 	}
 }
 
-// 13. Dependent code without EMG: kept as a standalone Fisiatria procedure (commit 7ce9774).
+//  13. Dependent code without EMG: kept as a standalone Fisiatria procedure (commit 7ce9774).
 //     Onda F can be ordered on its own, so it is no longer discarded.
 func TestFisiatria_DependentWithoutEMG(t *testing.T) {
 	mock := newMock(struct {
@@ -647,7 +652,7 @@ func TestFisiatria_MultipleNCWithEMG(t *testing.T) {
 	}
 }
 
-// 18. Fisiatria group with non-EMG/NC/dependent code plus NC only:
+//  18. Fisiatria group with non-EMG/NC/dependent code plus NC only:
 //     NC removed, non-EMG code stays.
 func TestFisiatria_NonEMGCodePlusNC(t *testing.T) {
 	mock := newMock(
@@ -784,9 +789,9 @@ func TestRadiografia_MultipleRx(t *testing.T) {
 	g := applyRadiografiaRules(CUPSGroup{
 		ServiceType: "Radiografia",
 		Cups: []CUPSEntry{
-			cup("873100", "Rx Mano", 1),      // 1 space
-			cup("871030", "Columna DL", 1),    // 2 spaces (exception)
-			cup("871060", "Col Total", 1),     // 3 spaces (exception)
+			cup("873100", "Rx Mano", 1),    // 1 space
+			cup("871030", "Columna DL", 1), // 2 spaces (exception)
+			cup("871060", "Col Total", 1),  // 3 spaces (exception)
 		},
 	})
 	if g.Espacios != 6 { // 1 + 2 + 3
@@ -901,8 +906,8 @@ func TestTomografia_Mixed(t *testing.T) {
 	g := applyTomografiaRules(CUPSGroup{
 		ServiceType: "Tomografia",
 		Cups: []CUPSEntry{
-			cup("879101", "TAC Simple", 1),                                            // 1
-			{Code: "879102", Name: "TAC Contraste", Quantity: 1, IsContrasted: true},  // 2
+			cup("879101", "TAC Simple", 1),                                           // 1
+			{Code: "879102", Name: "TAC Contraste", Quantity: 1, IsContrasted: true}, // 2
 		},
 	})
 	if g.Espacios != 3 { // 1 + 2
@@ -970,7 +975,7 @@ func TestEcografia_Mixed(t *testing.T) {
 	g := applyEcografiaRules(CUPSGroup{
 		ServiceType: "Ecografia",
 		Cups: []CUPSEntry{
-			cup("881436", "Eco Obstétrica TN", 1),  // 2 spaces
+			cup("881436", "Eco Obstétrica TN", 1),   // 2 spaces
 			cup("881101", "Eco Abdomen", 1),         // 1 space
 			cup("882317", "Doppler Venoso MMII", 2), // 2 spaces (qty-based)
 		},
@@ -1099,7 +1104,7 @@ func TestNeurologia_AllThree(t *testing.T) {
 func TestNeurologia_ProcedureIgnoresQuantity(t *testing.T) {
 	groups := applyNeurologiaRules(CUPSGroup{
 		ServiceType: "Neurologia",
-		Cups: []CUPSEntry{cup("053105", "Bloqueo", 10)},
+		Cups:        []CUPSEntry{cup("053105", "Bloqueo", 10)},
 	})
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 group, got %d", len(groups))
@@ -1151,21 +1156,21 @@ func TestForceServiceByCode(t *testing.T) {
 		code     string
 		expected string
 	}{
-		{"29120", "Fisiatria"},        // EMG
-		{"891509", "Fisiatria"},       // NC
-		{"891514", "Fisiatria"},       // Dependent
-		{"883101", "Resonancia"},      // RM code
-		{"998702", "Resonancia"},      // Sedación resonancia
-		{"053105", "Neurologia"},      // Bloqueo
-		{"890274", "Neurologia"},      // Consulta 1ra vez
-		{"890374", "Neurologia"},      // Control
-		{"879101", "Tomografia"},      // TAC
-		{"879910", "Tomografia"},      // 3D
-		{"881436", "Ecografia"},       // Obstetric
-		{"882308", "Ecografia"},       // Doppler
-		{"873100", "Radiografia"},     // Rx
-		{"871060", "Radiografia"},     // Rx exception
-		{"999999", ""},                // Unknown
+		{"29120", "Fisiatria"},    // EMG
+		{"891509", "Fisiatria"},   // NC
+		{"891514", "Fisiatria"},   // Dependent
+		{"883101", "Resonancia"},  // RM code
+		{"998702", "Resonancia"},  // Sedación resonancia
+		{"053105", "Neurologia"},  // Bloqueo
+		{"890274", "Neurologia"},  // Consulta 1ra vez
+		{"890374", "Neurologia"},  // Control
+		{"879101", "Tomografia"},  // TAC
+		{"879910", "Tomografia"},  // 3D
+		{"881436", "Ecografia"},   // Obstetric
+		{"882308", "Ecografia"},   // Doppler
+		{"873100", "Radiografia"}, // Rx
+		{"871060", "Radiografia"}, // Rx exception
+		{"999999", ""},            // Unknown
 	}
 
 	for _, tt := range tests {

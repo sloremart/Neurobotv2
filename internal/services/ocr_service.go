@@ -17,12 +17,12 @@ import (
 )
 
 type OCRService struct {
-	apiKey         string
-	model          string // gpt-4o-mini
-	apiURL         string // default: https://api.openai.com/v1/chat/completions
-	client         *http.Client
-	cupsContext    string // CUPS reference table injected into the prompt
-	birdAccessKey  string // Bird API key for downloading media files
+	apiKey        string
+	model         string // gpt-4o-mini
+	apiURL        string // default: https://api.openai.com/v1/chat/completions
+	client        *http.Client
+	cupsContext   string // CUPS reference table injected into the prompt
+	birdAccessKey string // Bird API key for downloading media files
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
@@ -260,8 +260,9 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 			continue
 		}
 
-		// 4xx client error (not 429) — no retry
-		slog.Error("openai api error", "status", resp.StatusCode, "body", string(respBody))
+		// 4xx client error (not 429) — no retry. No logueamos el body crudo: puede traer PII de
+		// salud (cédula/CUPS/EPS de la orden) y este ERROR se reenvía a Telegram (N-7).
+		slog.Error("openai api error", "status", resp.StatusCode, "body_len", len(respBody))
 		return nil, fmt.Errorf("openai api status %d", resp.StatusCode)
 	}
 
@@ -294,7 +295,8 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		Document *string     `json:"documento"`
 	}
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
-		slog.Warn("ocr json parse failed", "content", content, "error", err)
+		// No logueamos `content` crudo (PII de la orden médica); solo su longitud para diagnóstico (N-7).
+		slog.Warn("ocr json parse failed", "content_len", len(content), "error", err)
 		return &OCRResult{Success: false, Error: "no se pudo interpretar la respuesta"}, nil
 	}
 
