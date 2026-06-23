@@ -107,13 +107,19 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 	}
 
 	// If the preferred doctor has any slot, restrict to them; otherwise keep everyone.
+	// N8: el preferido debe pasar también la restricción de edad — si está descalificado por
+	// edad, NO debe activar preferredHasSlots (si no, filtraría a todos y dejaría 0 slots).
 	preferredHasSlots := false
 	if query.PreferredDoctor != "" {
 		for _, row := range rows {
-			if row.DoctorDocument == query.PreferredDoctor {
-				preferredHasSlots = true
-				break
+			if row.DoctorDocument != query.PreferredDoctor {
+				continue
 			}
+			if minAge, _, exists := GetDoctorAgeRestriction(row.DoctorDocument); exists && query.PatientAge < minAge {
+				continue
+			}
+			preferredHasSlots = true
+			break
 		}
 	}
 

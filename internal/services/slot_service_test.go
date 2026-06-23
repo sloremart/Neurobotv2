@@ -364,6 +364,36 @@ func TestGetAvailableSlots_CupWindowConsecutive(t *testing.T) {
 	}
 }
 
+// TestGetAvailableSlots_PreferredDoctorAgeRestricted verifica el fix N8: si el médico
+// preferido está descalificado por edad, NO debe activar el filtro "solo preferido" (que
+// dejaría 0 slots); deben devolverse los slots de los demás médicos elegibles.
+func TestGetAvailableSlots_PreferredDoctorAgeRestricted(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+			var rows []domain.AvailableSlotRow
+			rows = append(rows, dayRows("7178922", "Dr. Restringido", "2026-03-16", 1, 60, 8*60, 10*60)...) // min 18 años
+			rows = append(rows, dayRows("99999", "Dr. Libre", "2026-03-16", 2, 60, 8*60, 10*60)...)
+			return rows, nil
+		},
+	}
+	svc := NewSlotService(&mockProcedureRepo{}, scheduleRepo)
+	// Paciente de 10 años con el preferido = médico restringido por edad.
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode: "890271", PatientAge: 10, PreferredDoctor: "7178922", MaxSlots: 20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) == 0 {
+		t.Fatal("esperaba slots del médico libre; el preferido restringido por edad no debe vaciar el resultado")
+	}
+	for _, s := range slots {
+		if s.DoctorDoc == "7178922" {
+			t.Errorf("no debería haber slots del médico restringido por edad: %+v", s)
+		}
+	}
+}
+
 func TestGetAvailableSlots_FindSlotsError(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
 		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {

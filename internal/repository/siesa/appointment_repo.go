@@ -43,8 +43,11 @@ func NewAppointmentRepo(db *sql.DB) *AppointmentRepo {
 // ────────────────────────────────────────────────────────────────────────────
 
 // slotToDateTimeComponents converts "YYYYMMDDHHmm" → date "YYYY-MM-DD", timeStr "HH:mm", meridiem "am"|"pm".
-// SIESA may store PM slots (1-6 PM) as hours 1-6 in the datetime field (12h format).
-// To maintain consistency with the meridiano column in citas, hours 1-6 and ≥12 are marked "pm".
+// El slot SIEMPRE viene en 24h (lo arma SlotService desde pmd.Fecha), así que el meridiano se
+// deriva directamente: <12 → am, ≥12 → pm. (N-4: la heurística previa "1-6 → pm" marcaba como
+// PM los slots reales de 5–6 AM, p.ej. polisomnografía/EEG matutino, corrompiendo la UI/recordatorios.)
+// NOTA pendiente (no es este fix): timeStr queda en 24h ("13:00") mientras SIESA/staff usan 12h
+// ("01:00"+pm); es una discrepancia de convención separada, documentada para decisión.
 func slotToDateTimeComponents(slot string) (date, timeStr, meridiem string) {
 	if len(slot) < 12 {
 		return "", "", ""
@@ -52,7 +55,7 @@ func slotToDateTimeComponents(slot string) (date, timeStr, meridiem string) {
 	date = fmt.Sprintf("%s-%s-%s", slot[0:4], slot[4:6], slot[6:8])
 	timeStr = fmt.Sprintf("%s:%s", slot[8:10], slot[10:12])
 	hInt, _ := strconv.Atoi(slot[8:10])
-	if hInt >= 12 || (hInt >= 1 && hInt <= 6) {
+	if hInt >= 12 {
 		meridiem = "pm"
 	} else {
 		meridiem = "am"

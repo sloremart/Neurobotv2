@@ -1,5 +1,7 @@
 package utils
 
+import "strings"
+
 // maskPhones controls whether phone numbers are masked in logs.
 // Default: true (production). Set to false via LOG_MASK_PHONES=false for debugging.
 var maskPhones = true
@@ -32,4 +34,30 @@ func MaskDocument(doc string) string {
 		return "***"
 	}
 	return string(r[:2]) + "***" + string(r[len(r)-2:])
+}
+
+// sensitiveDocKeys / sensitivePhoneKeys son las claves de log que portan PII de salud (Ley 1581).
+var (
+	sensitiveDocKeys = map[string]bool{
+		"doc": true, "cedula": true, "cédula": true, "document": true, "documento": true,
+		"num_id": true, "numid": true, "patient_doc": true,
+		"name": true, "nombre": true, "nombres": true, "patient_name": true, "paciente": true,
+	}
+	sensitivePhoneKeys = map[string]bool{
+		"phone": true, "telefono": true, "teléfono": true, "celular": true,
+	}
+)
+
+// RedactLogAttr devuelve el valor enmascarado si la clave es PII (documento/nombre → MaskDocument,
+// teléfono → MaskPhone); si no, lo devuelve igual. Centraliza la política de redacción para todos
+// los sinks de logs (stdout/archivo vía ReplaceAttr global, y el handler de Telegram).
+func RedactLogAttr(key, value string) string {
+	k := strings.ToLower(key)
+	switch {
+	case sensitiveDocKeys[k]:
+		return MaskDocument(value)
+	case sensitivePhoneKeys[k]:
+		return MaskPhone(value)
+	}
+	return value
 }

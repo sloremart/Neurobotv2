@@ -61,6 +61,22 @@ Tests nuevos: `MaskDocument` (+disabled), `RateLimiter_SameHostDifferentPorts`. 
 - **N-33** `MarkNotified` claim-then-send: introduce un nuevo modo de fallo (claim ok + envío falla → notificación perdida) que exige rollback del claim; cambia firma en 2 interfaces + 2 callers + mocks.
 - También fuera (diseño): N-18 (phone_mutex deadlock), N-19 (TOCTOU timer), N-21 (FindConsecutiveBlock), N-22 (Valor=0), N-5/N-6 (clasificación contraste/resonancia).
 
+## Lote 3 — Grupo C (seguros que faltaban) + bugs del ultrareview PR#2 — APLICADOS
+Verificado Go 1.25: build + `go test ./... -race` (15 paq. OK, sin races) + lint + format.
+
+**Grupo C (no afectan diseño):**
+- **N-4** meridiano: derivar am/pm del valor 24h (la heurística "1-6→pm" marcaba 5–6 AM como PM). Validado contra BD (citas.hora es 12h+meridiano; el bot no lee citas.hora). +test `slotToDateTimeComponents`. *(Discrepancia separada documentada: el bot guarda hora en 24h y SIESA usa 12h — no se tocó, requiere decisión.)*
+- **N-9** PII: input de documento enmascarado en chat_events (centralizado en `ValidateWithRetry` vía `sensitiveInputStates`).
+- **K3** redacción PII global: `ReplaceAttr` en el handler JSON (stdout/archivo) + helper compartido `utils.RedactLogAttr`.
+- **N8** filtro médico-preferido respeta restricción de edad (defensivo, inalcanzable hoy). +test.
+
+**Bugs encontrados por la ultrareview del PR #2 (en mis fixes N-15/N-16), corregidos:**
+- **bug_004** (N-15): `escalateToAgent` reusaba la nota de timeout ("paciente NO confirmó"), falsa cuando el paciente SÍ confirmó pero falló SIESA. Se parametrizó con `escalationReason` (NoResponse vs SystemFailure): nota correcta + se omite el 2º mensaje al paciente en el fallo de sistema.
+- **bug_001** (N-16): el fix IVR no cubría `appt == nil` (no encontrada, sin error) → falso éxito. Ahora `appt==nil` se trata como error en confirm y cancel.
+
+**No aplicados del grupo C (cero beneficio runtime / riesgo):**
+- N11 (borrar estados huérfanos del registro) y RescheduleDate 12h/24h (código muerto admin): borrado de código que podría romper la máquina de estados sin poder validar corriendo la app. Documentados como limpieza pendiente.
+
 ## Pendientes (fuera de esta rama, requieren decisión)
 - 🔵 Estructural: multi-slot 1cita/N-slots; GAP-3 precio MRC (entidad→contrato).
 - 🟡 Latentes/código muerto: N4 (horacan granularidad), N6 (RescheduleDate 12h/24h), N8 (orden filtro médico-preferido), N11 (estados huérfanos del registro).

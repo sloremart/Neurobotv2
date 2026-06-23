@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -546,7 +547,11 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 
 		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, p.AppointmentID)
 		// N-16: capturar el resultado real de la BD; no afirmar "confirmada" si falló.
+		// bug_001: cita no encontrada (appt==nil sin error) también es fallo, no éxito.
 		confirmErr := err
+		if err == nil && appt == nil {
+			confirmErr = errors.New("appointment not found")
+		}
 		if err == nil && appt != nil {
 			// Confirm ALL patient's appointments for this date
 			allAppts, aErr := m.apptSvc.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
@@ -596,7 +601,11 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, p.AppointmentID)
 		// N-16: capturar el resultado real; un slot que el paciente cree liberado pero sigue
 		// ocupado en SIESA debe quedar marcado como error (no "cancelada") para revisión manual.
+		// bug_001: cita no encontrada (appt==nil sin error) también es fallo.
 		cancelErr := err
+		if err == nil && appt == nil {
+			cancelErr = errors.New("appointment not found")
+		}
 		if err == nil && appt != nil {
 			// Cancel ALL patient's appointments for this date
 			allAppts, aErr := m.apptSvc.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
