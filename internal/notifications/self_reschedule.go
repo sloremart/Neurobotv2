@@ -39,6 +39,17 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		return
 	}
 
+	// Modelo multi-slot: una cita ocupa N slots (programacion_medico_detalle.IdCita).
+	// El número de espacios a re-reservar es el conteo real de slots de la cita, NO
+	// len(block) — que con este modelo siempre vale 1 sin importar el tamaño real.
+	espacios := len(block)
+	if n, err := m.apptSvc.SlotCountForAppointment(ctx, pending.AppointmentID); err == nil && n > espacios {
+		espacios = n
+	}
+	if espacios < 1 {
+		espacios = 1
+	}
+
 	// 3. Extract procedure info
 	cupsCode := ""
 	cupsName := ""
@@ -87,7 +98,7 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 	groups := []services.CUPSGroup{{
 		ServiceType: "general",
 		Cups:        cups,
-		Espacios:    len(block),
+		Espacios:    espacios,
 	}}
 	proceduresJSON, _ := json.Marshal(groups)
 
@@ -112,7 +123,7 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		"cups_name":       cupsName,
 		"is_contrasted":   isContrasted,
 		"is_sedated":      isSedated,
-		"espacios":        fmt.Sprintf("%d", len(block)),
+		"espacios":        fmt.Sprintf("%d", espacios),
 		"procedures_json": string(proceduresJSON),
 
 		// Flow control
@@ -166,5 +177,6 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		"appointment_id", pending.AppointmentID,
 		"cups_code", cupsCode,
 		"skip_cancel", skipCancel,
+		"espacios", espacios,
 		"block_size", len(block))
 }

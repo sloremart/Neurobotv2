@@ -325,6 +325,17 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		return
 	}
 
+	// Modelo multi-slot: una cita ocupa N slots (programacion_medico_detalle.IdCita).
+	// El número de espacios a re-reservar al reagendar es el conteo real de slots de la
+	// cita, NO len(block) — que con este modelo siempre vale 1 sin importar el tamaño.
+	espacios := len(block)
+	if n, err := m.apptSvc.SlotCountForAppointment(ctx, pending.AppointmentID); err == nil && n > espacios {
+		espacios = n
+	}
+	if espacios < 1 {
+		espacios = 1
+	}
+
 	cupsCode := ""
 	cupsName := ""
 	if len(appt.Procedures) > 0 {
@@ -356,7 +367,7 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 	groups := []services.CUPSGroup{{
 		ServiceType: "general",
 		Cups:        cups,
-		Espacios:    len(block),
+		Espacios:    espacios,
 	}}
 	proceduresJSON, _ := json.Marshal(groups)
 
@@ -386,7 +397,7 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		"cups_name":       cupsName,
 		"is_contrasted":   isContrasted,
 		"is_sedated":      isSedated,
-		"espacios":        fmt.Sprintf("%d", len(block)),
+		"espacios":        fmt.Sprintf("%d", espacios),
 		"procedures_json": string(proceduresJSON),
 
 		// Flow control

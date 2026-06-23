@@ -37,6 +37,10 @@ type AppointmentRepository interface {
 	CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error)
 	FindPendingByDate(ctx context.Context, date string) ([]domain.Appointment, error)
 	RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
+	// SlotCountForAppointment devuelve cuántos slots de programacion_medico_detalle
+	// están asociados a la cita (IdCita = apptID). Es la fuente de verdad del número
+	// de espacios que ocupa una cita multi-slot (1 cita / N slots).
+	SlotCountForAppointment(ctx context.Context, apptID string) (int, error)
 }
 
 // ScheduleRepository — agendas, horarios y excepciones.

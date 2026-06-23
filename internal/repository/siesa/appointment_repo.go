@@ -501,7 +501,7 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		extra, err := tx.ExecContext(ctx, `
 		WITH win AS (
 		    SELECT TOP (@p3) Id
-		    FROM programacion_medico_detalle WITH (NOLOCK)
+		    FROM programacion_medico_detalle
 		    WHERE IdProgramacionMedico = @p2 AND Fecha >= @p4
 		    ORDER BY Fecha
 		)
@@ -920,6 +920,21 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 	return nil
 }
 
+// SlotCountForAppointment cuenta cuántos slots de programacion_medico_detalle están
+// asociados a la cita (IdCita = apptID). Es la fuente de verdad del número de espacios
+// que ocupa una cita multi-slot: el modelo es 1 cita / N slots (cada slot apunta a la
+// cita vía IdCita). Devuelve 0 si la cita no existe o no tiene slots asociados.
+func (r *AppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM programacion_medico_detalle WITH (NOLOCK) WHERE IdCita = @p1`,
+		apptID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("siesa slot count for appointment %s: %w", apptID, err)
+	}
+	return n, nil
+}
+
 // DeleteBatch is a SOFT delete (INTEG-01): semantically it does NOT remove the citas rows.
 // citas.id is referenced by FK constraints (CitasObservaciones, E_Payment, E_Payment_Logs,
 // Recordatorio_mail_deta), so a physical DELETE fails at runtime whenever a child row exists,
@@ -1099,6 +1114,13 @@ func (r *AppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([
 // All three steps run in one transaction: release old slots → move citas → claim new slots.
 // The new-slot claim is best-effort (matches by time on newDate); if no slot exists/is free,
 // the citas still move, consistent with the prior behaviour.
+//
+// CÓDIGO MUERTO (PR multi-slot): el único call-site (handleRescheduleSameAgenda) retorna 404
+// antes de invocar esta función porque FindWorkingDayException es un stub que siempre devuelve
+// (nil, nil). Además es INCOMPATIBLE con el modelo multi-slot: el paso 3 reclama solo el slot
+// cuyo HH:MM coincide con citas.hora (el inicial), liberando los N-1 restantes de una cita
+// multi-slot. Si esta vía administrativa se reactiva, el paso 3 debe reclamar TODOS los slots
+// que la cita ocupaba en oldDate (conteo previo vía SlotCountForAppointment), no solo el inicial.
 func (r *AppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {

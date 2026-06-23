@@ -20,6 +20,7 @@ type mockAppointmentRepo struct {
 	findByIDFn              func(ctx context.Context, id string) (*domain.Appointment, error)
 	findByAgendaAndDateFn   func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
 	createFn                func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
+	slotCountFn             func(ctx context.Context, apptID string) (int, error)
 }
 
 func (m *mockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -99,6 +100,13 @@ func (m *mockAppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, 
 	return 0, nil
 }
 
+func (m *mockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
+	if m.slotCountFn != nil {
+		return m.slotCountFn(ctx, apptID)
+	}
+	return 0, nil
+}
+
 func (m *mockAppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
@@ -153,6 +161,28 @@ func TestParseTimeSlotToMinutes(t *testing.T) {
 				t.Errorf("ParseTimeSlotToMinutes(%q) = %d, want %d", tc.input, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestSlotCountForAppointment(t *testing.T) {
+	var gotID string
+	repo := &mockAppointmentRepo{
+		slotCountFn: func(_ context.Context, apptID string) (int, error) {
+			gotID = apptID
+			return 3, nil
+		},
+	}
+	svc := NewAppointmentService(repo, nil)
+
+	n, err := svc.SlotCountForAppointment(context.Background(), "7160")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("esperaba 3 slots, got %d", n)
+	}
+	if gotID != "7160" {
+		t.Errorf("esperaba apptID=7160, got %q", gotID)
 	}
 }
 

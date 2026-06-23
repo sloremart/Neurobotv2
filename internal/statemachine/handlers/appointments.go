@@ -317,11 +317,17 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 			}
 
 			block := apptSvc.FindConsecutiveBlock(appointments, selectedID)
+			// Modelo multi-slot: una cita ocupa N slots (programacion_medico_detalle.IdCita).
+			// El conteo real de slots de la cita es la fuente de verdad de cuántos espacios
+			// re-reservar; len(block) vale 1 con este modelo y subreservaría la cita.
 			espacios := len(block)
+			if n, scErr := apptSvc.SlotCountForAppointment(ctx, selectedID); scErr == nil && n > espacios {
+				espacios = n
+			}
 			if espacios == 0 {
 				espacios = 1
 			}
-			// Para resonancias: recalcular espacios según código y contraste en lugar del bloque anterior
+			// Para resonancias: recalcular espacios según código y contraste (determinístico por CUPS)
 			if calculated, ok := services.SpacesForCUPS(cupsCode, isContrasted == "1"); ok {
 				espacios = calculated
 			}

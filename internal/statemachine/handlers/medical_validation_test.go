@@ -75,6 +75,10 @@ func (m *mockApptRepo) RescheduleDate(ctx context.Context, agendaID int, doctorD
 	return 0, nil
 }
 
+func (m *mockApptRepo) SlotCountForAppointment(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 func (m *mockApptRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }

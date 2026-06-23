@@ -9,6 +9,7 @@ package siesa
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -92,5 +93,26 @@ func TestCreateMultiSlot(t *testing.T) {
 	if len(horas) != espacios {
 		t.Fatalf("esperaba %d slots asociados a la cita, got %d (%v)", espacios, len(horas), horas)
 	}
-	t.Logf("OK: 1 cita id=%s con %d slots contiguos: %v", citaID, len(horas), horas)
+
+	// 3) Los slots deben ser FÍSICAMENTE contiguos: gaps iguales y positivos (la grilla real).
+	// Esto valida que repo.Create reclamó filas adyacentes en Fecha (no slots dispersos que
+	// solaparían el procedimiento con citas intermedias de otros pacientes).
+	mins := make([]int, len(horas))
+	for i, h := range horas {
+		var hh, mm int
+		if _, err := fmt.Sscanf(h, "%d:%d", &hh, &mm); err != nil {
+			t.Fatalf("parsear hora %q: %v", h, err)
+		}
+		mins[i] = hh*60 + mm
+	}
+	gap := mins[1] - mins[0]
+	if gap <= 0 {
+		t.Fatalf("gap inicial no positivo: %v", horas)
+	}
+	for i := 1; i < len(mins); i++ {
+		if g := mins[i] - mins[i-1]; g != gap {
+			t.Fatalf("slots no contiguos: gap esperado %d, got %d en %v", gap, g, horas)
+		}
+	}
+	t.Logf("OK: 1 cita id=%s con %d slots contiguos (grilla %dmin): %v", citaID, len(horas), gap, horas)
 }

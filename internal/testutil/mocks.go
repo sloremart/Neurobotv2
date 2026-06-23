@@ -89,6 +89,7 @@ type MockAppointmentRepo struct {
 	CountMonthlyByGroupFn        func(ctx context.Context, cupsCodes []string, year, month int) (int, error)
 	FindPendingByDateFn          func(ctx context.Context, date string) ([]domain.Appointment, error)
 	RescheduleDateFn             func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
+	SlotCountForAppointmentFn    func(ctx context.Context, apptID string) (int, error)
 }
 
 func (m *MockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -206,6 +207,14 @@ func (m *MockAppointmentRepo) FindPendingByDate(ctx context.Context, date string
 func (m *MockAppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	if m.RescheduleDateFn != nil {
 		return m.RescheduleDateFn(ctx, agendaID, doctorDoc, oldDate, newDate)
+	}
+	return 0, nil
+}
+
+// SlotCountForAppointment returns the configured slot count (or 0 by default).
+func (m *MockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
+	if m.SlotCountForAppointmentFn != nil {
+		return m.SlotCountForAppointmentFn(ctx, apptID)
 	}
 	return 0, nil
 }
