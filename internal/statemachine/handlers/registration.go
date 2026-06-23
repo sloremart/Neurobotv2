@@ -867,7 +867,7 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 		patientID, err := patientSvc.Create(ctx, input)
 		if err != nil {
 			slog.Error("patient_create_failed",
-				"doc", input.DocumentNumber,
+				"doc", utils.MaskDocument(input.DocumentNumber),
 				"doc_type", input.DocumentType,
 				"entity", input.EntityCode,
 				"error", err.Error(),

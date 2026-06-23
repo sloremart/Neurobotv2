@@ -704,6 +704,71 @@ func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs str
 	}()
 }
 
+// writeAuditLogBatch es la versión batch de writeAuditLog (N-34): inserta la auditoría de
+// VARIAS citas con UN solo INSERT ... SELECT ... WHERE id IN (...), en una única goroutine,
+// en vez de N goroutines (una por id) que saturaban el pool en cancelaciones masivas. Mismo
+// resultado observable (una fila de log por cita); obs/evento son uniformes en un batch.
+func (r *AppointmentRepo) writeAuditLogBatch(ctx context.Context, ids []string, evento, obs string) {
+	if len(ids) == 0 {
+		return
+	}
+	// @p1=obs, @p2=evento, @p3=usuario del bot; los ids empiezan en @p4.
+	clause, idArgs := inParams(ids, 4)
+	allArgs := append([]interface{}{obs, evento, siesaBotUserID}, idArgs...)
+
+	var query string
+	if evento == "CITA MODIFICADA" {
+		query = `
+		INSERT INTO log_citas (
+		    asunto, observacion, empresa, contrato, fecha_solicitud, fecha_evento,
+		    tipo_servicio, id_sede, primera_vez_control, formaSolicitud, lugarAtencion,
+		    tipoUsuario, EntornoAtencion,
+		    asunto_anterior, observacion_anterior, empresa_anterior, contrato_anterior,
+		    tipo_servicio_anterior, primera_vez_contrato_anterior,
+		    tipo_evento, usuario_evento, id_cita_modificada
+		)
+		SELECT
+		    asunto, @p1, empresa, contrato, fecha_solicitud, CONVERT(VARCHAR(50), GETDATE(), 100),
+		    tipo_servicio, id_sede, primera_vez_control, formaSolicitud, lugarAtencion,
+		    tipoUsuario, EntornoAtencion,
+		    asunto, observacion, empresa, contrato,
+		    tipo_servicio, primera_vez_control,
+		    @p2, @p3, id
+		FROM citas WHERE id IN (` + clause + `)`
+	} else {
+		query = `
+		INSERT INTO log_citas (
+		    autoid, cod_medi, fecha_usuario_desea_cita, fecha, hora, meridiano, estado,
+		    asunto, observacion, empresa, fecha_solicitud, motivo, horacan,
+		    cod_user_asigna_cita, tipo_servicio, id_sede, primera_vez_control, contrato,
+		    formaSolicitud, lugarAtencion, tipoUsuario, EntornoAtencion, es_terapia, fecha_evento,
+		    tipo_evento, usuario_evento, id_cita_modificada
+		)
+		SELECT
+		    autoid, cod_medi, fecha_usuario_desea_cita, fecha, hora, meridiano, estado,
+		    asunto, @p1, empresa, fecha_solicitud, motivo, horacan,
+		    cod_user_asigna_cita, tipo_servicio, id_sede, primera_vez_control, contrato,
+		    formaSolicitud, lugarAtencion, tipoUsuario, EntornoAtencion,
+		    CASE WHEN @p2 = 'CANCELAR CITA' THEN CAST(es_terapia AS VARCHAR(50)) ELSE NULL END,
+		    CONVERT(VARCHAR(50), GETDATE(), 100),
+		    @p2, @p3, id
+		FROM citas WHERE id IN (` + clause + `)`
+	}
+	bgCtx := context.WithoutCancel(ctx)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("audit_log_batch_panic", "evento", evento, "recover", rec)
+			}
+		}()
+		cctx, cancel := context.WithTimeout(bgCtx, 15*time.Second)
+		defer cancel()
+		if _, err := r.db.ExecContext(cctx, query, allArgs...); err != nil {
+			slog.Warn("audit_log_batch_write_failed", "evento", evento, "count", len(ids), "error", err)
+		}
+	}()
+}
+
 func (r *AppointmentRepo) Confirm(ctx context.Context, id string, channel, channelID string) error {
 	obs := fmt.Sprintf("Confirmado via WhatsApp [%s]", channelID)
 	_, err := r.db.ExecContext(ctx, `
@@ -780,9 +845,7 @@ func (r *AppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, channe
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		r.writeAuditLog(ctx, id, "CITA MODIFICADA", fmt.Sprintf("Confirmado via WhatsApp [conv: %s]", channelID))
-	}
+	r.writeAuditLogBatch(ctx, ids, "CITA MODIFICADA", fmt.Sprintf("Confirmado via WhatsApp [conv: %s]", channelID))
 	return nil
 }
 
@@ -820,9 +883,7 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 		idArgs2...); relErr != nil {
 		slog.Warn("slot_release_failed_batch", "ids", ids, "error", relErr)
 	}
-	for _, id := range ids {
-		r.writeAuditLog(ctx, id, "CANCELAR CITA", fmt.Sprintf("CANCELACION DE CITA - Motivo: %s [conv: %s]", reason, channelID))
-	}
+	r.writeAuditLogBatch(ctx, ids, "CANCELAR CITA", fmt.Sprintf("CANCELACION DE CITA - Motivo: %s [conv: %s]", reason, channelID))
 	return nil
 }
 

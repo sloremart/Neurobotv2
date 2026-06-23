@@ -20,3 +20,16 @@ func MaskPhone(phone string) string {
 	}
 	return phone[:4] + "***" + phone[len(phone)-4:]
 }
+
+// MaskDocument masks a patient document number for logs/events (Ley 1581 PII):
+// "1000000689" → "10***89". Runa-safe. Honors the same LOG_MASK_PHONES switch as MaskPhone.
+func MaskDocument(doc string) string {
+	if !maskPhones {
+		return doc
+	}
+	r := []rune(doc)
+	if len(r) <= 4 {
+		return "***"
+	}
+	return string(r[:2]) + "***" + string(r[len(r)-2:])
+}

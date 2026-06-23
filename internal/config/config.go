@@ -29,6 +29,7 @@ type Config struct {
 	ExtDBDatabase string
 	ExtDBUser     string
 	ExtDBPassword string
+	ExtDBEncrypt  string // SQL Server "encrypt": disable|true|false (N-11). Prod debería usar "true".
 
 	// External DB Driver — R-ARQ-01
 	ExternalDBDriver string // "siesa" (only supported driver; legacy "datosipsndx" removed)
@@ -158,6 +159,9 @@ func Load() *Config {
 		ExtDBDatabase: getEnv("EXTERNAL_DB_DATABASE", "ZeusSalud_Neuro"),
 		ExtDBUser:     os.Getenv("EXTERNAL_DB_USER"),
 		ExtDBPassword: os.Getenv("EXTERNAL_DB_PASSWORD"),
+		// Default "disable" preserva el comportamiento actual (no rompe el server de pruebas);
+		// en producción setear EXTERNAL_DB_ENCRYPT=true para cifrar el canal TDS (PII de salud).
+		ExtDBEncrypt: getEnv("EXTERNAL_DB_ENCRYPT", "disable"),
 
 		// External DB Driver
 		ExternalDBDriver: getEnv("EXTERNAL_DB_DRIVER", "siesa"),

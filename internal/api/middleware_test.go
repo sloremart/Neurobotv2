@@ -146,6 +146,30 @@ func TestRateLimiter_AllowsUnderLimit(t *testing.T) {
 	}
 }
 
+// TestRateLimiter_SameHostDifferentPorts verifica el fix N-14: el límite se keyea por HOST,
+// no por "host:port". Varias conexiones del mismo host con puerto efímero distinto deben caer
+// en el mismo bucket (antes del fix cada puerto era un bucket nuevo → el límite no aplicaba).
+func TestRateLimiter_SameHostDifferentPorts(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+	handler := RateLimiter(3, time.Minute)(inner)
+
+	ports := []string{"40001", "40002", "40003", "40004"}
+	var lastCode int
+	for _, p := range ports {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = "203.0.113.7:" + p // mismo host, puerto distinto
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		lastCode = rec.Code
+	}
+
+	if lastCode != http.StatusTooManyRequests {
+		t.Errorf("4ta request del mismo host (distinto puerto) debió ser 429, got %d", lastCode)
+	}
+}
+
 func TestRateLimiter_BlocksOverLimit(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

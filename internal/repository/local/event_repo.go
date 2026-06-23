@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"time"
 )
@@ -271,14 +272,16 @@ func (r *EventRepo) GetDailyKPIs(ctx context.Context, date time.Time) (*DailyKPI
 	}
 
 	// Average session duration
-	r.db.QueryRowContext(ctx,
+	if err := r.db.QueryRowContext(ctx,
 		`SELECT COALESCE(AVG(TIMESTAMPDIFF(MINUTE,
 			(SELECT MIN(ce2.created_at) FROM chat_events ce2 WHERE ce2.session_id = ce.session_id),
 			ce.created_at
 		 )), 0)
 		 FROM chat_events ce
 		 WHERE ce.event_type IN ('session_completed', 'session_closed_inactivity')
-		 AND DATE(ce.created_at) = ?`, dateStr).Scan(&kpis.AvgSessionDuration)
+		 AND DATE(ce.created_at) = ?`, dateStr).Scan(&kpis.AvgSessionDuration); err != nil {
+		slog.Warn("kpi avg session duration query failed", "date", dateStr, "error", err)
+	}
 
 	return kpis, nil
 }

@@ -20,7 +20,10 @@ import (
 // handleConfirmation processes responses to the daily confirmation template.
 // NOTE: Caller (HandleResponse) already removed pending from sync.Map and DB via LoadAndDelete.
 func (m *NotificationManager) handleConfirmation(phone, action string, pending *PendingNotification) {
-	ctx := context.Background()
+	// Timeout para no colgar la goroutine si SIESA (BD compartida con la UI) tiene un lock
+	// contendido en citas/programacion_medico_detalle (N-20).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	switch action {
 	case "confirm":
@@ -37,7 +40,12 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 		}
 
 		if err := m.apptSvc.ConfirmBlock(ctx, allAppts, "whatsapp_bot", pending.ConversationID); err != nil {
-			slog.Error("confirm: confirm appointments", "error", err)
+			// N-15: si el UPDATE a SIESA falló NO debemos decirle al paciente "cita confirmada"
+			// (quedaría con confirmación falsa y sin reintento). Avisar + escalar a agente.
+			slog.Error("confirm: confirm appointments failed, escalating", "error", err, "appointment_id", pending.AppointmentID)
+			_, _ = m.birdClient.SendText(phone, pending.ConversationID, "Tuvimos un inconveniente al confirmar tu cita. Un agente te ayudará en un momento.")
+			m.escalateToAgent(pending)
+			return
 		}
 
 		// Build procedure names from ALL appointments (deduplicated)
@@ -225,7 +233,8 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 // and assigns the conversation to the best available agent. Called as the final
 // step of the confirmation escalation chain.
 func (m *NotificationManager) escalateToAgent(pending *PendingNotification) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// 1. Look up appointment details for the note
 	appt, _, _ := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
@@ -284,7 +293,8 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification) {
 // startConfirmRescheduleSession creates a new session at CONFIRM_RESCHEDULE_NOTIF
 // so the state machine handles the "1/2" confirmation with proper retry logic.
 func (m *NotificationManager) startConfirmRescheduleSession(phone string, pending *PendingNotification) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	appt, block, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
 	if err != nil || appt == nil {
@@ -402,7 +412,8 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 // startConfirmCancelSession creates a new session at CONFIRM_CANCEL_NOTIF
 // so the state machine handles the "1/2" confirmation with proper retry logic.
 func (m *NotificationManager) startConfirmCancelSession(phone string, pending *PendingNotification) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
 	if err != nil || appt == nil {

@@ -50,8 +50,17 @@ func NewSIESADB(cfg *config.Config) (*sql.DB, error) {
 
 	query := url.Values{}
 	query.Set("database", cfg.ExtDBDatabase)
-	// Disable certificate validation for internal networks (use TrustServerCertificate=true for dev)
-	query.Set("encrypt", "disable")
+	// Cifrado configurable (N-11). Default "disable" preserva el comportamiento actual; en
+	// producción usar EXTERNAL_DB_ENCRYPT=true para cifrar el canal TDS (PII de salud). Con
+	// encrypt activo se confía en el certificado del server (LAN interna sin CA propia).
+	encrypt := cfg.ExtDBEncrypt
+	if encrypt == "" {
+		encrypt = "disable"
+	}
+	query.Set("encrypt", encrypt)
+	if encrypt != "disable" {
+		query.Set("TrustServerCertificate", "true")
+	}
 
 	u := &url.URL{
 		Scheme:   "sqlserver",

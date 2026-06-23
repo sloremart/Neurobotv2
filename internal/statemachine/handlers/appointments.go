@@ -347,6 +347,13 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 			}}
 			proceduresJSON, _ := json.Marshal(groups)
 
+			// N-23: preservar la edad real del paciente (la sesión ya la tiene). Antes se ponía
+			// "0", lo que descartaba slots de médicos con restricción de edad al reprogramar.
+			patientAge := sess.GetContext("patient_age")
+			if patientAge == "" {
+				patientAge = "0"
+			}
+
 			return sm.NewResult(sm.StateSearchSlots).
 				WithContext("cups_code", cupsCode).
 				WithContext("cups_name", cupsName).
@@ -357,7 +364,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				WithContext("total_procedures", "1").
 				WithContext("current_procedure_idx", "0").
 				WithContext("reschedule_appt_id", selectedAppt.ID).
-				WithContext("patient_age", "0").
+				WithContext("patient_age", patientAge).
 				WithContext("procedures_json", string(proceduresJSON)).
 				WithText("Buscando horarios disponibles para reprogramar tu cita de *"+cupsName+"*...").
 				WithEvent("appointment_reschedule_started", map[string]interface{}{
@@ -551,7 +558,9 @@ func confirmCancelNotifHandler(apptSvc *services.AppointmentService, onCancel Ca
 					var cupsCodes []string
 					json.Unmarshal([]byte(cupsJSON), &cupsCodes)
 					for _, code := range cupsCodes {
-						go onCancel(ctx, code)
+						// WithoutCancel: la notificación a lista de espera es fire-and-forget y no
+						// debe abortarse si el ctx del handler se cancela (ruta de overflow) (N-32).
+						go onCancel(context.WithoutCancel(ctx), code)
 					}
 				}
 			}
@@ -687,7 +696,7 @@ func notifRescheduleFallbackHandler(apptSvc *services.AppointmentService, procRe
 					for _, p := range a.Procedures {
 						if p.CupCode != "" && !seen[p.CupCode] {
 							seen[p.CupCode] = true
-							go onCancel(ctx, p.CupCode)
+							go onCancel(context.WithoutCancel(ctx), p.CupCode)
 						}
 					}
 				}
@@ -881,7 +890,7 @@ func executeCancelAppointment(ctx context.Context, sess *session.Session, apptSv
 			for _, proc := range appt.Procedures {
 				if proc.CupCode != "" && !seen[proc.CupCode] {
 					seen[proc.CupCode] = true
-					go onCancel(ctx, proc.CupCode)
+					go onCancel(context.WithoutCancel(ctx), proc.CupCode)
 				}
 			}
 		}

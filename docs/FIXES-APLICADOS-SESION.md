@@ -29,6 +29,37 @@ Criterio: **solo cambios seguros** (observabilidad, fixes que restauran el compo
   - `TestFormatAttr_RedactsSensitiveKeys` — clave `doc` enmascarada, `appointment_id` intacta.
   - N7 validado contra la BD real: con filtro dept "Bogotá, D.C." → 0 filas; fallback solo-ciudad → recupera "BOGOTA, D.C.".
 
+## Alineación de idioma (doc 29)
+- ✅ Identificadores: YA en inglés (la migración los renombró; no quedan identificadores Go en español; "Antares" solo aparece en comentarios históricos).
+- ⏸️ **Comentarios español→inglés (~529 líneas): PENDIENTE por decisión** (cosmético; menor valor/costo). Se hará en una pasada dedicada cuando convenga. SQL y strings de negocio quedan en español (exentos por doc 29).
+
+## Lote 2 — Gaps de auditoría general (A+B+C+D+E) — APLICADOS
+Todos verificados: build + `go test ./... -race` (14 paq. OK, sin races) + lint + format (Go 1.25).
+
+**A — Seguridad/PII (Ley 1581):**
+- N-7 OCR: ya no loguea `content`/`body` crudos (PII) → solo longitud.
+- N-8 documento enmascarado en logs/eventos (`MaskDocument` nuevo en utils). +test.
+- N-10 `PlaceCall`: `MaskPhone` en log + payload no se vuelca crudo.
+- N-13 `HandleConversation`: firma obligatoria con fallback al secret principal (cierra cache-poisoning).
+- N-14 RateLimiter keyea por HOST (no host:port). +test.
+- N-11 cifrado SIESA configurable (`EXTERNAL_DB_ENCRYPT`, default "disable" = sin cambio).
+
+**B — Observabilidad (logs a errores tragados):** N-26 (pool resume), N-27 (compensación consecutiva), N-28 (UpdateEntity ×3), N-29 (KPI avg session), N-30 (MRC month filter), N-31 (wl_check 3 ramas).
+
+**C — Concurrencia:** N-32 (`WithoutCancel` en `go onCancel` ×3), N-34 (auditoría batch = 1 INSERT en vez de N goroutines), N-35 (drain con `safeProcess`).
+- ⏸️ **N-17 (mutex en PendingNotification) y N-33 (claim-then-send): DIFERIDOS** — ver abajo.
+
+**D — Recursos:** N-20 (timeout 30s en los 4 handlers de notificación con `context.Background()`).
+
+**E — Error-handling de fallo:** N-15 (no falsa "confirmada" si falla ConfirmBlock → escala), N-16 (IVR confirm/cancel marcan error real, no éxito), N-25 (escala si entidad vacía), N-23 (preserva edad real en reschedule), N-24 (valida DateTo).
+
+Tests nuevos: `MaskDocument` (+disabled), `RateLimiter_SameHostDifferentPorts`. Tests existentes: sin cambios necesarios (todos verdes).
+
+### Diferidos por riesgo (requieren trabajo dedicado + stress test, chocan con "no romper")
+- **N-17** mutex en `PendingNotification`: retrofit de concurrencia con riesgo de deadlock; la carrera es latente (la suite `-race` actual NO la dispara). Hacerlo bien exige proteger todos los accesos a campos y un stress test de carrera.
+- **N-33** `MarkNotified` claim-then-send: introduce un nuevo modo de fallo (claim ok + envío falla → notificación perdida) que exige rollback del claim; cambia firma en 2 interfaces + 2 callers + mocks.
+- También fuera (diseño): N-18 (phone_mutex deadlock), N-19 (TOCTOU timer), N-21 (FindConsecutiveBlock), N-22 (Valor=0), N-5/N-6 (clasificación contraste/resonancia).
+
 ## Pendientes (fuera de esta rama, requieren decisión)
 - 🔵 Estructural: multi-slot 1cita/N-slots; GAP-3 precio MRC (entidad→contrato).
 - 🟡 Latentes/código muerto: N4 (horacan granularidad), N6 (RescheduleDate 12h/24h), N8 (orden filtro médico-preferido), N11 (estados huérfanos del registro), N5 (batch audit single-INSERT).

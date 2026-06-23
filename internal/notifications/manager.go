@@ -545,25 +545,36 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 		}
 
 		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, p.AppointmentID)
+		// N-16: capturar el resultado real de la BD; no afirmar "confirmada" si falló.
+		confirmErr := err
 		if err == nil && appt != nil {
 			// Confirm ALL patient's appointments for this date
 			allAppts, aErr := m.apptSvc.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
 			if aErr != nil || len(allAppts) == 0 {
 				allAppts = []domain.Appointment{*appt}
 			}
-			m.apptSvc.ConfirmBlock(ctx, allAppts, "ivr", callID)
+			confirmErr = m.apptSvc.ConfirmBlock(ctx, allAppts, "ivr", callID)
 		}
 
-		m.ivrInternalNote(p.ConversationID, phone, callID,
-			"✅ *IVR — Cita CONFIRMADA por el paciente via llamada telefonica.*\n"+
-				"El paciente oprimio *1*. La cita queda confirmada en el sistema.")
-
-		if m.callTracker != nil {
-			m.callTracker.UpdateCallResult(ctx, callID, "completed", "confirmed")
-		}
-		if m.tracker != nil {
-			m.tracker.LogEvent(ctx, "", phone, "notification_confirmed_ivr",
-				map[string]interface{}{"appointment_id": p.AppointmentID, "call_id": callID})
+		if confirmErr != nil {
+			slog.Error("IVR confirm failed", "phone", utils.MaskPhone(phone), "callId", callID, "error", confirmErr)
+			m.ivrInternalNote(p.ConversationID, phone, callID,
+				"⚠️ *IVR — El paciente oprimio *1* (confirmar) pero la confirmacion FALLO en el sistema.*\n"+
+					"Revisar y confirmar la cita manualmente.")
+			if m.callTracker != nil {
+				_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "error")
+			}
+		} else {
+			m.ivrInternalNote(p.ConversationID, phone, callID,
+				"✅ *IVR — Cita CONFIRMADA por el paciente via llamada telefonica.*\n"+
+					"El paciente oprimio *1*. La cita queda confirmada en el sistema.")
+			if m.callTracker != nil {
+				_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "confirmed")
+			}
+			if m.tracker != nil {
+				m.tracker.LogEvent(ctx, "", phone, "notification_confirmed_ivr",
+					map[string]interface{}{"appointment_id": p.AppointmentID, "call_id": callID})
+			}
 		}
 
 	case keys != "":
@@ -583,25 +594,37 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 		}
 
 		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, p.AppointmentID)
+		// N-16: capturar el resultado real; un slot que el paciente cree liberado pero sigue
+		// ocupado en SIESA debe quedar marcado como error (no "cancelada") para revisión manual.
+		cancelErr := err
 		if err == nil && appt != nil {
 			// Cancel ALL patient's appointments for this date
 			allAppts, aErr := m.apptSvc.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
 			if aErr != nil || len(allAppts) == 0 {
 				allAppts = []domain.Appointment{*appt}
 			}
-			m.apptSvc.CancelBlock(ctx, allAppts, "Cancelada por paciente via llamada IVR", "ivr", "")
+			cancelErr = m.apptSvc.CancelBlock(ctx, allAppts, "Cancelada por paciente via llamada IVR", "ivr", "")
 		}
 
-		m.ivrInternalNote(p.ConversationID, phone, callID,
-			"❌ *IVR — Cita CANCELADA por el paciente via llamada telefonica.*\n"+
-				fmt.Sprintf("El paciente oprimio *%s* (≠1). La cita fue cancelada en el sistema.", keys))
-
-		if m.callTracker != nil {
-			m.callTracker.UpdateCallResult(ctx, callID, "completed", "cancelled")
-		}
-		if m.tracker != nil {
-			m.tracker.LogEvent(ctx, "", phone, "notification_cancelled_ivr",
-				map[string]interface{}{"appointment_id": p.AppointmentID, "call_id": callID, "keys": keys})
+		if cancelErr != nil {
+			slog.Error("IVR cancel failed", "phone", utils.MaskPhone(phone), "callId", callID, "error", cancelErr)
+			m.ivrInternalNote(p.ConversationID, phone, callID,
+				fmt.Sprintf("⚠️ *IVR — El paciente oprimio *%s* (cancelar) pero la cancelacion FALLO en el sistema.*\n"+
+					"La cita puede seguir ocupando el cupo. Revisar y cancelar manualmente.", keys))
+			if m.callTracker != nil {
+				_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "error")
+			}
+		} else {
+			m.ivrInternalNote(p.ConversationID, phone, callID,
+				"❌ *IVR — Cita CANCELADA por el paciente via llamada telefonica.*\n"+
+					fmt.Sprintf("El paciente oprimio *%s* (≠1). La cita fue cancelada en el sistema.", keys))
+			if m.callTracker != nil {
+				_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "cancelled")
+			}
+			if m.tracker != nil {
+				m.tracker.LogEvent(ctx, "", phone, "notification_cancelled_ivr",
+					map[string]interface{}{"appointment_id": p.AppointmentID, "call_id": callID, "keys": keys})
+			}
 		}
 
 	default:

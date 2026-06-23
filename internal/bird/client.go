@@ -684,7 +684,8 @@ func (c *Client) PlaceCall(to string, params map[string]string) (string, error) 
 		return "", fmt.Errorf("marshal voice call payload: %w", err)
 	}
 
-	slog.Debug("voice call payload", "body", string(body))
+	// No volcamos el payload crudo (nombre/fecha/clínica del paciente); solo tamaño (N-10).
+	slog.Debug("voice call payload", "body_len", len(body))
 
 	url := fmt.Sprintf("%s/workspaces/%s/channels/%s/calls",
 		c.conversationsBase(), c.workspaceID, c.voiceChannelID)
@@ -718,7 +719,7 @@ func (c *Client) PlaceCall(to string, params map[string]string) (string, error) 
 		return "", fmt.Errorf("parse voice call response: %w", err)
 	}
 
-	slog.Info("voice call placed", "to", to, "callId", result.ID)
+	slog.Info("voice call placed", "to", utils.MaskPhone(to), "callId", result.ID)
 	return result.ID, nil
 }
 

@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -91,7 +92,13 @@ func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Keyear por HOST, no por "host:port": el puerto efímero cambia en cada conexión TCP,
+			// lo que vaciaba el bucket y hacía inefectivo el límite (N-14). Fallback a RemoteAddr
+			// crudo si no trae puerto.
 			ip := r.RemoteAddr
+			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+				ip = host
+			}
 
 			mu.Lock()
 			c, exists := clients[ip]
