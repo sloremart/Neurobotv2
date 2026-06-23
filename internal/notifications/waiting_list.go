@@ -39,6 +39,7 @@ func (m *NotificationManager) handleWaitingList(phone, action string, pending *P
 			"patient_age":           fmt.Sprintf("%d", entry.PatientAge),
 			"patient_gender":        entry.PatientGender,
 			"patient_entity":        entry.PatientEntity,
+			"patient_contract":      entry.ContractCode, // MRC contract — keeps WL booking consistent with the main flow (citas.contrato + MRC limit)
 			"cups_code":             entry.CupsCode,
 			"cups_name":             entry.CupsName,
 			"is_contrasted":         boolToStr(entry.IsContrasted),

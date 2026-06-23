@@ -174,8 +174,30 @@ func (h *AlertHandler) formatMessage(r slog.Record) string {
 	return b.String()
 }
 
+// sensitiveAttrKeys son claves de log con PII de salud (Ley 1581) que NO deben salir en
+// claro a un chat externo de Telegram. Se redactan antes de enviar. Es el mismo criterio
+// que utils.MaskPhone para teléfonos, extendido a documento/nombre.
+var sensitiveAttrKeys = map[string]bool{
+	"doc": true, "cedula": true, "cédula": true, "document": true, "documento": true,
+	"num_id": true, "numid": true, "numero_documento": true, "patient_doc": true,
+	"name": true, "nombre": true, "nombres": true, "patient_name": true, "paciente": true,
+	"phone": true, "telefono": true, "teléfono": true, "celular": true,
+}
+
+// redactValue enmascara un valor dejando solo extremos como pista (p.ej. "10***89").
+func redactValue(s string) string {
+	if len(s) <= 4 {
+		return "***"
+	}
+	return s[:2] + "***" + s[len(s)-2:]
+}
+
 func formatAttr(a slog.Attr) string {
-	return fmt.Sprintf("<code>%s</code>: %s", escapeHTML(a.Key), escapeHTML(a.Value.String()))
+	val := a.Value.String()
+	if sensitiveAttrKeys[strings.ToLower(a.Key)] {
+		val = redactValue(val)
+	}
+	return fmt.Sprintf("<code>%s</code>: %s", escapeHTML(a.Key), escapeHTML(val))
 }
 
 func escapeHTML(s string) string {

@@ -7,25 +7,26 @@ import (
 )
 
 // PatientRepository — operaciones sobre pacientes en BD externa.
-// Implementación actual: datosipsndx (tabla: pacientes)
-// Al migrar de software: crear nueva implementación con misma interfaz.
+// Implementación actual: siesa (tabla: sis_paci)
 type PatientRepository interface {
-	FindByDocument(ctx context.Context, doc string) (*domain.Patient, error)
+	FindByDocument(ctx context.Context, docType, doc string) (*domain.Patient, error)
 	FindByID(ctx context.Context, id string) (*domain.Patient, error)
 	Create(ctx context.Context, input domain.CreatePatientInput) (string, error)
 	UpdateEntity(ctx context.Context, patientID, entityCode string) error
+	UpdateContract(ctx context.Context, patientID, contractCode string) error
+	UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error
 	UpdateContactInfo(ctx context.Context, patientID, phone, email string) error
 }
 
 // AppointmentRepository — operaciones sobre citas en BD externa.
-// Implementación actual: datosipsndx (tablas: citas, pxcita)
+// Implementación actual: siesa (tablas: citas, citas_procedimientos, citas_procedimientos_asuntos)
 type AppointmentRepository interface {
 	FindByID(ctx context.Context, id string) (*domain.Appointment, error)
 	FindUpcomingByPatient(ctx context.Context, patientID string) ([]domain.Appointment, error)
 	FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
 	Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
-	CreatePxCita(ctx context.Context, input domain.CreatePxCitaInput) error
-	CreatePxCitaBatch(ctx context.Context, inputs []domain.CreatePxCitaInput) error
+	CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error
+	CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error
 	Confirm(ctx context.Context, id string, channel, channelID string) error
 	Cancel(ctx context.Context, id string, reason, channel, channelID string) error
 	ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error
@@ -38,31 +39,22 @@ type AppointmentRepository interface {
 	RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
 }
 
-// DoctorRepository — búsqueda de médicos por procedimiento.
-// Implementación actual: datosipsndx (tabla: cup_medico)
-type DoctorRepository interface {
-	FindByCupID(ctx context.Context, cupID int) ([]domain.Doctor, error)
-	FindByCupsCode(ctx context.Context, cupsCode string) ([]domain.Doctor, error)
-	FindByDocument(ctx context.Context, doc string) (*domain.Doctor, error)
-}
-
 // ScheduleRepository — agendas, horarios y excepciones.
-// Implementación actual: datosipsndx (tablas: tblagendas, citas_conf, tblexepciondias)
+// Implementación actual: siesa (tablas: programacion_medico, programacion_medico_detalle, programacion_medico_relacion*)
 type ScheduleRepository interface {
-	FindFutureWorkingDays(ctx context.Context, doctorDocs []string) ([]domain.WorkingDay, error)
-	FindScheduleConfig(ctx context.Context, scheduleID int, doctorDoc string) (*domain.ScheduleConfig, error)
+	// FindAvailableSlots returns every free SIESA slot for agendas serving the given subject
+	// (asunto_id), within the 3h..90-day window, optionally after the given date (YYYY-MM-DD,
+	// for pagination). Each returned row is one bookable slot. Replaces the old
+	// FindFutureWorkingDays + FindScheduleConfig + FindBookedSlots + in-memory slot generation.
+	FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error)
 	FindByScheduleID(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error)
-	FindBookedSlots(ctx context.Context, agendaID int, date string) ([]string, error)
 	FindWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
 	UpdateWorkingDayExceptionDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
 	DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error)
-	// FindAsuntoForCups retorna el asunto SIESA para un CUPS (de AsuntoPctos/citas historial).
-	// 0 si no se encuentra. Usado por SlotService para filtrar agendas sin depender de Antares.
-	FindAsuntoForCups(ctx context.Context, cupsCode string) int
 }
 
 // SoatRepository — búsqueda de precios por CUPS según tarifa.
-// Implementación actual: datosipsndx (tabla: codigossoat)
+// Implementación actual: siesa (tabla: sis_proc_precios)
 // FindPrice returns nil when the CUPS code is not found in the SOAT table,
 // and *0.0 when the tariff is legitimately zero.
 type SoatRepository interface {
@@ -70,16 +62,19 @@ type SoatRepository interface {
 }
 
 // ProcedureRepository — catálogo de procedimientos CUPS.
-// Implementación actual: datosipsndx (tabla: cups_procedimientos)
+// Implementación actual: local MySQL (tabla: cups_procedimientos, migración 019)
 type ProcedureRepository interface {
 	FindByCode(ctx context.Context, code string) (*domain.Procedure, error)
 	FindByID(ctx context.Context, id int) (*domain.Procedure, error)
 	SearchByName(ctx context.Context, name string) ([]domain.Procedure, error)
 	FindAllActive(ctx context.Context) ([]domain.Procedure, error)
+	// FindSubjectTypeForCups returns the SIESA subject id (asunto_id) for a CUPS code,
+	// or 0 if not found. Deterministic replacement for ScheduleRepo.FindAsuntoForCups.
+	FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error)
 }
 
 // EntityRepository — entidades/EPS activas.
-// Implementación actual: datosipsndx (tabla: entidades)
+// Implementación actual: siesa (tabla: contratos)
 type EntityRepository interface {
 	FindActive(ctx context.Context) ([]domain.Entity, error)
 	FindActiveByCategory(ctx context.Context, category string) ([]domain.Entity, error)
@@ -88,16 +83,18 @@ type EntityRepository interface {
 }
 
 // MunicipalityRepository — búsqueda de municipios.
-// Implementación actual: datosipsndx (tabla: municipios)
+// Implementación actual: siesa (tabla: sis_muni)
 type MunicipalityRepository interface {
 	Search(ctx context.Context, name string) ([]domain.Municipality, error)
+	// SearchBarrios busca barrios del catálogo sis_barrios por nombre, acotados al
+	// municipio (depCode, muniCode) ya seleccionado.
+	SearchBarrios(ctx context.Context, name, depCode, muniCode string) ([]domain.Barrio, error)
 }
 
 // Repositories agrupa todas las interfaces para inyección de dependencias.
 type Repositories struct {
 	Patient      PatientRepository
 	Appointment  AppointmentRepository
-	Doctor       DoctorRepository
 	Schedule     ScheduleRepository
 	Procedure    ProcedureRepository
 	Entity       EntityRepository

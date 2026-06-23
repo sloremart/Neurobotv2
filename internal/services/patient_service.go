@@ -18,9 +18,9 @@ func NewPatientService(repo repository.PatientRepository) *PatientService {
 	return &PatientService{repo: repo}
 }
 
-// LookupByDocument busca un paciente por documento
-func (s *PatientService) LookupByDocument(ctx context.Context, document string) (*domain.Patient, error) {
-	return s.repo.FindByDocument(ctx, document)
+// LookupByDocument busca un paciente por tipo + número de documento.
+func (s *PatientService) LookupByDocument(ctx context.Context, docType, document string) (*domain.Patient, error) {
+	return s.repo.FindByDocument(ctx, docType, document)
 }
 
 // LookupByID busca un paciente por NumeroPaciente
@@ -74,6 +74,16 @@ func (s *PatientService) Create(ctx context.Context, input domain.CreatePatientI
 // UpdateEntity actualiza la entidad/EPS de un paciente
 func (s *PatientService) UpdateEntity(ctx context.Context, patientID, entityCode string) error {
 	return s.repo.UpdateEntity(ctx, patientID, entityCode)
+}
+
+// UpdateContract persiste el contrato resuelto en el paciente (sis_paci.contrato).
+func (s *PatientService) UpdateContract(ctx context.Context, patientID, contractCode string) error {
+	return s.repo.UpdateContract(ctx, patientID, contractCode)
+}
+
+// UpdateMunicipality persiste departamento+municipio del paciente (sis_paci).
+func (s *PatientService) UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error {
+	return s.repo.UpdateMunicipality(ctx, patientID, depCode, muniCode)
 }
 
 // UpdateContactInfo actualiza teléfono y email de un paciente en la BD externa

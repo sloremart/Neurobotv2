@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancela runs en curso de la misma rama/PR cuando llega un push nuevo (ahorra minutos de CI).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Build, lint, test, security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Necesario para que --new-from-rev / only-new-issues y git blame funcionen.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      # golangci-lint v2 'run' incluye gosec y staticcheck, y reporta también
+      # los problemas de formato (gofumpt/goimports) declarados en formatters.
+      - name: Lint + formato + seguridad estática
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.0
+          # En pull requests, solo falla por problemas NUEVOS (baseline para legacy).
+          # En push a main corre completo.
+          only-new-issues: true
+
+      - name: Tests + race detector + cobertura
+        run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
+
+      - name: Vulnerabilidades conocidas en dependencias
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # OPCIONAL (recomendado por ser datos de salud): sube hallazgos de seguridad
+  # a la pestaña Security de GitHub como SARIF. Descomenta si quieres activarlo.
+  #
+  # security-sarif:
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     security-events: write
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Run gosec
+  #       uses: securego/gosec@master
+  #       with:
+  #         args: '-no-fail -fmt sarif -out gosec.sarif ./...'
+  #     - uses: github/codeql-action/upload-sarif@v3
+  #       with:
+  #         sarif_file: gosec.sarif

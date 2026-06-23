@@ -24,7 +24,6 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
-	"github.com/neuro-bot/neuro-bot/internal/repository/datosipsndx"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/repository/siesa"
 	"github.com/neuro-bot/neuro-bot/internal/scheduler"
@@ -104,18 +103,6 @@ func main() {
 		defer externalDB.Close()
 	}
 
-	// Cuando el driver es SIESA, abrir también Antares (MySQL datosipsndx) para
-	// cups_procedimientos y cup_medico.
-	var antaresDB *sql.DB
-	if cfg.ExternalDBDriver == "siesa" {
-		antaresDB, err = database.NewAntaresDB(cfg)
-		if err != nil {
-			slog.Warn("antares db not available; CUPS catalog will be unavailable", "error", err)
-		} else {
-			defer antaresDB.Close()
-		}
-	}
-
 	// Migraciones (BD local)
 	if err := database.RunMigrations(localDB, "migrations"); err != nil {
 		log.Fatalf("migrations: %v", err)
@@ -124,7 +111,7 @@ func main() {
 	// Repositorios — selección por EXTERNAL_DB_DRIVER (R-ARQ-01)
 	var repos *repository.Repositories
 	if externalDB != nil {
-		repos = initRepositories(cfg.ExternalDBDriver, externalDB, antaresDB)
+		repos = initRepositories(cfg.ExternalDBDriver, externalDB, localDB)
 	}
 
 	// Session manager (BD local + phone mutex)
@@ -203,12 +190,10 @@ func main() {
 	})
 	if appointmentSvc != nil {
 		var procRepoForAppts repository.ProcedureRepository
-		var doctorRepoForAppts repository.DoctorRepository
 		if repos != nil {
 			procRepoForAppts = repos.Procedure
-			doctorRepoForAppts = repos.Doctor
 		}
-		handlers.RegisterAppointmentHandlers(machine, appointmentSvc, procRepoForAppts, doctorRepoForAppts, addrMapper, onCancel)
+		handlers.RegisterAppointmentHandlers(machine, appointmentSvc, procRepoForAppts, addrMapper, onCancel)
 	}
 	// Fase 8: Orden Médica y OCR
 	waitingListRepo := localrepo.NewWaitingListRepo(localDB)
@@ -223,7 +208,7 @@ func main() {
 	// Fase 10 + 13: Búsqueda de Slots y Agendamiento + Lista de Espera
 	var slotSvc *services.SlotService
 	if repos != nil && appointmentSvc != nil {
-		slotSvc = services.NewSlotService(repos.Doctor, repos.Schedule)
+		slotSvc = services.NewSlotService(repos.Procedure, repos.Schedule)
 		handlers.RegisterSlotHandlers(machine, slotSvc, appointmentSvc, repos.Procedure, repos.Soat, repos.Entity, waitingListRepo, addrMapper, birdClient)
 	}
 	// Fase 11: Post-Acción y Escalación
@@ -386,8 +371,8 @@ func main() {
 
 	// HTTP Server
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, antaresDB))
-	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, antaresDB))))
+	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB))
+	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -496,44 +481,32 @@ func initLogger(level, logDir string) {
 }
 
 // initRepositories construye los repositorios según el driver configurado.
-// externalDB = SIESA (SQL Server) cuando driver="siesa", datosipsndx (MySQL) en otro caso.
-// antaresDB  = Antares MySQL (cups_procedimientos, cup_medico) solo cuando driver="siesa".
-func initRepositories(driver string, externalDB, antaresDB *sql.DB) *repository.Repositories {
+// externalDB = SIESA (SQL Server). localDB = MySQL local del bot
+// (catálogo cups_procedimientos, migración 019).
+// "siesa" es el único driver soportado; el legacy datosipsndx (Antares/MySQL) fue eliminado.
+func initRepositories(driver string, externalDB, localDB *sql.DB) *repository.Repositories {
 	switch driver {
-	case "datosipsndx":
-		return &repository.Repositories{
-			Patient:      datosipsndx.NewPatientRepo(externalDB),
-			Appointment:  datosipsndx.NewAppointmentRepo(externalDB),
-			Doctor:       datosipsndx.NewDoctorRepo(externalDB),
-			Schedule:     datosipsndx.NewScheduleRepo(externalDB),
-			Procedure:    repository.NewCachedProcedureRepo(datosipsndx.NewProcedureRepo(externalDB), 60*time.Minute),
-			Entity:       repository.NewCachedEntityRepo(datosipsndx.NewEntityRepo(externalDB), 30*time.Minute),
-			Municipality: datosipsndx.NewMunicipalityRepo(externalDB),
-			Soat:         datosipsndx.NewSoatRepo(externalDB),
-		}
 	case "siesa":
-		// Datos clínicos → SIESA SQL Server (externalDB)
-		// Catálogo CUPS y médicos → Antares MySQL (antaresDB)
-		repos := &repository.Repositories{
+		// Datos clínicos → SIESA SQL Server (externalDB).
+		// Catálogo CUPS (nombre, asunto_id, servicio_id, preparación) → BD local (migración 019).
+		// Doctor names come resolved from appointment queries (RTRIM(sis_medi.nombre)),
+		// so there is no separate doctor repository.
+		return &repository.Repositories{
 			Patient:      siesa.NewPatientRepo(externalDB),
 			Appointment:  siesa.NewAppointmentRepo(externalDB),
 			Schedule:     siesa.NewScheduleRepo(externalDB),
+			Procedure:    repository.NewCachedProcedureRepo(localrepo.NewProcedureRepo(localDB), 60*time.Minute),
 			Entity:       repository.NewCachedEntityRepo(siesa.NewEntityRepo(externalDB), 30*time.Minute),
 			Soat:         siesa.NewSoatRepo(externalDB),
 			Municipality: siesa.NewMunicipalityRepo(externalDB),
 		}
-		if antaresDB != nil {
-			repos.Doctor = datosipsndx.NewDoctorRepo(antaresDB)
-			repos.Procedure = repository.NewCachedProcedureRepo(datosipsndx.NewProcedureRepo(antaresDB), 60*time.Minute)
-		}
-		return repos
 	default:
 		log.Fatalf("unknown EXTERNAL_DB_DRIVER: %s", driver)
 		return nil
 	}
 }
 
-func healthHandler(localDB, externalDB, antaresDB *sql.DB) http.HandlerFunc {
+func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		health := map[string]string{"status": "ok"}
 		critical := false
@@ -558,17 +531,6 @@ func healthHandler(localDB, externalDB, antaresDB *sql.DB) http.HandlerFunc {
 			}
 		} else {
 			health["external_db"] = "ok"
-		}
-
-		if antaresDB != nil {
-			if err := antaresDB.Ping(); err != nil {
-				health["antares_db"] = "error"
-				if health["status"] == "ok" {
-					health["status"] = "degraded"
-				}
-			} else {
-				health["antares_db"] = "ok"
-			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -599,7 +561,7 @@ func safeGo(name string, f func()) {
 	}()
 }
 
-func debugHandler(localDB, externalDB, antaresDB *sql.DB) http.HandlerFunc {
+func debugHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
@@ -632,16 +594,6 @@ func debugHandler(localDB, externalDB, antaresDB *sql.DB) http.HandlerFunc {
 				"in_use":           extStats.InUse,
 				"idle":             extStats.Idle,
 				"max_open":         extStats.MaxOpenConnections,
-			}
-		}
-
-		if antaresDB != nil {
-			antStats := antaresDB.Stats()
-			info["antares_db"] = map[string]interface{}{
-				"open_connections": antStats.OpenConnections,
-				"in_use":           antStats.InUse,
-				"idle":             antStats.Idle,
-				"max_open":         antStats.MaxOpenConnections,
 			}
 		}
 

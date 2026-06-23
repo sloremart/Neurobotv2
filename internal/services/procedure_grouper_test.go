@@ -30,6 +30,9 @@ func (m *mockProcRepo) SearchByName(ctx context.Context, name string) ([]domain.
 func (m *mockProcRepo) FindAllActive(ctx context.Context) ([]domain.Procedure, error) {
 	return nil, nil
 }
+func (m *mockProcRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
+	return 0, nil
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +51,7 @@ func newMock(entries ...struct {
 			Name:           e.name,
 			ServiceName:    e.service,
 			RequiredSpaces: e.spaces,
+			IsActive:       true, // catalog rows used in these tests are active (GroupByServiceFromDB skips inactive)
 		}
 	}
 	return m
@@ -347,7 +351,8 @@ func TestFisiatria_EMGWithNC(t *testing.T) {
 	}
 }
 
-// 10. NC code without EMG: NC is removed, empty group gets Espacios=1.
+// 10. NC code without EMG: kept as a standalone Fisiatria procedure (commit 7ce9774).
+//     Neuroconducción can be ordered on its own, so it is no longer discarded.
 func TestFisiatria_NCWithoutEMG(t *testing.T) {
 	mock := newMock(struct {
 		code, name, service string
@@ -364,13 +369,16 @@ func TestFisiatria_NCWithoutEMG(t *testing.T) {
 		t.Fatal("missing 'Fisiatria' group")
 	}
 
-	// NC should be removed (no EMG present)
-	if len(g.Cups) != 0 {
-		t.Errorf("expected 0 cups (NC removed without EMG), got %d", len(g.Cups))
+	// NC without EMG is kept as a standalone procedure
+	if len(g.Cups) != 1 {
+		t.Fatalf("expected 1 cup (NC kept as standalone), got %d", len(g.Cups))
 	}
-	// Minimum Espacios = 1
+	if g.Cups[0].Code != "891509" {
+		t.Errorf("expected remaining cup '891509', got %q", g.Cups[0].Code)
+	}
+	// Standalone procedure → 1 slot
 	if g.Espacios != 1 {
-		t.Errorf("expected Espacios=1 (minimum), got %d", g.Espacios)
+		t.Errorf("expected Espacios=1, got %d", g.Espacios)
 	}
 }
 
@@ -464,7 +472,8 @@ func TestFisiatria_EMGWithDependent(t *testing.T) {
 	}
 }
 
-// 13. Dependent code without EMG: dependent is removed.
+// 13. Dependent code without EMG: kept as a standalone Fisiatria procedure (commit 7ce9774).
+//     Onda F can be ordered on its own, so it is no longer discarded.
 func TestFisiatria_DependentWithoutEMG(t *testing.T) {
 	mock := newMock(struct {
 		code, name, service string
@@ -481,12 +490,16 @@ func TestFisiatria_DependentWithoutEMG(t *testing.T) {
 		t.Fatal("missing 'Fisiatria' group")
 	}
 
-	// Dependent should be removed (no EMG present)
-	if len(g.Cups) != 0 {
-		t.Errorf("expected 0 cups (dependent removed without EMG), got %d", len(g.Cups))
+	// Onda F without EMG is kept as a standalone procedure
+	if len(g.Cups) != 1 {
+		t.Fatalf("expected 1 cup (dependent kept as standalone), got %d", len(g.Cups))
 	}
+	if g.Cups[0].Code != "891514" {
+		t.Errorf("expected remaining cup '891514', got %q", g.Cups[0].Code)
+	}
+	// Standalone procedure → 1 slot
 	if g.Espacios != 1 {
-		t.Errorf("expected Espacios=1 (minimum), got %d", g.Espacios)
+		t.Errorf("expected Espacios=1, got %d", g.Espacios)
 	}
 }
 

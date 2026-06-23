@@ -232,18 +232,18 @@ check_port "$NGROK_PORT" "ngrok dashboard" "(editar docker-compose.yml ports de 
 # ==========================================================================
 # 5. BD Externa accesible
 # ==========================================================================
-header "5. BD Externa (datosipsndx)"
+header "5. BD Externa (SIESA / ZeusSalud_Neuro)"
 
 if [ -f ".env" ]; then
     EXT_HOST=$(grep "^EXTERNAL_DB_HOST=" .env 2>/dev/null | cut -d'=' -f2- | xargs 2>/dev/null || echo "host.docker.internal")
-    EXT_PORT=$(grep "^EXTERNAL_DB_PORT=" .env 2>/dev/null | cut -d'=' -f2- | xargs 2>/dev/null || echo "3306")
+    EXT_PORT=$(grep "^EXTERNAL_DB_PORT=" .env 2>/dev/null | cut -d'=' -f2- | xargs 2>/dev/null || echo "1433")
     EXT_USER=$(grep "^EXTERNAL_DB_USER=" .env 2>/dev/null | cut -d'=' -f2- | xargs 2>/dev/null || echo "")
     EXT_PASS=$(grep "^EXTERNAL_DB_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2- | xargs 2>/dev/null || echo "")
-    EXT_DB=$(grep "^EXTERNAL_DB_DATABASE=" .env 2>/dev/null | cut -d'=' -f2- | xargs 2>/dev/null || echo "datosipsndx")
+    EXT_DB=$(grep "^EXTERNAL_DB_DATABASE=" .env 2>/dev/null | cut -d'=' -f2- | xargs 2>/dev/null || echo "ZeusSalud_Neuro")
 
     [ -z "$EXT_HOST" ] && EXT_HOST="host.docker.internal"
-    [ -z "$EXT_PORT" ] && EXT_PORT="3306"
-    [ -z "$EXT_DB" ] && EXT_DB="datosipsndx"
+    [ -z "$EXT_PORT" ] && EXT_PORT="1433"
+    [ -z "$EXT_DB" ] && EXT_DB="ZeusSalud_Neuro"
 
     # Resolver host.docker.internal a localhost para prueba desde el host
     TEST_HOST="$EXT_HOST"

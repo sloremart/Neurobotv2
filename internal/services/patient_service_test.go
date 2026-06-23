@@ -12,16 +12,16 @@ import (
 // --- Mock PatientRepository ---
 
 type mockPatientRepo struct {
-	findByDocumentFn    func(ctx context.Context, doc string) (*domain.Patient, error)
+	findByDocumentFn    func(ctx context.Context, docType, doc string) (*domain.Patient, error)
 	findByIDFn          func(ctx context.Context, id string) (*domain.Patient, error)
 	createFn            func(ctx context.Context, input domain.CreatePatientInput) (string, error)
 	updateEntityFn      func(ctx context.Context, patientID, entityCode string) error
 	updateContactInfoFn func(ctx context.Context, patientID, phone, email string) error
 }
 
-func (m *mockPatientRepo) FindByDocument(ctx context.Context, doc string) (*domain.Patient, error) {
+func (m *mockPatientRepo) FindByDocument(ctx context.Context, docType, doc string) (*domain.Patient, error) {
 	if m.findByDocumentFn != nil {
-		return m.findByDocumentFn(ctx, doc)
+		return m.findByDocumentFn(ctx, docType, doc)
 	}
 	return nil, nil
 }
@@ -43,6 +43,12 @@ func (m *mockPatientRepo) UpdateEntity(ctx context.Context, patientID, entityCod
 	}
 	return nil
 }
+func (m *mockPatientRepo) UpdateContract(ctx context.Context, patientID, contractCode string) error {
+	return nil
+}
+func (m *mockPatientRepo) UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error {
+	return nil
+}
 func (m *mockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phone, email string) error {
 	if m.updateContactInfoFn != nil {
 		return m.updateContactInfoFn(ctx, patientID, phone, email)
@@ -55,7 +61,7 @@ func (m *mockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phon
 func TestLookupByDocument_Found(t *testing.T) {
 	patient := &domain.Patient{ID: "P1", DocumentNumber: "1234567890", FirstName: "Juan"}
 	repo := &mockPatientRepo{
-		findByDocumentFn: func(ctx context.Context, doc string) (*domain.Patient, error) {
+		findByDocumentFn: func(ctx context.Context, docType, doc string) (*domain.Patient, error) {
 			if doc == "1234567890" {
 				return patient, nil
 			}
@@ -64,7 +70,7 @@ func TestLookupByDocument_Found(t *testing.T) {
 	}
 	svc := NewPatientService(repo)
 
-	p, err := svc.LookupByDocument(context.Background(), "1234567890")
+	p, err := svc.LookupByDocument(context.Background(), "CC", "1234567890")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +83,7 @@ func TestLookupByDocument_NotFound(t *testing.T) {
 	repo := &mockPatientRepo{}
 	svc := NewPatientService(repo)
 
-	p, err := svc.LookupByDocument(context.Background(), "9999999999")
+	p, err := svc.LookupByDocument(context.Background(), "CC", "9999999999")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,13 +94,13 @@ func TestLookupByDocument_NotFound(t *testing.T) {
 
 func TestLookupByDocument_Error(t *testing.T) {
 	repo := &mockPatientRepo{
-		findByDocumentFn: func(ctx context.Context, doc string) (*domain.Patient, error) {
+		findByDocumentFn: func(ctx context.Context, docType, doc string) (*domain.Patient, error) {
 			return nil, fmt.Errorf("db error")
 		},
 	}
 	svc := NewPatientService(repo)
 
-	_, err := svc.LookupByDocument(context.Background(), "1234567890")
+	_, err := svc.LookupByDocument(context.Background(), "CC", "1234567890")
 	if err == nil {
 		t.Error("expected error")
 	}

@@ -20,9 +20,9 @@ type ConfirmationLogger interface {
 }
 
 type AppointmentService struct {
-	repo        repository.AppointmentRepository
-	cfg         *config.Config
-	confirmLog  ConfirmationLogger
+	repo       repository.AppointmentRepository
+	cfg        *config.Config
+	confirmLog ConfirmationLogger
 }
 
 func NewAppointmentService(repo repository.AppointmentRepository, cfg *config.Config) *AppointmentService {
@@ -210,32 +210,27 @@ var cupsRequiresPreviousDoctor = map[string][]string{
 	"861402": {"890264", "890364"}, // Requiere cita previa de tipo 890264 o 890364
 }
 
-// MRC group limits (máximo mensual por grupo — Modelo de Riesgo Compartido, aplica solo a SAN02)
+// MRC group limits (máximo mensual por grupo — Modelo de Riesgo Compartido, aplica solo a contratos 5/6)
 // Per R-PROC-09 in 02-BUSINESS-RULES.md
 var mrcGroups = map[string]struct {
 	MaxPerMonth int
 	CupsCodes   []string
 }{
-	"consulta_neurologia":       {MaxPerMonth: 397, CupsCodes: []string{"890274", "890374"}},
-	"electroencefalograma":      {MaxPerMonth: 172, CupsCodes: []string{"891402", "891901", "891402-1", "891402PED", "891901-1", "891901PED", "891401", "891401PED"}},
-	"bloqueos":                  {MaxPerMonth: 67, CupsCodes: []string{"053106", "053105", "053111"}},
-	"aplicacion_sustancia":      {MaxPerMonth: 20, CupsCodes: []string{"861411", "48201"}},
-	"polisomnografia":           {MaxPerMonth: 57, CupsCodes: []string{"891704", "891703", "891704-1", "891704PED", "891703-1", "891703PED"}},
-	"otros_procedimientos":      {MaxPerMonth: 932, CupsCodes: []string{"891515", "891514", "930820", "891511", "891509", "930860", "891530", "952303", "954626", "952302", "930103", "930821", "954624", "954625", "952301", "930801", "891503", "891508"}},
+	"consulta_neurologia":  {MaxPerMonth: 397, CupsCodes: []string{"890274", "890374"}},
+	"electroencefalograma": {MaxPerMonth: 172, CupsCodes: []string{"891402", "891901", "891402-1", "891402PED", "891901-1", "891901PED", "891401", "891401PED"}},
+	"bloqueos":             {MaxPerMonth: 67, CupsCodes: []string{"053106", "053105", "053111"}},
+	"aplicacion_sustancia": {MaxPerMonth: 20, CupsCodes: []string{"861411", "48201"}},
+	"polisomnografia":      {MaxPerMonth: 57, CupsCodes: []string{"891704", "891703", "891704-1", "891704PED", "891703-1", "891703PED"}},
+	"otros_procedimientos": {MaxPerMonth: 932, CupsCodes: []string{"891515", "891514", "930820", "891511", "891509", "930860", "891530", "952303", "954626", "952302", "930103", "930821", "954624", "954625", "952301", "930801", "891503", "891508"}},
 }
 
-// mrcEntities son los códigos de entidad sujetos a validación MRC.
-// Aplica a contratos 5 y 6 (SANITAS MRC SUBSIDIADO y MRC CONTRIBUTIVO).
-// "SAN02" = código Antares legacy (backward compat).
-var mrcEntities = map[string]bool{
-	"SAN02": true,
-	"5":     true, // SANITAS MRC SUBSIDIADO
-	"6":     true, // SANITAS MRC CONTRIBUTIVO
-}
-
-// IsMRCEntity determina si un código de entidad está sujeto a validación MRC.
-func IsMRCEntity(entityCode string) bool {
-	return mrcEntities[entityCode]
+// IsMRCPatient determina si un paciente está sujeto a validación MRC según su contrato.
+// MRC = contratos 5 (SANITAS MRC SUBSIDIADO) y 6 (SANITAS MRC CONTRIBUTIVO).
+// Reemplaza al antiguo IsMRCEntity, que comparaba el código de empresa (todos los
+// contratos Sanitas comparten empresa "EPS005", así que nunca distinguía MRC de Evento).
+// El contrato viene de sis_paci.contrato (domain.Patient.ContractCode → sesión patient_contract).
+func IsMRCPatient(contractCode string) bool {
+	return contractCode == "5" || contractCode == "6"
 }
 
 // IsMRCGroupCups returns the group name, max per month, and whether the CUPS code belongs to an MRC group.
@@ -291,12 +286,12 @@ func (s *AppointmentService) CheckPriorConsultation(ctx context.Context, cupsCod
 }
 
 // CheckMRCLimit verifica si el grupo CUPS ha alcanzado el límite mensual (mes actual).
-// Solo aplica para entidad SAN02 (Modelo de Riesgo Compartido). Deshabilitado con CUPS_GROUP_LIMITS_ENABLED=false.
-func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, entity string) (bool, string, error) {
+// Solo aplica a pacientes MRC (contrato 5/6). Deshabilitado con CUPS_GROUP_LIMITS_ENABLED=false.
+func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contractCode string) (bool, string, error) {
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
 		return false, "", nil
 	}
-	if !IsMRCEntity(entity) {
+	if !IsMRCPatient(contractCode) {
 		return false, "", nil
 	}
 
@@ -319,12 +314,12 @@ func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, entity
 }
 
 // CheckMRCLimitForMonth verifica si el grupo CUPS ha alcanzado el límite MRC para un mes específico.
-// Retorna true si está bloqueado (al límite). Solo aplica para SAN02.
-func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, entity string, year, month int) (bool, error) {
+// Retorna true si está bloqueado (al límite). Solo aplica a pacientes MRC (contrato 5/6).
+func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, contractCode string, year, month int) (bool, error) {
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
 		return false, nil
 	}
-	if !IsMRCEntity(entity) {
+	if !IsMRCPatient(contractCode) {
 		return false, nil
 	}
 
@@ -356,7 +351,7 @@ func GetDoctorAgeRestriction(doctorDoc string) (minAge int, reason string, exist
 }
 
 // CreateWithConsecutive creates N consecutive appointments.
-// For consecutive blocks, pxcita is only inserted on the first appointment.
+// For consecutive blocks, appointment procedure is only inserted on the first appointment.
 // Duration is the slot length in minutes (from ScheduleConfig.AppointmentDuration).
 func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input domain.CreateAppointmentInput, espacios, durationMinutes int) (string, error) {
 	// Single appointment case
@@ -365,12 +360,18 @@ func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input do
 		if err != nil {
 			return "", err
 		}
-		
-		// Create pxcita records for each procedure
-		if err := s.createPxCitaRecords(ctx, appt.ID, input.Procedures); err != nil {
-			return "", fmt.Errorf("create pxcita: %w", err)
+
+		// Create appointment procedure records for each procedure. The citas row + slot were already
+		// committed by repo.Create; if procedure insertion fails we must compensate by
+		// cancelling the appointment (INTEG-02), otherwise SIESA is left with an orphan
+		// cita (no procedures → confused operator, wrong MRC count).
+		if err := s.createAppointmentProcedureRecords(ctx, appt.ID, input.Procedures); err != nil {
+			if cancelErr := s.repo.CancelBatch(ctx, []string{appt.ID}, "appointment procedure creation failed", "system", ""); cancelErr != nil {
+				slog.Error("appointment procedure compensation failed — orphan appointment", "appointment_id", appt.ID, "cancel_error", cancelErr, "procedure_error", err)
+			}
+			return "", fmt.Errorf("create appointment procedure: %w", err)
 		}
-		
+
 		return appt.ID, nil
 	}
 
@@ -407,10 +408,10 @@ func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input do
 
 		if i == 0 {
 			firstID = appt.ID
-			// Create pxcita records only for the FIRST appointment
-			if err := s.createPxCitaRecords(ctx, appt.ID, input.Procedures); err != nil {
-				cancelCreated("pxcita creation failed")
-				return "", fmt.Errorf("create pxcita: %w", err)
+			// Create appointment procedure records only for the FIRST appointment
+			if err := s.createAppointmentProcedureRecords(ctx, appt.ID, input.Procedures); err != nil {
+				cancelCreated("appointment procedure creation failed")
+				return "", fmt.Errorf("create appointment procedure: %w", err)
 			}
 		}
 	}
@@ -418,27 +419,27 @@ func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input do
 	return firstID, nil
 }
 
-// createPxCitaRecords creates a pxcita record for each procedure in the appointment
-func (s *AppointmentService) createPxCitaRecords(ctx context.Context, appointmentID string, procedures []domain.CreateProcedureInput) error {
-	slog.Debug("createPxCitaRecords called",
+// createAppointmentProcedureRecords creates a appointment procedure record for each procedure in the appointment
+func (s *AppointmentService) createAppointmentProcedureRecords(ctx context.Context, appointmentID string, procedures []domain.CreateProcedureInput) error {
+	slog.Debug("createAppointmentProcedureRecords called",
 		"appointment_id", appointmentID,
 		"procedures_count", len(procedures),
 	)
-	
+
 	apptIDInt, err := strconv.Atoi(appointmentID)
 	if err != nil {
 		return fmt.Errorf("invalid appointment ID: %w", err)
 	}
 
 	for i, proc := range procedures {
-		slog.Debug("createPxCitaRecords iteration",
+		slog.Debug("createAppointmentProcedureRecords iteration",
 			"appointment_id", appointmentID,
 			"iteration", i,
 			"cup_code", proc.CupCode,
 			"quantity", proc.Quantity,
 		)
-		
-		pxcitaInput := domain.CreatePxCitaInput{
+
+		procInput := domain.CreateAppointmentProcedureInput{
 			AppointmentID: apptIDInt,
 			CupCode:       proc.CupCode,
 			Quantity:      proc.Quantity,
@@ -446,16 +447,16 @@ func (s *AppointmentService) createPxCitaRecords(ctx context.Context, appointmen
 			ServiceID:     proc.ServiceID,
 		}
 
-		if err := s.repo.CreatePxCita(ctx, pxcitaInput); err != nil {
-			return fmt.Errorf("create pxcita for %s: %w", proc.CupCode, err)
+		if err := s.repo.CreateAppointmentProcedure(ctx, procInput); err != nil {
+			return fmt.Errorf("create appointment procedure for %s: %w", proc.CupCode, err)
 		}
 	}
 
-	slog.Debug("createPxCitaRecords completed",
+	slog.Debug("createAppointmentProcedureRecords completed",
 		"appointment_id", appointmentID,
 		"total_inserted", len(procedures),
 	)
-	
+
 	return nil
 }
 

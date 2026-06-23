@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,35 +38,15 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: registrationStartHandler(),
 	})
-	m.RegisterWithConfig(sm.StateRegDocumentType, sm.HandlerConfig{
-		InputType: sm.InputButton,
-		Options:   []string{"CC", "TI", "CE", "PA", "RC", "MS", "AS"},
-		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
-			result.Messages = append(result.Messages, &sm.ListMessage{
-				Body: "Selecciona tu tipo de documento:", Title: "Seleccionar",
-				Sections: []sm.ListSection{{
-					Title: "Tipos de documento",
-					Rows: []sm.ListRow{
-						{ID: "CC", Title: "CC - Cédula Ciudadanía"},
-						{ID: "TI", Title: "TI - Tarjeta Identidad"},
-						{ID: "CE", Title: "CE - Cédula Extranjería"},
-						{ID: "PA", Title: "PA - Pasaporte"},
-						{ID: "RC", Title: "RC - Registro Civil"},
-						{ID: "MS", Title: "MS - Menor sin ID"},
-						{ID: "AS", Title: "AS - Adulto sin ID"},
-					},
-				}},
-			})
-		},
-		Handler: withCorrectionRedirect(regDocumentTypeHandler()),
-	})
+	// Tipo de documento: 15 tipos del catálogo SIESA sis_tipo_documento. WhatsApp limita las
+	// listas interactivas a 10 filas, por eso se ofrece como menú de texto numerado.
+	m.Register(sm.StateRegDocumentType, withCorrectionRedirect(regDocumentTypeHandler()))
 	m.Register(sm.StateRegDocumentIssuePlace, regDocumentIssuePlaceHandler())
 	m.Register(sm.StateRegFirstSurname, withCorrectionRedirect(regFieldHandler("reg_first_surname", "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondSurname, "Si tienes *segundo apellido*, escríbelo. Si no, responde *NA*:")))
 	m.Register(sm.StateRegSecondSurname, regOptionalFieldHandler("reg_second_surname", "Si tienes segundo apellido, escríbelo. Si no, responde *NA*:", sm.StateRegFirstName, "Por favor escribe tu *primer nombre* (solo letras, sin números ni símbolos):"))
 	m.Register(sm.StateRegFirstName, withCorrectionRedirect(regFieldHandler("reg_first_name", "Por favor escribe tu primer nombre (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondName, "Si tienes *segundo nombre*, escríbelo. Si no, responde *NA*:")))
 	m.Register(sm.StateRegSecondName, regOptionalFieldHandler("reg_second_name", "Si tienes segundo nombre, escríbelo. Si no, responde *NA*:", sm.StateRegBirthDate, "Ingresa tu *fecha de nacimiento* en formato *AAAA-MM-DD* (ejemplo: 1992-04-17):"))
 	m.Register(sm.StateRegBirthDate, withCorrectionRedirect(regBirthDateHandler()))
-	m.Register(sm.StateRegBirthPlace, regBirthPlaceHandler())
 	m.RegisterWithConfig(sm.StateRegGender, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"M", "F"},
@@ -77,9 +58,20 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: regGenderHandler(),
 	})
+	m.RegisterWithConfig(sm.StateRegBloodType, sm.HandlerConfig{
+		InputType: sm.InputButton,
+		Options:   bloodTypeValues(),
+		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
+			result.Messages = append(result.Messages, &sm.ListMessage{
+				Body: "Selecciona tu grupo sanguíneo (RH):", Title: "Seleccionar",
+				Sections: []sm.ListSection{{Title: "Grupo sanguíneo", Rows: bloodTypeListRows()}},
+			})
+		},
+		Handler: withCorrectionRedirect(regBloodTypeHandler()),
+	})
 	m.RegisterWithConfig(sm.StateRegMaritalStatus, sm.HandlerConfig{
 		InputType: sm.InputButton,
-		Options:   []string{"1", "2", "3", "4", "5", "6"},
+		Options:   []string{"1", "2", "3", "4", "5"},
 		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
 			result.Messages = append(result.Messages, &sm.ListMessage{
 				Body: "Selecciona tu estado civil:", Title: "Seleccionar",
@@ -88,12 +80,13 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: withCorrectionRedirect(regMaritalStatusHandler()),
 	})
-	m.Register(sm.StateRegAddress, withCorrectionRedirect(regFieldHandler("reg_address", "Escribe tu dirección completa (calle, número, barrio).", validateNotEmpty, sm.StateRegPhone, "Ingresa tu *celular principal* preferiblemente con WhatsApp (ej: 3001234567):")))
+	m.Register(sm.StateRegAddress, withCorrectionRedirect(regFieldHandler("reg_address", "Escribe tu dirección (calle y número).", validateNotEmpty, sm.StateRegBarrio, "¿En qué *barrio* vives? Escribe el nombre (ej: La Esperanza) o responde *NA* si no lo sabes:")))
 	m.Register(sm.StateRegPhone, withCorrectionRedirect(regPhoneHandler()))
 	m.Register(sm.StateRegPhone2, regOptionalPhoneHandler())
 	m.Register(sm.StateRegEmail, withCorrectionRedirect(regEmailHandler()))
-	m.Register(sm.StateRegOccupation, regFieldHandler("reg_occupation", "Indica tu ocupación (ej.: Empleado, Estudiante).", validateNotEmpty, sm.StateRegMunicipality, "Escribe tu *municipio de residencia* (ej.: Villavicencio):"))
 	m.Register(sm.StateRegMunicipality, regMunicipalityHandler(municipalityRepo))
+	m.Register(sm.StateRegBarrio, regBarrioHandler(municipalityRepo))
+	m.Register(sm.StateConfirmMunicipality, confirmMunicipalityHandler(municipalityRepo, patientSvc))
 	m.RegisterWithConfig(sm.StateRegZone, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"U", "R"},
@@ -121,15 +114,11 @@ func RegisterRegistrationHandlers(
 	})
 	m.RegisterWithConfig(sm.StateRegAffiliationType, sm.HandlerConfig{
 		InputType: sm.InputButton,
-		Options:   []string{"C", "B", "O"},
+		Options:   affiliationTypeValues(),
 		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
-			result.Messages = append(result.Messages, &sm.ButtonMessage{
-				Text: "Selecciona tu tipo de afiliación:",
-				Buttons: []sm.Button{
-					{Text: "Cotizante", Payload: "C"},
-					{Text: "Beneficiario", Payload: "B"},
-					{Text: "Otro", Payload: "O"},
-				},
+			result.Messages = append(result.Messages, &sm.ListMessage{
+				Body: "Selecciona tu tipo de afiliación:", Title: "Tipo de afiliación",
+				Sections: []sm.ListSection{{Title: "Tipo de afiliación", Rows: affiliationTypeListRows()}},
 			})
 		},
 		Handler: regAffiliationTypeHandler(),
@@ -239,21 +228,10 @@ func registrationStartHandler() sm.StateHandler {
 		selected := sm.ValidatedPayload(ctx)
 		switch selected {
 		case "register_yes":
-			// Copy entity data from pre-registration context (entity_management.go flow)
-			r := sm.NewResult(sm.StateRegDocumentType).
-				WithList("¡Perfecto! Vamos a registrarte. Selecciona tu *tipo de documento*:", "Seleccionar",
-					sm.ListSection{
-						Title: "Tipos de documento",
-						Rows: []sm.ListRow{
-							{ID: "CC", Title: "CC - Cédula Ciudadanía"},
-							{ID: "TI", Title: "TI - Tarjeta Identidad"},
-							{ID: "CE", Title: "CE - Cédula Extranjería"},
-							{ID: "PA", Title: "PA - Pasaporte"},
-							{ID: "RC", Title: "RC - Registro Civil"},
-							{ID: "MS", Title: "MS - Menor sin ID"},
-							{ID: "AS", Title: "AS - Adulto sin ID"},
-						},
-					}).
+			// El tipo de documento (reg_document_type) y el número (patient_doc) ya se pidieron
+			// antes de la búsqueda, así que el registro arranca directo en el primer apellido.
+			r := sm.NewResult(sm.StateRegFirstSurname).
+				WithText("¡Perfecto! Vamos a registrarte.\n\nPor favor escribe tu *primer apellido* (solo letras, sin números ni símbolos):").
 				WithEvent("registration_started", nil)
 
 			// Entity and client type already selected before registration
@@ -277,13 +255,62 @@ func registrationStartHandler() sm.StateHandler {
 	}
 }
 
-// REG_DOCUMENT_TYPE — solo lógica de negocio (validación declarativa en RegisterWithConfig).
+// documentTypeCatalog mirrors SIESA's sis_tipo_documento (abreviatura → descripción).
+// The Code is what gets stored in sis_paci.tipo_id. Ordered by expected frequency.
+var documentTypeCatalog = []struct{ Code, Label string }{
+	{"CC", "Cédula de Ciudadanía"},
+	{"TI", "Tarjeta de Identidad"},
+	{"RC", "Registro Civil"},
+	{"CE", "Cédula de Extranjería"},
+	{"PA", "Pasaporte"},
+	{"PT", "Permiso por Protección Temporal"},
+	{"PE", "Permiso Especial"},
+	{"CN", "Certificado de Nacido Vivo"},
+	{"NUI", "Número Único de Identificación"},
+	{"NIT", "Número de Identificación Tributaria"},
+	{"SV", "Salvoconducto"},
+	{"DE", "Documento Extranjero"},
+}
+
+// docTypeMenuText renders the numbered text menu (WhatsApp lists cap at 10 rows, so the 12
+// document types are offered as text). The "sin identificación" types (AS/MS/SI) are excluded:
+// a patient must have a real identification document to register.
+func docTypeMenuText() string {
+	var b strings.Builder
+	b.WriteString("Selecciona tu *tipo de documento* respondiendo con el *número*:\n")
+	for i, d := range documentTypeCatalog {
+		b.WriteString(fmt.Sprintf("%d. %s - %s\n", i+1, d.Code, d.Label))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// parseDocType resolves a user reply (a 1..15 number, or the code itself) to a catalog code,
+// or "" when invalid.
+func parseDocType(input string) string {
+	s := strings.ToUpper(strings.TrimSpace(input))
+	if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= len(documentTypeCatalog) {
+		return documentTypeCatalog[n-1].Code
+	}
+	for _, d := range documentTypeCatalog {
+		if d.Code == s {
+			return d.Code
+		}
+	}
+	return ""
+}
+
+// REG_DOCUMENT_TYPE — menú de texto numerado (15 tipos del catálogo SIESA).
 func regDocumentTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		selected := sm.ValidatedPayload(ctx)
-		return sm.NewResult(sm.StateRegDocumentIssuePlace).
-			WithContext("reg_document_type", selected).
-			WithText("Ciudad donde se expidió tu documento (ej.: Villavicencio):"), nil
+		retry := sm.ValidateWithRetry(sess, msg.Text,
+			func(s string) bool { return parseDocType(s) != "" }, docTypeMenuText())
+		if retry != nil {
+			return retry, nil
+		}
+		sess.RetryCount = 0
+		return sm.NewResult(sm.StateRegFirstSurname).
+			WithContext("reg_document_type", parseDocType(msg.Text)).
+			WithText("Por favor escribe tu *primer apellido* (solo letras, sin números ni símbolos):"), nil
 	}
 }
 
@@ -348,35 +375,11 @@ func regBirthDateHandler() sm.StateHandler {
 		age := services.CalculateAge(parsedDate)
 		sess.RetryCount = 0
 
-		return sm.NewResult(sm.StateRegBirthPlace).
+		// Lugar de nacimiento: SIESA no tiene columna para ello (eliminado del flujo).
+		// Pasamos directo a género.
+		return sm.NewResult(sm.StateRegGender).
 			WithContext("reg_birth_date", parsedDate.Format("2006-01-02")).
 			WithContext("patient_age", fmt.Sprintf("%d", age)).
-			WithText("Ciudad de nacimiento (ej.: Villavicencio):"), nil
-	}
-}
-
-// REG_BIRTH_PLACE (interactivo) — lugar de nacimiento
-func regBirthPlaceHandler() sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		input := strings.TrimSpace(msg.Text)
-
-		// Reject internal trigger texts (e.g. __resume__)
-		if sm.IsReservedKeyword(input) {
-			input = ""
-		}
-
-		retryResult := sm.ValidateWithRetry(sess, input, validateNotEmpty, "Ciudad de nacimiento (ej.: Villavicencio):")
-		if retryResult != nil {
-			return retryResult, nil
-		}
-
-		value := strings.ToUpper(input)
-		if len(value) > 15 {
-			value = value[:15]
-		}
-
-		return sm.NewResult(sm.StateRegGender).
-			WithContext("reg_birth_place", value).
 			WithButtons("Selecciona tu *género*:",
 				sm.Button{Text: "Masculino", Payload: "M"},
 				sm.Button{Text: "Femenino", Payload: "F"},
@@ -388,9 +391,24 @@ func regBirthPlaceHandler() sm.StateHandler {
 func regGenderHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
-		return sm.NewResult(sm.StateRegMaritalStatus).
+		return sm.NewResult(sm.StateRegBloodType).
 			WithContext("reg_gender", selected).
 			WithContext("patient_gender", selected).
+			WithList("Selecciona tu *grupo sanguíneo (RH)*:", "Seleccionar",
+				sm.ListSection{
+					Title: "Grupo sanguíneo",
+					Rows:  bloodTypeListRows(),
+				}), nil
+	}
+}
+
+// REG_BLOOD_TYPE — solo lógica de negocio (validación declarativa en RegisterWithConfig).
+// Guarda el valor exacto del catálogo sis_tiposangre (ej. "O+") en reg_blood_type.
+func regBloodTypeHandler() sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		selected := sm.ValidatedPayload(ctx)
+		return sm.NewResult(sm.StateRegMaritalStatus).
+			WithContext("reg_blood_type", selected).
 			WithList("Selecciona tu *estado civil*:", "Seleccionar",
 				sm.ListSection{
 					Title: "Estado civil",
@@ -403,9 +421,9 @@ func regGenderHandler() sm.StateHandler {
 func regMaritalStatusHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
-		return sm.NewResult(sm.StateRegAddress).
+		return sm.NewResult(sm.StateRegPhone).
 			WithContext("reg_marital_status", selected).
-			WithText("Escribe tu dirección completa (calle, número, barrio):"), nil
+			WithText("Ingresa tu *celular principal* preferiblemente con WhatsApp (ej: 3001234567):"), nil
 	}
 }
 
@@ -461,9 +479,10 @@ func regEmailHandler() sm.StateHandler {
 		lower := strings.ToLower(input)
 
 		if noResponses[lower] {
-			return sm.NewResult(sm.StateRegOccupation).
+			return sm.NewResult(sm.StateRegUserType).
 				WithContext("reg_email", "").
-				WithText("Indica tu ocupación (ej.: Empleado, Estudiante):"), nil
+				WithList("Selecciona tu *tipo de usuario*:", "Tipo de usuario",
+					sm.ListSection{Title: "Tipo de usuario", Rows: userTypeListRows()}), nil
 		}
 
 		if !validators.Email(lower) {
@@ -473,9 +492,10 @@ func regEmailHandler() sm.StateHandler {
 		}
 
 		sess.RetryCount = 0
-		return sm.NewResult(sm.StateRegOccupation).
+		return sm.NewResult(sm.StateRegUserType).
 			WithContext("reg_email", lower).
-			WithText("Indica tu ocupación (ej.: Empleado, Estudiante):"), nil
+			WithList("Selecciona tu *tipo de usuario*:", "Tipo de usuario",
+				sm.ListSection{Title: "Tipo de usuario", Rows: userTypeListRows()}), nil
 	}
 }
 
@@ -532,7 +552,7 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 		if len(results) == 0 {
 			sess.RetryCount++
 			return sm.NewResult(sess.CurrentState).
-				WithText("No encontré ese municipio. Escribe el nombre completo (ej: *Villavicencio*, *Acacias*) o escribe *0* para usar Villavicencio por defecto:"), nil
+				WithText("No encontré ese municipio. Escribe el municipio y departamento (ej: *Villavicencio - Meta*, *Acacías - Meta*) o escribe *0* para usar Villavicencio por defecto:"), nil
 		}
 
 		outcome, errResult := sm.ValidateSearchCount(sess, len(results), 5,
@@ -578,13 +598,9 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 func regZoneHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
-		return sm.NewResult(sm.StateRegUserType).
+		return sm.NewResult(sm.StateRegAddress).
 			WithContext("reg_zone", selected).
-			WithList("Selecciona tu *tipo de usuario*:", "Tipo de usuario",
-				sm.ListSection{
-					Title: "Tipo de usuario",
-					Rows:  userTypeListRows(),
-				}), nil
+			WithText("Escribe tu *dirección* (calle y número):"), nil
 	}
 }
 
@@ -595,11 +611,8 @@ func regUserTypeHandler() sm.StateHandler {
 		selected := sm.ValidatedPayload(ctx)
 		return sm.NewResult(sm.StateRegAffiliationType).
 			WithContext("reg_user_type", selected).
-			WithButtons("¿Cuál es tu *tipo de afiliación*?",
-				sm.Button{Text: "Cotizante", Payload: "C"},
-				sm.Button{Text: "Beneficiario", Payload: "B"},
-				sm.Button{Text: "Otro", Payload: "O"},
-			), nil
+			WithList("Selecciona tu *tipo de afiliación*:", "Tipo de afiliación",
+				sm.ListSection{Title: "Tipo de afiliación", Rows: affiliationTypeListRows()}), nil
 	}
 }
 
@@ -629,16 +642,10 @@ func userTypeListRows() []sm.ListRow {
 func regAffiliationTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
-
-		// Apply to session before building summary so it reflects the new value.
-		sess.SetContext("reg_affiliation_type", selected)
-
-		return sm.NewResult(sm.StateConfirmRegistration).
+		// Inicia el grupo de dirección: municipio → zona → dirección → barrio.
+		return sm.NewResult(sm.StateRegMunicipality).
 			WithContext("reg_affiliation_type", selected).
-			WithButtons(buildRegistrationSummary(sess),
-				sm.Button{Text: "✅ Sí, confirmar", Payload: "reg_confirm"},
-				sm.Button{Text: "✏️ Corregir datos", Payload: "reg_correct"},
-			), nil
+			WithText("Escribe tu *municipio y departamento de residencia* (ej.: Villavicencio - Meta):"), nil
 	}
 }
 
@@ -658,6 +665,164 @@ func confirmRegistrationHandler() sm.StateHandler {
 		}
 		return nil, fmt.Errorf("unreachable")
 	}
+}
+
+// CONFIRM_MUNICIPALITY (interactivo) — SANITAS: confirma o edita el municipio de
+// residencia para resolver el contrato (MRC vs Evento) antes de agendar.
+func confirmMunicipalityHandler(municipalityRepo repository.MunicipalityRepository, patientSvc *services.PatientService) sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		if msg.IsPostback {
+			switch msg.PostbackPayload {
+			case "muni_ok":
+				return finalizeSanitasMunicipality(ctx, sess, patientSvc,
+					sess.GetContext("patient_dep"), sess.GetContext("patient_muni")), nil
+			case "muni_change":
+				return sm.NewResult(sm.StateConfirmMunicipality).
+					WithText("Escribe el nombre de tu municipio y departamento de residencia (ej: *Acacías - Meta*):"), nil
+			default:
+				// Selección desde la lista de desambiguación: payload "depCod-muniCod".
+				parts := strings.SplitN(msg.PostbackPayload, "-", 2)
+				if len(parts) == 2 {
+					return finalizeSanitasMunicipality(ctx, sess, patientSvc, parts[0], parts[1]), nil
+				}
+			}
+		}
+
+		input := strings.TrimSpace(msg.Text)
+		if input == "" {
+			return sm.NewResult(sm.StateConfirmMunicipality).
+				WithText("Escribe tu municipio y departamento de residencia (ej: *Acacías - Meta*):"), nil
+		}
+
+		results, err := municipalityRepo.Search(ctx, input)
+		if err != nil {
+			return sm.NewResult(sm.StateConfirmMunicipality).
+				WithText("No pudimos buscar el municipio en este momento. Intenta de nuevo:"), nil
+		}
+		if len(results) == 0 {
+			sess.RetryCount++
+			return sm.NewResult(sm.StateConfirmMunicipality).
+				WithText("No encontré ese municipio. Escribe el municipio y departamento (ej: *Acacías - Meta*):"), nil
+		}
+
+		outcome, errResult := sm.ValidateSearchCount(sess, len(results), 5,
+			"No encontré municipios con ese nombre. Intenta con otro nombre:",
+			"Encontré demasiados resultados. Sé más específico con el departamento (ej: *Acacías - Meta*):")
+		if errResult != nil {
+			return errResult, nil
+		}
+
+		if outcome == sm.SearchExact {
+			sess.RetryCount = 0
+			return finalizeSanitasMunicipality(ctx, sess, patientSvc,
+				results[0].DepartmentCode, results[0].MunicipalityCode), nil
+		}
+
+		// SearchMultiple → lista para desambiguar
+		rows := make([]sm.ListRow, len(results))
+		r := sm.NewResult(sm.StateConfirmMunicipality)
+		for i, res := range results {
+			compositeID := res.DepartmentCode + "-" + res.MunicipalityCode
+			rows[i] = sm.ListRow{
+				ID:          compositeID,
+				Title:       res.MunicipalityName,
+				Description: res.DepartmentName,
+			}
+		}
+		return r.WithList("Selecciona tu municipio:", "Municipios",
+			sm.ListSection{Title: "Resultados", Rows: rows}), nil
+	}
+}
+
+// finalizeSanitasMunicipality resuelve y persiste el contrato SANITAS según el
+// municipio confirmado/editado y continúa hacia la orden médica. Si el municipio
+// cambió respecto al guardado, también lo persiste en el paciente (sis_paci).
+func finalizeSanitasMunicipality(ctx context.Context, sess *session.Session, patientSvc *services.PatientService, depCode, muniCode string) *sm.StateResult {
+	r := sm.NewResult(sm.StateAskMedicalOrder)
+	patientID := sess.GetContext("patient_id")
+	applyEPSContract(ctx, r, patientSvc, patientID, entitySanitas, sess.GetContext("eps_regimen"), depCode, muniCode)
+
+	// Persistir municipio/departamento si el paciente los cambió.
+	changed := depCode != sess.GetContext("patient_dep") || muniCode != sess.GetContext("patient_muni")
+	if changed && patientSvc != nil && patientID != "" && depCode != "" && muniCode != "" {
+		_ = patientSvc.UpdateMunicipality(ctx, patientID, depCode, muniCode)
+		r.WithContext("patient_dep", depCode).
+			WithContext("patient_muni", muniCode)
+	}
+	return r
+}
+
+// REG_BARRIO (interactivo) — búsqueda de barrio en sis_barrios, acotada al municipio.
+// Guarda sis_barrios.codigo en reg_barrio. Es el último dato antes del resumen.
+func regBarrioHandler(municipalityRepo repository.MunicipalityRepository) sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		dep := sess.GetContext("reg_department")
+		muni := sess.GetContext("reg_municipality")
+
+		// Selección desde la lista de desambiguación (postback con código de barrio).
+		if msg.IsPostback {
+			sess.RetryCount = 0
+			code := msg.PostbackPayload
+			return finishRegistrationWithBarrio(sess, code, sess.GetContext("barrio_"+code)), nil
+		}
+
+		input := strings.TrimSpace(msg.Text)
+		// Atajo: "NA" (o equivalentes) omite el barrio (queda sin dato). No se usa "0"
+		// porque el interceptor global de menú lo captura antes de llegar aquí.
+		if noResponses[strings.ToLower(input)] {
+			sess.RetryCount = 0
+			return finishRegistrationWithBarrio(sess, "", ""), nil
+		}
+		if input == "" {
+			return sm.NewResult(sm.StateRegBarrio).
+				WithText("Escribe el nombre de tu *barrio* (ej: La Esperanza) o responde *NA* si no lo sabes:"), nil
+		}
+
+		results, err := municipalityRepo.SearchBarrios(ctx, input, dep, muni)
+		if err != nil {
+			return sm.NewResult(sm.StateRegBarrio).
+				WithText("No pudimos buscar el barrio en este momento. Intenta de nuevo:"), nil
+		}
+		if len(results) == 0 {
+			sess.RetryCount++
+			return sm.NewResult(sm.StateRegBarrio).
+				WithText("No encontré ese barrio en tu municipio. Escribe el nombre de otra forma o responde *NA* si no lo sabes:"), nil
+		}
+
+		outcome, errResult := sm.ValidateSearchCount(sess, len(results), 9,
+			"No encontré barrios con ese nombre. Intenta con otro:",
+			"Encontré demasiados resultados. Sé más específico con el nombre del barrio:")
+		if errResult != nil {
+			return errResult, nil
+		}
+
+		if outcome == sm.SearchExact {
+			sess.RetryCount = 0
+			return finishRegistrationWithBarrio(sess, results[0].Code, results[0].Name), nil
+		}
+
+		rows := make([]sm.ListRow, len(results))
+		r := sm.NewResult(sm.StateRegBarrio)
+		for i, b := range results {
+			rows[i] = sm.ListRow{ID: b.Code, Title: b.Name}
+			r.WithContext("barrio_"+b.Code, b.Name)
+		}
+		return r.WithList("Selecciona tu barrio:", "Barrios",
+			sm.ListSection{Title: "Resultados", Rows: rows}), nil
+	}
+}
+
+// finishRegistrationWithBarrio guarda el barrio y muestra el resumen para confirmar.
+func finishRegistrationWithBarrio(sess *session.Session, code, name string) *sm.StateResult {
+	sess.SetContext("reg_barrio", code)
+	sess.SetContext("reg_barrio_name", name)
+	return sm.NewResult(sm.StateConfirmRegistration).
+		WithContext("reg_barrio", code).
+		WithContext("reg_barrio_name", name).
+		WithButtons(buildRegistrationSummary(sess),
+			sm.Button{Text: "✅ Sí, confirmar", Payload: "reg_confirm"},
+			sm.Button{Text: "✏️ Corregir datos", Payload: "reg_correct"},
+		)
 }
 
 // CREATE_PATIENT (automático) — crea paciente en BD externa
@@ -680,9 +845,9 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 			FirstSurname:       sess.GetContext("reg_first_surname"),
 			SecondSurname:      sess.GetContext("reg_second_surname"),
 			BirthDate:          birthDate,
-			BirthPlace:         sess.GetContext("reg_birth_place"),
 			Gender:             sess.GetContext("reg_gender"),
 			Phone:              sess.GetContext("reg_phone"),
+			Phone2:             sess.GetContext("reg_phone2"),
 			Email:              sess.GetContext("reg_email"),
 			Address:            sess.GetContext("reg_address"),
 			DepartmentCode:     sess.GetContext("reg_department"),
@@ -691,8 +856,9 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 			EntityCode:         entityCode,
 			AffiliationType:    sess.GetContext("reg_affiliation_type"),
 			UserType:           sess.GetContext("reg_user_type"),
-			Occupation:         sess.GetContext("reg_occupation"),
 			MaritalStatus:      sess.GetContext("reg_marital_status"),
+			BloodType:          sess.GetContext("reg_blood_type"),
+			Barrio:             sess.GetContext("reg_barrio"),
 			CountryCode:        "170",
 		}
 
@@ -728,11 +894,22 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 		sess.PatientName = fullName
 		sess.PatientEntity = entityCode
 
-		return sm.NewResult(sm.StateAskMedicalOrder).
+		r := sm.NewResult(sm.StateAskMedicalOrder).
 			WithContext("patient_id", patientID).
 			WithContext("patient_name", fullName).
 			WithText(fmt.Sprintf("✅ *¡Registro exitoso!*\n\nBienvenido/a *%s*. Ahora procedamos a agendar tu cita.", fullName)).
-			WithEvent("registration_success", map[string]interface{}{"patient_id": patientID}), nil
+			WithEvent("registration_success", map[string]interface{}{"patient_id": patientID})
+
+		// EPS contract resolution: the patient just entered régimen and municipality
+		// during registration, so resolve and persist the contract directly.
+		if isEPSWithMatrix(entityCode) {
+			applyEPSContract(ctx, r, patientSvc, patientID, entityCode,
+				sess.GetContext("eps_regimen"),
+				sess.GetContext("reg_department"),
+				sess.GetContext("reg_municipality"))
+		}
+
+		return r, nil
 	}
 }
 
@@ -745,39 +922,53 @@ func buildRegistrationSummary(sess *session.Session) string {
 	}
 
 	return fmt.Sprintf("*Resumen de tu registro:*\n\n"+
+		"*Datos personales*\n"+
 		"Documento: %s %s\n"+
-		"Lugar de expedición: %s\n"+
 		"Nombre: %s %s %s %s\n"+
 		"Nacimiento: %s (Edad: %s)\n"+
-		"Lugar de nacimiento: %s\n"+
 		"Género: %s\n"+
+		"RH: %s\n"+
 		"Estado civil: %s\n"+
-		"Dirección: %s\n"+
 		"Teléfono: %s\n"+
-		"Email: %s\n"+
-		"Ocupación: %s\n"+
-		"Municipio: %s\n"+
+		"Email: %s\n\n"+
+		"*Afiliación*\n"+
 		"Entidad: %s\n"+
 		"Tipo usuario: %s\n"+
 		"Afiliación: %s\n\n"+
+		"*Dirección*\n"+
+		"Municipio: %s\n"+
+		"Zona: %s\n"+
+		"Dirección: %s\n"+
+		"Barrio: %s\n\n"+
 		"¿Los datos son correctos?",
 		sess.GetContext("reg_document_type"), sess.GetContext("patient_doc"),
-		formatOptional(sess.GetContext("reg_document_issue_place")),
 		sess.GetContext("reg_first_name"), sess.GetContext("reg_second_name"),
 		sess.GetContext("reg_first_surname"), sess.GetContext("reg_second_surname"),
 		sess.GetContext("reg_birth_date"), sess.GetContext("patient_age"),
-		formatOptional(sess.GetContext("reg_birth_place")),
 		formatGender(sess.GetContext("reg_gender")),
+		formatOptional(sess.GetContext("reg_blood_type")),
 		formatMaritalStatus(sess.GetContext("reg_marital_status")),
-		sess.GetContext("reg_address"),
 		sess.GetContext("reg_phone"),
 		formatOptional(sess.GetContext("reg_email")),
-		sess.GetContext("reg_occupation"),
-		formatMunicipality(sess.GetContext("reg_municipality"), sess.GetContext("reg_municipality_name")),
 		entityDisplay,
 		formatUserType(sess.GetContext("reg_user_type")),
 		formatAffiliation(sess.GetContext("reg_affiliation_type")),
+		formatMunicipality(sess.GetContext("reg_municipality"), sess.GetContext("reg_municipality_name")),
+		formatZone(sess.GetContext("reg_zone")),
+		sess.GetContext("reg_address"),
+		formatOptional(sess.GetContext("reg_barrio_name")),
 	)
+}
+
+func formatZone(z string) string {
+	switch z {
+	case "U":
+		return "Urbana"
+	case "R":
+		return "Rural"
+	default:
+		return z
+	}
 }
 
 func formatGender(g string) string {
@@ -805,6 +996,22 @@ func formatOptional(s string) string {
 	return s
 }
 
+// bloodTypeValues returns the exact catalog values (sis_tiposangre.valor) stored in
+// sis_paci.tipo_sangre. Used as both list-row IDs and valid payloads.
+func bloodTypeValues() []string {
+	return []string{"O+", "O-", "A+", "A-", "B+", "B-", "AB+", "AB-", "No Aplica"}
+}
+
+// bloodTypeListRows returns the blood-type (RH) options from the sis_tiposangre catalog.
+func bloodTypeListRows() []sm.ListRow {
+	values := bloodTypeValues()
+	rows := make([]sm.ListRow, len(values))
+	for i, v := range values {
+		rows[i] = sm.ListRow{ID: v, Title: v}
+	}
+	return rows
+}
+
 // maritalStatusListRows returns the 6 marital status options (numeric IDs for DB column EstadoCivil int).
 func maritalStatusListRows() []sm.ListRow {
 	return []sm.ListRow{
@@ -812,8 +1019,7 @@ func maritalStatusListRows() []sm.ListRow {
 		{ID: "2", Title: "Casado/a"},
 		{ID: "3", Title: "Viudo/a"},
 		{ID: "4", Title: "Unión libre"},
-		{ID: "5", Title: "Separado/Divorciado"},
-		{ID: "6", Title: "Sin información"},
+		{ID: "5", Title: "Divorciado/a"},
 	}
 }
 
@@ -823,8 +1029,7 @@ var maritalStatusLabels = map[string]string{
 	"2": "Casado/a",
 	"3": "Viudo/a",
 	"4": "Unión libre",
-	"5": "Separado/Divorciado",
-	"6": "Sin información",
+	"5": "Divorciado/a",
 }
 
 func formatMaritalStatus(id string) string {
@@ -834,11 +1039,27 @@ func formatMaritalStatus(id string) string {
 	return id
 }
 
-// affiliationLabels maps single-char IDs to display labels.
+// affiliationLabels maps TipoAfiliado catalog IDs to display labels.
 var affiliationLabels = map[string]string{
-	"C": "Cotizante",
-	"B": "Beneficiario",
-	"O": "Otro",
+	"1": "Cotizante",
+	"2": "Beneficiario",
+	"3": "Sustituto de pensión",
+	"4": "Pensionado",
+}
+
+// affiliationTypeValues returns the valid payloads (TipoAfiliado catalog IDs).
+func affiliationTypeValues() []string {
+	return []string{"1", "2", "3", "4"}
+}
+
+// affiliationTypeListRows returns the 4 affiliation options from the TipoAfiliado catalog.
+func affiliationTypeListRows() []sm.ListRow {
+	return []sm.ListRow{
+		{ID: "1", Title: "Cotizante"},
+		{ID: "2", Title: "Beneficiario"},
+		{ID: "3", Title: "Sustituto de pensión"},
+		{ID: "4", Title: "Pensionado"},
+	}
 }
 
 func formatAffiliation(id string) string {
@@ -948,21 +1169,7 @@ func correctionFields() []correctionField {
 			}},
 		{ID: "corr_document_type", Title: "Tipo de documento", State: sm.StateRegDocumentType,
 			Prompt: func() sm.OutboundMessage {
-				return &sm.ListMessage{
-					Body: "Selecciona tu *tipo de documento*:", Title: "Seleccionar",
-					Sections: []sm.ListSection{{
-						Title: "Tipos de documento",
-						Rows: []sm.ListRow{
-							{ID: "CC", Title: "CC - Cédula Ciudadanía"},
-							{ID: "TI", Title: "TI - Tarjeta Identidad"},
-							{ID: "CE", Title: "CE - Cédula Extranjería"},
-							{ID: "PA", Title: "PA - Pasaporte"},
-							{ID: "RC", Title: "RC - Registro Civil"},
-							{ID: "MS", Title: "MS - Menor sin ID"},
-							{ID: "AS", Title: "AS - Adulto sin ID"},
-						},
-					}},
-				}
+				return &sm.TextMessage{Text: docTypeMenuText()}
 			}},
 		{ID: "corr_marital_status", Title: "Estado civil", State: sm.StateRegMaritalStatus,
 			Prompt: func() sm.OutboundMessage {
@@ -1018,19 +1225,7 @@ func regSelectCorrectionHandler() sm.StateHandler {
 			// "Empezar de nuevo" = full restart without correction mode
 			if field.Prompt == nil {
 				return sm.NewResult(field.State).
-					WithList("Vamos a corregir tus datos. Comencemos de nuevo.\n\nSelecciona tu *tipo de documento*:", "Seleccionar",
-						sm.ListSection{
-							Title: "Tipos de documento",
-							Rows: []sm.ListRow{
-								{ID: "CC", Title: "CC - Cédula Ciudadanía"},
-								{ID: "TI", Title: "TI - Tarjeta Identidad"},
-								{ID: "CE", Title: "CE - Cédula Extranjería"},
-								{ID: "PA", Title: "PA - Pasaporte"},
-								{ID: "RC", Title: "RC - Registro Civil"},
-								{ID: "MS", Title: "MS - Menor sin ID"},
-								{ID: "AS", Title: "AS - Adulto sin ID"},
-							},
-						}).
+					WithText("Vamos a corregir tus datos. Comencemos de nuevo.\n\n" + docTypeMenuText()).
 					WithClearCtx("reg_correction_mode").
 					WithEvent("registration_restart", nil), nil
 			}

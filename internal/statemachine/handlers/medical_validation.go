@@ -537,13 +537,13 @@ func checkPriorConsultHandler(apptSvc *services.AppointmentService) sm.StateHand
 
 // CHECK_MRC_LIMIT (automático) — marca flag para filtro mensual MRC en búsqueda de slots.
 // Ya no bloquea aquí; el filtro se aplica en SEARCH_SLOTS via MonthFilter.
-// Solo aplica a entidades Sanitas (SAN02 en Antares, EPS005 en SIESA).
+// Solo aplica a pacientes Sanitas MRC (contratos 5 y 6 en SIESA).
 func checkMRCLimitHandler(apptSvc *services.AppointmentService) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsCode := sess.GetContext("cups_code")
-		entity := sess.GetContext("patient_entity")
+		contract := sess.GetContext("patient_contract")
 
-		if services.IsMRCEntity(entity) {
+		if services.IsMRCPatient(contract) {
 			if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 				return sm.NewResult(sm.StateCheckAgeRestriction).
 					WithContext("mrc_limit_check", "1"), nil

@@ -29,8 +29,8 @@ func TestRegistrationStart_Yes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegDocumentType {
-		t.Errorf("expected REG_DOCUMENT_TYPE, got %s", result.NextState)
+	if result.NextState != sm.StateRegFirstSurname {
+		t.Errorf("expected REG_FIRST_SURNAME (doc type + issue place removed), got %s", result.NextState)
 	}
 }
 
@@ -49,11 +49,8 @@ func TestRegistrationStart_No(t *testing.T) {
 }
 
 func registerDocumentTypeConfig(m *sm.Machine) {
-	m.RegisterWithConfig(sm.StateRegDocumentType, sm.HandlerConfig{
-		InputType: sm.InputButton,
-		Options:   []string{"CC", "TI", "CE", "PA", "RC", "MS", "AS"},
-		Handler:   regDocumentTypeHandler(),
-	})
+	// Doc type is now a numbered text menu (12 catalog types), not an interactive button list.
+	m.Register(sm.StateRegDocumentType, regDocumentTypeHandler())
 }
 
 func TestRegDocumentType_Valid(t *testing.T) {
@@ -61,12 +58,12 @@ func TestRegDocumentType_Valid(t *testing.T) {
 	registerDocumentTypeConfig(m)
 
 	sess := testSess(sm.StateRegDocumentType)
-	result, err := m.Process(context.Background(), sess, postbackM("CC"))
+	result, err := m.Process(context.Background(), sess, textM("CC"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegDocumentIssuePlace {
-		t.Errorf("expected REG_DOCUMENT_ISSUE_PLACE, got %s", result.NextState)
+	if result.NextState != sm.StateRegFirstSurname {
+		t.Errorf("expected REG_FIRST_SURNAME, got %s", result.NextState)
 	}
 }
 
@@ -121,8 +118,9 @@ func TestRegBirthDate_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegBirthPlace {
-		t.Errorf("expected REG_BIRTH_PLACE, got %s", result.NextState)
+	// Birth place was removed (no SIESA column); birth date now goes straight to gender.
+	if result.NextState != sm.StateRegGender {
+		t.Errorf("expected REG_GENDER, got %s", result.NextState)
 	}
 }
 
@@ -311,6 +309,10 @@ func (m *mockMunicipalityRepo) Search(ctx context.Context, query string) ([]doma
 	return nil, nil
 }
 
+func (m *mockMunicipalityRepo) SearchBarrios(ctx context.Context, name, depCode, muniCode string) ([]domain.Barrio, error) {
+	return nil, nil
+}
+
 
 // =============================================================================
 // Tests for regOptionalFieldHandler (second surname / second name)
@@ -385,8 +387,8 @@ func TestRegGender_Male(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegMaritalStatus {
-		t.Errorf("expected REG_MARITAL_STATUS, got %s", result.NextState)
+	if result.NextState != sm.StateRegBloodType {
+		t.Errorf("expected REG_BLOOD_TYPE, got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_gender"]; v != "M" {
 		t.Errorf("expected reg_gender=M, got %q", v)
@@ -405,8 +407,8 @@ func TestRegGender_Female(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegMaritalStatus {
-		t.Errorf("expected REG_MARITAL_STATUS, got %s", result.NextState)
+	if result.NextState != sm.StateRegBloodType {
+		t.Errorf("expected REG_BLOOD_TYPE, got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_gender"]; v != "F" {
 		t.Errorf("expected reg_gender=F, got %q", v)
@@ -448,8 +450,8 @@ func TestRegMaritalStatus_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegAddress {
-		t.Errorf("expected REG_ADDRESS, got %s", result.NextState)
+	if result.NextState != sm.StateRegPhone {
+		t.Errorf("expected REG_PHONE, got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_marital_status"]; v != "1" {
 		t.Errorf("expected reg_marital_status=1, got %q", v)
@@ -465,8 +467,8 @@ func TestRegMaritalStatus_Casado(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegAddress {
-		t.Errorf("expected REG_ADDRESS, got %s", result.NextState)
+	if result.NextState != sm.StateRegPhone {
+		t.Errorf("expected REG_PHONE, got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_marital_status"]; v != "2" {
 		t.Errorf("expected reg_marital_status=2, got %q", v)
@@ -500,8 +502,8 @@ func TestRegEmail_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegOccupation {
-		t.Errorf("expected REG_OCCUPATION, got %s", result.NextState)
+	if result.NextState != sm.StateRegUserType {
+		t.Errorf("expected REG_USER_TYPE (affiliation group after personal), got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_email"]; v != "test@test.com" {
 		t.Errorf("expected reg_email=test@test.com, got %q", v)
@@ -517,8 +519,8 @@ func TestRegEmail_NoTengo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegOccupation {
-		t.Errorf("expected REG_OCCUPATION, got %s", result.NextState)
+	if result.NextState != sm.StateRegUserType {
+		t.Errorf("expected REG_USER_TYPE (affiliation group after personal), got %s", result.NextState)
 	}
 	if v, ok := result.UpdateCtx["reg_email"]; !ok || v != "" {
 		t.Errorf("expected reg_email to be empty, got %q", v)
@@ -730,8 +732,8 @@ func TestRegZone_Urban(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegUserType {
-		t.Errorf("expected REG_USER_TYPE, got %s", result.NextState)
+	if result.NextState != sm.StateRegAddress {
+		t.Errorf("expected REG_ADDRESS (address group), got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_zone"]; v != "U" {
 		t.Errorf("expected reg_zone=U, got %q", v)
@@ -774,7 +776,7 @@ func TestRegUserType_Contributivo(t *testing.T) {
 func registerAffiliationTypeConfig(m *sm.Machine) {
 	m.RegisterWithConfig(sm.StateRegAffiliationType, sm.HandlerConfig{
 		InputType: sm.InputButton,
-		Options:   []string{"C", "B", "O"},
+		Options:   []string{"1", "2", "3", "4"},
 		Handler:   regAffiliationTypeHandler(),
 	})
 }
@@ -784,15 +786,16 @@ func TestRegAffiliationType_Cotizante(t *testing.T) {
 	registerAffiliationTypeConfig(m)
 
 	sess := testSess(sm.StateRegAffiliationType)
-	result, err := m.Process(context.Background(), sess, postbackM("C"))
+	result, err := m.Process(context.Background(), sess, postbackM("1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateConfirmRegistration {
-		t.Errorf("expected CONFIRM_REGISTRATION, got %s", result.NextState)
+	// Affiliation now starts the address group → REG_MUNICIPALITY.
+	if result.NextState != sm.StateRegMunicipality {
+		t.Errorf("expected REG_MUNICIPALITY, got %s", result.NextState)
 	}
-	if v := result.UpdateCtx["reg_affiliation_type"]; v != "C" {
-		t.Errorf("expected reg_affiliation_type=C, got %q", v)
+	if v := result.UpdateCtx["reg_affiliation_type"]; v != "1" {
+		t.Errorf("expected reg_affiliation_type=1, got %q", v)
 	}
 }
 
@@ -981,16 +984,12 @@ func TestCorrectionRedirect_ValidationFails(t *testing.T) {
 
 func TestCorrectionRedirect_DocumentType(t *testing.T) {
 	m := sm.NewMachine()
-	m.RegisterWithConfig(sm.StateRegDocumentType, sm.HandlerConfig{
-		InputType: sm.InputButton,
-		Options:   []string{"CC", "TI", "CE", "PA", "RC", "MS", "AS"},
-		Handler:   withCorrectionRedirect(regDocumentTypeHandler()),
-	})
+	m.Register(sm.StateRegDocumentType, withCorrectionRedirect(regDocumentTypeHandler()))
 
 	sess := correctionTestSession()
 	sess.CurrentState = sm.StateRegDocumentType
 
-	result, err := m.Process(context.Background(), sess, postbackM("TI"))
+	result, err := m.Process(context.Background(), sess, textM("TI"))
 	if err != nil {
 		t.Fatal(err)
 	}

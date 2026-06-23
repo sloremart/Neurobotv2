@@ -1,0 +1,25 @@
+# lefthook.yml — verificación local en cada commit
+# Como Go NO está instalado localmente, todo corre vía Docker (igual que tu build/test).
+# En Windows/Git Bash, MSYS_NO_PATHCONV=1 evita que se corrompa la ruta del volumen.
+#
+# Activación (una sola vez):
+#   1) Instala lefthook:  npm install -g lefthook   (o usa el binario oficial)
+#   2) Instala los hooks: lefthook install
+#
+# La imagen golangci/golangci-lint está basada en golang, así que trae el toolchain Go.
+# Pin de versión idéntico al de .golangci.yml y ci.yml.
+
+pre-commit:
+  parallel: false
+  commands:
+    format-check:
+      glob: "*.go"
+      run: MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app golangci/golangci-lint:v2.11.0 golangci-lint fmt --diff
+    lint-new:
+      glob: "*.go"
+      # --new-from-rev=HEAD: solo falla por problemas NUEVOS respecto al último commit.
+      # Así la deuda histórica del repo no bloquea cada commit desde el día uno.
+      run: MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app golangci/golangci-lint:v2.11.0 golangci-lint run --new-from-rev=HEAD
+
+# Nota: dejamos `go vet`, `go test -race` y `govulncheck` para la CI (son más lentos).
+# El pre-commit prioriza feedback en segundos: formato + lint de lo nuevo.

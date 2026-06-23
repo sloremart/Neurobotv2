@@ -23,9 +23,9 @@ func RegisterEntityManagementHandlers(
 	patientRepo repository.PatientRepository,
 ) {
 	m.Register(sm.StateAskClientType, askClientTypeHandler())
+	m.Register(sm.StateAskEpsRegimen, askEpsRegimenHandler())
 	m.Register(sm.StateShowEntityList, showEntityListHandler(entityRepo))
 	m.Register(sm.StateAskEntityNumber, askEntityNumberHandler(entityRepo))
-	m.Register(sm.StateAskSanitasPlan, askSanitasPlanHandler())
 	// Legacy handlers kept for backwards compatibility
 	m.Register(sm.StateCheckEntity, checkEntityHandler(entityRepo))
 	m.Register(sm.StateConfirmEntity, confirmEntityHandler())
@@ -62,11 +62,64 @@ func askClientTypeHandler() sm.StateHandler {
 
 		label := domain.EntityCategoryLabels[index]
 
+		// PARTICULAR is a single option (PART02): skip the entity list and go
+		// straight to the document step. The contract is resolved from the entity.
+		if strings.Contains(strings.ToUpper(category), "PARTICULAR") {
+			return sm.NewResult(sm.StateAskDocumentType).
+				WithContext("client_type", label).
+				WithContext("entity_category", category).
+				WithContext("menu_option", "agendar").
+				WithContext("selected_entity_code", particularEntityCode).
+				WithContext("selected_entity_name", "Particular").
+				WithText("Has seleccionado atención *particular*.\n\n"+docTypeMenuText()).
+				WithEvent("client_type_selected", map[string]interface{}{"type": label, "category": category}), nil
+		}
+
+		// EPS entities require the régimen (contributivo/subsidiado) before the
+		// entity list, since it selects the contract tariff. Ask it first.
+		if category == "EPS" {
+			return sm.NewResult(sm.StateAskEpsRegimen).
+				WithContext("client_type", label).
+				WithContext("entity_category", category).
+				WithContext("entity_type_index", indexStr).
+				WithButtons("Para tu EPS, indícanos tu régimen de afiliación:",
+					sm.Button{Text: "Contributivo", Payload: "regimen_1"},
+					sm.Button{Text: "Subsidiado", Payload: "regimen_2"},
+				).
+				WithEvent("client_type_selected", map[string]interface{}{"type": label, "category": category}), nil
+		}
+
 		return sm.NewResult(sm.StateShowEntityList).
 			WithContext("client_type", label).
 			WithContext("entity_category", category).
 			WithContext("entity_type_index", indexStr).
 			WithEvent("client_type_selected", map[string]interface{}{"type": label, "category": category}), nil
+	}
+}
+
+// ASK_EPS_REGIMEN (interactivo) — para EPS, pregunta contributivo vs subsidiado.
+// El régimen determina el contrato (tarifa) al agendar.
+func askEpsRegimenHandler() sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		result, selected := sm.ValidateButtonResponse(sess, msg, "regimen_1", "regimen_2")
+		if result != nil {
+			if result.NextState == sm.StateEscalateToAgent {
+				return result, nil
+			}
+			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
+				Text: "Indícanos tu régimen de afiliación:",
+				Buttons: []sm.Button{
+					{Text: "Contributivo", Payload: "regimen_1"},
+					{Text: "Subsidiado", Payload: "regimen_2"},
+				},
+			}}
+			return result, nil
+		}
+
+		regimen := strings.TrimPrefix(selected, "regimen_")
+		return sm.NewResult(sm.StateShowEntityList).
+			WithContext("eps_regimen", regimen).
+			WithEvent("eps_regimen_selected", map[string]interface{}{"regimen": regimen}), nil
 	}
 }
 
@@ -121,29 +174,8 @@ func showEntityListHandler(entityRepo repository.EntityRepository) sm.StateHandl
 				WithEvent("no_entities_found", map[string]interface{}{"category": category}), nil
 		}
 
-		// Sanitas deduplication: keep only SAN02 as the canonical "SANITAS" entry.
-		// The ASK_SANITAS_PLAN submenu handles Premium vs regular distinction.
-		// This removes SAN01 and any other DB code that also displays as "SANITAS".
-		hasSAN02 := false
-		for _, e := range entities {
-			if e.Code == "SAN02" {
-				hasSAN02 = true
-				break
-			}
-		}
-		if hasSAN02 {
-			filtered := entities[:0]
-			for _, e := range entities {
-				if e.Code != "SAN02" && strings.Contains(strings.ToUpper(e.DisplayName()), "SANITAS") {
-					continue
-				}
-				filtered = append(filtered, e)
-			}
-			entities = filtered
-		}
-
 		// Build numbered list and store ordered codes so ASK_ENTITY_NUMBER can resolve
-		// by display index (independent of DB ordering after the filter above).
+		// by display index (independent of DB ordering).
 		codes := make([]string, len(entities))
 		var sb strings.Builder
 		for i, e := range entities {
@@ -208,22 +240,10 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			}
 		}
 
-		// Sanitas submenu: solo para códigos Antares SAN01/SAN02 (no aplica en SIESA)
-		if entityCode == "SAN01" || entityCode == "SAN02" {
-			return sm.NewResult(sm.StateAskSanitasPlan).
-				WithContext("entity_number", fmt.Sprintf("%d", index)).
-				WithContext("menu_option", "agendar").
-				WithButtons("Selecciona tu plan de Sanitas:",
-					sm.Button{Text: "Sanitas Premium", Payload: "sanitas_premium"},
-					sm.Button{Text: "Sanitas", Payload: "sanitas_regular"},
-				).
-				WithEvent("sanitas_plan_prompted", nil), nil
-		}
-
-		r := sm.NewResult(sm.StateAskDocument).
+		r := sm.NewResult(sm.StateAskDocumentType).
 			WithContext("entity_number", fmt.Sprintf("%d", index)).
 			WithContext("menu_option", "agendar").
-			WithText("Por favor ingresa tu número de documento de identidad (sin puntos ni espacios):").
+			WithText(docTypeMenuText()).
 			WithEvent("entity_number_selected", map[string]interface{}{"index": index, "code": entityCode})
 
 		if entityCode != "" {
@@ -232,43 +252,6 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 		}
 
 		return r, nil
-	}
-}
-
-// ASK_SANITAS_PLAN (interactivo) — submenú para distinguir Sanitas Premium (SAN01) de Sanitas MRC (SAN02).
-func askSanitasPlanHandler() sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		result, selected := sm.ValidateButtonResponse(sess, msg, "sanitas_premium", "sanitas_regular")
-		if result != nil {
-			if result.NextState == sm.StateEscalateToAgent {
-				return result, nil
-			}
-			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
-				Text: "Selecciona tu plan de Sanitas:",
-				Buttons: []sm.Button{
-					{Text: "Sanitas Premium", Payload: "sanitas_premium"},
-					{Text: "Sanitas", Payload: "sanitas_regular"},
-				},
-			}}
-			return result, nil
-		}
-
-		var entityCode, entityName string
-		switch selected {
-		case "sanitas_premium":
-			entityCode = "SAN01"
-			entityName = "Sanitas Premium"
-		case "sanitas_regular":
-			entityCode = "SAN02"
-			entityName = "Sanitas"
-		}
-
-		return sm.NewResult(sm.StateAskDocument).
-			WithContext("menu_option", "agendar").
-			WithContext("selected_entity_code", entityCode).
-			WithContext("selected_entity_name", entityName).
-			WithText("Por favor ingresa tu número de documento de identidad (sin puntos ni espacios):").
-			WithEvent("entity_number_selected", map[string]interface{}{"code": entityCode}), nil
 	}
 }
 

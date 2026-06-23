@@ -31,10 +31,16 @@ func (r *SoatRepo) FindPrice(ctx context.Context, cupCode, tariffType string) (*
 		return nil, nil
 	}
 
+	// Validar que sea numérico y normalizar ceros a la izquierda ("08"→"8"). IMPORTANTE:
+	// sis_proc_precios.Cod_manual es varchar; hay que pasar el manual como STRING (no int),
+	// porque un int fuerza CONVERT_IMPLICIT(int, Cod_manual) como predicado RESIDUAL sobre la
+	// tabla de ~1.48M filas, sacando Cod_manual del índice. Como string entra al seek
+	// (IX_sis_proc_precios_manual_proc / UQ_sis_proc_precios).
 	manualInt, err := strconv.Atoi(tariffType)
 	if err != nil {
 		return nil, fmt.Errorf("invalid manual code %q: %w", tariffType, err)
 	}
+	manualStr := strconv.Itoa(manualInt)
 
 	// Handle CUPS with suffix (e.g., "891901-72") — try exact match first, then base code.
 	cupsBase := cupCode
@@ -43,14 +49,14 @@ func (r *SoatRepo) FindPrice(ctx context.Context, cupCode, tariffType string) (*
 	}
 
 	query := `SELECT TOP 1 spp.Precio
-	          FROM sis_proc_precios spp
+	          FROM sis_proc_precios spp WITH (NOLOCK)
 	          WHERE spp.Cod_manual = @p1
 	            AND spp.Codigo_proc IN (@p2, @p3)
 	            AND spp.Tipo_proc = '256'
 	          ORDER BY CASE WHEN spp.Codigo_proc = @p4 THEN 0 ELSE 1 END`
 
 	var price float64
-	err = r.db.QueryRowContext(ctx, query, manualInt, cupCode, cupsBase, cupCode).Scan(&price)
+	err = r.db.QueryRowContext(ctx, query, manualStr, cupCode, cupsBase, cupCode).Scan(&price)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

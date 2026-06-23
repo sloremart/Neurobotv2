@@ -222,9 +222,9 @@ func mainMenuHandler() sm.StateHandler {
 				WithContext("escalation_reason", "pet_ct").
 				WithEvent("menu_selected", map[string]interface{}{"option": "pet_ct"}), nil
 		case "consultar":
-			return sm.NewResult(sm.StateAskDocument).
+			return sm.NewResult(sm.StateAskDocumentType).
 				WithContext("menu_option", "consultar").
-				WithText("Por favor ingresa tu número de documento de identidad (sin puntos ni espacios):").
+				WithText(docTypeMenuText()).
 				WithEvent("menu_selected", map[string]interface{}{"option": "consultar"}), nil
 		case "agendar":
 			// Bird V2: entity type selection BEFORE document entry

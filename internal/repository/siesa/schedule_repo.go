@@ -15,11 +15,7 @@ var _ repository.ScheduleRepository = (*ScheduleRepo)(nil)
 
 // ScheduleRepo lee los slots de SIESA desde programacion_medico_detalle.
 // En SIESA los slots ya están pre-calculados (un row = un slot de tiempo).
-// AgendaID en el dominio = programacion_medico.id (IdProgramacionMedico).
-// FindFutureWorkingDays recibe cédulas reales de médico (de cup_medico.doctor_documento)
-// y hace JOIN con sis_medi para traducir cedula → codigo interno (Medico).
-// DoctorDocument devuelto = CAST(m.cedula AS VARCHAR(20)) = cédula real del médico,
-// igual que en Antares, para que docMap en SlotService funcione correctamente.
+// AgendaID en el dominio = programacion_medico.id (= IdProgramacionMedico).
 type ScheduleRepo struct {
 	db *sql.DB
 }
@@ -28,126 +24,95 @@ func NewScheduleRepo(db *sql.DB) *ScheduleRepo {
 	return &ScheduleRepo{db: db}
 }
 
-// FindFutureWorkingDays devuelve días con slots libres por médico.
-// Retorna un WorkingDay por combinación única (fecha, médico, agenda).
-func (r *ScheduleRepo) FindFutureWorkingDays(ctx context.Context, doctorDocs []string) ([]domain.WorkingDay, error) {
-	if len(doctorDocs) == 0 {
-		return nil, nil
+// FindAvailableSlots returns every free SIESA slot for agendas that serve the given
+// subject (asunto_id), within the 3h..90-day window. Each row is one bookable slot.
+//
+// Agenda eligibility is the UNION of two sets (validated against real SIESA data):
+//   1. Agendas with an explicit programacion_medico_relacion_asunto row for @asuntoId.
+//   2. "Orphan" agendas that have NO relacion_asunto rows at all (≈10 of 55 active
+//      agendas) whose most recent non-cancelled cita has asunto = @asuntoId. Without
+//      this fallback an INNER JOIN would silently drop those agendas (RX, resonancia,
+//      EEG, procedures, etc.).
+//
+// The 3h floor and 90-day ceiling are range predicates on pmd.Fecha (no CAST on the
+// column) so the datetime index is preserved. afterDate (YYYY-MM-DD) paginates forward.
+func (r *ScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+	var sb strings.Builder
+	args := []interface{}{asuntoID}
+
+	sb.WriteString(`
+WITH eligible AS (
+    SELECT pmr.id_programacion AS aid
+    FROM programacion_medico_relacion pmr WITH (NOLOCK)
+    JOIN programacion_medico_relacion_asunto pmra WITH (NOLOCK)
+        ON pmra.IdProgramacionMedicoRelacion = pmr.Id
+    WHERE pmra.IdAsunto = @p1
+    UNION
+    SELECT pm.id AS aid
+    FROM programacion_medico pm WITH (NOLOCK)
+    WHERE pm.activo = 1
+      AND NOT EXISTS (
+          SELECT 1 FROM programacion_medico_relacion pmr2 WITH (NOLOCK)
+          JOIN programacion_medico_relacion_asunto pmra2 WITH (NOLOCK)
+              ON pmra2.IdProgramacionMedicoRelacion = pmr2.Id
+          WHERE pmr2.id_programacion = pm.id)
+      AND (
+          SELECT TOP 1 c.asunto FROM citas c WITH (NOLOCK)
+          WHERE c.id_programacion = pm.id AND c.asunto > 0 AND c.estado <> 'C'
+          ORDER BY c.fecha DESC) = @p1
+)
+SELECT
+    pmd.Fecha,
+    CAST(m.cedula AS VARCHAR(20)),
+    RTRIM(m.nombre),
+    CAST(m.codigo AS VARCHAR(20)),
+    pm.id,
+    ISNULL(NULLIF(pm.intervalo, 0), 30),
+    pm.id_sede
+FROM programacion_medico_detalle pmd WITH (NOLOCK)
+JOIN programacion_medico pm WITH (NOLOCK) ON pm.id = pmd.IdProgramacionMedico AND pm.activo = 1
+JOIN eligible e ON e.aid = pm.id
+JOIN sis_medi m WITH (NOLOCK) ON m.codigo = pmd.Medico
+WHERE pmd.IdCita IS NULL
+  AND pmd.Bloqueado = 0
+  AND pmd.SinProgramacion = 0
+  AND pmd.Fecha >= DATEADD(HOUR, 3, GETDATE())
+  AND pmd.Fecha <= DATEADD(DAY, 90, GETDATE())
+  -- Doble validación (agenda Y médico deben coincidir en el asunto): el médico del slot
+  -- debe atender el asunto buscado según sis_asuntoMedico. Esto descarta agendas mal
+  -- configuradas (asunto asignado a una agenda cuyo médico no hace ese asunto). Fail-open:
+  -- si el médico no está catalogado en sis_asuntoMedico, no se filtra (no ocultar cupos).
+  AND (
+      EXISTS (SELECT 1 FROM sis_asuntoMedico sam WITH (NOLOCK)
+              WHERE sam.Medico = pmd.Medico AND sam.Asunto = @p1)
+      OR NOT EXISTS (SELECT 1 FROM sis_asuntoMedico sam2 WITH (NOLOCK)
+              WHERE sam2.Medico = pmd.Medico)
+  )`)
+
+	if afterDate != "" {
+		sb.WriteString(` AND pmd.Fecha >= DATEADD(DAY, 1, CAST(@p2 AS DATE))`)
+		args = append(args, afterDate)
 	}
+	sb.WriteString(` ORDER BY pmd.Fecha`)
 
-	params := make([]string, len(doctorDocs))
-	args := make([]interface{}, len(doctorDocs))
-	for i, doc := range doctorDocs {
-		params[i] = fmt.Sprintf("@p%d", i+1)
-		args[i] = doc
-	}
-
-	// doctorDocs son cédulas reales (cup_medico.doctor_documento).
-	// JOIN con sis_medi traduce cedula → codigo interno (pmd.Medico).
-	// Retornamos cedula (m.cedula) como DoctorDocument para mantener consistencia
-	// con el docMap del slot service, que está indexado por cedula de Antares.
-	query := fmt.Sprintf(`
-	SELECT fecha, cedula, siesa_code, agenda_id,
-	       MAX(has_morning)   AS morning_enabled,
-	       MAX(has_afternoon) AS afternoon_enabled
-	FROM (
-	    SELECT
-	        CAST(pmd.Fecha AS DATE)         AS fecha,
-	        CAST(m.cedula AS VARCHAR(20))   AS cedula,
-	        CAST(m.codigo AS VARCHAR(20))   AS siesa_code,
-	        pm.id                           AS agenda_id,
-	        CASE WHEN DATEPART(HOUR, pmd.Fecha) < 12 THEN 1 ELSE 0 END  AS has_morning,
-	        CASE WHEN DATEPART(HOUR, pmd.Fecha) >= 12 THEN 1 ELSE 0 END AS has_afternoon
-	    FROM programacion_medico_detalle pmd
-	    JOIN programacion_medico pm ON pm.id = pmd.IdProgramacionMedico AND pm.activo = 1
-	    JOIN sis_medi m ON m.codigo = pmd.Medico
-	    WHERE CAST(m.cedula AS VARCHAR(20)) IN (%s)
-	      AND pmd.IdCita IS NULL
-	      AND pmd.Bloqueado = 0
-	      AND pmd.SinProgramacion = 0
-	      AND CAST(pmd.Fecha AS DATE) >= CAST(GETDATE() AS DATE)
-	) t
-	GROUP BY fecha, cedula, siesa_code, agenda_id
-	ORDER BY fecha, cedula, agenda_id`, strings.Join(params, ","))
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
-		return nil, fmt.Errorf("FindFutureWorkingDays: %w", err)
+		return nil, fmt.Errorf("FindAvailableSlots asunto=%d: %w", asuntoID, err)
 	}
 	defer rows.Close()
 
-	var days []domain.WorkingDay
+	var slots []domain.AvailableSlotRow
 	for rows.Next() {
-		var d domain.WorkingDay
+		var s domain.AvailableSlotRow
 		var fecha time.Time
-		var morningInt, afternoonInt int
-		if err := rows.Scan(&fecha, &d.DoctorDocument, &d.DoctorSiesaCode, &d.AgendaID, &morningInt, &afternoonInt); err != nil {
+		if err := rows.Scan(&fecha, &s.DoctorDocument, &s.DoctorName, &s.DoctorSiesaCode,
+			&s.AgendaID, &s.DurationMin, &s.AgendaSede); err != nil {
 			return nil, err
 		}
-		d.Date = fecha.Format("2006-01-02")
-		d.MorningEnabled = (morningInt == 1)
-		d.AfternoonEnabled = (afternoonInt == 1)
-		days = append(days, d)
+		s.SlotTime = fecha
+		slots = append(slots, s)
 	}
-	return days, rows.Err()
-}
-
-// FindScheduleConfig deriva la configuración de horario desde los slots reales de SIESA.
-// Consulta los próximos 14 días para obtener horas de inicio/fin y duración de slot.
-func (r *ScheduleRepo) FindScheduleConfig(ctx context.Context, scheduleID int, doctorDoc string) (*domain.ScheduleConfig, error) {
-	query := `
-	WITH slot_data AS (
-	    SELECT
-	        pmd.Fecha,
-	        LEAD(pmd.Fecha) OVER (PARTITION BY CAST(pmd.Fecha AS DATE) ORDER BY pmd.Fecha) AS next_fecha
-	    FROM programacion_medico_detalle pmd
-	    JOIN sis_medi m ON m.codigo = pmd.Medico
-	    WHERE pmd.IdProgramacionMedico = @p1
-	      AND CAST(m.cedula AS VARCHAR(20)) = @p2
-	      AND CAST(pmd.Fecha AS DATE) BETWEEN CAST(GETDATE() AS DATE) AND DATEADD(DAY, 14, CAST(GETDATE() AS DATE))
-	      AND pmd.Bloqueado = 0 AND pmd.SinProgramacion = 0
-	)
-	SELECT
-	    ISNULL(MIN(CASE WHEN DATEPART(HOUR, Fecha) < 12 THEN CONVERT(VARCHAR(5), Fecha, 108) END), '') AS morning_first,
-	    ISNULL(MAX(CASE WHEN DATEPART(HOUR, Fecha) < 12 THEN CONVERT(VARCHAR(5), Fecha, 108) END), '') AS morning_last,
-	    ISNULL(MIN(CASE WHEN DATEPART(HOUR, Fecha) >= 12 THEN CONVERT(VARCHAR(5), Fecha, 108) END), '') AS afternoon_first,
-	    ISNULL(MAX(CASE WHEN DATEPART(HOUR, Fecha) >= 12 THEN CONVERT(VARCHAR(5), Fecha, 108) END), '') AS afternoon_last,
-	    ISNULL(MIN(CASE WHEN DATEDIFF(MINUTE, Fecha, next_fecha) > 0 THEN DATEDIFF(MINUTE, Fecha, next_fecha) END), 30) AS slot_duration
-	FROM slot_data`
-
-	var mFirst, mLast, aFirst, aLast string
-	var duration int
-	err := r.db.QueryRowContext(ctx, query, scheduleID, doctorDoc).Scan(
-		&mFirst, &mLast, &aFirst, &aLast, &duration,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("FindScheduleConfig agenda=%d doc=%s: %w", scheduleID, doctorDoc, err)
-	}
-	if duration <= 0 {
-		duration = 30
-	}
-
-	cfg := &domain.ScheduleConfig{
-		AgendaID:               scheduleID,
-		DoctorDocument:         doctorDoc,
-		AppointmentDuration:    duration,
-		SessionsPerAppointment: 1,
-		IsActive:               true,
-	}
-
-	// Habilitar todos los días de la semana (FindFutureWorkingDays ya filtró los días laborales)
-	for i := range cfg.WorkDays {
-		cfg.WorkDays[i] = true
-		cfg.MorningStart[i] = mFirst
-		cfg.MorningEnd[i] = addMinutesToHHMM(mLast, duration)
-		cfg.AfternoonStart[i] = aFirst
-		cfg.AfternoonEnd[i] = addMinutesToHHMM(aLast, duration)
-	}
-
-	return cfg, nil
+	return slots, rows.Err()
 }
 
 // FindByScheduleID busca una agenda en programacion_medico por ID y tipo de procedimiento.
@@ -159,7 +124,7 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 	var s domain.Schedule
 	err := r.db.QueryRowContext(ctx,
 		`SELECT pm.id, CAST(ISNULL(pm.id_medico, 0) AS VARCHAR(20))
-		 FROM programacion_medico pm
+		 FROM programacion_medico pm WITH (NOLOCK)
 		 WHERE pm.id = @p1 AND pm.activo = 1`,
 		scheduleID).Scan(&s.ID, &s.DoctorDocument)
 	if err == sql.ErrNoRows {
@@ -174,26 +139,26 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 	}
 
 	// Obtener asuntos asignados a esta agenda via programacion_medico_relacion_asunto
-	asuntoRows, err := r.db.QueryContext(ctx,
+	subjectRows, err := r.db.QueryContext(ctx,
 		`SELECT pmra.IdAsunto
-		 FROM programacion_medico_relacion pmr
-		 JOIN programacion_medico_relacion_asunto pmra ON pmra.IdProgramacionMedicoRelacion = pmr.Id
+		 FROM programacion_medico_relacion pmr WITH (NOLOCK)
+		 JOIN programacion_medico_relacion_asunto pmra WITH (NOLOCK) ON pmra.IdProgramacionMedicoRelacion = pmr.Id
 		 WHERE pmr.id_programacion = @p1`,
 		scheduleID)
 	if err != nil {
 		return nil, fmt.Errorf("FindByScheduleID asuntos %d: %w", scheduleID, err)
 	}
-	defer asuntoRows.Close()
+	defer subjectRows.Close()
 
-	var asuntos []int
-	for asuntoRows.Next() {
+	var subjectTypes []int
+	for subjectRows.Next() {
 		var a int
-		if err := asuntoRows.Scan(&a); err != nil {
+		if err := subjectRows.Scan(&a); err != nil {
 			return nil, err
 		}
-		asuntos = append(asuntos, a)
+		subjectTypes = append(subjectTypes, a)
 	}
-	if err := asuntoRows.Err(); err != nil {
+	if err := subjectRows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -203,10 +168,10 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 	// consultar el asunto más reciente de citas reales para determinar el tipo real.
 	// Agenda 254 (resonancias) tiene asunto=4 en citas → tipo consulta → se permite correctamente.
 	// Agendas de procedimientos (asuntos 13-16 en citas) quedan excluidas de búsquedas de consulta.
-	if len(asuntos) == 0 {
+	if len(subjectTypes) == 0 {
 		var lastAsunto int
 		_ = r.db.QueryRowContext(ctx, `
-			SELECT TOP 1 asunto FROM citas
+			SELECT TOP 1 asunto FROM citas WITH (NOLOCK)
 			WHERE id_programacion = @p1 AND asunto > 0 AND estado != 'C'
 			ORDER BY fecha DESC`, scheduleID).Scan(&lastAsunto)
 
@@ -230,7 +195,7 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 	switch st {
 	case "sedacion":
 		// Requiere asunto 17 (SOPORTE SEDACION)
-		for _, a := range asuntos {
+		for _, a := range subjectTypes {
 			if a == 17 {
 				return &s, nil
 			}
@@ -240,7 +205,7 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 	case "procedimiento", "nocturno":
 		// Agenda de procedimientos: asuntos en rango 13-16, sin asuntos de consulta (1-12)
 		hasProcedure := false
-		for _, a := range asuntos {
+		for _, a := range subjectTypes {
 			if a >= 1 && a <= 12 {
 				return nil, nil // tiene asunto de consulta → no es agenda de procedimientos
 			}
@@ -257,41 +222,13 @@ func (r *ScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, sch
 		// Consultas/exámenes: requiere al menos un asunto 1-12.
 		// Agendas con solo asuntos 13-16 (procedimientos puros) quedan excluidas,
 		// evitando que CUPS de consulta aparezcan en agendas de procedimientos.
-		for _, a := range asuntos {
+		for _, a := range subjectTypes {
 			if a >= 1 && a <= 12 {
 				return &s, nil
 			}
 		}
 		return nil, nil
 	}
-}
-
-// FindBookedSlots retorna los timecodes (YYYYMMDDHHmm) de slots ocupados o bloqueados
-// para una agenda en una fecha dada.
-func (r *ScheduleRepo) FindBookedSlots(ctx context.Context, agendaID int, date string) ([]string, error) {
-	query := `
-	SELECT CONVERT(VARCHAR(8), Fecha, 112)
-	       + REPLACE(CONVERT(VARCHAR(5), Fecha, 108), ':', '') AS timecode
-	FROM programacion_medico_detalle
-	WHERE IdProgramacionMedico = @p1
-	  AND CAST(Fecha AS DATE) = @p2
-	  AND (IdCita IS NOT NULL OR Bloqueado = 1 OR SinProgramacion = 1)`
-
-	rows, err := r.db.QueryContext(ctx, query, agendaID, date)
-	if err != nil {
-		return nil, fmt.Errorf("FindBookedSlots agenda=%d date=%s: %w", agendaID, date, err)
-	}
-	defer rows.Close()
-
-	var slots []string
-	for rows.Next() {
-		var tc string
-		if err := rows.Scan(&tc); err != nil {
-			return nil, err
-		}
-		slots = append(slots, strings.TrimSpace(tc))
-	}
-	return slots, rows.Err()
 }
 
 // FindWorkingDayException no aplica en SIESA (los slots ya están pre-generados).
@@ -307,57 +244,4 @@ func (r *ScheduleRepo) UpdateWorkingDayExceptionDate(ctx context.Context, agenda
 // DeleteWorkingDayException no aplica en SIESA.
 func (r *ScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error) {
 	return false, nil
-}
-
-// FindAsuntoForCups retorna el asunto SIESA para un CUPS consultando AsuntoPctos.
-// Fallback 1: historial en citas_procedimientos (procedimientos/imágenes).
-// Fallback 2: historial en citas_procedimientos_asuntos (consultas).
-// Retorna 0 si no se encuentra.
-func (r *ScheduleRepo) FindAsuntoForCups(ctx context.Context, cupsCode string) int {
-	var asunto int
-	// Fuente primaria: catálogo AsuntoPctos
-	_ = r.db.QueryRowContext(ctx,
-		`SELECT TOP 1 Asunto FROM AsuntoPctos WHERE CodProcedimiento = @p1`, cupsCode,
-	).Scan(&asunto)
-	if asunto > 0 {
-		return asunto
-	}
-	// Fallback 1: historial de procedimientos (citas_procedimientos)
-	_ = r.db.QueryRowContext(ctx, `
-		SELECT TOP 1 c.asunto
-		FROM citas c
-		JOIN citas_procedimientos cp ON cp.id_cita = c.id
-		WHERE LEFT(cp.id_procedimiento, @p2) = @p1
-		  AND c.asunto IN (SELECT id FROM sis_asunto)
-		  AND c.estado != 'C'
-		ORDER BY c.fecha DESC`, cupsCode, len(cupsCode),
-	).Scan(&asunto)
-	if asunto > 0 {
-		return asunto
-	}
-	// Fallback 2: historial de consultas (citas_procedimientos_asuntos)
-	_ = r.db.QueryRowContext(ctx, `
-		SELECT TOP 1 c.asunto
-		FROM citas c
-		JOIN citas_procedimientos_asuntos cpa ON cpa.IdCita = c.id
-		WHERE cpa.CodProcedimiento = @p1
-		  AND c.asunto IN (SELECT id FROM sis_asunto)
-		  AND c.estado != 'C'
-		ORDER BY c.fecha DESC`, cupsCode,
-	).Scan(&asunto)
-	return asunto
-}
-
-// addMinutesToHHMM suma N minutos a una hora "HH:mm" y devuelve el resultado como "HH:mm".
-func addMinutesToHHMM(hhmm string, minutes int) string {
-	if len(hhmm) < 5 {
-		return hhmm
-	}
-	var h, m int
-	fmt.Sscanf(hhmm, "%d:%d", &h, &m)
-	total := h*60 + m + minutes
-	if total >= 24*60 {
-		total = 24*60 - 1
-	}
-	return fmt.Sprintf("%02d:%02d", total/60, total%60)
 }

@@ -216,7 +216,7 @@ func buildAgentSummary(sess *session.Session, cupsCode, teamName string) string 
 
 // regFieldLabels maps registration states to human-readable field descriptions for agent commands.
 var regFieldLabels = map[string]string{
-	sm.StateRegDocumentType:       "tipo de documento (CC, TI, CE, PA, RC, MS, AS)",
+	sm.StateRegDocumentType:       "tipo de documento (CC, TI, RC, CE, PA, PT, etc.)",
 	sm.StateRegDocumentIssuePlace: "ciudad donde se expidio el documento (ej: Bogota)",
 	sm.StateRegFirstSurname:    "primer apellido",
 	sm.StateRegSecondSurname:   "segundo apellido (o NA si no tiene)",
@@ -282,6 +282,10 @@ func buildAgentCommands(sess *session.Session, cupsCode string) string {
 			"  /bot cerrar"
 
 	// --- Identificacion ---
+	case sm.StateAskDocumentType:
+		situation = fmt.Sprintf("El paciente no logro elegir su tipo de documento.\nMenu: %s", menuOption)
+		actions = "- Preguntale el tipo de documento (CC, TI, RC, CE, PA, PT, etc.) y envialo:\n" +
+			"  /bot resume ASK_DOCUMENT_TYPE CC"
 	case sm.StateAskDocument:
 		situation = fmt.Sprintf("El paciente no logro ingresar su numero de documento.\nMenu: %s", menuOption)
 		actions = "- Preguntale su numero de documento y envialo:\n" +
@@ -318,12 +322,11 @@ func buildAgentCommands(sess *session.Session, cupsCode string) string {
 			"  /bot resume ASK_UPDATE_EMAIL NA — Si no tiene email"
 
 	// --- Entity Management ---
-	case sm.StateAskSanitasPlan:
-		situation = fmt.Sprintf("El paciente no selecciono su plan de Sanitas (Premium o regular).\nPaciente: %s | Doc: %s", patientName, patientDoc)
-		actions = "- Preguntale si tiene Sanitas Premium o Sanitas regular:\n" +
-			"  /bot resume ASK_SANITAS_PLAN sanitas_premium — Sanitas Premium (SAN01, sin limite MRC)\n" +
-			"  /bot resume ASK_SANITAS_PLAN sanitas_regular — Sanitas (SAN02, con limite MRC)\n" +
-			"  /bot resume ASK_SANITAS_PLAN — Mostrar opciones de nuevo"
+	case sm.StateAskEpsRegimen:
+		situation = fmt.Sprintf("El paciente no selecciono su regimen de afiliacion (contributivo o subsidiado).\nPaciente: %s | Doc: %s", patientName, patientDoc)
+		actions = "- Preguntale su regimen y selecciona por el:\n" +
+			"  /bot resume ASK_EPS_REGIMEN regimen_1 — Contributivo\n" +
+			"  /bot resume ASK_EPS_REGIMEN regimen_2 — Subsidiado"
 
 	case sm.StateAskClientType:
 		situation = fmt.Sprintf("El paciente no pudo seleccionar su tipo de entidad (EPS, PARTICULAR, etc.).\nPaciente: %s | Doc: %s", patientName, patientDoc)

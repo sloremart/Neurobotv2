@@ -97,6 +97,7 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator) sm.StateHandler {
 						PatientAge:     age,
 						PatientGender:  gender,
 						PatientEntity:  sess.GetContext("patient_entity"),
+						ContractCode:   sess.GetContext("patient_contract"),
 						CupsCode:       "PARTICULAR",
 						CupsName:       "Consulta PARTICULAR - Sin orden médica",
 						ProceduresJSON: "[]",
@@ -407,7 +408,7 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 					r.WithContext("alternative_cups_codes", strings.Join(alternativeCodes, ","))
 				}
 			}
-			
+
 			r.WithContext("cups_code", cupsForSearch.Code).
 				WithContext("cups_name", cupsForSearch.Name).
 				WithContext("espacios", fmt.Sprintf("%d", firstGroup.Espacios))

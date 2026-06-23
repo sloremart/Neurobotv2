@@ -125,8 +125,8 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		"reschedule_conversation_id": pending.ConversationID,
 		"reschedule_bird_msg_id":     pending.BirdMessageID,
 
-		// Prefer same doctor
-		"preferred_doctor_doc": appt.DoctorID,
+		// Prefer same doctor (must be cedula, not cod_medi, for slot_service match)
+		"preferred_doctor_doc": appt.DoctorDocument,
 	}
 
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {

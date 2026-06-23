@@ -14,16 +14,18 @@ import (
 
 // MockPatientRepo implements repository.PatientRepository.
 type MockPatientRepo struct {
-	FindByDocumentFn    func(ctx context.Context, doc string) (*domain.Patient, error)
+	FindByDocumentFn    func(ctx context.Context, docType, doc string) (*domain.Patient, error)
 	FindByIDFn          func(ctx context.Context, id string) (*domain.Patient, error)
 	CreateFn            func(ctx context.Context, input domain.CreatePatientInput) (string, error)
 	UpdateEntityFn      func(ctx context.Context, patientID, entityCode string) error
-	UpdateContactInfoFn func(ctx context.Context, patientID, phone, email string) error
+	UpdateContractFn     func(ctx context.Context, patientID, contractCode string) error
+	UpdateMunicipalityFn func(ctx context.Context, patientID, depCode, muniCode string) error
+	UpdateContactInfoFn  func(ctx context.Context, patientID, phone, email string) error
 }
 
-func (m *MockPatientRepo) FindByDocument(ctx context.Context, doc string) (*domain.Patient, error) {
+func (m *MockPatientRepo) FindByDocument(ctx context.Context, docType, doc string) (*domain.Patient, error) {
 	if m.FindByDocumentFn != nil {
-		return m.FindByDocumentFn(ctx, doc)
+		return m.FindByDocumentFn(ctx, docType, doc)
 	}
 	return nil, nil
 }
@@ -45,6 +47,18 @@ func (m *MockPatientRepo) UpdateEntity(ctx context.Context, patientID, entityCod
 	}
 	return nil
 }
+func (m *MockPatientRepo) UpdateContract(ctx context.Context, patientID, contractCode string) error {
+	if m.UpdateContractFn != nil {
+		return m.UpdateContractFn(ctx, patientID, contractCode)
+	}
+	return nil
+}
+func (m *MockPatientRepo) UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error {
+	if m.UpdateMunicipalityFn != nil {
+		return m.UpdateMunicipalityFn(ctx, patientID, depCode, muniCode)
+	}
+	return nil
+}
 func (m *MockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phone, email string) error {
 	if m.UpdateContactInfoFn != nil {
 		return m.UpdateContactInfoFn(ctx, patientID, phone, email)
@@ -54,21 +68,21 @@ func (m *MockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phon
 
 // MockAppointmentRepo implements repository.AppointmentRepository.
 type MockAppointmentRepo struct {
-	FindByIDFn              func(ctx context.Context, id string) (*domain.Appointment, error)
-	FindUpcomingByPatientFn func(ctx context.Context, patientID string) ([]domain.Appointment, error)
-	FindByAgendaAndDateFn   func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
-	CreateFn                func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
-	CreatePxCitaFn          func(ctx context.Context, input domain.CreatePxCitaInput) error
-	ConfirmFn               func(ctx context.Context, id string, channel, channelID string) error
-	CancelFn                func(ctx context.Context, id string, reason, channel, channelID string) error
-	ConfirmBatchFn          func(ctx context.Context, ids []string, channel, channelID string) error
-	CancelBatchFn           func(ctx context.Context, ids []string, reason, channel, channelID string) error
-	DeleteBatchFn           func(ctx context.Context, ids []string) error
-	HasFutureForCupFn       func(ctx context.Context, patientID, cupCode string) (bool, error)
-	FindLastDoctorForCupsFn func(ctx context.Context, patientID string, cups []string) (string, error)
-	CountMonthlyByGroupFn   func(ctx context.Context, cupsCodes []string, year, month int) (int, error)
-	FindPendingByDateFn     func(ctx context.Context, date string) ([]domain.Appointment, error)
-	RescheduleDateFn        func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
+	FindByIDFn                   func(ctx context.Context, id string) (*domain.Appointment, error)
+	FindUpcomingByPatientFn      func(ctx context.Context, patientID string) ([]domain.Appointment, error)
+	FindByAgendaAndDateFn        func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
+	CreateFn                     func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
+	CreateAppointmentProcedureFn func(ctx context.Context, input domain.CreateAppointmentProcedureInput) error
+	ConfirmFn                    func(ctx context.Context, id string, channel, channelID string) error
+	CancelFn                     func(ctx context.Context, id string, reason, channel, channelID string) error
+	ConfirmBatchFn               func(ctx context.Context, ids []string, channel, channelID string) error
+	CancelBatchFn                func(ctx context.Context, ids []string, reason, channel, channelID string) error
+	DeleteBatchFn                func(ctx context.Context, ids []string) error
+	HasFutureForCupFn            func(ctx context.Context, patientID, cupCode string) (bool, error)
+	FindLastDoctorForCupsFn      func(ctx context.Context, patientID string, cups []string) (string, error)
+	CountMonthlyByGroupFn        func(ctx context.Context, cupsCodes []string, year, month int) (int, error)
+	FindPendingByDateFn          func(ctx context.Context, date string) ([]domain.Appointment, error)
+	RescheduleDateFn             func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
 }
 
 func (m *MockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -95,13 +109,13 @@ func (m *MockAppointmentRepo) Create(ctx context.Context, input domain.CreateApp
 	}
 	return &domain.Appointment{ID: "apt-new"}, nil
 }
-func (m *MockAppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreatePxCitaInput) error {
-	if m.CreatePxCitaFn != nil {
-		return m.CreatePxCitaFn(ctx, input)
+func (m *MockAppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
+	if m.CreateAppointmentProcedureFn != nil {
+		return m.CreateAppointmentProcedureFn(ctx, input)
 	}
 	return nil
 }
-func (m *MockAppointmentRepo) CreatePxCitaBatch(ctx context.Context, inputs []domain.CreatePxCitaInput) error {
+func (m *MockAppointmentRepo) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
 func (m *MockAppointmentRepo) Confirm(ctx context.Context, id string, channel, channelID string) error {
@@ -175,64 +189,26 @@ func (m *MockAppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, 
 	return 0, nil
 }
 
-// MockDoctorRepo implements repository.DoctorRepository.
-type MockDoctorRepo struct {
-	FindByCupIDFn   func(ctx context.Context, cupID int) ([]domain.Doctor, error)
-	FindByCupsCodeFn func(ctx context.Context, cupsCode string) ([]domain.Doctor, error)
-	FindByDocumentFn func(ctx context.Context, doc string) (*domain.Doctor, error)
-}
-
-func (m *MockDoctorRepo) FindByCupID(ctx context.Context, cupID int) ([]domain.Doctor, error) {
-	if m.FindByCupIDFn != nil {
-		return m.FindByCupIDFn(ctx, cupID)
-	}
-	return nil, nil
-}
-func (m *MockDoctorRepo) FindByCupsCode(ctx context.Context, cupsCode string) ([]domain.Doctor, error) {
-	if m.FindByCupsCodeFn != nil {
-		return m.FindByCupsCodeFn(ctx, cupsCode)
-	}
-	return nil, nil
-}
-func (m *MockDoctorRepo) FindByDocument(ctx context.Context, doc string) (*domain.Doctor, error) {
-	if m.FindByDocumentFn != nil {
-		return m.FindByDocumentFn(ctx, doc)
-	}
-	return nil, nil
-}
 
 // MockScheduleRepo implements repository.ScheduleRepository.
 type MockScheduleRepo struct {
-	FindFutureWorkingDaysFn          func(ctx context.Context, doctorDocs []string) ([]domain.WorkingDay, error)
-	FindScheduleConfigFn             func(ctx context.Context, scheduleID int, doctorDoc string) (*domain.ScheduleConfig, error)
-	FindByScheduleIDFn               func(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error)
-	FindBookedSlotsFn                func(ctx context.Context, agendaID int, date string) ([]string, error)
-	FindWorkingDayExceptionFn        func(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
-	UpdateWorkingDayExceptionDateFn  func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
-	DeleteWorkingDayExceptionFn      func(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error)
+	FindAvailableSlotsFn            func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error)
+	FindByScheduleIDFn              func(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error)
+	FindWorkingDayExceptionFn       func(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
+	UpdateWorkingDayExceptionDateFn func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
+	DeleteWorkingDayExceptionFn     func(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error)
 }
 
-func (m *MockScheduleRepo) FindFutureWorkingDays(ctx context.Context, doctorDocs []string) ([]domain.WorkingDay, error) {
-	if m.FindFutureWorkingDaysFn != nil {
-		return m.FindFutureWorkingDaysFn(ctx, doctorDocs)
+func (m *MockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+	if m.FindAvailableSlotsFn != nil {
+		return m.FindAvailableSlotsFn(ctx, asuntoID, afterDate)
 	}
 	return nil, nil
 }
-func (m *MockScheduleRepo) FindScheduleConfig(ctx context.Context, scheduleID int, doctorDoc string) (*domain.ScheduleConfig, error) {
-	if m.FindScheduleConfigFn != nil {
-		return m.FindScheduleConfigFn(ctx, scheduleID, doctorDoc)
-	}
-	return nil, nil
-}
+
 func (m *MockScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error) {
 	if m.FindByScheduleIDFn != nil {
 		return m.FindByScheduleIDFn(ctx, scheduleID, scheduleType)
-	}
-	return nil, nil
-}
-func (m *MockScheduleRepo) FindBookedSlots(ctx context.Context, agendaID int, date string) ([]string, error) {
-	if m.FindBookedSlotsFn != nil {
-		return m.FindBookedSlotsFn(ctx, agendaID, date)
 	}
 	return nil, nil
 }
@@ -254,14 +230,21 @@ func (m *MockScheduleRepo) DeleteWorkingDayException(ctx context.Context, agenda
 	}
 	return false, nil
 }
-func (m *MockScheduleRepo) FindAsuntoForCups(_ context.Context, _ string) int { return 0 }
 
 // MockProcedureRepo implements repository.ProcedureRepository.
 type MockProcedureRepo struct {
-	FindByCodeFn    func(ctx context.Context, code string) (*domain.Procedure, error)
-	FindByIDFn      func(ctx context.Context, id int) (*domain.Procedure, error)
-	SearchByNameFn  func(ctx context.Context, name string) ([]domain.Procedure, error)
-	FindAllActiveFn func(ctx context.Context) ([]domain.Procedure, error)
+	FindByCodeFn             func(ctx context.Context, code string) (*domain.Procedure, error)
+	FindByIDFn               func(ctx context.Context, id int) (*domain.Procedure, error)
+	SearchByNameFn           func(ctx context.Context, name string) ([]domain.Procedure, error)
+	FindAllActiveFn          func(ctx context.Context) ([]domain.Procedure, error)
+	FindSubjectTypeForCupsFn func(ctx context.Context, cupsCode string) (int, error)
+}
+
+func (m *MockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
+	if m.FindSubjectTypeForCupsFn != nil {
+		return m.FindSubjectTypeForCupsFn(ctx, cupsCode)
+	}
+	return 0, nil
 }
 
 func (m *MockProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {
@@ -324,12 +307,20 @@ func (m *MockEntityRepo) GetCodeByIndexAndCategory(ctx context.Context, index in
 
 // MockMunicipalityRepo implements repository.MunicipalityRepository.
 type MockMunicipalityRepo struct {
-	SearchFn func(ctx context.Context, name string) ([]domain.Municipality, error)
+	SearchFn        func(ctx context.Context, name string) ([]domain.Municipality, error)
+	SearchBarriosFn func(ctx context.Context, name, depCode, muniCode string) ([]domain.Barrio, error)
 }
 
 func (m *MockMunicipalityRepo) Search(ctx context.Context, name string) ([]domain.Municipality, error) {
 	if m.SearchFn != nil {
 		return m.SearchFn(ctx, name)
+	}
+	return nil, nil
+}
+
+func (m *MockMunicipalityRepo) SearchBarrios(ctx context.Context, name, depCode, muniCode string) ([]domain.Barrio, error) {
+	if m.SearchBarriosFn != nil {
+		return m.SearchBarriosFn(ctx, name, depCode, muniCode)
 	}
 	return nil, nil
 }

@@ -23,12 +23,12 @@ import (
 type CancellationCallback func(ctx context.Context, cupsCode string)
 
 // RegisterAppointmentHandlers registra los handlers del flujo de consulta de citas.
-func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
-	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo, doctorRepo))
-	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo, doctorRepo))
-	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, doctorRepo, addrMapper))
-	m.Register(sm.StateConfirmAppointment, confirmAppointmentHandler(apptSvc, procRepo, doctorRepo, addrMapper))
-	m.Register(sm.StateCancelAppointment, cancelAppointmentHandler(apptSvc, procRepo, doctorRepo, onCancel))
+func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
+	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo))
+	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo))
+	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper))
+	m.Register(sm.StateConfirmAppointment, confirmAppointmentHandler(apptSvc, procRepo, addrMapper))
+	m.Register(sm.StateCancelAppointment, cancelAppointmentHandler(apptSvc, procRepo, onCancel))
 	m.Register(sm.StateNoAppointments, noAppointmentsHandler())
 
 	// Flujos de confirmación desde notificaciones proactivas
@@ -113,7 +113,7 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 }
 
 // FETCH_APPOINTMENTS (automático) — consulta citas del paciente y muestra la lista
-func fetchAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository) sm.StateHandler {
+func fetchAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		patientID := sess.GetContext("patient_id")
 
@@ -143,7 +143,7 @@ func fetchAppointmentsHandler(apptSvc *services.AppointmentService, procRepo rep
 		}
 
 		// Generar la lista aquí (LIST_APPOINTMENTS es interactivo, no auto-chain)
-		listMsg := buildAppointmentList(apptSvc, appointments, procRepo, doctorRepo)
+		listMsg := buildAppointmentList(apptSvc, appointments, procRepo)
 
 		return sm.NewResult(sm.StateListAppointments).
 			WithContext("appointments_json", string(apptJSON)).
@@ -153,7 +153,7 @@ func fetchAppointmentsHandler(apptSvc *services.AppointmentService, procRepo rep
 }
 
 // LIST_APPOINTMENTS (interactivo, lista) — espera selección de cita, muestra detalle al seleccionar
-func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository) sm.StateHandler {
+func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		// Si es postback con ID de cita seleccionada
 		if msg.IsPostback {
@@ -168,7 +168,7 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 					sess.RetryCount = 0
 
 					// Mostrar detalle + lista de acciones en un solo mensaje
-					detail := buildAppointmentDetail(apptSvc, appts, a.ID, procRepo, doctorRepo)
+					detail := buildAppointmentDetail(apptSvc, appts, a.ID, procRepo)
 					return sm.NewResult(sm.StateAppointmentAction).
 						WithContext("selected_appointment_id", msg.PostbackPayload).
 						WithList(detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
@@ -191,7 +191,7 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 			if n <= len(appts) {
 				selected := appts[n-1]
 				sess.RetryCount = 0
-				detail := buildAppointmentDetail(apptSvc, appts, selected.ID, procRepo, doctorRepo)
+				detail := buildAppointmentDetail(apptSvc, appts, selected.ID, procRepo)
 				return sm.NewResult(sm.StateAppointmentAction).
 					WithContext("selected_appointment_id", selected.ID).
 					WithList(detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
@@ -213,7 +213,7 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 			return buildAutoCloseResult("No pudimos cargar tus citas. Por favor intenta de nuevo."), nil
 		}
 
-		listMsg := buildAppointmentList(apptSvc, appointments, procRepo, doctorRepo)
+		listMsg := buildAppointmentList(apptSvc, appointments, procRepo)
 
 		return sm.NewResult(sess.CurrentState).
 			WithList(listMsg.body, listMsg.button, listMsg.section).
@@ -222,7 +222,7 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 }
 
 // APPOINTMENT_ACTION (interactivo, lista) — procesa acción seleccionada sobre la cita
-func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper) sm.StateHandler {
+func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selectedID := sess.GetContext("selected_appointment_id")
 
@@ -238,7 +238,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				return buildAutoCloseResult("No pudimos cargar tus citas en este momento."), nil
 			}
 
-			detail := buildAppointmentDetail(apptSvc, appointments, selectedID, procRepo, doctorRepo)
+			detail := buildAppointmentDetail(apptSvc, appointments, selectedID, procRepo)
 			if detail == "" {
 				return sm.NewResult(sm.StateListAppointments).
 					WithText("Cita no encontrada. Selecciona otra.").
@@ -366,7 +366,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				}), nil
 
 		case "appt_preparation":
-			return showAppointmentPreparation(ctx, sess, apptSvc, procRepo, doctorRepo, addrMapper)
+			return showAppointmentPreparation(ctx, sess, apptSvc, procRepo, addrMapper)
 
 		case "appt_back":
 			var appointments []domain.Appointment
@@ -375,7 +375,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				return buildAutoCloseResult("No pudimos cargar tus citas. Por favor intenta de nuevo.").
 					WithEvent("appointments_unmarshal_error", map[string]interface{}{"error": err.Error()}), nil
 			}
-			listMsg := buildAppointmentList(apptSvc, appointments, procRepo, doctorRepo)
+			listMsg := buildAppointmentList(apptSvc, appointments, procRepo)
 
 			return sm.NewResult(sm.StateListAppointments).
 				WithList(listMsg.body, listMsg.button, listMsg.section).
@@ -393,7 +393,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 }
 
 // CONFIRM_APPOINTMENT (interactivo) — reconfirmación antes de confirmar la cita
-func confirmAppointmentHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper) sm.StateHandler {
+func confirmAppointmentHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "confirm_yes", "confirm_no")
 		if result != nil {
@@ -414,7 +414,7 @@ func confirmAppointmentHandler(apptSvc *services.AppointmentService, procRepo re
 
 		case "confirm_no":
 			// Volver al detalle de la cita
-			return backToAppointmentAction(sess, apptSvc, procRepo, doctorRepo), nil
+			return backToAppointmentAction(sess, apptSvc, procRepo), nil
 		}
 
 		return nil, fmt.Errorf("unreachable: selected=%s", selected)
@@ -422,7 +422,7 @@ func confirmAppointmentHandler(apptSvc *services.AppointmentService, procRepo re
 }
 
 // CANCEL_APPOINTMENT (interactivo) — reconfirmación antes de cancelar la cita.
-func cancelAppointmentHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, onCancel CancellationCallback) sm.StateHandler {
+func cancelAppointmentHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, onCancel CancellationCallback) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "cancel_yes", "cancel_no")
 		if result != nil {
@@ -442,7 +442,7 @@ func cancelAppointmentHandler(apptSvc *services.AppointmentService, procRepo rep
 			return executeCancelAppointment(ctx, sess, apptSvc, onCancel)
 
 		case "cancel_no":
-			return backToAppointmentAction(sess, apptSvc, procRepo, doctorRepo), nil
+			return backToAppointmentAction(sess, apptSvc, procRepo), nil
 		}
 
 		return nil, fmt.Errorf("unreachable: selected=%s", selected)
@@ -902,12 +902,12 @@ func executeCancelAppointment(ctx context.Context, sess *session.Session, apptSv
 }
 
 // backToAppointmentAction re-muestra el detalle de la cita + lista de acciones.
-func backToAppointmentAction(sess *session.Session, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository) *sm.StateResult {
+func backToAppointmentAction(sess *session.Session, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) *sm.StateResult {
 	selectedID := sess.GetContext("selected_appointment_id")
 	var appointments []domain.Appointment
 	json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appointments)
 
-	detail := buildAppointmentDetail(apptSvc, appointments, selectedID, procRepo, doctorRepo)
+	detail := buildAppointmentDetail(apptSvc, appointments, selectedID, procRepo)
 	if detail == "" {
 		return sm.NewResult(sm.StateListAppointments).
 			WithText("Cita no encontrada. Selecciona otra.").
@@ -921,7 +921,7 @@ func backToAppointmentAction(sess *session.Session, apptSvc *services.Appointmen
 }
 
 // showAppointmentPreparation looks up preparation instructions for the selected appointment's procedures.
-func showAppointmentPreparation(ctx context.Context, sess *session.Session, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository, addrMapper *services.AddressMapper) (*sm.StateResult, error) {
+func showAppointmentPreparation(ctx context.Context, sess *session.Session, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) (*sm.StateResult, error) {
 	selectedID := sess.GetContext("selected_appointment_id")
 	var appointments []domain.Appointment
 	json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appointments)
@@ -934,7 +934,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 	}
 
 	if procRepo == nil {
-		r := backToAppointmentAction(sess, apptSvc, procRepo, doctorRepo)
+		r := backToAppointmentAction(sess, apptSvc, procRepo)
 		r.Messages = append([]sm.OutboundMessage{&sm.TextMessage{Text: "No se pudo consultar la preparación en este momento."}}, r.Messages...)
 		return r, nil
 	}
@@ -981,7 +981,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 		}
 	}
 
-	r := backToAppointmentAction(sess, apptSvc, procRepo, doctorRepo)
+	r := backToAppointmentAction(sess, apptSvc, procRepo)
 	r.Messages = append([]sm.OutboundMessage{&sm.TextMessage{Text: msg}}, r.Messages...)
 	return r.WithEvent("appointment_preparation_viewed", map[string]interface{}{
 		"appointment_id": selectedID,
@@ -989,7 +989,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 }
 
 // buildAppointmentDetail construye el texto de detalle de una cita seleccionada.
-func buildAppointmentDetail(apptSvc *services.AppointmentService, appointments []domain.Appointment, selectedID string, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository) string {
+func buildAppointmentDetail(apptSvc *services.AppointmentService, appointments []domain.Appointment, selectedID string, procRepo repository.ProcedureRepository) string {
 	var appt *domain.Appointment
 	for i, a := range appointments {
 		if a.ID == selectedID {
@@ -1018,12 +1018,8 @@ func buildAppointmentDetail(apptSvc *services.AppointmentService, appointments [
 		}
 	}
 
+	// DoctorName comes already resolved from SIESA (RTRIM(sis_medi.nombre)).
 	doctorName := appt.DoctorName
-	if doctorRepo != nil && appt.DoctorDocument != "" {
-		if doc, err := doctorRepo.FindByDocument(ctx, appt.DoctorDocument); err == nil && doc != nil && doc.FullName != "" {
-			doctorName = doc.FullName
-		}
-	}
 
 	detail := fmt.Sprintf("*Detalle de tu cita:*\n\n"+
 		"Procedimiento: %s\n"+
@@ -1070,7 +1066,7 @@ type appointmentListData struct {
 // buildAppointmentList constructs the list display for appointments.
 // Each appointment is shown as its own row (no block grouping for display).
 // Block grouping is only used in confirm/cancel actions via FindConsecutiveBlock.
-func buildAppointmentList(apptSvc *services.AppointmentService, appointments []domain.Appointment, procRepo repository.ProcedureRepository, doctorRepo repository.DoctorRepository) appointmentListData {
+func buildAppointmentList(apptSvc *services.AppointmentService, appointments []domain.Appointment, procRepo repository.ProcedureRepository) appointmentListData {
 	maxShow := 10
 	ctx := context.Background()
 
@@ -1083,12 +1079,8 @@ func buildAppointmentList(apptSvc *services.AppointmentService, appointments []d
 				cupName = p.Name
 			}
 		}
+		// DoctorName comes already resolved from SIESA (RTRIM(sis_medi.nombre)).
 		doctorName := appt.DoctorName
-		if doctorRepo != nil && appt.DoctorDocument != "" {
-			if doc, err := doctorRepo.FindByDocument(ctx, appt.DoctorDocument); err == nil && doc != nil && doc.FullName != "" {
-				doctorName = doc.FullName
-			}
-		}
 		title := fmt.Sprintf("%s %s", utils.FormatFriendlyDateShort(appt.Date), services.FormatTimeSlot(appt.TimeSlot))
 		desc := fmt.Sprintf("Dr. %s - %s", doctorName, cupName)
 

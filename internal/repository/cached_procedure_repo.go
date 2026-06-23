@@ -57,3 +57,7 @@ func (c *CachedProcedureRepo) FindByID(ctx context.Context, id int) (*domain.Pro
 func (c *CachedProcedureRepo) SearchByName(ctx context.Context, name string) ([]domain.Procedure, error) {
 	return c.inner.SearchByName(ctx, name)
 }
+
+func (c *CachedProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
+	return c.inner.FindSubjectTypeForCups(ctx, cupsCode)
+}

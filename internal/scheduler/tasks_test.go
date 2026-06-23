@@ -122,12 +122,14 @@ func sampleAppointments() []domain.Appointment {
 // 1. RegisterAll Tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-func TestRegisterAll_RegistersFiveTasks(t *testing.T) {
+func TestRegisterAll_RegistersFourTasks(t *testing.T) {
 	tasks := &Tasks{}
 	s := NewScheduler(time.UTC)
 	tasks.RegisterAll(s)
-	if len(s.tasks) != 5 {
-		t.Fatalf("expected 5 tasks, got %d", len(s.tasks))
+	// data_cleanup, whatsapp_reminders, waiting_list_check_06, voice_reminders.
+	// The waiting-list check was consolidated to a single 06:00 run (commit d5ea233).
+	if len(s.tasks) != 4 {
+		t.Fatalf("expected 4 tasks, got %d", len(s.tasks))
 	}
 }
 
@@ -139,8 +141,7 @@ func TestRegisterAll_TaskNames(t *testing.T) {
 	expected := map[string]bool{
 		"data_cleanup":          false,
 		"whatsapp_reminders":    false,
-		"waiting_list_check_08": false,
-		"waiting_list_check_14": false,
+		"waiting_list_check_06": false,
 		"voice_reminders":       false,
 	}
 
@@ -212,23 +213,23 @@ func TestRegisterAll_WaitingListCheck_WeekdaysOnly(t *testing.T) {
 	tasks.RegisterAll(s)
 
 	for _, task := range s.tasks {
-		if task.Name == "waiting_list_check_08" {
-			if task.Hour != 8 || task.Minute != 0 {
-				t.Errorf("waiting_list_check_08 expected 08:00, got %02d:%02d", task.Hour, task.Minute)
+		if task.Name == "waiting_list_check_06" {
+			if task.Hour != 6 || task.Minute != 0 {
+				t.Errorf("waiting_list_check_06 expected 06:00, got %02d:%02d", task.Hour, task.Minute)
 			}
 			if len(task.Weekdays) != 5 {
-				t.Errorf("waiting_list_check_08 expected 5 weekdays (Mon-Fri), got %d", len(task.Weekdays))
+				t.Errorf("waiting_list_check_06 expected 5 weekdays (Mon-Fri), got %d", len(task.Weekdays))
 			}
 			// Verify Saturday and Sunday are NOT included
 			for _, wd := range task.Weekdays {
 				if wd == time.Saturday || wd == time.Sunday {
-					t.Errorf("waiting_list_check_08 should not include %s", wd)
+					t.Errorf("waiting_list_check_06 should not include %s", wd)
 				}
 			}
 			return
 		}
 	}
-	t.Fatal("waiting_list_check_08 task not found")
+	t.Fatal("waiting_list_check_06 task not found")
 }
 
 func TestRegisterAll_VoiceReminders_Schedule(t *testing.T) {
@@ -238,8 +239,8 @@ func TestRegisterAll_VoiceReminders_Schedule(t *testing.T) {
 
 	for _, task := range s.tasks {
 		if task.Name == "voice_reminders" {
-			if task.Hour != 15 || task.Minute != 0 {
-				t.Errorf("voice_reminders expected 15:00, got %02d:%02d", task.Hour, task.Minute)
+			if task.Hour != 13 || task.Minute != 0 {
+				t.Errorf("voice_reminders expected 13:00, got %02d:%02d", task.Hour, task.Minute)
 			}
 			if len(task.Weekdays) != 7 {
 				t.Errorf("voice_reminders expected 7 weekdays (every day), got %d", len(task.Weekdays))
@@ -649,16 +650,14 @@ func TestSendVoiceReminders_RepoError(t *testing.T) {
 	cfg := testConfig()
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
 
-	// Register a pending notification at RetryCount=2 so GetPendingForIVR returns a target
+	// Register a pending at RetryCount=0 so GetPendingForIVR returns it as an IVR target.
+	// The follow-up chain is disabled by default (ConfirmFollowupEnabled=false), so IVR
+	// targets are those still at RetryCount==0 (the initial reminder).
 	nm.RegisterPending(notifications.PendingNotification{
 		Type:          "confirmation",
 		Phone:         "+573001234567",
 		AppointmentID: "apt-1",
 	})
-	// Manually advance to RetryCount=2 (simulate 2 follow-ups completed)
-	if p, ok := nm.LoadPendingForTest("+573001234567"); ok {
-		p.RetryCount = 2
-	}
 
 	mockRepo := &testutil.MockAppointmentRepo{
 		FindPendingByDateFn: func(ctx context.Context, date string) ([]domain.Appointment, error) {
@@ -876,7 +875,7 @@ func TestCleanup_WaitingListExpireDays30(t *testing.T) {
 func TestCheckWaitingList_NilWaitingListRepo_ReturnsNil(t *testing.T) {
 	tasks := &Tasks{
 		WaitingListRepo: nil,
-		SlotService:     services.NewSlotService(&testutil.MockDoctorRepo{}, &testutil.MockScheduleRepo{}),
+		SlotService:     services.NewSlotService(&testutil.MockProcedureRepo{}, &testutil.MockScheduleRepo{}),
 	}
 	err := tasks.checkWaitingList(context.Background())
 	if err != nil {
@@ -913,7 +912,7 @@ func TestCheckWaitingList_NoWaitingEntries(t *testing.T) {
 		},
 	}
 
-	slotSvc := services.NewSlotService(&testutil.MockDoctorRepo{}, &testutil.MockScheduleRepo{})
+	slotSvc := services.NewSlotService(&testutil.MockProcedureRepo{}, &testutil.MockScheduleRepo{})
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,
@@ -938,13 +937,13 @@ func TestCheckWaitingList_NoSlots_Skip(t *testing.T) {
 		},
 	}
 
-	// SlotService with no doctors → returns nil slots
-	doctorRepo := &testutil.MockDoctorRepo{
-		FindByCupsCodeFn: func(ctx context.Context, cupsCode string) ([]domain.Doctor, error) {
-			return nil, nil // no doctors → no slots
+	// SlotService with no subject → returns nil slots
+	procRepo := &testutil.MockProcedureRepo{
+		FindSubjectTypeForCupsFn: func(ctx context.Context, cupsCode string) (int, error) {
+			return 0, nil // no subject → no slots
 		},
 	}
-	slotSvc := services.NewSlotService(doctorRepo, &testutil.MockScheduleRepo{})
+	slotSvc := services.NewSlotService(procRepo, &testutil.MockScheduleRepo{})
 
 	srv := newBirdTestServer()
 	defer srv.Close()
@@ -993,34 +992,21 @@ func TestCheckWaitingList_DuplicateFound_UpdateStatus(t *testing.T) {
 	}
 
 	// Need doctors and working days so slots are found
-	doctorRepo := &testutil.MockDoctorRepo{
-		FindByCupsCodeFn: func(ctx context.Context, cupsCode string) ([]domain.Doctor, error) {
-			return []domain.Doctor{{Document: "DOC001", FullName: "Dr. Test"}}, nil
+	procRepo := &testutil.MockProcedureRepo{
+		FindSubjectTypeForCupsFn: func(ctx context.Context, cupsCode string) (int, error) {
+			return 8, nil
 		},
 	}
 	scheduleRepo := &testutil.MockScheduleRepo{
-		FindFutureWorkingDaysFn: func(ctx context.Context, doctorDocs []string) ([]domain.WorkingDay, error) {
-			futureDate := time.Now().AddDate(0, 0, 3).Format("2006-01-02")
-			return []domain.WorkingDay{
-				{AgendaID: 1, DoctorDocument: "DOC001", Date: futureDate, MorningEnabled: true, AfternoonEnabled: false},
-			}, nil
-		},
-		FindScheduleConfigFn: func(ctx context.Context, scheduleID int, doctorDoc string) (*domain.ScheduleConfig, error) {
-			workDays := [7]bool{false, true, true, true, true, true, true} // Mon-Sat
-			morning := [7]string{"", "07:00", "07:00", "07:00", "07:00", "07:00", "07:00"}
-			morningEnd := [7]string{"", "12:00", "12:00", "12:00", "12:00", "12:00", "12:00"}
-			return &domain.ScheduleConfig{
-				WorkDays:            workDays,
-				MorningStart:        morning,
-				MorningEnd:          morningEnd,
-				AppointmentDuration: 30,
-			}, nil
-		},
-		FindBookedSlotsFn: func(ctx context.Context, agendaID int, date string) ([]string, error) {
-			return nil, nil // no booked slots
+		FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+			ts := time.Now().AddDate(0, 0, 3)
+			return []domain.AvailableSlotRow{{
+				SlotTime: ts, DoctorDocument: "DOC001", DoctorName: "Dr. Test",
+				DoctorSiesaCode: "S1", AgendaID: 1, DurationMin: 30, AgendaSede: 2,
+			}}, nil
 		},
 	}
-	slotSvc := services.NewSlotService(doctorRepo, scheduleRepo)
+	slotSvc := services.NewSlotService(procRepo, scheduleRepo)
 
 	// HasFutureForCup returns true → duplicate
 	apptRepo := &testutil.MockAppointmentRepo{
@@ -1075,34 +1061,21 @@ func TestCheckWaitingList_SlotsAvailable_NotifyAndRegister(t *testing.T) {
 		},
 	}
 
-	doctorRepo := &testutil.MockDoctorRepo{
-		FindByCupsCodeFn: func(ctx context.Context, cupsCode string) ([]domain.Doctor, error) {
-			return []domain.Doctor{{Document: "DOC001", FullName: "Dr. Test"}}, nil
+	procRepo := &testutil.MockProcedureRepo{
+		FindSubjectTypeForCupsFn: func(ctx context.Context, cupsCode string) (int, error) {
+			return 8, nil
 		},
 	}
 	scheduleRepo := &testutil.MockScheduleRepo{
-		FindFutureWorkingDaysFn: func(ctx context.Context, doctorDocs []string) ([]domain.WorkingDay, error) {
-			futureDate := time.Now().AddDate(0, 0, 3).Format("2006-01-02")
-			return []domain.WorkingDay{
-				{AgendaID: 1, DoctorDocument: "DOC001", Date: futureDate, MorningEnabled: true},
-			}, nil
-		},
-		FindScheduleConfigFn: func(ctx context.Context, scheduleID int, doctorDoc string) (*domain.ScheduleConfig, error) {
-			workDays := [7]bool{false, true, true, true, true, true, true}
-			morning := [7]string{"", "07:00", "07:00", "07:00", "07:00", "07:00", "07:00"}
-			morningEnd := [7]string{"", "12:00", "12:00", "12:00", "12:00", "12:00", "12:00"}
-			return &domain.ScheduleConfig{
-				WorkDays:            workDays,
-				MorningStart:        morning,
-				MorningEnd:          morningEnd,
-				AppointmentDuration: 30,
-			}, nil
-		},
-		FindBookedSlotsFn: func(ctx context.Context, agendaID int, date string) ([]string, error) {
-			return nil, nil
+		FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+			ts := time.Now().AddDate(0, 0, 3)
+			return []domain.AvailableSlotRow{{
+				SlotTime: ts, DoctorDocument: "DOC001", DoctorName: "Dr. Test",
+				DoctorSiesaCode: "S1", AgendaID: 1, DurationMin: 30, AgendaSede: 2,
+			}}, nil
 		},
 	}
-	slotSvc := services.NewSlotService(doctorRepo, scheduleRepo)
+	slotSvc := services.NewSlotService(procRepo, scheduleRepo)
 
 	apptRepo := &testutil.MockAppointmentRepo{
 		HasFutureForCupFn: func(ctx context.Context, patientID, cupCode string) (bool, error) {
@@ -1159,34 +1132,21 @@ func TestCheckWaitingList_EmptyTemplateConfig_Skip(t *testing.T) {
 		},
 	}
 
-	doctorRepo := &testutil.MockDoctorRepo{
-		FindByCupsCodeFn: func(ctx context.Context, cupsCode string) ([]domain.Doctor, error) {
-			return []domain.Doctor{{Document: "DOC001", FullName: "Dr. Test"}}, nil
+	procRepo := &testutil.MockProcedureRepo{
+		FindSubjectTypeForCupsFn: func(ctx context.Context, cupsCode string) (int, error) {
+			return 8, nil
 		},
 	}
 	scheduleRepo := &testutil.MockScheduleRepo{
-		FindFutureWorkingDaysFn: func(ctx context.Context, doctorDocs []string) ([]domain.WorkingDay, error) {
-			futureDate := time.Now().AddDate(0, 0, 3).Format("2006-01-02")
-			return []domain.WorkingDay{
-				{AgendaID: 1, DoctorDocument: "DOC001", Date: futureDate, MorningEnabled: true},
-			}, nil
-		},
-		FindScheduleConfigFn: func(ctx context.Context, scheduleID int, doctorDoc string) (*domain.ScheduleConfig, error) {
-			workDays := [7]bool{false, true, true, true, true, true, true}
-			morning := [7]string{"", "07:00", "07:00", "07:00", "07:00", "07:00", "07:00"}
-			morningEnd := [7]string{"", "12:00", "12:00", "12:00", "12:00", "12:00", "12:00"}
-			return &domain.ScheduleConfig{
-				WorkDays:            workDays,
-				MorningStart:        morning,
-				MorningEnd:          morningEnd,
-				AppointmentDuration: 30,
-			}, nil
-		},
-		FindBookedSlotsFn: func(ctx context.Context, agendaID int, date string) ([]string, error) {
-			return nil, nil
+		FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+			ts := time.Now().AddDate(0, 0, 3)
+			return []domain.AvailableSlotRow{{
+				SlotTime: ts, DoctorDocument: "DOC001", DoctorName: "Dr. Test",
+				DoctorSiesaCode: "S1", AgendaID: 1, DurationMin: 30, AgendaSede: 2,
+			}}, nil
 		},
 	}
-	slotSvc := services.NewSlotService(doctorRepo, scheduleRepo)
+	slotSvc := services.NewSlotService(procRepo, scheduleRepo)
 
 	apptRepo := &testutil.MockAppointmentRepo{
 		HasFutureForCupFn: func(ctx context.Context, patientID, cupCode string) (bool, error) {
@@ -1230,7 +1190,7 @@ func TestCheckWaitingList_GetDistinctCupsError(t *testing.T) {
 		},
 	}
 
-	slotSvc := services.NewSlotService(&testutil.MockDoctorRepo{}, &testutil.MockScheduleRepo{})
+	slotSvc := services.NewSlotService(&testutil.MockProcedureRepo{}, &testutil.MockScheduleRepo{})
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,

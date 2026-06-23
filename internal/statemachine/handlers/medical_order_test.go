@@ -57,6 +57,10 @@ func (m *mockProcedureRepo) FindAllActive(ctx context.Context) ([]domain.Procedu
 	return nil, nil
 }
 
+func (m *mockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
+	return 0, nil
+}
+
 // wrapOpenAIResponse wraps a content string into a full OpenAI API response JSON.
 func wrapOpenAIResponse(content string) string {
 	resp := map[string]interface{}{
@@ -72,7 +76,7 @@ func wrapOpenAIResponse(content string) string {
 
 func TestAskMedicalOrder_Automatic(t *testing.T) {
 	m := sm.NewMachine()
-	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler())
+	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(nil))
 
 	sess := testSess(sm.StateAskMedicalOrder)
 	result, err := m.Process(context.Background(), sess, textM("any"))
@@ -492,7 +496,7 @@ func TestValidateOCR_EnrichesFromDB(t *testing.T) {
 	procRepo := &mockProcedureRepo{
 		findByCodeFn: func(ctx context.Context, code string) (*domain.Procedure, error) {
 			if code == "890271" {
-				return &domain.Procedure{ID: 1, Code: "890271", Name: "Electromiografia de 4 extremidades"}, nil
+				return &domain.Procedure{ID: 1, Code: "890271", Name: "Electromiografia de 4 extremidades", IsActive: true}, nil
 			}
 			return nil, nil
 		},
@@ -527,7 +531,7 @@ func TestValidateOCR_EnrichesFromDB(t *testing.T) {
 func TestValidateOCR_DocumentMismatch_NoWarning(t *testing.T) {
 	procRepo := &mockProcedureRepo{
 		findByCodeFn: func(ctx context.Context, code string) (*domain.Procedure, error) {
-			return &domain.Procedure{ID: 1, Code: code, Name: "Procedimiento Test"}, nil
+			return &domain.Procedure{ID: 1, Code: code, Name: "Procedimiento Test", IsActive: true}, nil
 		},
 	}
 
@@ -562,7 +566,7 @@ func TestValidateOCR_DocumentMismatch_NoWarning(t *testing.T) {
 func TestValidateOCR_DocumentMatch(t *testing.T) {
 	procRepo := &mockProcedureRepo{
 		findByCodeFn: func(ctx context.Context, code string) (*domain.Procedure, error) {
-			return &domain.Procedure{ID: 1, Code: code, Name: "Procedimiento Test"}, nil
+			return &domain.Procedure{ID: 1, Code: code, Name: "Procedimiento Test", IsActive: true}, nil
 		},
 	}
 

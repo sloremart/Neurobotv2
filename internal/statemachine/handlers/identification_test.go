@@ -14,13 +14,13 @@ import (
 // --- Mock PatientRepository ---
 
 type mockPatientRepo struct {
-	findByDocumentFn    func(ctx context.Context, doc string) (*domain.Patient, error)
+	findByDocumentFn    func(ctx context.Context, docType, doc string) (*domain.Patient, error)
 	updateContactInfoFn func(ctx context.Context, patientID, phone, email string) error
 }
 
-func (m *mockPatientRepo) FindByDocument(ctx context.Context, doc string) (*domain.Patient, error) {
+func (m *mockPatientRepo) FindByDocument(ctx context.Context, docType, doc string) (*domain.Patient, error) {
 	if m.findByDocumentFn != nil {
-		return m.findByDocumentFn(ctx, doc)
+		return m.findByDocumentFn(ctx, docType, doc)
 	}
 	return nil, nil
 }
@@ -31,6 +31,12 @@ func (m *mockPatientRepo) Create(ctx context.Context, input domain.CreatePatient
 	return "", nil
 }
 func (m *mockPatientRepo) UpdateEntity(ctx context.Context, patientID, entityCode string) error {
+	return nil
+}
+func (m *mockPatientRepo) UpdateContract(ctx context.Context, patientID, contractCode string) error {
+	return nil
+}
+func (m *mockPatientRepo) UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error {
 	return nil
 }
 func (m *mockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phone, email string) error {
@@ -133,7 +139,7 @@ func TestPatientLookup_Found(t *testing.T) {
 		FirstName: "Juan", FirstSurname: "Perez",
 	}
 	repo := &mockPatientRepo{
-		findByDocumentFn: func(ctx context.Context, doc string) (*domain.Patient, error) {
+		findByDocumentFn: func(ctx context.Context, docType, doc string) (*domain.Patient, error) {
 			return patient, nil
 		},
 	}
@@ -196,7 +202,7 @@ func TestPatientLookup_NotFound_Consultar(t *testing.T) {
 
 func TestPatientLookup_DBError(t *testing.T) {
 	repo := &mockPatientRepo{
-		findByDocumentFn: func(ctx context.Context, doc string) (*domain.Patient, error) {
+		findByDocumentFn: func(ctx context.Context, docType, doc string) (*domain.Patient, error) {
 			return nil, fmt.Errorf("connection refused")
 		},
 	}

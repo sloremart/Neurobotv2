@@ -1,0 +1,57 @@
+# .golangci.yml — golangci-lint v2
+# Calibrado para neuro-bot: SQL puro (database/sql), clientes HTTP custom,
+# worker pool de goroutines y datos de salud (Ley 1581 → seguridad prioritaria).
+#
+# Pin: usa la misma versión aquí, en lefthook.yml y en ci.yml.
+# Verifica la última v2 estable en: https://github.com/golangci/golangci-lint/releases
+
+version: "2"
+
+run:
+  go: "1.23"
+  tests: true
+
+linters:
+  # 'standard' = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    # --- Seguridad (datos de salud) ---
+    - gosec            # análisis de seguridad (SAST)
+    # --- SQL puro con database/sql ---
+    - rowserrcheck     # rows.Err() sin comprobar
+    - sqlclosecheck    # *sql.Rows / *sql.Stmt sin cerrar
+    # --- Clientes HTTP custom (Bird, OpenAI, Telegram) ---
+    - bodyclose        # response.Body sin cerrar
+    - noctx            # peticiones HTTP sin context.Context
+    # --- Manejo de errores robusto ---
+    - errorlint        # comparaciones/wrapping de errores incorrectos
+    - nilerr           # return nil cuando err != nil
+    # --- Concurrencia / context (worker pool, sesiones) ---
+    - contextcheck     # uso incoherente de context
+    - copyloopvar      # defensa de variables de loop en goroutines (Go 1.22+)
+    # --- Calidad general ---
+    - gocritic
+    - revive
+    - misspell
+    - unparam
+  exclusions:
+    # No hay código generado en el proyecto, pero dejamos el manejo por defecto.
+    generated: lax
+    rules:
+      # En tests relajamos reglas que generan ruido sin aportar.
+      - path: _test\.go
+        linters:
+          - gosec
+          - bodyclose
+          - noctx
+          - unparam
+
+formatters:
+  enable:
+    - gofumpt          # formato estricto
+    - goimports        # ordena/limpia imports
+  settings:
+    goimports:
+      # Agrupa los imports del propio módulo por separado.
+      local-prefixes:
+        - github.com/neuro-bot/neuro-bot

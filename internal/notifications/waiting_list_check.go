@@ -55,23 +55,22 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 
 	// 3. Verify there are actually available slots
 	query := services.SlotQuery{
-		CupsCode:      cupsCode,
-		PatientAge:    entry.PatientAge,
-		IsContrasted:  entry.IsContrasted,
-		IsSedated:     entry.IsSedated,
-		Espacios:      entry.Espacios,
-		ProcedureType: entry.ProcedureType,
-		MaxSlots:      1,
+		CupsCode:     cupsCode,
+		PatientAge:   entry.PatientAge,
+		IsContrasted: entry.IsContrasted,
+		IsSedated:    entry.IsSedated,
+		Espacios:     entry.Espacios,
+		MaxSlots:     1,
 	}
 	if entry.PreferredDoctorDoc != "" {
 		query.PreferredDoctor = entry.PreferredDoctorDoc
 	}
 
-	// MRC monthly limit filter: solo para entidades Sanitas (SAN02/EPS005)
-	if m.apptSvc != nil && services.IsMRCEntity(entry.PatientEntity) {
+	// MRC monthly limit filter: solo para pacientes Sanitas MRC (contratos 5/6)
+	if m.apptSvc != nil && services.IsMRCPatient(entry.ContractCode) {
 		if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 			query.MonthFilter = func(year, month int) (bool, error) {
-				blocked, err := m.apptSvc.CheckMRCLimitForMonth(ctx, cupsCode, entry.PatientEntity, year, month)
+				blocked, err := m.apptSvc.CheckMRCLimitForMonth(ctx, cupsCode, entry.ContractCode, year, month)
 				if err != nil {
 					return true, nil // fail-open
 				}

@@ -13,12 +13,13 @@ import (
 // --- Mock AppointmentRepository ---
 
 type mockAppointmentRepo struct {
-	hasFutureForCupFn        func(ctx context.Context, pid, cup string) (bool, error)
-	countMonthlyByGroupFn    func(ctx context.Context, cups []string, year, month int) (int, error)
-	findUpcomingByPatientFn  func(ctx context.Context, patientID string) ([]domain.Appointment, error)
-	findByIDFn               func(ctx context.Context, id string) (*domain.Appointment, error)
-	findByAgendaAndDateFn    func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
-	createFn                 func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
+	hasFutureForCupFn       func(ctx context.Context, pid, cup string) (bool, error)
+	findLastDoctorForCupsFn func(ctx context.Context, pid string, cups []string) (string, error)
+	countMonthlyByGroupFn   func(ctx context.Context, cups []string, year, month int) (int, error)
+	findUpcomingByPatientFn func(ctx context.Context, patientID string) ([]domain.Appointment, error)
+	findByIDFn              func(ctx context.Context, id string) (*domain.Appointment, error)
+	findByAgendaAndDateFn   func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
+	createFn                func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
 }
 
 func (m *mockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -57,6 +58,9 @@ func (m *mockAppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, ch
 func (m *mockAppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
 	return nil
 }
+func (m *mockAppointmentRepo) DeleteBatch(ctx context.Context, ids []string) error {
+	return nil
+}
 func (m *mockAppointmentRepo) HasFutureForCup(ctx context.Context, pid, cup string) (bool, error) {
 	if m.hasFutureForCupFn != nil {
 		return m.hasFutureForCupFn(ctx, pid, cup)
@@ -64,6 +68,9 @@ func (m *mockAppointmentRepo) HasFutureForCup(ctx context.Context, pid, cup stri
 	return false, nil
 }
 func (m *mockAppointmentRepo) FindLastDoctorForCups(ctx context.Context, pid string, cups []string) (string, error) {
+	if m.findLastDoctorForCupsFn != nil {
+		return m.findLastDoctorForCupsFn(ctx, pid, cups)
+	}
 	return "", nil
 }
 func (m *mockAppointmentRepo) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int) (int, error) {
@@ -78,10 +85,10 @@ func (m *mockAppointmentRepo) FindPendingByDate(ctx context.Context, date string
 func (m *mockAppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	return 0, nil
 }
-func (m *mockAppointmentRepo) CreatePxCita(ctx context.Context, input domain.CreatePxCitaInput) error {
+func (m *mockAppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
-func (m *mockAppointmentRepo) CreatePxCitaBatch(ctx context.Context, inputs []domain.CreatePxCitaInput) error {
+func (m *mockAppointmentRepo) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
 
@@ -170,7 +177,7 @@ func TestFindConsecutiveBlock(t *testing.T) {
 func TestCheckSOATLimit_NonSOAT(t *testing.T) {
 	svc := NewAppointmentService(&mockAppointmentRepo{}, nil)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "890271", "EPS001")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "890271", "4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +197,7 @@ func TestCheckSOATLimit_WithinLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, _, err := svc.CheckMRCLimit(context.Background(), "861411", "SAN02")
+	blocked, _, err := svc.CheckMRCLimit(context.Background(), "861411", "6")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +214,7 @@ func TestCheckSOATLimit_ExceedsLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "SAN02")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "6")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,22 +226,22 @@ func TestCheckSOATLimit_ExceedsLimit(t *testing.T) {
 	}
 }
 
-func TestCheckSOATLimit_SAN01_NotBlocked(t *testing.T) {
-	// SAN01 (Sanitas Premium) is NOT subject to MRC limits
+func TestCheckMRCLimit_EventoContract_NotBlocked(t *testing.T) {
+	// Contract 4 (SANITAS EVENTO CONTRIBUTIVO) is NOT subject to MRC limits
 	repo := &mockAppointmentRepo{
 		countMonthlyByGroupFn: func(ctx context.Context, cups []string, year, month int) (int, error) {
-			t.Fatal("CountMonthlyByGroup should not be called for SAN01 (Sanitas Premium)")
+			t.Fatal("CountMonthlyByGroup should not be called for an Evento contract")
 			return 999, nil
 		},
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "SAN01")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "4")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if blocked {
-		t.Error("expected SAN01 NOT blocked — MRC only applies to SAN02")
+		t.Error("expected Evento contract NOT blocked — MRC only applies to contracts 5/6")
 	}
 	if msg != "" {
 		t.Errorf("expected empty message, got %q", msg)
@@ -242,7 +249,7 @@ func TestCheckSOATLimit_SAN01_NotBlocked(t *testing.T) {
 }
 
 func TestCheckSOATLimit_Disabled(t *testing.T) {
-	// With feature flag disabled, even SAN02 should not be checked
+	// With feature flag disabled, even an MRC contract should not be checked
 	repo := &mockAppointmentRepo{
 		countMonthlyByGroupFn: func(ctx context.Context, cups []string, year, month int) (int, error) {
 			t.Fatal("CountMonthlyByGroup should not be called when disabled")
@@ -252,7 +259,7 @@ func TestCheckSOATLimit_Disabled(t *testing.T) {
 	cfg := &config.Config{CupsGroupLimitsEnabled: false}
 	svc := NewAppointmentService(repo, cfg)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "SAN02")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "6")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +282,7 @@ func TestCheckMRCLimitForMonth_WithinLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "SAN02", 2026, 4)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 2026, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +299,7 @@ func TestCheckMRCLimitForMonth_AtLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "SAN02", 2026, 3)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 2026, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,21 +308,21 @@ func TestCheckMRCLimitForMonth_AtLimit(t *testing.T) {
 	}
 }
 
-func TestCheckMRCLimitForMonth_NonSAN02(t *testing.T) {
+func TestCheckMRCLimitForMonth_NonMRCContract(t *testing.T) {
 	repo := &mockAppointmentRepo{
 		countMonthlyByGroupFn: func(ctx context.Context, cups []string, year, month int) (int, error) {
-			t.Fatal("CountMonthlyByGroup should not be called for non-SAN02 entity")
+			t.Fatal("CountMonthlyByGroup should not be called for a non-MRC contract")
 			return 999, nil
 		},
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "EPS001", 2026, 3)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 2026, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if blocked {
-		t.Error("expected not blocked for non-SAN02 entity")
+		t.Error("expected not blocked for a non-MRC contract")
 	}
 }
 

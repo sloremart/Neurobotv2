@@ -5,6 +5,7 @@ const (
 	StateCheckBusinessHours = "CHECK_BUSINESS_HOURS"
 	StateGreeting           = "GREETING"
 	StateMainMenu           = "MAIN_MENU"
+	StateAskDocumentType    = "ASK_DOCUMENT_TYPE"
 	StateAskDocument        = "ASK_DOCUMENT"
 	StatePatientLookup      = "PATIENT_LOOKUP"
 	StateConfirmIdentity    = "CONFIRM_IDENTITY"
@@ -26,8 +27,10 @@ const (
 	StateAskClientType   = "ASK_CLIENT_TYPE"
 	StateShowEntityList  = "SHOW_ENTITY_LIST"
 	StateAskEntityNumber  = "ASK_ENTITY_NUMBER"
-	StateAskSanitasPlan   = "ASK_SANITAS_PLAN"
 	StateOutOfHoursMenu   = "OUT_OF_HOURS_MENU"
+	// EPS régimen + Sanitas municipality steps (SIESA contract resolution)
+	StateAskEpsRegimen       = "ASK_EPS_REGIMEN"
+	StateConfirmMunicipality = "CONFIRM_MUNICIPALITY"
 )
 
 // === Registro de Paciente Nuevo ===
@@ -42,6 +45,7 @@ const (
 	StateRegBirthDate        = "REG_BIRTH_DATE"
 	StateRegBirthPlace       = "REG_BIRTH_PLACE"
 	StateRegGender           = "REG_GENDER"
+	StateRegBloodType        = "REG_BLOOD_TYPE"
 	StateRegMaritalStatus    = "REG_MARITAL_STATUS"
 	StateRegAddress          = "REG_ADDRESS"
 	StateRegPhone            = "REG_PHONE"
@@ -49,6 +53,7 @@ const (
 	StateRegEmail            = "REG_EMAIL"
 	StateRegOccupation       = "REG_OCCUPATION"
 	StateRegMunicipality     = "REG_MUNICIPALITY"
+	StateRegBarrio           = "REG_BARRIO"
 	StateRegClientType       = "REG_CLIENT_TYPE"
 	StateRegUserType         = "REG_USER_TYPE"
 	StateRegAffiliationType  = "REG_AFFILIATION_TYPE"
@@ -157,6 +162,7 @@ var stateTypes = map[string]StateType{
 	StateCheckBusinessHours: StateTypeAutomatic,
 	StateGreeting:           StateTypeAutomatic,
 	StateMainMenu:           StateTypeInteractive,
+	StateAskDocumentType:    StateTypeInteractive,
 	StateAskDocument:        StateTypeInteractive,
 	StatePatientLookup:      StateTypeAutomatic,
 	StateConfirmIdentity:    StateTypeInteractive,
@@ -176,7 +182,8 @@ var stateTypes = map[string]StateType{
 	StateAskClientType:   StateTypeInteractive,
 	StateShowEntityList:  StateTypeAutomatic,
 	StateAskEntityNumber: StateTypeInteractive,
-	StateAskSanitasPlan:  StateTypeInteractive,
+	StateAskEpsRegimen:       StateTypeInteractive,
+	StateConfirmMunicipality: StateTypeInteractive,
 	StateOutOfHoursMenu:  StateTypeInteractive,
 
 	// Registro
@@ -190,6 +197,7 @@ var stateTypes = map[string]StateType{
 	StateRegBirthDate:        StateTypeInteractive,
 	StateRegBirthPlace:       StateTypeInteractive,
 	StateRegGender:           StateTypeInteractive,
+	StateRegBloodType:        StateTypeInteractive,
 	StateRegMaritalStatus:    StateTypeInteractive,
 	StateRegAddress:          StateTypeInteractive,
 	StateRegPhone:            StateTypeInteractive,
@@ -197,6 +205,7 @@ var stateTypes = map[string]StateType{
 	StateRegEmail:            StateTypeInteractive,
 	StateRegOccupation:       StateTypeInteractive,
 	StateRegMunicipality:     StateTypeInteractive,
+	StateRegBarrio:           StateTypeInteractive,
 	StateRegClientType:       StateTypeInteractive,
 	StateRegUserType:         StateTypeInteractive,
 	StateRegAffiliationType:  StateTypeInteractive,

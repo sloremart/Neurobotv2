@@ -21,7 +21,7 @@ var _ repository.EntityRepository = (*EntityRepo)(nil)
 // entity.PriceType = manual del contrato principal (menor codigo activo)
 // entity.Category  = regimen del contrato principal
 //
-// Al agendar, lookupContrato (appointment_repo) resuelve empresa → contrato.codigo.
+// When scheduling, lookupContract (appointment_repo) resolves empresa → contrato.codigo.
 type EntityRepo struct {
 	db *sql.DB
 }
@@ -43,26 +43,26 @@ SELECT
         ' MRC',          '')), '')                                                      AS nombre_corto,
     ISNULL(MIN(manual), 0)                                                              AS manual,
     ISNULL(MIN(regimen), 1)                                                             AS regimen
-FROM contratos`
+FROM contratos WITH (NOLOCK)`
 
 func scanEntityGroup(rows *sql.Rows) (domain.Entity, error) {
 	var e domain.Entity
-	var empresa, cleanName string
-	var manual, regimen int64
-	if err := rows.Scan(&empresa, &cleanName, &manual, &regimen); err != nil {
+	var company, cleanName string
+	var priceType, regime int64
+	if err := rows.Scan(&company, &cleanName, &priceType, &regime); err != nil {
 		return e, err
 	}
-	e.Code = empresa
+	e.Code = company
 	e.Name = cleanName
-	e.PriceType = strconv.FormatInt(manual, 10)
-	e.Category = categoryNameFromRegimen(regimen)
+	e.PriceType = strconv.FormatInt(priceType, 10)
+	e.Category = categoryNameFromRegime(regime)
 	e.IsActive = true
 	return e, nil
 }
 
-// categoryNameFromRegimen maps a SIESA regimen number to the domain category name
+// categoryNameFromRegime maps a SIESA regimen number to the domain category name
 // used by EntityCategories and CachedEntityRepo.byCategory.
-func categoryNameFromRegimen(regimen int64) string {
+func categoryNameFromRegime(regimen int64) string {
 	switch regimen {
 	case 1, 2:
 		return "EPS"
@@ -81,17 +81,17 @@ func categoryNameFromRegimen(regimen int64) string {
 func scanEntity(rows *sql.Rows) (domain.Entity, error) {
 	var e domain.Entity
 	var codigo int
-	var alias, empresa sql.NullString
-	var manual, regimen sql.NullInt64
+	var alias, company sql.NullString
+	var priceType, regime sql.NullInt64
 	var activo int
-	if err := rows.Scan(&codigo, &alias, &empresa, &manual, &regimen, &activo); err != nil {
+	if err := rows.Scan(&codigo, &alias, &company, &priceType, &regime, &activo); err != nil {
 		return e, err
 	}
 	e.ID = codigo
-	e.Code = empresa.String  // empresa como Code para consistencia con sis_paci.entidad
+	e.Code = company.String  // company (empresa) as Code, consistent with sis_paci.entidad
 	e.Name = alias.String
-	e.PriceType = strconv.FormatInt(manual.Int64, 10)
-	e.Category = strconv.FormatInt(regimen.Int64, 10)
+	e.PriceType = strconv.FormatInt(priceType.Int64, 10)
+	e.Category = strconv.FormatInt(regime.Int64, 10)
 	e.IsActive = (activo == 1)
 	return e, nil
 }
@@ -138,12 +138,13 @@ func (r *EntityRepo) FindActiveByCategory(ctx context.Context, category string) 
 	case strings.Contains(upper, "PREPAGADA"):
 		whereExtra = `AND es_prepagado = 1`
 	case strings.Contains(upper, "PARTICULAR"):
-		// Solo el contrato estándar de paciente particular (10% descuento)
+		// Contrato estándar de paciente particular (PART02, 10% descuento). El bot
+		// no muestra lista para PARTICULAR (es opción única); se asigna directo.
 		whereExtra = `AND empresa = 'PART02'`
 	default:
 		regimenInt, err := strconv.Atoi(category)
 		if err != nil {
-			regimenInt = regimenFromCategoryName(category)
+			regimenInt = regimeFromCategoryName(category)
 		}
 		whereExtra = `AND regimen = @p1`
 		args = append(args, regimenInt)
@@ -177,11 +178,11 @@ func (r *EntityRepo) FindByCode(ctx context.Context, code string) (*domain.Entit
 
 	if codigoInt, err := strconv.Atoi(code); err == nil {
 		// código numérico de contrato: buscar por codigo
-		query = `SELECT ` + entitySelectCols + ` FROM contratos c WHERE c.codigo = @p1`
+		query = `SELECT ` + entitySelectCols + ` FROM contratos c WITH (NOLOCK) WHERE c.codigo = @p1`
 		param = codigoInt
 	} else {
 		// código empresa (e.g. "EPS005" de sis_paci.entidad): primer contrato activo
-		query = `SELECT TOP 1 ` + entitySelectCols + ` FROM contratos c WHERE c.empresa = @p1 AND c.activo = 1 ORDER BY c.codigo`
+		query = `SELECT TOP 1 ` + entitySelectCols + ` FROM contratos c WITH (NOLOCK) WHERE c.empresa = @p1 AND c.activo = 1 ORDER BY c.codigo`
 		param = code
 	}
 
@@ -226,7 +227,7 @@ func (r *EntityRepo) GetCodeByIndexAndCategory(ctx context.Context, index int, c
 	default:
 		regimenInt, err := strconv.Atoi(category)
 		if err != nil {
-			regimenInt = regimenFromCategoryName(category)
+			regimenInt = regimeFromCategoryName(category)
 		}
 		whereExtra = `AND regimen = @p1`
 		args = []interface{}{regimenInt, index - 1}
@@ -239,19 +240,19 @@ func (r *EntityRepo) GetCodeByIndexAndCategory(ctx context.Context, index int, c
 	ORDER BY MIN(alias)
 	OFFSET @p` + strconv.Itoa(len(args)) + ` ROWS FETCH NEXT 1 ROWS ONLY`
 
-	var empresa string
-	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&empresa, new(string), new(int64), new(int64)); err != nil {
+	var company string
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&company, new(string), new(int64), new(int64)); err != nil {
 		if err == sql.ErrNoRows {
 			return "", fmt.Errorf("entity index %d out of range for category %s", index, category)
 		}
 		return "", fmt.Errorf("entity GetCodeByIndex: %w", err)
 	}
-	return empresa, nil
+	return company, nil
 }
 
-// regimenFromCategoryName mapea categoría a regimen SIESA.
+// regimeFromCategoryName mapea categoría a regimen SIESA.
 // "EPS" se maneja por separado (IN 1,2) en FindActiveByCategory.
-func regimenFromCategoryName(name string) int {
+func regimeFromCategoryName(name string) int {
 	upper := strings.ToUpper(strings.TrimSpace(name))
 	switch {
 	case strings.Contains(upper, "SUBSIDIADO"):

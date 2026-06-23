@@ -39,10 +39,10 @@ func (m *mockApptRepoNotif) FindByAgendaAndDate(ctx context.Context, agendaID in
 func (m *mockApptRepoNotif) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	return nil, nil
 }
-func (m *mockApptRepoNotif) CreatePxCita(ctx context.Context, input domain.CreatePxCitaInput) error {
+func (m *mockApptRepoNotif) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
-func (m *mockApptRepoNotif) CreatePxCitaBatch(ctx context.Context, inputs []domain.CreatePxCitaInput) error {
+func (m *mockApptRepoNotif) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
 func (m *mockApptRepoNotif) Confirm(ctx context.Context, id string, channel, channelID string) error {
@@ -75,6 +75,9 @@ func (m *mockApptRepoNotif) CancelBatch(ctx context.Context, ids []string, reaso
 			}
 		}
 	}
+	return nil
+}
+func (m *mockApptRepoNotif) DeleteBatch(ctx context.Context, ids []string) error {
 	return nil
 }
 func (m *mockApptRepoNotif) HasFutureForCup(ctx context.Context, patientID, cupCode string) (bool, error) {
@@ -418,9 +421,10 @@ func TestHandleTimeout_Confirmation_Step0_FollowUp1(t *testing.T) {
 	defer srv.Close()
 
 	cfg := &config.Config{
-		ConfirmFollowup1Hours: 3,
-		ConfirmFollowup2Hours: 3,
-		ConfirmPostIVRMinutes: 30,
+		ConfirmFollowupEnabled: true, // escalation chain only runs when enabled
+		ConfirmFollowup1Hours:  3,
+		ConfirmFollowup2Hours:  3,
+		ConfirmPostIVRMinutes:  30,
 	}
 	mgr := NewNotificationManager(birdClient, nil, cfg)
 
@@ -447,9 +451,10 @@ func TestHandleTimeout_Confirmation_Step1_FollowUp2(t *testing.T) {
 	defer srv.Close()
 
 	cfg := &config.Config{
-		ConfirmFollowup1Hours: 3,
-		ConfirmFollowup2Hours: 3,
-		ConfirmPostIVRMinutes: 30,
+		ConfirmFollowupEnabled: true, // escalation chain only runs when enabled
+		ConfirmFollowup1Hours:  3,
+		ConfirmFollowup2Hours:  3,
+		ConfirmPostIVRMinutes:  30,
 	}
 	mgr := NewNotificationManager(birdClient, nil, cfg)
 
@@ -483,10 +488,11 @@ func TestHandleTimeout_Confirmation_Step2_SafetyEscalation(t *testing.T) {
 	}
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 	cfg := &config.Config{
-		BirdTeamFallback:      "team-fallback",
-		ConfirmFollowup1Hours: 3,
-		ConfirmFollowup2Hours: 3,
-		ConfirmPostIVRMinutes: 30,
+		BirdTeamFallback:       "team-fallback",
+		ConfirmFollowupEnabled: true, // escalation chain only runs when enabled
+		ConfirmFollowup1Hours:  3,
+		ConfirmFollowup2Hours:  3,
+		ConfirmPostIVRMinutes:  30,
 	}
 	mgr := NewNotificationManager(birdClient, apptSvc, cfg)
 
@@ -518,10 +524,11 @@ func TestHandleTimeout_Confirmation_Step3_PostIVR(t *testing.T) {
 	}
 	apptSvc := services.NewAppointmentService(apptRepo, nil)
 	cfg := &config.Config{
-		BirdTeamFallback:      "team-fallback",
-		ConfirmFollowup1Hours: 3,
-		ConfirmFollowup2Hours: 3,
-		ConfirmPostIVRMinutes: 30,
+		BirdTeamFallback:       "team-fallback",
+		ConfirmFollowupEnabled: true, // escalation chain only runs when enabled
+		ConfirmFollowup1Hours:  3,
+		ConfirmFollowup2Hours:  3,
+		ConfirmPostIVRMinutes:  30,
 	}
 	mgr := NewNotificationManager(birdClient, apptSvc, cfg)
 
@@ -570,7 +577,8 @@ func TestHandleTimeout_Confirmation_EscalateNoAppt(t *testing.T) {
 }
 
 func TestGetPendingForIVR(t *testing.T) {
-	cfg := &config.Config{}
+	// Followup chain enabled → IVR targets are those who completed the WA chain (RetryCount==2).
+	cfg := &config.Config{ConfirmFollowupEnabled: true}
 	mgr := NewNotificationManager(nil, nil, cfg)
 
 	// confirmation retry=2 → should be returned
@@ -613,7 +621,8 @@ func TestGetPendingForIVR(t *testing.T) {
 }
 
 func TestMarkIVRSent(t *testing.T) {
-	cfg := &config.Config{ConfirmPostIVRMinutes: 30}
+	// Followup chain enabled → IVR is not the last step; pending survives with a post-IVR timer.
+	cfg := &config.Config{ConfirmFollowupEnabled: true, ConfirmPostIVRMinutes: 30}
 	mgr := NewNotificationManager(nil, nil, cfg)
 
 	mgr.pending.Store("+573001234567", &PendingNotification{
@@ -749,12 +758,12 @@ func (m *mockWaitingListFinder) UpdateStatus(ctx context.Context, id, status str
 }
 
 type mockSessionCreator struct {
-	mu              sync.Mutex
-	createFn        func(ctx context.Context, s *session.Session) error
-	setCtxBatchFn   func(ctx context.Context, sessionID string, kvs map[string]string) error
-	createdSession  *session.Session
-	batchSessionID  string
-	batchKVs        map[string]string
+	mu             sync.Mutex
+	createFn       func(ctx context.Context, s *session.Session) error
+	setCtxBatchFn  func(ctx context.Context, sessionID string, kvs map[string]string) error
+	createdSession *session.Session
+	batchSessionID string
+	batchKVs       map[string]string
 }
 
 func (m *mockSessionCreator) Create(ctx context.Context, s *session.Session) error {
@@ -787,8 +796,8 @@ func (m *mockSessionCreator) CompleteActiveByPhone(ctx context.Context, phone st
 }
 
 type mockVirtualEnqueuer struct {
-	mu      sync.Mutex
-	calls   []string
+	mu    sync.Mutex
+	calls []string
 }
 
 func (m *mockVirtualEnqueuer) EnqueueVirtual(phone string) {
@@ -1585,13 +1594,13 @@ func (m *mockFutureApptChecker) HasFutureForCup(ctx context.Context, patientID, 
 }
 
 type mockWLChecker struct {
-	mu              sync.Mutex
-	getWaitingFn    func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
-	markNotifiedFn  func(ctx context.Context, id string) error
-	updateStatusFn  func(ctx context.Context, id, status string) error
-	notifiedID      string
-	updatedID       string
-	updatedStatus   string
+	mu             sync.Mutex
+	getWaitingFn   func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
+	markNotifiedFn func(ctx context.Context, id string) error
+	updateStatusFn func(ctx context.Context, id, status string) error
+	notifiedID     string
+	updatedID      string
+	updatedStatus  string
 }
 
 func (m *mockWLChecker) GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error) {

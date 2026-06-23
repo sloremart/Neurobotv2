@@ -19,16 +19,16 @@ func NewWaitingListRepo(db *sql.DB) *WaitingListRepo {
 // Create inserts a new waiting list entry.
 func (r *WaitingListRepo) Create(ctx context.Context, entry *domain.WaitingListEntry) error {
 	query := `INSERT INTO waiting_list (
-		id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
+		id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity, patient_contract,
 		cups_code, cups_name, is_contrasted, is_sedated, espacios, procedures_json, procedure_type,
 		gfr_creatinine, gfr_height_cm, gfr_weight_kg, gfr_disease_type, gfr_calculated,
 		is_pregnant, baby_weight_cat, preferred_doctor_doc,
 		status, expires_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := r.db.ExecContext(ctx, query,
 		entry.ID, entry.PhoneNumber, entry.PatientID, entry.PatientDoc,
-		entry.PatientName, entry.PatientAge, entry.PatientGender, entry.PatientEntity,
+		entry.PatientName, entry.PatientAge, entry.PatientGender, entry.PatientEntity, entry.ContractCode,
 		entry.CupsCode, entry.CupsName, entry.IsContrasted, entry.IsSedated,
 		entry.Espacios, entry.ProceduresJSON, entry.ProcedureType,
 		nullFloat(entry.GfrCreatinine), nullInt(entry.GfrHeightCm),
@@ -46,7 +46,7 @@ func (r *WaitingListRepo) Create(ctx context.Context, entry *domain.WaitingListE
 
 // FindByID retrieves a waiting list entry by ID.
 func (r *WaitingListRepo) FindByID(ctx context.Context, id string) (*domain.WaitingListEntry, error) {
-	query := `SELECT id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
+	query := `SELECT id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity, patient_contract,
 		cups_code, cups_name, is_contrasted, is_sedated, espacios, procedures_json, procedure_type,
 		gfr_creatinine, gfr_height_cm, gfr_weight_kg, gfr_disease_type, gfr_calculated,
 		is_pregnant, baby_weight_cat, preferred_doctor_doc,
@@ -62,7 +62,7 @@ func (r *WaitingListRepo) FindByID(ctx context.Context, id string) (*domain.Wait
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&e.ID, &e.PhoneNumber, &e.PatientID, &e.PatientDoc,
-		&e.PatientName, &e.PatientAge, &e.PatientGender, &e.PatientEntity,
+		&e.PatientName, &e.PatientAge, &e.PatientGender, &e.PatientEntity, &e.ContractCode,
 		&e.CupsCode, &e.CupsName, &e.IsContrasted, &e.IsSedated,
 		&e.Espacios, &e.ProceduresJSON, &e.ProcedureType,
 		&gfrCreatinine, &gfrHeightCm, &gfrWeightKg, &gfrDiseaseType, &gfrCalculated,
@@ -144,7 +144,7 @@ func (r *WaitingListRepo) GetDistinctWaitingCups(ctx context.Context) ([]string,
 
 // GetWaitingByCups returns waiting entries for a CUPS code, ordered FIFO, limited to N.
 func (r *WaitingListRepo) GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error) {
-	query := `SELECT id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
+	query := `SELECT id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity, patient_contract,
 		cups_code, cups_name, is_contrasted, is_sedated, espacios, procedures_json, procedure_type,
 		gfr_creatinine, gfr_height_cm, gfr_weight_kg, gfr_disease_type, gfr_calculated,
 		is_pregnant, baby_weight_cat, preferred_doctor_doc,
@@ -170,7 +170,7 @@ func (r *WaitingListRepo) GetWaitingByCups(ctx context.Context, cupsCode string,
 
 		if err := rows.Scan(
 			&e.ID, &e.PhoneNumber, &e.PatientID, &e.PatientDoc,
-			&e.PatientName, &e.PatientAge, &e.PatientGender, &e.PatientEntity,
+			&e.PatientName, &e.PatientAge, &e.PatientGender, &e.PatientEntity, &e.ContractCode,
 			&e.CupsCode, &e.CupsName, &e.IsContrasted, &e.IsSedated,
 			&e.Espacios, &e.ProceduresJSON, &e.ProcedureType,
 			&gfrCreatinine, &gfrHeightCm, &gfrWeightKg, &gfrDiseaseType, &gfrCalculated,

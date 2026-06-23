@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
@@ -29,14 +28,35 @@ func TestAskClientType_ValidSelection_EPS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateAskEntityNumber {
-		t.Errorf("expected ASK_ENTITY_NUMBER (chained from SHOW_ENTITY_LIST), got %s", result.NextState)
+	// EPS now asks the régimen (contributivo/subsidiado) before the entity list.
+	if result.NextState != sm.StateAskEpsRegimen {
+		t.Errorf("expected ASK_EPS_REGIMEN, got %s", result.NextState)
 	}
-	if sess.GetContext("entity_category") != "EPS" {
-		t.Errorf("expected entity_category=EPS, got %s", sess.GetContext("entity_category"))
+	// ASK_EPS_REGIMEN is interactive (no auto-chain), so context stays in the
+	// result's UpdateCtx (the worker persists it afterward).
+	if result.UpdateCtx["entity_category"] != "EPS" {
+		t.Errorf("expected entity_category=EPS, got %s", result.UpdateCtx["entity_category"])
 	}
-	if sess.GetContext("client_type") != "EPS" {
-		t.Errorf("expected client_type=EPS, got %s", sess.GetContext("client_type"))
+	if result.UpdateCtx["client_type"] != "EPS" {
+		t.Errorf("expected client_type=EPS, got %s", result.UpdateCtx["client_type"])
+	}
+}
+
+func TestAskClientType_Particular_SkipsListToDocument(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterEntityManagementHandlers(m, &testutil.MockEntityRepo{}, &testutil.MockPatientRepo{})
+
+	sess := testSess(sm.StateAskClientType)
+	result, err := m.Process(context.Background(), sess, postbackM("ct_1")) // ct_1 = PARTICULAR
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PARTICULAR skips the entity list and goes straight to document type.
+	if result.NextState != sm.StateAskDocumentType {
+		t.Errorf("expected ASK_DOCUMENT_TYPE, got %s", result.NextState)
+	}
+	if result.UpdateCtx["selected_entity_code"] != "PART02" {
+		t.Errorf("expected selected_entity_code=PART02, got %s", result.UpdateCtx["selected_entity_code"])
 	}
 }
 
@@ -150,43 +170,6 @@ func TestShowEntityList_RepoError_Fallback(t *testing.T) {
 	}
 }
 
-func TestShowEntityList_SanitasDedup(t *testing.T) {
-	entityRepo := &testutil.MockEntityRepo{
-		FindActiveByCategoryFn: func(ctx context.Context, category string) ([]domain.Entity, error) {
-			return []domain.Entity{
-				{Code: "SAN01", Name: "SANITAS EVENTO", Category: "EPS", IsActive: true},
-				{Code: "SAN02", Name: "SANITAS MRC", Category: "EPS", IsActive: true},
-				{Code: "EPS003", Name: "FAMISANAR", Category: "EPS", IsActive: true},
-			}, nil
-		},
-	}
-
-	m := sm.NewMachine()
-	m.Register(sm.StateShowEntityList, showEntityListHandler(entityRepo))
-
-	sess := testSess(sm.StateShowEntityList)
-	sess.Context["entity_category"] = "EPS"
-
-	result, err := m.Process(context.Background(), sess, textM(""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.NextState != sm.StateAskEntityNumber {
-		t.Errorf("expected ASK_ENTITY_NUMBER, got %s", result.NextState)
-	}
-	// SAN01 should be filtered out, leaving SAN02 + FAMISANAR = 2
-	if result.UpdateCtx["entity_list_count"] != "2" {
-		t.Errorf("expected entity_list_count=2 (SAN01 filtered), got %s", result.UpdateCtx["entity_list_count"])
-	}
-	codes := result.UpdateCtx["entity_list_codes"]
-	if strings.Contains(codes, "SAN01") {
-		t.Errorf("SAN01 should be filtered from entity_list_codes, got %s", codes)
-	}
-	if !strings.Contains(codes, "SAN02") {
-		t.Errorf("SAN02 should be in entity_list_codes, got %s", codes)
-	}
-}
-
 // --- ASK_ENTITY_NUMBER ---
 
 func TestAskEntityNumber_ValidNumber_NonSanitas(t *testing.T) {
@@ -208,35 +191,11 @@ func TestAskEntityNumber_ValidNumber_NonSanitas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateAskDocument {
-		t.Errorf("expected ASK_DOCUMENT, got %s", result.NextState)
+	if result.NextState != sm.StateAskDocumentType {
+		t.Errorf("expected ASK_DOCUMENT_TYPE, got %s", result.NextState)
 	}
 	if result.UpdateCtx["selected_entity_code"] != "EPS001" {
 		t.Errorf("expected selected_entity_code=EPS001, got %s", result.UpdateCtx["selected_entity_code"])
-	}
-}
-
-func TestAskEntityNumber_Sanitas_RedirectToSubmenu(t *testing.T) {
-	entityRepo := &testutil.MockEntityRepo{
-		FindByCodeFn: func(ctx context.Context, code string) (*domain.Entity, error) {
-			return &domain.Entity{Code: code, Name: "SANITAS", IsActive: true}, nil
-		},
-	}
-
-	m := sm.NewMachine()
-	m.Register(sm.StateAskEntityNumber, askEntityNumberHandler(entityRepo))
-
-	sess := testSess(sm.StateAskEntityNumber)
-	sess.Context["entity_list_count"] = "2"
-	sess.Context["entity_list_codes"] = "SAN02,EPS003"
-	sess.Context["entity_category"] = "EPS"
-
-	result, err := m.Process(context.Background(), sess, textM("1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.NextState != sm.StateAskSanitasPlan {
-		t.Errorf("expected ASK_SANITAS_PLAN, got %s", result.NextState)
 	}
 }
 
@@ -269,42 +228,6 @@ func TestAskEntityNumber_NonNumeric(t *testing.T) {
 	}
 	if result.NextState != sm.StateAskEntityNumber {
 		t.Errorf("expected ASK_ENTITY_NUMBER (retry), got %s", result.NextState)
-	}
-}
-
-// --- ASK_SANITAS_PLAN ---
-
-func TestAskSanitasPlan_Premium(t *testing.T) {
-	m := sm.NewMachine()
-	m.Register(sm.StateAskSanitasPlan, askSanitasPlanHandler())
-
-	sess := testSess(sm.StateAskSanitasPlan)
-	result, err := m.Process(context.Background(), sess, postbackM("sanitas_premium"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.NextState != sm.StateAskDocument {
-		t.Errorf("expected ASK_DOCUMENT, got %s", result.NextState)
-	}
-	if result.UpdateCtx["selected_entity_code"] != "SAN01" {
-		t.Errorf("expected selected_entity_code=SAN01, got %s", result.UpdateCtx["selected_entity_code"])
-	}
-}
-
-func TestAskSanitasPlan_Regular(t *testing.T) {
-	m := sm.NewMachine()
-	m.Register(sm.StateAskSanitasPlan, askSanitasPlanHandler())
-
-	sess := testSess(sm.StateAskSanitasPlan)
-	result, err := m.Process(context.Background(), sess, postbackM("sanitas_regular"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.NextState != sm.StateAskDocument {
-		t.Errorf("expected ASK_DOCUMENT, got %s", result.NextState)
-	}
-	if result.UpdateCtx["selected_entity_code"] != "SAN02" {
-		t.Errorf("expected selected_entity_code=SAN02, got %s", result.UpdateCtx["selected_entity_code"])
 	}
 }
 

@@ -109,8 +109,8 @@ neuro-bot/
 │   │   └── waiting_list.go  (entrada en lista de espera)
 │   ├── notifications/   # Gestor de notificaciones proactivas
 │   ├── repository/      # Acceso a las dos bases de datos
-│   │   ├── datosipsndx/ # BD del sistema clínico (lectura)
-│   │   └── local/       # BD propia del bot (sesiones, eventos, lista de espera)
+│   │   ├── siesa/       # BD del sistema clínico SIESA / SQL Server (lectura/escritura)
+│   │   └── local/       # BD propia del bot (sesiones, eventos, lista de espera, catálogo CUPS)
 │   ├── scheduler/       # Tareas programadas (reminders, list de espera, cleanup)
 │   ├── services/        # Lógica de negocio reutilizable
 │   │   ├── appointment_service.go  (consultar, crear, confirmar, cancelar citas)

@@ -222,8 +222,8 @@ func TestMainMenu_Consultar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateAskDocument {
-		t.Errorf("expected ASK_DOCUMENT, got %s", result.NextState)
+	if result.NextState != sm.StateAskDocumentType {
+		t.Errorf("expected ASK_DOCUMENT_TYPE, got %s", result.NextState)
 	}
 	if result.UpdateCtx["menu_option"] != "consultar" {
 		t.Errorf("expected menu_option=consultar, got %s", result.UpdateCtx["menu_option"])

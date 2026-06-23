@@ -411,17 +411,19 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Verify HMAC signature using voice secret (falls back to main webhook secret)
+	// Firma OBLIGATORIA cuando hay secreto configurado: cierra el bypass fail-open (antes se
+	// podía saltar la validación simplemente NO enviando el header MessageBird-Signature).
+	// Si no hay secreto configurado, se omite (entornos sin configurar). Igual que HandleConversation.
 	signature := r.Header.Get("MessageBird-Signature")
 	timestamp := r.Header.Get("MessageBird-Request-Timestamp")
-	if signature != "" {
+	secret := h.cfg.BirdWebhookSecretVoice
+	if secret == "" {
+		secret = h.cfg.BirdWebhookSecret
+	}
+	if secret != "" {
 		requestURL := reconstructFullURL(r)
-		secret := h.cfg.BirdWebhookSecretVoice
-		if secret == "" {
-			secret = h.cfg.BirdWebhookSecret
-		}
 		if !bird.VerifySignatureWithKey(secret, signature, timestamp, requestURL, body) {
-			slog.Warn("invalid voice webhook signature")
+			slog.Warn("invalid voice webhook signature", "has_signature", signature != "")
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}
@@ -536,17 +538,19 @@ func (h *WebhookHandler) HandleVoiceDTMF(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Verify HMAC signature if present (Bird Flow may or may not sign fetchCallFlow requests)
+	// Firma OBLIGATORIA cuando hay secreto configurado (cierra el bypass fail-open). Si no hay
+	// secreto, se omite. ⚠️ Este endpoint procesa el DTMF que confirma/cancela la cita: si Bird
+	// NO firma estos webhooks, esto los rechazaría — validar con una llamada IVR real.
 	signature := r.Header.Get("MessageBird-Signature")
 	timestamp := r.Header.Get("MessageBird-Request-Timestamp")
-	if signature != "" {
+	secret := h.cfg.BirdWebhookSecretVoice
+	if secret == "" {
+		secret = h.cfg.BirdWebhookSecret
+	}
+	if secret != "" {
 		requestURL := reconstructFullURL(r)
-		secret := h.cfg.BirdWebhookSecretVoice
-		if secret == "" {
-			secret = h.cfg.BirdWebhookSecret
-		}
 		if !bird.VerifySignatureWithKey(secret, signature, timestamp, requestURL, body) {
-			slog.Warn("invalid voice dtmf webhook signature")
+			slog.Warn("invalid voice dtmf webhook signature", "has_signature", signature != "")
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}

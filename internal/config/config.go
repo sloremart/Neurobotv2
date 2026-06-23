@@ -31,38 +31,30 @@ type Config struct {
 	ExtDBPassword string
 
 	// External DB Driver — R-ARQ-01
-	ExternalDBDriver string // "datosipsndx" | "siesa"
-
-	// Antares DB (MySQL) — usado solo cuando ExternalDBDriver="siesa" para
-	// mantener cups_procedimientos y cup_medico accesibles desde Antares.
-	AntaresDBHost     string
-	AntaresDBPort     string
-	AntaresDBDatabase string
-	AntaresDBUser     string
-	AntaresDBPassword string
+	ExternalDBDriver string // "siesa" (only supported driver; legacy "datosipsndx" removed)
 
 	// Bird
-	BirdAPIURL        string
-	BirdAPIKeyWA      string
-	BirdAccessKeyID   string
+	BirdAPIURL                     string
+	BirdAPIKeyWA                   string
+	BirdAccessKeyID                string
 	BirdWebhookSecret              string
 	BirdWebhookSecretOutbound      string // Separate signing key for outbound webhook (optional)
 	BirdWebhookSecretConversations string // Signing key for conversations API webhook (optional, skips validation if empty)
 	BirdWebhookSecretVoice         string // Signing key for voice webhook (optional, falls back to BirdWebhookSecret)
-	BirdWorkspaceID   string
-	BirdChannelID     string
-	BirdTeamGrupoA    string // Ecografías, RX, Resonancia, TAC
-	BirdTeamGrupoB    string // Neurología, Fisiatría, Estudios del sueño
-	BirdTeamFallback  string // Call Center (genérico)
-	BirdAgentFallback string // Líder Call Center — fallback si equipo no disponible
+	BirdWorkspaceID                string
+	BirdChannelID                  string
+	BirdTeamGrupoA                 string // Ecografías, RX, Resonancia, TAC
+	BirdTeamGrupoB                 string // Neurología, Fisiatría, Estudios del sueño
+	BirdTeamFallback               string // Call Center (genérico)
+	BirdAgentFallback              string // Líder Call Center — fallback si equipo no disponible
 
 	// Bird Templates
-	BirdTemplateConfirmProjectID     string
-	BirdTemplateConfirmVersionID     string
-	BirdTemplateConfirmLocale        string
-	BirdTemplateRescheduleProjectID  string
-	BirdTemplateRescheduleVersionID  string
-	BirdTemplateRescheduleLocale     string
+	BirdTemplateConfirmProjectID      string
+	BirdTemplateConfirmVersionID      string
+	BirdTemplateConfirmLocale         string
+	BirdTemplateRescheduleProjectID   string
+	BirdTemplateRescheduleVersionID   string
+	BirdTemplateRescheduleLocale      string
 	BirdTemplateWaitingListProjectID  string
 	BirdTemplateWaitingListVersionID  string
 	BirdTemplateWaitingListLocale     string
@@ -95,9 +87,9 @@ type Config struct {
 	InactivityCloseMin    int // Silent close (no message)
 
 	// Center
-	CenterKey  string
-	CenterName string
-	BotName    string
+	CenterKey       string
+	CenterName      string
+	BotName         string
 	ResultsURL      string
 	ResultsVideoURL string
 
@@ -113,8 +105,8 @@ type Config struct {
 	MaxRetries        int  // Max invalid response attempts before fallback menu
 
 	// CUPS group limits
-	CupsGroupLimitsEnabled   bool // Monthly CUPS group limits for SAN01
-	TeamRoutingEnabled       bool // Route to specialty teams (Grupo A/B); false → all to Call Center
+	CupsGroupLimitsEnabled bool // Monthly CUPS group limits for Sanitas MRC (contracts 5/6)
+	TeamRoutingEnabled     bool // Route to specialty teams (Grupo A/B); false → all to Call Center
 
 	// Confirmation escalation chain
 	ConfirmFollowupEnabled bool // Enable follow-up messages + IVR after initial reminder (default false)
@@ -130,17 +122,17 @@ type Config struct {
 	TestingWhitelistPhones []string
 
 	// Scaling — configurable pool sizes and DB connections for load profiles
-	ScalingProfile     string // "normal" or "high-load" (informational, for monitoring alerts)
-	WorkerPoolSize     int    // Worker goroutines (default 10)
-	WorkerQueueSize    int    // Message queue buffer (default 100)
-	LocalDBMaxOpen     int // Local DB max open connections (default 25)
-	LocalDBMaxIdle     int // Local DB max idle connections (default 10)
-	ExternalDBMaxOpen  int // External DB max open connections (default 10)
-	ExternalDBMaxIdle  int // External DB max idle connections (default 5)
-	HTTPReadTimeout    int // HTTP server read timeout seconds (default 30)
-	HTTPWriteTimeout   int // HTTP server write timeout seconds (default 30)
-	HTTPIdleTimeout    int // HTTP server idle timeout seconds (default 60)
-	MySQLMaxConns      int // MySQL max_connections hint for docker-compose (informational)
+	ScalingProfile    string // "normal" or "high-load" (informational, for monitoring alerts)
+	WorkerPoolSize    int    // Worker goroutines (default 10)
+	WorkerQueueSize   int    // Message queue buffer (default 100)
+	LocalDBMaxOpen    int    // Local DB max open connections (default 25)
+	LocalDBMaxIdle    int    // Local DB max idle connections (default 10)
+	ExternalDBMaxOpen int    // External DB max open connections (default 10)
+	ExternalDBMaxIdle int    // External DB max idle connections (default 5)
+	HTTPReadTimeout   int    // HTTP server read timeout seconds (default 30)
+	HTTPWriteTimeout  int    // HTTP server write timeout seconds (default 30)
+	HTTPIdleTimeout   int    // HTTP server idle timeout seconds (default 60)
+	MySQLMaxConns     int    // MySQL max_connections hint for docker-compose (informational)
 }
 
 func Load() *Config {
@@ -162,43 +154,36 @@ func Load() *Config {
 
 		// External DB
 		ExtDBHost:     getEnv("EXTERNAL_DB_HOST", "host.docker.internal"),
-		ExtDBPort:     getEnv("EXTERNAL_DB_PORT", "3306"),
-		ExtDBDatabase: getEnv("EXTERNAL_DB_DATABASE", "datosipsndx"),
+		ExtDBPort:     getEnv("EXTERNAL_DB_PORT", "1433"),
+		ExtDBDatabase: getEnv("EXTERNAL_DB_DATABASE", "ZeusSalud_Neuro"),
 		ExtDBUser:     os.Getenv("EXTERNAL_DB_USER"),
 		ExtDBPassword: os.Getenv("EXTERNAL_DB_PASSWORD"),
 
 		// External DB Driver
-		ExternalDBDriver: getEnv("EXTERNAL_DB_DRIVER", "datosipsndx"),
-
-		// Antares DB (solo cuando EXTERNAL_DB_DRIVER=siesa)
-		AntaresDBHost:     getEnv("ANTARES_DB_HOST", "host.docker.internal"),
-		AntaresDBPort:     getEnv("ANTARES_DB_PORT", "3306"),
-		AntaresDBDatabase: getEnv("ANTARES_DB_DATABASE", "datosipsndx"),
-		AntaresDBUser:     os.Getenv("ANTARES_DB_USER"),
-		AntaresDBPassword: os.Getenv("ANTARES_DB_PASSWORD"),
+		ExternalDBDriver: getEnv("EXTERNAL_DB_DRIVER", "siesa"),
 
 		// Bird
-		BirdAPIURL:        os.Getenv("BIRD_API_URL"),
-		BirdAPIKeyWA:      os.Getenv("BIRD_API_KEY_WA"),
-		BirdAccessKeyID:   os.Getenv("BIRD_ACCESS_KEY_ID"),
+		BirdAPIURL:                     os.Getenv("BIRD_API_URL"),
+		BirdAPIKeyWA:                   os.Getenv("BIRD_API_KEY_WA"),
+		BirdAccessKeyID:                os.Getenv("BIRD_ACCESS_KEY_ID"),
 		BirdWebhookSecret:              os.Getenv("BIRD_WEBHOOK_SECRET"),
 		BirdWebhookSecretOutbound:      os.Getenv("BIRD_WEBHOOK_SECRET_OUTBOUND"),
 		BirdWebhookSecretConversations: os.Getenv("BIRD_WEBHOOK_SECRET_CONVERSATIONS"),
 		BirdWebhookSecretVoice:         os.Getenv("BIRD_WEBHOOK_SECRET_VOICE"),
-		BirdWorkspaceID:   os.Getenv("BIRD_WORKSPACE_ID"),
-		BirdChannelID:     os.Getenv("BIRD_CHANNEL_ID"),
-		BirdTeamGrupoA:    os.Getenv("BIRD_TEAM_GRUPO_A"),
-		BirdTeamGrupoB:    os.Getenv("BIRD_TEAM_GRUPO_B"),
-		BirdTeamFallback:  os.Getenv("BIRD_TEAM_FALLBACK"),
-		BirdAgentFallback: os.Getenv("BIRD_AGENT_FALLBACK"),
+		BirdWorkspaceID:                os.Getenv("BIRD_WORKSPACE_ID"),
+		BirdChannelID:                  os.Getenv("BIRD_CHANNEL_ID"),
+		BirdTeamGrupoA:                 os.Getenv("BIRD_TEAM_GRUPO_A"),
+		BirdTeamGrupoB:                 os.Getenv("BIRD_TEAM_GRUPO_B"),
+		BirdTeamFallback:               os.Getenv("BIRD_TEAM_FALLBACK"),
+		BirdAgentFallback:              os.Getenv("BIRD_AGENT_FALLBACK"),
 
 		// Bird Templates
-		BirdTemplateConfirmProjectID:     os.Getenv("BIRD_TEMPLATE_CONFIRM_PROJECT_ID"),
-		BirdTemplateConfirmVersionID:     os.Getenv("BIRD_TEMPLATE_CONFIRM_VERSION_ID"),
-		BirdTemplateConfirmLocale:        getEnv("BIRD_TEMPLATE_CONFIRM_LOCALE", "es-MX"),
-		BirdTemplateRescheduleProjectID:  os.Getenv("BIRD_TEMPLATE_RESCHEDULE_PROJECT_ID"),
-		BirdTemplateRescheduleVersionID:  os.Getenv("BIRD_TEMPLATE_RESCHEDULE_VERSION_ID"),
-		BirdTemplateRescheduleLocale:     getEnv("BIRD_TEMPLATE_RESCHEDULE_LOCALE", "es-CO"),
+		BirdTemplateConfirmProjectID:      os.Getenv("BIRD_TEMPLATE_CONFIRM_PROJECT_ID"),
+		BirdTemplateConfirmVersionID:      os.Getenv("BIRD_TEMPLATE_CONFIRM_VERSION_ID"),
+		BirdTemplateConfirmLocale:         getEnv("BIRD_TEMPLATE_CONFIRM_LOCALE", "es-MX"),
+		BirdTemplateRescheduleProjectID:   os.Getenv("BIRD_TEMPLATE_RESCHEDULE_PROJECT_ID"),
+		BirdTemplateRescheduleVersionID:   os.Getenv("BIRD_TEMPLATE_RESCHEDULE_VERSION_ID"),
+		BirdTemplateRescheduleLocale:      getEnv("BIRD_TEMPLATE_RESCHEDULE_LOCALE", "es-CO"),
 		BirdTemplateWaitingListProjectID:  os.Getenv("BIRD_TEMPLATE_WAITING_LIST_PROJECT_ID"),
 		BirdTemplateWaitingListVersionID:  os.Getenv("BIRD_TEMPLATE_WAITING_LIST_VERSION_ID"),
 		BirdTemplateWaitingListLocale:     getEnv("BIRD_TEMPLATE_WAITING_LIST_LOCALE", "es-CO"),
@@ -210,12 +195,11 @@ func Load() *Config {
 		BirdChannelIDTemplates: os.Getenv("BIRD_CHANNEL_ID_TEMPLATES"),
 
 		// Bird Voice
-		BirdAPIKeyVoice: os.Getenv("BIRD_API_KEY_VOICE"),
+		BirdAPIKeyVoice:    os.Getenv("BIRD_API_KEY_VOICE"),
 		BirdVoiceChannelID: os.Getenv("BIRD_VOICE_CHANNEL_ID"),
 		BirdVoiceNumber:    os.Getenv("BIRD_VOICE_NUMBER"),
 		BirdVoiceFlowID:    os.Getenv("BIRD_VOICE_FLOW_ID"),
 		ServerPublicURL:    os.Getenv("SERVER_PUBLIC_URL"),
-
 
 		// OpenAI
 		OpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
@@ -232,9 +216,9 @@ func Load() *Config {
 		InactivityCloseMin:    getEnvInt("INACTIVITY_CLOSE_MIN", 120),
 
 		// Center
-		CenterKey:  getEnv("CENTER_KEY", "datosipsndx"),
-		CenterName: getEnv("CENTER_NAME", "Neuro Electrodiagnóstico del Llano"),
-		BotName:    getEnv("BOT_NAME", "Samuel"),
+		CenterKey:       getEnv("CENTER_KEY", "datosipsndx"),
+		CenterName:      getEnv("CENTER_NAME", "Neuro Electrodiagnóstico del Llano"),
+		BotName:         getEnv("BOT_NAME", "Samuel"),
 		ResultsURL:      getEnv("RESULTS_URL", ""),
 		ResultsVideoURL: getEnv("RESULTS_VIDEO_URL", ""),
 
@@ -285,18 +269,18 @@ func Load() *Config {
 
 func (c *Config) validate() {
 	required := map[string]string{
-		"DB_HOST":             c.DBHost,
-		"DB_PASSWORD":         c.DBPassword,
-		"EXTERNAL_DB_USER":    c.ExtDBUser,
+		"DB_HOST":              c.DBHost,
+		"DB_PASSWORD":          c.DBPassword,
+		"EXTERNAL_DB_USER":     c.ExtDBUser,
 		"EXTERNAL_DB_PASSWORD": c.ExtDBPassword,
-		"BIRD_API_URL":        c.BirdAPIURL,
-		"BIRD_API_KEY_WA":     c.BirdAPIKeyWA,
-		"BIRD_WEBHOOK_SECRET": c.BirdWebhookSecret,
-		"BIRD_WORKSPACE_ID":   c.BirdWorkspaceID,
-		"BIRD_CHANNEL_ID":     c.BirdChannelID,
-		"BIRD_TEAM_FALLBACK":  c.BirdTeamFallback,
-		"OPENAI_API_KEY":      c.OpenAIAPIKey,
-		"INTERNAL_API_KEY":    c.InternalAPIKey,
+		"BIRD_API_URL":         c.BirdAPIURL,
+		"BIRD_API_KEY_WA":      c.BirdAPIKeyWA,
+		"BIRD_WEBHOOK_SECRET":  c.BirdWebhookSecret,
+		"BIRD_WORKSPACE_ID":    c.BirdWorkspaceID,
+		"BIRD_CHANNEL_ID":      c.BirdChannelID,
+		"BIRD_TEAM_FALLBACK":   c.BirdTeamFallback,
+		"OPENAI_API_KEY":       c.OpenAIAPIKey,
+		"INTERNAL_API_KEY":     c.InternalAPIKey,
 	}
 
 	var missing []string

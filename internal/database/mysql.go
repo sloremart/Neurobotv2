@@ -33,57 +33,10 @@ func NewLocalDB(cfg *config.Config) (*sql.DB, error) {
 }
 
 // NewExternalDB opens a connection to the external clinical database.
-// For "siesa" driver it uses SQL Server (go-mssqldb); otherwise MySQL.
+// Only the SIESA (SQL Server) driver is supported; the legacy MySQL/Antares
+// external path was removed.
 func NewExternalDB(cfg *config.Config) (*sql.DB, error) {
-	if cfg.ExternalDBDriver == "siesa" {
-		return NewSIESADB(cfg)
-	}
-	return newMySQLExternalDB(cfg)
-}
-
-func newMySQLExternalDB(cfg *config.Config) (*sql.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=America%%2FBogota&charset=utf8mb4&collation=utf8mb4_unicode_ci",
-		cfg.ExtDBUser, cfg.ExtDBPassword, cfg.ExtDBHost, cfg.ExtDBPort, cfg.ExtDBDatabase)
-
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("external db open: %w", err)
-	}
-
-	db.SetMaxOpenConns(cfg.ExternalDBMaxOpen)
-	db.SetMaxIdleConns(cfg.ExternalDBMaxIdle)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetConnMaxIdleTime(3 * time.Minute)
-
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("external db ping: %w", err)
-	}
-
-	return db, nil
-}
-
-// NewAntaresDB abre la conexión a Antares (MySQL datosipsndx) para uso simultáneo
-// con SIESA cuando EXTERNAL_DB_DRIVER=siesa. cups_procedimientos y cup_medico
-// siguen leyéndose desde Antares.
-func NewAntaresDB(cfg *config.Config) (*sql.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=America%%2FBogota&charset=utf8mb4&collation=utf8mb4_unicode_ci",
-		cfg.AntaresDBUser, cfg.AntaresDBPassword, cfg.AntaresDBHost, cfg.AntaresDBPort, cfg.AntaresDBDatabase)
-
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("antares db open: %w", err)
-	}
-
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(2)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetConnMaxIdleTime(3 * time.Minute)
-
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("antares db ping: %w", err)
-	}
-
-	return db, nil
+	return NewSIESADB(cfg)
 }
 
 // NewSIESADB opens a SQL Server connection to the SIESA database (ZeusSalud_Neuro).

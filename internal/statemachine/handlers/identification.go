@@ -17,6 +17,11 @@ import (
 // RegisterIdentificationHandlers registra ASK_DOCUMENT, PATIENT_LOOKUP, CONFIRM_IDENTITY
 // y los nuevos estados de verificación de datos de contacto.
 func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientService) {
+	// Tipo de documento (15 tipos del catálogo SIESA) — se pregunta ANTES del número.
+	// sis_paci no es único por num_id (mismo número con distinto tipo_id existe), así que la
+	// búsqueda necesita tipo + número. El tipo también se reutiliza si el paciente no existe y
+	// pasa a registro.
+	m.Register(sm.StateAskDocumentType, askDocumentTypeHandler())
 	m.RegisterWithConfig(sm.StateAskDocument, sm.HandlerConfig{
 		InputType:    sm.InputText,
 		TextValidate: validators.Document,
@@ -57,6 +62,25 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	m.Register(sm.StateUpdateContactInfo, updateContactInfoHandler(patientSvc))
 }
 
+// ASK_DOCUMENT_TYPE — menú de texto numerado (15 tipos del catálogo SIESA). Guarda el tipo
+// (para la búsqueda y para reusarlo en el registro) y pasa a pedir el número.
+func askDocumentTypeHandler() sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		retry := sm.ValidateWithRetry(sess, msg.Text,
+			func(s string) bool { return parseDocType(s) != "" }, docTypeMenuText())
+		if retry != nil {
+			return retry, nil
+		}
+		sess.RetryCount = 0
+		code := parseDocType(msg.Text)
+		return sm.NewResult(sm.StateAskDocument).
+			WithContext("patient_doc_type", code).
+			WithContext("reg_document_type", code). // reusado por el flujo de registro si el paciente no existe
+			WithText("Ahora ingresa tu *número de documento* (sin puntos ni espacios):").
+			WithEvent("document_type_selected", map[string]interface{}{"type": code}), nil
+	}
+}
+
 // ASK_DOCUMENT — solo lógica de negocio (validación declarativa en RegisterWithConfig).
 func askDocumentHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
@@ -71,8 +95,9 @@ func askDocumentHandler() sm.StateHandler {
 func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		doc := sess.GetContext("patient_doc")
+		docType := sess.GetContext("patient_doc_type")
 
-		patient, err := patientSvc.LookupByDocument(ctx, doc)
+		patient, err := patientSvc.LookupByDocument(ctx, docType, doc)
 		if err != nil {
 			slog.Error("patient_lookup_failed", "doc_len", len(doc), "error", err)
 			return buildAutoCloseResult("Lo siento, hubo un problema al buscar tu información. Intenta más tarde.").
@@ -92,7 +117,7 @@ func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 			}
 
 			// Menú consultar → no puede consultar sin estar registrado
-			return buildAutoCloseResult("No encontramos un paciente con el documento *" + doc + "*. Verifica que el número sea correcto.\n\nSi eres paciente nuevo, selecciona la opción *Agendar cita* para registrarte.").
+			return buildAutoCloseResult("No encontramos un paciente con el documento *"+doc+"*. Verifica que el número sea correcto.\n\nSi eres paciente nuevo, selecciona la opción *Agendar cita* para registrarte.").
 				WithEvent("patient_not_found", map[string]interface{}{"doc": doc, "can_register": false}), nil
 		}
 
@@ -106,8 +131,12 @@ func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 			WithContext("patient_age", age).
 			WithContext("patient_gender", patient.Gender).
 			WithContext("patient_entity", patient.EntityCode).
+			WithContext("patient_contract", patient.ContractCode).
 			WithContext("patient_phone", patient.Phone).
 			WithContext("patient_email", patient.Email).
+			WithContext("patient_dep", patient.DepartmentCode).
+			WithContext("patient_muni", patient.CityCode).
+			WithContext("patient_muni_name", patient.CityName).
 			WithButtons(fmt.Sprintf("Encontré este paciente:\n\n*%s*\nDocumento: %s\n\n¿Eres tú?", fullName, doc),
 				sm.Button{Text: "Sí, soy yo", Payload: "identity_yes"},
 				sm.Button{Text: "No, no soy yo", Payload: "identity_no"},
@@ -145,7 +174,7 @@ func confirmIdentityHandler() sm.StateHandler {
 		case "identity_no":
 			return sm.NewResult(sm.StateAskDocument).
 				WithText("Entendido. Por favor ingresa tu número de documento correcto.").
-				WithClearCtx("patient_id", "patient_name", "patient_age", "patient_gender", "patient_entity", "patient_phone", "patient_email").
+				WithClearCtx("patient_id", "patient_name", "patient_age", "patient_gender", "patient_entity", "patient_contract", "patient_phone", "patient_email").
 				WithEvent("patient_identity_rejected", nil), nil
 		}
 
@@ -173,9 +202,58 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 				_ = patientSvc.UpdateEntity(ctx, patientID, selectedEntity)
 			}
 		}
+
+		// EPS contract resolution (régimen + Sanitas municipality).
+		if isEPSWithMatrix(selectedEntity) {
+			// SANITAS depends on the residence municipality → confirm/edit it first.
+			if selectedEntity == entitySanitas {
+				muniName := sess.GetContext("patient_muni_name")
+				if muniName == "" {
+					muniName = "el registrado"
+				}
+				r.NextState = sm.StateConfirmMunicipality
+				r.WithButtons(fmt.Sprintf("Para asignar tu contrato SANITAS necesitamos confirmar tu municipio de residencia.\n\nTenemos registrado: *%s*\n\n¿Es correcto?", muniName),
+					sm.Button{Text: "Sí, es correcto", Payload: "muni_ok"},
+					sm.Button{Text: "No, cambiar", Payload: "muni_change"},
+				)
+				return
+			}
+			// Other EPS only need the régimen.
+			applyEPSContract(ctx, r, patientSvc, sess.GetContext("patient_id"), selectedEntity, sess.GetContext("eps_regimen"), "", "")
+		}
+
+		// PARTICULAR: clear any stored contract so lookupContract resolves the
+		// particular contract (PART02 → its active contrato) on the cita.
+		if selectedEntity == particularEntityCode {
+			r.WithContext("patient_contract", "")
+		}
+
 		r.NextState = sm.StateAskMedicalOrder
 	default:
 		r.NextState = sm.StateTerminated
+	}
+}
+
+// applyEPSContract resolves the EPS contract from (entity, régimen, municipality),
+// stores it for the booking (patient_contract) and persists it to the patient
+// (sis_paci.contrato) — Option B: the contract stays tied to the patient and the
+// cita. No-op when the entity is not part of the matrix or the contract is empty.
+func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *services.PatientService, patientID, entity, regimen, depCode, muniCode string) {
+	contract := resolveEPSContract(entity, regimen, depCode, muniCode)
+	if contract == "" {
+		return
+	}
+	slog.Info("eps_contract_resolved",
+		"patient_id", patientID,
+		"entity", entity,
+		"regimen", regimen,
+		"dep", depCode,
+		"muni", muniCode,
+		"contract", contract,
+	)
+	r.WithContext("patient_contract", contract)
+	if patientSvc != nil && patientID != "" {
+		_ = patientSvc.UpdateContract(ctx, patientID, contract)
 	}
 }
 

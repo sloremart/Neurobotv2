@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/services"
@@ -36,38 +37,23 @@ func sampleSlots() []services.AvailableSlot {
 func TestSearchSlots_Found(t *testing.T) {
 	slots := sampleSlots()
 	slotSvc := services.NewSlotService(
-		&testutil.MockDoctorRepo{
-			FindByCupsCodeFn: func(ctx context.Context, code string) ([]domain.Doctor, error) {
-				return []domain.Doctor{{Document: "DOC001", FullName: "Garcia"}}, nil
+		&testutil.MockProcedureRepo{
+			FindSubjectTypeForCupsFn: func(ctx context.Context, code string) (int, error) {
+				return 8, nil
 			},
 		},
 		&testutil.MockScheduleRepo{
-			FindFutureWorkingDaysFn: func(ctx context.Context, docs []string) ([]domain.WorkingDay, error) {
-				return []domain.WorkingDay{{
-					DoctorDocument: "DOC001",
-					AgendaID:       1,
-					Date:           "2026-03-20",
-					MorningEnabled: true,
+			FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+				ts, _ := time.Parse("2006-01-02 15:04", "2026-03-20 10:00")
+				return []domain.AvailableSlotRow{{
+					SlotTime:        ts,
+					DoctorDocument:  "DOC001",
+					DoctorName:      "Garcia",
+					DoctorSiesaCode: "S1",
+					AgendaID:        1,
+					DurationMin:     30,
+					AgendaSede:      2,
 				}}, nil
-			},
-			FindScheduleConfigFn: func(ctx context.Context, scheduleID int, doc string) (*domain.ScheduleConfig, error) {
-				cfg := &domain.ScheduleConfig{
-					AppointmentDuration: 30,
-					IsActive:            true,
-					AgendaID:            1,
-				}
-				// Friday = index 5, set morning hours
-				for i := 0; i < 7; i++ {
-					cfg.WorkDays[i] = true
-					cfg.MorningStart[i] = "08:00"
-					cfg.MorningEnd[i] = "12:00"
-					cfg.AfternoonStart[i] = "14:00"
-					cfg.AfternoonEnd[i] = "18:00"
-				}
-				return cfg, nil
-			},
-			FindBookedSlotsFn: func(ctx context.Context, agendaID int, date string) ([]string, error) {
-				return []string{}, nil
 			},
 		},
 	)
@@ -94,9 +80,9 @@ func TestSearchSlots_Found(t *testing.T) {
 
 func TestSearchSlots_NotFound(t *testing.T) {
 	slotSvc := services.NewSlotService(
-		&testutil.MockDoctorRepo{
-			FindByCupsCodeFn: func(ctx context.Context, code string) ([]domain.Doctor, error) {
-				return []domain.Doctor{}, nil
+		&testutil.MockProcedureRepo{
+			FindSubjectTypeForCupsFn: func(ctx context.Context, code string) (int, error) {
+				return 0, nil // no subject → no slots
 			},
 		},
 		&testutil.MockScheduleRepo{},
@@ -344,7 +330,7 @@ func TestCreateAppointment_Success(t *testing.T) {
 	sess.Context["available_slots_json"] = slotsJSON(slots)
 	sess.Context["selected_slot_id"] = slots[0].TimeSlot
 	sess.Context["patient_id"] = "PAT001"
-	sess.Context["patient_entity"] = "SAN01"
+	sess.Context["patient_entity"] = "EPS005"
 	sess.Context["cups_code"] = "890271"
 	sess.Context["is_contrasted"] = "0"
 	sess.Context["is_sedated"] = "0"
@@ -415,7 +401,7 @@ func TestCreateAppointment_SlotTakenError(t *testing.T) {
 	sess.Context["available_slots_json"] = slotsJSON(slots)
 	sess.Context["selected_slot_id"] = slots[0].TimeSlot
 	sess.Context["patient_id"] = "PAT001"
-	sess.Context["patient_entity"] = "SAN01"
+	sess.Context["patient_entity"] = "EPS005"
 	sess.Context["cups_code"] = "890271"
 	sess.Context["is_contrasted"] = "0"
 	sess.Context["is_sedated"] = "0"
@@ -462,7 +448,7 @@ func TestCreateAppointment_GenericError(t *testing.T) {
 	sess.Context["available_slots_json"] = slotsJSON(slots)
 	sess.Context["selected_slot_id"] = slots[0].TimeSlot
 	sess.Context["patient_id"] = "PAT001"
-	sess.Context["patient_entity"] = "SAN01"
+	sess.Context["patient_entity"] = "EPS005"
 	sess.Context["cups_code"] = "890271"
 	sess.Context["is_contrasted"] = "0"
 	sess.Context["is_sedated"] = "0"

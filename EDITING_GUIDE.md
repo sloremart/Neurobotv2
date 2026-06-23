@@ -333,7 +333,7 @@ handlers.RegisterVideocallHandlers(machine, videocallSvc) // pasar deps necesari
 ### Si el nuevo flujo necesita un repo o servicio nuevo
 
 1. Crea la interfaz en `internal/repository/interfaces.go`
-2. Implementa el repo en `internal/repository/local/<repo>.go` o `datosipsndx/<repo>.go`
+2. Implementa el repo en `internal/repository/local/<repo>.go` (BD del bot) o `internal/repository/siesa/<repo>.go` (BD clínica SIESA)
 3. Si es externo, agrégalo a `repository.Repositories` en `internal/repository/` y a `initRepositories()` en `main.go`
 4. Si es local (tabla nueva del bot), instáncialo en `main.go` como: `myRepo := localrepo.NewMyRepo(localDB)`
 5. Inyéctalo en `handlers.RegisterXxxHandlers(machine, myRepo, ...)`
@@ -717,10 +717,10 @@ MY_SERVICE_URL=https://api.example.com
 | 5 | `internal/repository/local/<tabla>.go` | Implementar la interfaz |
 | 6 | `cmd/server/main.go` | Instanciar el repo e inyectarlo donde se usa |
 
-> **¿Es una tabla de la BD externa (DatosIPSNDX)?** En ese caso también debes:
+> **¿Es una tabla de la BD externa (SIESA / SQL Server)?** En ese caso también debes:
 > - Agregar el campo a `repository.Repositories` en `internal/repository/`
-> - Agregar el repo a `initRepositories()` en `main.go` (`repos.MiTabla = datosipsndx.NewMiTablaRepo(externalDB)`)
-> - Implementar el repo en `internal/repository/datosipsndx/<tabla>.go`
+> - Agregar el repo a `initRepositories()` en `main.go` (`repos.MiTabla = siesa.NewMiTablaRepo(externalDB)`)
+> - Implementar el repo en `internal/repository/siesa/<tabla>.go`
 
 ### Convención de nombres de migración
 
@@ -767,7 +767,7 @@ make migrate-up
 | Archivo | Qué hacer |
 |---------|-----------|
 | `internal/repository/interfaces.go` | Agregar el método a la interfaz del repositorio |
-| `internal/repository/local/<repo>.go` o `internal/repository/datosipsndx/<repo>.go` | Implementar el método |
+| `internal/repository/local/<repo>.go` o `internal/repository/siesa/<repo>.go` | Implementar el método |
 | Cualquier archivo de test (`_test.go`) | Actualizar el mock si existe |
 
 ### Estructura de un método de repositorio

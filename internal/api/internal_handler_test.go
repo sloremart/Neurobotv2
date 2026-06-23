@@ -38,10 +38,10 @@ func (m *mockApptRepoAPI) FindByAgendaAndDate(ctx context.Context, agendaID int,
 func (m *mockApptRepoAPI) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	return nil, nil
 }
-func (m *mockApptRepoAPI) CreatePxCita(ctx context.Context, input domain.CreatePxCitaInput) error {
+func (m *mockApptRepoAPI) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
-func (m *mockApptRepoAPI) CreatePxCitaBatch(ctx context.Context, inputs []domain.CreatePxCitaInput) error {
+func (m *mockApptRepoAPI) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
 func (m *mockApptRepoAPI) Confirm(ctx context.Context, id, ch, chID string) error { return nil }
@@ -58,6 +58,9 @@ func (m *mockApptRepoAPI) CancelBatch(ctx context.Context, ids []string, reason,
 	if m.cancelBatchFn != nil {
 		return m.cancelBatchFn(ctx, ids, reason, channel, channelID)
 	}
+	return nil
+}
+func (m *mockApptRepoAPI) DeleteBatch(ctx context.Context, ids []string) error {
 	return nil
 }
 func (m *mockApptRepoAPI) HasFutureForCup(ctx context.Context, pid, cup string) (bool, error) {
@@ -109,12 +112,12 @@ func (m *mockNotifCounterAPI) PendingCount() int { return m.count }
 // --- mock EventKPIReader ---
 
 type mockEventKPIReader struct {
-	dailyKPIsFn             func(ctx context.Context, date time.Time) (*localrepo.DailyKPIs, error)
-	notifBreakdownFn        func(ctx context.Context, date time.Time) (*localrepo.NotificationBreakdown, error)
-	apptBreakdownFn         func(ctx context.Context, date time.Time) (*localrepo.AppointmentBreakdown, error)
-	funnelFn                func(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error)
-	healthMetricsFn         func(ctx context.Context) (*localrepo.HealthMetrics, error)
-	findByPhoneFn           func(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]localrepo.ChatEvent, error)
+	dailyKPIsFn      func(ctx context.Context, date time.Time) (*localrepo.DailyKPIs, error)
+	notifBreakdownFn func(ctx context.Context, date time.Time) (*localrepo.NotificationBreakdown, error)
+	apptBreakdownFn  func(ctx context.Context, date time.Time) (*localrepo.AppointmentBreakdown, error)
+	funnelFn         func(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error)
+	healthMetricsFn  func(ctx context.Context) (*localrepo.HealthMetrics, error)
+	findByPhoneFn    func(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]localrepo.ChatEvent, error)
 }
 
 func (m *mockEventKPIReader) GetDailyKPIs(ctx context.Context, date time.Time) (*localrepo.DailyKPIs, error) {
@@ -157,7 +160,7 @@ func (m *mockEventKPIReader) FindByPhone(ctx context.Context, phone string, from
 // --- mock WaitingListReader ---
 
 type mockWaitingListReader struct {
-	getDistinctCupsFn func(ctx context.Context) ([]string, error)
+	getDistinctCupsFn  func(ctx context.Context) ([]string, error)
 	getWaitingByCupsFn func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
 	listFn             func(ctx context.Context, filters domain.WaitingListFilters, page, pageSize int) ([]domain.WaitingListEntry, int, error)
 }
@@ -306,8 +309,8 @@ func TestHandleDailyKPIs_Success(t *testing.T) {
 	eventRepo := &mockEventKPIReader{
 		dailyKPIsFn: func(ctx context.Context, date time.Time) (*localrepo.DailyKPIs, error) {
 			return &localrepo.DailyKPIs{
-				Date:              date.Format("2006-01-02"),
-				TotalSessions:     42,
+				Date:                date.Format("2006-01-02"),
+				TotalSessions:       42,
 				AppointmentsCreated: 10,
 			}, nil
 		},
@@ -501,11 +504,11 @@ func TestHandleFunnel_Success(t *testing.T) {
 	eventRepo := &mockEventKPIReader{
 		funnelFn: func(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error) {
 			return &localrepo.FunnelData{
-				FromDate:      from.Format("2006-01-02"),
-				ToDate:        to.Format("2006-01-02"),
-				TotalSessions: 100,
+				FromDate:           from.Format("2006-01-02"),
+				ToDate:             to.Format("2006-01-02"),
+				TotalSessions:      100,
 				AppointmentCreated: 25,
-				ConversionRate: 25.0,
+				ConversionRate:     25.0,
 			}, nil
 		},
 	}

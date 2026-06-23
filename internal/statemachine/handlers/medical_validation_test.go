@@ -12,8 +12,9 @@ import (
 
 // mockApptRepo for medical validation tests
 type mockApptRepo struct {
-	hasFutureForCupFn     func(ctx context.Context, pid, cup string) (bool, error)
-	countMonthlyByGroupFn func(ctx context.Context, cups []string, year, month int) (int, error)
+	hasFutureForCupFn       func(ctx context.Context, pid, cup string) (bool, error)
+	findLastDoctorForCupsFn func(ctx context.Context, pid string, cups []string) (string, error)
+	countMonthlyByGroupFn   func(ctx context.Context, cups []string, year, month int) (int, error)
 }
 
 func (m *mockApptRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -29,11 +30,14 @@ func (m *mockApptRepo) Create(ctx context.Context, input domain.CreateAppointmen
 	return &domain.Appointment{ID: "new"}, nil
 }
 func (m *mockApptRepo) Confirm(ctx context.Context, id, channel, channelID string) error { return nil }
-func (m *mockApptRepo) Cancel(ctx context.Context, id, reason, ch, chID string) error  { return nil }
+func (m *mockApptRepo) Cancel(ctx context.Context, id, reason, ch, chID string) error    { return nil }
 func (m *mockApptRepo) ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error {
 	return nil
 }
 func (m *mockApptRepo) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
+	return nil
+}
+func (m *mockApptRepo) DeleteBatch(ctx context.Context, ids []string) error {
 	return nil
 }
 func (m *mockApptRepo) HasFutureForCup(ctx context.Context, pid, cup string) (bool, error) {
@@ -43,6 +47,9 @@ func (m *mockApptRepo) HasFutureForCup(ctx context.Context, pid, cup string) (bo
 	return false, nil
 }
 func (m *mockApptRepo) FindLastDoctorForCups(ctx context.Context, pid string, cups []string) (string, error) {
+	if m.findLastDoctorForCupsFn != nil {
+		return m.findLastDoctorForCupsFn(ctx, pid, cups)
+	}
 	return "", nil
 }
 func (m *mockApptRepo) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int) (int, error) {
@@ -57,10 +64,10 @@ func (m *mockApptRepo) FindPendingByDate(ctx context.Context, date string) ([]do
 func (m *mockApptRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	return 0, nil
 }
-func (m *mockApptRepo) CreatePxCita(ctx context.Context, input domain.CreatePxCitaInput) error {
+func (m *mockApptRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
-func (m *mockApptRepo) CreatePxCitaBatch(ctx context.Context, inputs []domain.CreatePxCitaInput) error {
+func (m *mockApptRepo) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
 
@@ -875,7 +882,7 @@ func TestCheckMRCLimit_NotBlocked(t *testing.T) {
 
 	sess := testSess(sm.StateCheckMRCLimit)
 	sess.Context["cups_code"] = "890271"
-	sess.Context["patient_entity"] = "OTRA" // Not SAN01/SAN02 → not blocked
+	sess.Context["patient_contract"] = "4" // Evento (non-MRC) → not flagged
 
 	result, err := m.Process(context.Background(), sess, textM(""))
 	if err != nil {
@@ -886,15 +893,15 @@ func TestCheckMRCLimit_NotBlocked(t *testing.T) {
 	}
 }
 
-func TestCheckMRCLimit_SAN02_SetsFlag(t *testing.T) {
+func TestCheckMRCLimit_MRCContract_SetsFlag(t *testing.T) {
 	apptSvc := services.NewAppointmentService(&mockApptRepo{}, nil)
 
 	m := sm.NewMachine()
 	m.Register(sm.StateCheckMRCLimit, checkMRCLimitHandler(apptSvc))
 
 	sess := testSess(sm.StateCheckMRCLimit)
-	sess.Context["cups_code"] = "861411" // aplicacion_sustancia → in mrcGroup
-	sess.Context["patient_entity"] = "SAN02" // Sanitas MRC
+	sess.Context["cups_code"] = "861411"   // aplicacion_sustancia → in mrcGroup
+	sess.Context["patient_contract"] = "6" // Sanitas MRC Contributivo
 
 	result, err := m.Process(context.Background(), sess, textM(""))
 	if err != nil {
@@ -905,7 +912,7 @@ func TestCheckMRCLimit_SAN02_SetsFlag(t *testing.T) {
 	}
 	// Should set MRC flag
 	if result.UpdateCtx == nil || result.UpdateCtx["mrc_limit_check"] != "1" {
-		t.Error("expected mrc_limit_check=1 in UpdateCtx for SAN02 + mrcGroup CUPS")
+		t.Error("expected mrc_limit_check=1 in UpdateCtx for MRC contract + mrcGroup CUPS")
 	}
 }
 

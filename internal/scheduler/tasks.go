@@ -389,20 +389,19 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 		firstEntry := entries[0]
 
 		query := services.SlotQuery{
-			CupsCode:      cupsCode,
-			PatientAge:    firstEntry.PatientAge,
-			IsContrasted:  firstEntry.IsContrasted,
-			IsSedated:     firstEntry.IsSedated,
-			Espacios:      firstEntry.Espacios,
-			ProcedureType: firstEntry.ProcedureType,
-			MaxSlots:      20, // Buscar más slots para saber cuántos pacientes notificar
+			CupsCode:     cupsCode,
+			PatientAge:   firstEntry.PatientAge,
+			IsContrasted: firstEntry.IsContrasted,
+			IsSedated:    firstEntry.IsSedated,
+			Espacios:     firstEntry.Espacios,
+			MaxSlots:     20, // Buscar más slots para saber cuántos pacientes notificar
 		}
 
-		// MRC monthly limit filter: solo para entidades Sanitas (SAN02/EPS005)
-		if t.AppointmentSvc != nil && services.IsMRCEntity(firstEntry.PatientEntity) {
+		// MRC monthly limit filter: solo para pacientes MRC (contrato 5/6)
+		if t.AppointmentSvc != nil && services.IsMRCPatient(firstEntry.ContractCode) {
 			if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 				query.MonthFilter = func(year, month int) (bool, error) {
-					blocked, err := t.AppointmentSvc.CheckMRCLimitForMonth(ctx, cupsCode, firstEntry.PatientEntity, year, month)
+					blocked, err := t.AppointmentSvc.CheckMRCLimitForMonth(ctx, cupsCode, firstEntry.ContractCode, year, month)
 					if err != nil {
 						return true, nil // fail-open
 					}
@@ -441,10 +440,10 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 				continue
 			}
 
-			// 5b. Solo para Sanitas (SAN02/EPS005): verificar cupo MRC antes de notificar
-			if t.AppointmentSvc != nil && services.IsMRCEntity(entry.PatientEntity) {
+			// 5b. Solo para pacientes MRC (contrato 5/6): verificar cupo MRC antes de notificar
+			if t.AppointmentSvc != nil && services.IsMRCPatient(entry.ContractCode) {
 				if _, _, found := services.IsMRCGroupCups(cupsCode); found {
-					blocked, _, err := t.AppointmentSvc.CheckMRCLimit(ctx, cupsCode, entry.PatientEntity)
+					blocked, _, err := t.AppointmentSvc.CheckMRCLimit(ctx, cupsCode, entry.ContractCode)
 					if err != nil {
 						slog.Warn("wl_check: mrc limit error", "cups_code", cupsCode, "entry_id", entry.ID, "error", err)
 					} else if blocked {
@@ -498,10 +497,10 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 			if t.Tracker != nil {
 				t.Tracker.LogEvent(ctx, "", entry.PhoneNumber, "notification_sent",
 					map[string]interface{}{
-						"type":             "waiting_list",
-						"waiting_list_id":  entry.ID,
-						"bird_msg_id":      msgID,
-						"conversation_id":  wlConvID,
+						"type":            "waiting_list",
+						"waiting_list_id": entry.ID,
+						"bird_msg_id":     msgID,
+						"conversation_id": wlConvID,
 					})
 			}
 
@@ -525,4 +524,3 @@ func groupAppointmentsByPatient(appointments []domain.Appointment) map[string][]
 	}
 	return groups
 }
-

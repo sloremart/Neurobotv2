@@ -82,3 +82,10 @@ type Municipality struct {
 	MunicipalityCode string
 	MunicipalityName string
 }
+
+// Barrio is a neighborhood from the sis_barrios catalog, scoped by municipality.
+type Barrio struct {
+	Code string // sis_barrios.codigo (stored in sis_paci.barrio, a bigint)
+	Name string // sis_barrios.nombres
+	Zone string // sis_barrios.zona (U/R)
+}
