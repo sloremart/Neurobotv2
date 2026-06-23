@@ -18,15 +18,19 @@ type mockProcedureRepo struct {
 func (m *mockProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) FindByID(ctx context.Context, id int) (*domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) SearchByName(ctx context.Context, name string) ([]domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) FindAllActive(ctx context.Context) ([]domain.Procedure, error) {
 	return nil, nil
 }
+
 func (m *mockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
 	if m.findSubjectTypeForCupsFn != nil {
 		return m.findSubjectTypeForCupsFn(ctx, cupsCode)
@@ -45,15 +49,19 @@ func (m *mockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int,
 	}
 	return nil, nil
 }
+
 func (m *mockScheduleRepo) FindByScheduleID(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error) {
 	return nil, nil
 }
+
 func (m *mockScheduleRepo) FindWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error) {
 	return nil, nil
 }
+
 func (m *mockScheduleRepo) UpdateWorkingDayExceptionDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error) {
 	return false, nil
 }
+
 func (m *mockScheduleRepo) DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error) {
 	return false, nil
 }

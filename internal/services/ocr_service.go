@@ -17,12 +17,12 @@ import (
 )
 
 type OCRService struct {
-	apiKey         string
-	model          string // gpt-4o-mini
-	apiURL         string // default: https://api.openai.com/v1/chat/completions
-	client         *http.Client
-	cupsContext    string // CUPS reference table injected into the prompt
-	birdAccessKey  string // Bird API key for downloading media files
+	apiKey        string
+	model         string // gpt-4o-mini
+	apiURL        string // default: https://api.openai.com/v1/chat/completions
+	client        *http.Client
+	cupsContext   string // CUPS reference table injected into the prompt
+	birdAccessKey string // Bird API key for downloading media files
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {

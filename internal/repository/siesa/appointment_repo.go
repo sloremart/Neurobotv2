@@ -643,6 +643,7 @@ const siesaBotUserID = 10006
 //   - CITA MODIFICADA (confirmaciones) → NO copia autoid/cod_medi/fecha/estado (van en blanco)
 //     y en su lugar llena las columnas *_anterior con el estado previo. Como confirmar no
 //     cambia esos campos, anterior = valor actual y observacion lleva el mensaje nuevo.
+//
 // En ambos casos fecha_evento = CONVERT(VARCHAR(50), GETDATE(), 100) → 'Jun 23 2026  6:53AM',
 // el mismo formato que la UI (style 100), que es lo que ese front usa para ordenar el historial.
 func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs string) {

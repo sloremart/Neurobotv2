@@ -88,7 +88,7 @@ func scanEntity(rows *sql.Rows) (domain.Entity, error) {
 		return e, err
 	}
 	e.ID = codigo
-	e.Code = company.String  // company (empresa) as Code, consistent with sis_paci.entidad
+	e.Code = company.String // company (empresa) as Code, consistent with sis_paci.entidad
 	e.Name = alias.String
 	e.PriceType = strconv.FormatInt(priceType.Int64, 10)
 	e.Category = strconv.FormatInt(regime.Int64, 10)

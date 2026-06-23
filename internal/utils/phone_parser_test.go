@@ -33,9 +33,9 @@ func TestParseColombianPhone(t *testing.T) {
 		{"no tiene", ""},
 		{"n/a", ""},
 		{"-", ""},
-		{"1234567", ""},        // Too short
-		{"6011234567", ""},     // Not mobile (doesn't start with 3)
-		{"1234567890", ""},     // 10 digits but doesn't start with 3
+		{"1234567", ""},    // Too short
+		{"6011234567", ""}, // Not mobile (doesn't start with 3)
+		{"1234567890", ""}, // 10 digits but doesn't start with 3
 	}
 
 	for _, tc := range tests {

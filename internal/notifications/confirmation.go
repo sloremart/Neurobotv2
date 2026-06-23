@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -465,8 +466,8 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 	}
 
 	sessCtx := map[string]string{
-		"patient_id":         appt.PatientID,
-		"patient_name":       appt.PatientName,
+		"patient_id":        appt.PatientID,
+		"patient_name":      appt.PatientName,
 		"notif_appt_id":     pending.AppointmentID,
 		"notif_appt_ids":    string(allIDsJSON),
 		"notif_cups_codes":  string(cupsJSON),

@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-
-	"github.com/neuro-bot/neuro-bot/internal/utils"
 	"strconv"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 const maxTimestampAge = 15 * 60 // 15 minutes in seconds

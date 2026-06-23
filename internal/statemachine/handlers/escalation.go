@@ -8,9 +8,9 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
-	"github.com/neuro-bot/neuro-bot/internal/utils"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // RegisterEscalationHandlers registra los handlers de escalación a agente (Fase 11).
@@ -218,25 +218,25 @@ func buildAgentSummary(sess *session.Session, cupsCode, teamName string) string 
 var regFieldLabels = map[string]string{
 	sm.StateRegDocumentType:       "tipo de documento (CC, TI, RC, CE, PA, PT, etc.)",
 	sm.StateRegDocumentIssuePlace: "ciudad donde se expidio el documento (ej: Bogota)",
-	sm.StateRegFirstSurname:    "primer apellido",
-	sm.StateRegSecondSurname:   "segundo apellido (o NA si no tiene)",
-	sm.StateRegFirstName:       "primer nombre",
-	sm.StateRegSecondName:      "segundo nombre (o NA si no tiene)",
-	sm.StateRegBirthDate:       "fecha de nacimiento (formato: AAAA-MM-DD)",
-	sm.StateRegBirthPlace:      "ciudad de nacimiento",
-	sm.StateRegGender:          "genero (M o F)",
-	sm.StateRegMaritalStatus:   "estado civil (SOLTERO, CASADO, UNION LIBRE, DIVORCIADO, VIUDO)",
-	sm.StateRegAddress:         "direccion completa",
-	sm.StateRegPhone:           "telefono (formato colombiano, ej: 3001234567)",
-	sm.StateRegPhone2:          "telefono secundario (o NA)",
-	sm.StateRegEmail:           "correo electronico (o NA)",
-	sm.StateRegOccupation:      "ocupacion",
-	sm.StateRegMunicipality:    "municipio de residencia",
-	sm.StateRegClientType:      "tipo de cliente (PARTICULAR, EPS, ARL, POLIZA, PREPAGADA, REGIMEN ESPECIAL)",
-	sm.StateRegUserType:        "tipo de usuario (CONTRIBUTIVO, SUBSIDIADO, PARTICULAR)",
-	sm.StateRegAffiliationType: "tipo de afiliacion (COTIZANTE, BENEFICIARIO, OTRO)",
-	sm.StateRegEntity:          "nombre de la entidad/EPS",
-	sm.StateRegZone:            "zona (U=Urbana, R=Rural)",
+	sm.StateRegFirstSurname:       "primer apellido",
+	sm.StateRegSecondSurname:      "segundo apellido (o NA si no tiene)",
+	sm.StateRegFirstName:          "primer nombre",
+	sm.StateRegSecondName:         "segundo nombre (o NA si no tiene)",
+	sm.StateRegBirthDate:          "fecha de nacimiento (formato: AAAA-MM-DD)",
+	sm.StateRegBirthPlace:         "ciudad de nacimiento",
+	sm.StateRegGender:             "genero (M o F)",
+	sm.StateRegMaritalStatus:      "estado civil (SOLTERO, CASADO, UNION LIBRE, DIVORCIADO, VIUDO)",
+	sm.StateRegAddress:            "direccion completa",
+	sm.StateRegPhone:              "telefono (formato colombiano, ej: 3001234567)",
+	sm.StateRegPhone2:             "telefono secundario (o NA)",
+	sm.StateRegEmail:              "correo electronico (o NA)",
+	sm.StateRegOccupation:         "ocupacion",
+	sm.StateRegMunicipality:       "municipio de residencia",
+	sm.StateRegClientType:         "tipo de cliente (PARTICULAR, EPS, ARL, POLIZA, PREPAGADA, REGIMEN ESPECIAL)",
+	sm.StateRegUserType:           "tipo de usuario (CONTRIBUTIVO, SUBSIDIADO, PARTICULAR)",
+	sm.StateRegAffiliationType:    "tipo de afiliacion (COTIZANTE, BENEFICIARIO, OTRO)",
+	sm.StateRegEntity:             "nombre de la entidad/EPS",
+	sm.StateRegZone:               "zona (U=Urbana, R=Rural)",
 }
 
 // buildAgentCommands generates contextual instructions for the agent based on escalation state.

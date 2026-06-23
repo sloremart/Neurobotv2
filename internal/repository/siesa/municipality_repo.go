@@ -22,7 +22,8 @@ func NewMunicipalityRepo(db *sql.DB) *MunicipalityRepo {
 
 // Search busca municipios en sis_muni por nombre.
 // Retorna DepartmentCode = sis_muni.id_dep (ej: "50"),
-//         MunicipalityCode = sis_muni.codigo (ej: "001") — formato que espera sis_paci.
+//
+//	MunicipalityCode = sis_muni.codigo (ej: "001") — formato que espera sis_paci.
 func (r *MunicipalityRepo) Search(ctx context.Context, name string) ([]domain.Municipality, error) {
 	// Acepta "Ciudad - Departamento" o "Ciudad, Departamento": busca por el nombre
 	// de la ciudad y, si se indica departamento, acota por él. Así "Cubarral - Meta"

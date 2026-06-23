@@ -12,18 +12,17 @@
 pre-commit:
   parallel: false
   commands:
+    format-check:
+      glob: "*.go"
+      # Verifica que TODO el repo cumpla gofumpt+goimports. Seguro de re-activar porque la
+      # deuda de formato histórica ya se limpió (commit "chore: gofumpt+goimports todo el repo").
+      # Si algún día vuelve a fallar masivamente, reformatear con: golangci-lint fmt ./...
+      run: MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app golangci/golangci-lint:v2.11.0 golangci-lint fmt --diff
     lint-new:
       glob: "*.go"
       # --new-from-rev=HEAD: solo falla por problemas NUEVOS respecto al último commit.
-      # Así la deuda histórica del repo no bloquea cada commit desde el día uno.
-      # IMPORTANTE: `golangci-lint run` (v2) YA reporta los formateadores declarados en
-      # `formatters` (gofumpt/goimports) como issues, así que con el baseline esto también
-      # cubre el FORMATO del código nuevo. Por eso NO hay un `format-check` aparte: el antiguo
-      # `golangci-lint fmt --diff` escaneaba TODO el repo sin baseline y bloqueaba el commit
-      # por la deuda de formato preexistente (la migración nunca se gofumpt-eó).
+      # Así la deuda histórica de LINT (no formato) no bloquea cada commit desde el día uno.
       run: MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app golangci/golangci-lint:v2.11.0 golangci-lint run --new-from-rev=HEAD
 
 # Nota: dejamos `go vet`, `go test -race` y `govulncheck` para la CI (son más lentos).
-# El pre-commit prioriza feedback en segundos: lint+formato de lo nuevo.
-# Para formatear todo el repo de una vez (limpiar la deuda histórica), correr manualmente:
-#   docker run --rm -v "$(pwd):/app" -w /app golangci/golangci-lint:v2.11.0 golangci-lint fmt ./...
+# El pre-commit prioriza feedback en segundos: formato (todo) + lint de lo nuevo.

@@ -695,7 +695,7 @@ func notifRescheduleFallbackHandler(apptSvc *services.AppointmentService, procRe
 
 			return buildAutoCloseResult("Tu cita ha sido cancelada.\n\nSi deseas reprogramar, puedes escribirnos cuando lo necesites.").
 				WithEvent("notif_reschedule_fallback_cancelled", map[string]interface{}{
-					"appointment_id": apptID,
+					"appointment_id":  apptID,
 					"total_cancelled": len(allIDs),
 				}), nil
 		}

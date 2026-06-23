@@ -30,33 +30,41 @@ func (m *mockApptRepoNotif) FindByID(ctx context.Context, id string) (*domain.Ap
 	}
 	return nil, nil
 }
+
 func (m *mockApptRepoNotif) FindUpcomingByPatient(ctx context.Context, patientID string) ([]domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoNotif) FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoNotif) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoNotif) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
+
 func (m *mockApptRepoNotif) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
+
 func (m *mockApptRepoNotif) Confirm(ctx context.Context, id string, channel, channelID string) error {
 	if m.confirmFn != nil {
 		return m.confirmFn(ctx, id, channel, channelID)
 	}
 	return nil
 }
+
 func (m *mockApptRepoNotif) Cancel(ctx context.Context, id string, reason, channel, channelID string) error {
 	if m.cancelFn != nil {
 		return m.cancelFn(ctx, id, reason, channel, channelID)
 	}
 	return nil
 }
+
 func (m *mockApptRepoNotif) ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error {
 	if m.confirmFn != nil {
 		for _, id := range ids {
@@ -67,6 +75,7 @@ func (m *mockApptRepoNotif) ConfirmBatch(ctx context.Context, ids []string, chan
 	}
 	return nil
 }
+
 func (m *mockApptRepoNotif) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
 	if m.cancelFn != nil {
 		for _, id := range ids {
@@ -77,21 +86,27 @@ func (m *mockApptRepoNotif) CancelBatch(ctx context.Context, ids []string, reaso
 	}
 	return nil
 }
+
 func (m *mockApptRepoNotif) DeleteBatch(ctx context.Context, ids []string) error {
 	return nil
 }
+
 func (m *mockApptRepoNotif) HasFutureForCup(ctx context.Context, patientID, cupCode string) (bool, error) {
 	return false, nil
 }
+
 func (m *mockApptRepoNotif) FindLastDoctorForCups(ctx context.Context, patientID string, cups []string) (string, error) {
 	return "", nil
 }
+
 func (m *mockApptRepoNotif) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error) {
 	return 0, nil
 }
+
 func (m *mockApptRepoNotif) FindPendingByDate(ctx context.Context, date string) ([]domain.Appointment, error) {
 	return nil, nil
 }
+
 func (m *mockApptRepoNotif) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
 	return 0, nil
 }

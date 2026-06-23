@@ -605,7 +605,6 @@ func regZoneHandler() sm.StateHandler {
 	}
 }
 
-
 // REG_USER_TYPE — solo lógica de negocio (validación declarativa en RegisterWithConfig).
 func regUserTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
@@ -649,7 +648,6 @@ func regAffiliationTypeHandler() sm.StateHandler {
 			WithText("Escribe tu *municipio y departamento de residencia* (ej.: Villavicencio - Meta):"), nil
 	}
 }
-
 
 // CONFIRM_REGISTRATION — solo lógica de negocio (validación declarativa en RegisterWithConfig).
 func confirmRegistrationHandler() sm.StateHandler {
@@ -1138,57 +1136,75 @@ func withCorrectionRedirect(handler sm.StateHandler) sm.StateHandler {
 
 // correctionField defines a correctable field with its target state and prompt builder.
 type correctionField struct {
-	ID    string
-	Title string
-	State string
+	ID     string
+	Title  string
+	State  string
 	Prompt func() sm.OutboundMessage // nil = full restart (no correction mode)
 }
 
 // correctionFields defines the 9 correctable fields + restart option (10 total for WhatsApp limit).
 func correctionFields() []correctionField {
 	return []correctionField{
-		{ID: "corr_first_name", Title: "Primer nombre", State: sm.StateRegFirstName,
+		{
+			ID: "corr_first_name", Title: "Primer nombre", State: sm.StateRegFirstName,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Por favor escribe tu primer nombre (solo letras, sin números, ni símbolos ni espacios)."}
-			}},
-		{ID: "corr_first_surname", Title: "Primer apellido", State: sm.StateRegFirstSurname,
+			},
+		},
+		{
+			ID: "corr_first_surname", Title: "Primer apellido", State: sm.StateRegFirstSurname,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios)."}
-			}},
-		{ID: "corr_birth_date", Title: "Fecha de nacimiento", State: sm.StateRegBirthDate,
+			},
+		},
+		{
+			ID: "corr_birth_date", Title: "Fecha de nacimiento", State: sm.StateRegBirthDate,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Ingresa tu fecha de nacimiento en formato *AAAA-MM-DD* (ejemplo: 1992-04-17):"}
-			}},
-		{ID: "corr_address", Title: "Dirección", State: sm.StateRegAddress,
+			},
+		},
+		{
+			ID: "corr_address", Title: "Dirección", State: sm.StateRegAddress,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Escribe tu dirección completa (calle, número, barrio):"}
-			}},
-		{ID: "corr_phone", Title: "Teléfono", State: sm.StateRegPhone,
+			},
+		},
+		{
+			ID: "corr_phone", Title: "Teléfono", State: sm.StateRegPhone,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Ingresa tu celular principal preferiblemente con WhatsApp (ej: 3001234567):"}
-			}},
-		{ID: "corr_email", Title: "Email", State: sm.StateRegEmail,
+			},
+		},
+		{
+			ID: "corr_email", Title: "Email", State: sm.StateRegEmail,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: "Indica tu correo electrónico o responde *NA*:"}
-			}},
-		{ID: "corr_document_type", Title: "Tipo de documento", State: sm.StateRegDocumentType,
+			},
+		},
+		{
+			ID: "corr_document_type", Title: "Tipo de documento", State: sm.StateRegDocumentType,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.TextMessage{Text: docTypeMenuText()}
-			}},
-		{ID: "corr_marital_status", Title: "Estado civil", State: sm.StateRegMaritalStatus,
+			},
+		},
+		{
+			ID: "corr_marital_status", Title: "Estado civil", State: sm.StateRegMaritalStatus,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.ListMessage{
 					Body: "Selecciona tu *estado civil*:", Title: "Seleccionar",
 					Sections: []sm.ListSection{{Title: "Estado civil", Rows: maritalStatusListRows()}},
 				}
-			}},
-		{ID: "corr_user_type", Title: "Tipo de usuario", State: sm.StateRegUserType,
+			},
+		},
+		{
+			ID: "corr_user_type", Title: "Tipo de usuario", State: sm.StateRegUserType,
 			Prompt: func() sm.OutboundMessage {
 				return &sm.ListMessage{
 					Body: "Selecciona tu *tipo de usuario*:", Title: "Tipo de usuario",
 					Sections: []sm.ListSection{{Title: "Tipo de usuario", Rows: userTypeListRows()}},
 				}
-			}},
+			},
+		},
 		{ID: "corr_restart", Title: "Empezar de nuevo", State: sm.StateRegDocumentType, Prompt: nil},
 	}
 }
@@ -1229,7 +1245,7 @@ func regSelectCorrectionHandler() sm.StateHandler {
 			// "Empezar de nuevo" = full restart without correction mode
 			if field.Prompt == nil {
 				return sm.NewResult(field.State).
-					WithText("Vamos a corregir tus datos. Comencemos de nuevo.\n\n" + docTypeMenuText()).
+					WithText("Vamos a corregir tus datos. Comencemos de nuevo.\n\n"+docTypeMenuText()).
 					WithClearCtx("reg_correction_mode").
 					WithEvent("registration_restart", nil), nil
 			}

@@ -447,8 +447,8 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 			} `json:"callCommand"`
 		} `json:"payload"`
 		// Legacy format
-		Type    string `json:"type"`
-		LegacyCallID string `json:"callId"`
+		Type              string `json:"type"`
+		LegacyCallID      string `json:"callId"`
 		LegacyCallCommand struct {
 			Gather struct {
 				Keys string `json:"keys"`

@@ -41,12 +41,14 @@ func (m *mockSessionMgmt) FindOrCreate(ctx context.Context, phone string) (*sess
 	}
 	return &session.Session{ID: "sess-test", PhoneNumber: phone, CurrentState: "GREETING", Context: map[string]string{}}, true, nil
 }
+
 func (m *mockSessionMgmt) RenewTimeout(ctx context.Context, sess *session.Session) error {
 	if m.renewFn != nil {
 		return m.renewFn(ctx, sess)
 	}
 	return nil
 }
+
 func (m *mockSessionMgmt) SaveState(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error {
 	if m.saveFn != nil {
 		return m.saveFn(ctx, sess, state, updateCtx, clearCtx)
@@ -54,6 +56,7 @@ func (m *mockSessionMgmt) SaveState(ctx context.Context, sess *session.Session, 
 	sess.CurrentState = state
 	return nil
 }
+
 func (m *mockSessionMgmt) ClearAllContext(ctx context.Context, sess *session.Session) error {
 	if m.clearAllFn != nil {
 		return m.clearAllFn(ctx, sess)
@@ -61,6 +64,7 @@ func (m *mockSessionMgmt) ClearAllContext(ctx context.Context, sess *session.Ses
 	sess.Context = make(map[string]string)
 	return nil
 }
+
 func (m *mockSessionMgmt) Escalate(ctx context.Context, sess *session.Session, teamID string) error {
 	if m.escalateFn != nil {
 		return m.escalateFn(ctx, sess, teamID)
@@ -68,6 +72,7 @@ func (m *mockSessionMgmt) Escalate(ctx context.Context, sess *session.Session, t
 	sess.Status = session.StatusEscalated
 	return nil
 }
+
 func (m *mockSessionMgmt) ResumeFromEscalation(ctx context.Context, sess *session.Session, targetState string) error {
 	if m.resumeFn != nil {
 		return m.resumeFn(ctx, sess, targetState)
@@ -76,6 +81,7 @@ func (m *mockSessionMgmt) ResumeFromEscalation(ctx context.Context, sess *sessio
 	sess.CurrentState = targetState
 	return nil
 }
+
 func (m *mockSessionMgmt) Complete(ctx context.Context, sess *session.Session) error {
 	if m.completeFn != nil {
 		return m.completeFn(ctx, sess)
@@ -83,9 +89,11 @@ func (m *mockSessionMgmt) Complete(ctx context.Context, sess *session.Session) e
 	sess.Status = session.StatusCompleted
 	return nil
 }
+
 func (m *mockSessionMgmt) UpdateConversationID(ctx context.Context, phone, conversationID string) error {
 	return nil
 }
+
 func (m *mockSessionMgmt) SetContext(ctx context.Context, sess *session.Session, key, value string) error {
 	sess.SetContext(key, value)
 	return nil
@@ -94,13 +102,13 @@ func (m *mockSessionMgmt) SetContext(ctx context.Context, sess *session.Session,
 // --- Mock MessageSender ---
 
 type mockMessageSender struct {
-	mu                sync.Mutex
-	sent              []sentMsg
-	sendErr           error
-	cachedConvID      string // returned by GetCachedConversationID
-	lookupConvID      string // returned by LookupConversationByPhone
-	lookupConvErr     error
-	lookupConvCalled  bool
+	mu               sync.Mutex
+	sent             []sentMsg
+	sendErr          error
+	cachedConvID     string // returned by GetCachedConversationID
+	lookupConvID     string // returned by LookupConversationByPhone
+	lookupConvErr    error
+	lookupConvCalled bool
 }
 
 type sentMsg struct {
@@ -118,6 +126,7 @@ func (m *mockMessageSender) SendText(phone, conversationID, text string) (string
 	}
 	return "msg-sent-1", nil
 }
+
 func (m *mockMessageSender) SendButtons(phone, conversationID, text string, buttons []bird.Button) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -127,6 +136,7 @@ func (m *mockMessageSender) SendButtons(phone, conversationID, text string, butt
 	}
 	return "msg-sent-btn", nil
 }
+
 func (m *mockMessageSender) SendList(phone, conversationID, body, title string, sections []bird.ListSection) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -136,6 +146,7 @@ func (m *mockMessageSender) SendList(phone, conversationID, body, title string, 
 	}
 	return "msg-sent-list", nil
 }
+
 func (m *mockMessageSender) SendInternalText(conversationID, text string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -145,15 +156,19 @@ func (m *mockMessageSender) SendInternalText(conversationID, text string) (strin
 	}
 	return "msg-sent-internal", nil
 }
+
 func (m *mockMessageSender) UnassignFeedItem(conversationID string, closed bool) error {
 	return nil
 }
+
 func (m *mockMessageSender) CloseFeedItems(conversationID string) error {
 	return nil
 }
+
 func (m *mockMessageSender) GetCachedConversationID(phone string) string {
 	return m.cachedConvID
 }
+
 func (m *mockMessageSender) LookupConversationByPhone(phone string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

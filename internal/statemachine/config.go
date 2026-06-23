@@ -25,12 +25,12 @@ const validatedPayloadKey contextKey = "validated_payload"
 
 // HandlerConfig define validación declarativa para un estado interactivo.
 type HandlerConfig struct {
-	InputType    InputType            // Qué tipo de input espera
-	TextValidate func(string) bool   // Para InputText: función de validación
-	Options      []string            // Para InputButton: payloads válidos
-	ErrorMsg     string              // Mensaje de error en retry
+	InputType    InputType                            // Qué tipo de input espera
+	TextValidate func(string) bool                    // Para InputText: función de validación
+	Options      []string                             // Para InputButton: payloads válidos
+	ErrorMsg     string                               // Mensaje de error en retry
 	RetryPrompt  func(*session.Session, *StateResult) // Rebuild UI en retry (opcional)
-	Handler      StateHandler        // Solo lógica de negocio (input ya validado)
+	Handler      StateHandler                         // Solo lógica de negocio (input ya validado)
 }
 
 // ValidatedPayload extrae el payload validado del context (para InputButton handlers).

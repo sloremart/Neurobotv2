@@ -140,4 +140,3 @@ func TestTerminated(t *testing.T) {
 		t.Errorf("expected TERMINATED, got %s", result.NextState)
 	}
 }
-

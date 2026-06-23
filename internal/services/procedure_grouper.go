@@ -97,7 +97,7 @@ var emgCodes = map[string]bool{
 }
 
 var ncCodes = map[string]bool{
-	"29103":  true, "891509": true, "29102": true,
+	"29103": true, "891509": true, "29102": true,
 	"891098": true, // NEUROCONDUCCION POR CADA EXTREMIDAD
 }
 
@@ -140,6 +140,7 @@ var ecografiaObstetric = map[string]bool{
 	"881436": true, // Obstétrica translucencia nucal → 2 espacios
 	"881437": true, // Obstétrica detalle anatómico → 2 espacios
 }
+
 var ecografiaDoppler = map[string]bool{
 	"882308": true, // Doppler arterial MMII
 	"882309": true, // Doppler venoso MMSS

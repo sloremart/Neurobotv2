@@ -84,11 +84,11 @@ type InboxMarker interface {
 type MessageWorkerPool struct {
 	queue          chan bird.InboundMessage
 	agentCmds      chan AgentCommand
-	recentMessages sync.Map // messageID -> time.Time (dedup)
+	recentMessages sync.Map     // messageID -> time.Time (dedup)
 	dedupCount     atomic.Int64 // approximate count for safety cap
 	workers        int
 	activeOverflow atomic.Int32
-	wg             sync.WaitGroup // tracks all goroutines for graceful shutdown
+	wg             sync.WaitGroup  // tracks all goroutines for graceful shutdown
 	ctx            context.Context // stored from Start() for overflow goroutines
 
 	botEnabled bool // BOT_ENABLED=false → escala directo sin tocar SIESA/Antares

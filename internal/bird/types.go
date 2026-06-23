@@ -25,14 +25,14 @@ type WebhookPayload struct {
 type SenderInfo struct {
 	ID          string    `json:"id"`
 	DisplayName string    `json:"displayName"`
-	Contacts    []Contact `json:"contacts"`    // Legacy format
-	Contact     Contact   `json:"contact"`     // Bird actual format (singular)
+	Contacts    []Contact `json:"contacts"` // Legacy format
+	Contact     Contact   `json:"contact"`  // Bird actual format (singular)
 }
 
 type ReceiverInfo struct {
 	ID        string    `json:"id"`
-	Contacts  []Contact `json:"contacts"`    // Legacy format
-	Connector Contact   `json:"connector"`   // Bird actual format
+	Contacts  []Contact `json:"contacts"`  // Legacy format
+	Connector Contact   `json:"connector"` // Bird actual format
 }
 
 type Contact struct {
@@ -44,12 +44,12 @@ type Contact struct {
 }
 
 type MessageBody struct {
-	Type        string       `json:"type"` // text, image, document, file, list, interactive
-	Text        TextBody     `json:"text"`
-	List        TextBody     `json:"list"`        // Bird may send list responses under "list" key
-	Interactive TextBody     `json:"interactive"` // Bird may send interactive responses under "interactive" key
-	Image       MediaBody    `json:"image"`       // Bird image: body.image.images[0].mediaUrl
-	File        FileBody     `json:"file"`        // Bird file/document: body.file.files[0].mediaUrl
+	Type        string    `json:"type"` // text, image, document, file, list, interactive
+	Text        TextBody  `json:"text"`
+	List        TextBody  `json:"list"`        // Bird may send list responses under "list" key
+	Interactive TextBody  `json:"interactive"` // Bird may send interactive responses under "interactive" key
+	Image       MediaBody `json:"image"`       // Bird image: body.image.images[0].mediaUrl
+	File        FileBody  `json:"file"`        // Bird file/document: body.file.files[0].mediaUrl
 }
 
 type MediaBody struct {

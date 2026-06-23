@@ -12,8 +12,8 @@ import (
 // for FindAllActive. Individual lookups (FindByCode, FindByID, SearchByName)
 // are delegated directly to the inner repo.
 type CachedProcedureRepo struct {
-	inner    ProcedureRepository
-	ttl      time.Duration
+	inner ProcedureRepository
+	ttl   time.Duration
 
 	mu       sync.RWMutex
 	all      []domain.Procedure

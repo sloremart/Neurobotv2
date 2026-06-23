@@ -3,22 +3,22 @@ package domain
 import "time"
 
 type Procedure struct {
-	ID               int
-	Code             string // Código CUPS
-	Name             string
-	Description      string
-	SpecialtyID      int
-	ServiceID        int
-	ServiceName      string
-	Preparation      string
-	Address          string
-	VideoURL         string
-	AudioURL         string
-	Type             string
-	RequiredSpaces   int // Slots consecutivos necesarios
+	ID                 int
+	Code               string // Código CUPS
+	Name               string
+	Description        string
+	SpecialtyID        int
+	ServiceID          int
+	ServiceName        string
+	Preparation        string
+	Address            string
+	VideoURL           string
+	AudioURL           string
+	Type               string
+	RequiredSpaces     int // Slots consecutivos necesarios
 	SpecificScheduleID int
 	AssignmentFlowID   int
-	IsActive         bool
+	IsActive           bool
 }
 
 type Entity struct {

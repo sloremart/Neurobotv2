@@ -67,8 +67,8 @@ func MaxBodySize(next http.Handler) http.Handler {
 // maxRequests por ventana de tiempo.
 func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.Handler {
 	type client struct {
-		count    int
-		resetAt  time.Time
+		count   int
+		resetAt time.Time
 	}
 
 	var mu sync.Mutex

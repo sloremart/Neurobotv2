@@ -26,8 +26,8 @@ const (
 	StateChangeEntity    = "CHANGE_ENTITY"
 	StateAskClientType   = "ASK_CLIENT_TYPE"
 	StateShowEntityList  = "SHOW_ENTITY_LIST"
-	StateAskEntityNumber  = "ASK_ENTITY_NUMBER"
-	StateOutOfHoursMenu   = "OUT_OF_HOURS_MENU"
+	StateAskEntityNumber = "ASK_ENTITY_NUMBER"
+	StateOutOfHoursMenu  = "OUT_OF_HOURS_MENU"
 	// EPS régimen + Sanitas municipality steps (SIESA contract resolution)
 	StateAskEpsRegimen       = "ASK_EPS_REGIMEN"
 	StateConfirmMunicipality = "CONFIRM_MUNICIPALITY"
@@ -35,33 +35,33 @@ const (
 
 // === Registro de Paciente Nuevo ===
 const (
-	StateRegistrationStart       = "REGISTRATION_START"
-	StateRegDocumentType         = "REG_DOCUMENT_TYPE"
-	StateRegDocumentIssuePlace   = "REG_DOCUMENT_ISSUE_PLACE"
-	StateRegFirstSurname         = "REG_FIRST_SURNAME"
-	StateRegSecondSurname    = "REG_SECOND_SURNAME"
-	StateRegFirstName        = "REG_FIRST_NAME"
-	StateRegSecondName       = "REG_SECOND_NAME"
-	StateRegBirthDate        = "REG_BIRTH_DATE"
-	StateRegBirthPlace       = "REG_BIRTH_PLACE"
-	StateRegGender           = "REG_GENDER"
-	StateRegBloodType        = "REG_BLOOD_TYPE"
-	StateRegMaritalStatus    = "REG_MARITAL_STATUS"
-	StateRegAddress          = "REG_ADDRESS"
-	StateRegPhone            = "REG_PHONE"
-	StateRegPhone2           = "REG_PHONE2"
-	StateRegEmail            = "REG_EMAIL"
-	StateRegOccupation       = "REG_OCCUPATION"
-	StateRegMunicipality     = "REG_MUNICIPALITY"
-	StateRegBarrio           = "REG_BARRIO"
-	StateRegClientType       = "REG_CLIENT_TYPE"
-	StateRegUserType         = "REG_USER_TYPE"
-	StateRegAffiliationType  = "REG_AFFILIATION_TYPE"
-	StateRegEntity           = "REG_ENTITY"
-	StateRegZone             = "REG_ZONE"
-	StateRegSelectCorrection = "REG_SELECT_CORRECTION"
-	StateConfirmRegistration = "CONFIRM_REGISTRATION"
-	StateCreatePatient       = "CREATE_PATIENT"
+	StateRegistrationStart     = "REGISTRATION_START"
+	StateRegDocumentType       = "REG_DOCUMENT_TYPE"
+	StateRegDocumentIssuePlace = "REG_DOCUMENT_ISSUE_PLACE"
+	StateRegFirstSurname       = "REG_FIRST_SURNAME"
+	StateRegSecondSurname      = "REG_SECOND_SURNAME"
+	StateRegFirstName          = "REG_FIRST_NAME"
+	StateRegSecondName         = "REG_SECOND_NAME"
+	StateRegBirthDate          = "REG_BIRTH_DATE"
+	StateRegBirthPlace         = "REG_BIRTH_PLACE"
+	StateRegGender             = "REG_GENDER"
+	StateRegBloodType          = "REG_BLOOD_TYPE"
+	StateRegMaritalStatus      = "REG_MARITAL_STATUS"
+	StateRegAddress            = "REG_ADDRESS"
+	StateRegPhone              = "REG_PHONE"
+	StateRegPhone2             = "REG_PHONE2"
+	StateRegEmail              = "REG_EMAIL"
+	StateRegOccupation         = "REG_OCCUPATION"
+	StateRegMunicipality       = "REG_MUNICIPALITY"
+	StateRegBarrio             = "REG_BARRIO"
+	StateRegClientType         = "REG_CLIENT_TYPE"
+	StateRegUserType           = "REG_USER_TYPE"
+	StateRegAffiliationType    = "REG_AFFILIATION_TYPE"
+	StateRegEntity             = "REG_ENTITY"
+	StateRegZone               = "REG_ZONE"
+	StateRegSelectCorrection   = "REG_SELECT_CORRECTION"
+	StateConfirmRegistration   = "CONFIRM_REGISTRATION"
+	StateCreatePatient         = "CREATE_PATIENT"
 )
 
 // === Consulta de Citas ===
@@ -103,38 +103,38 @@ const (
 
 // === Validaciones Médicas ===
 const (
-	StateCheckSpecialCups      = "CHECK_SPECIAL_CUPS"
-	StateAskGestationalWeeks   = "ASK_GESTATIONAL_WEEKS"
-	StateCheckExisting         = "CHECK_EXISTING"
-	StateAppointmentExists     = "APPOINTMENT_EXISTS"
-	StateAskContrasted         = "ASK_CONTRASTED"
-	StateAskPregnancy          = "ASK_PREGNANCY"
-	StatePregnancyBlock        = "PREGNANCY_BLOCK"
-	StateAskBabyWeight         = "ASK_BABY_WEIGHT"
-	StateGfrCreatinine         = "GFR_CREATININE"
-	StateGfrHeight             = "GFR_HEIGHT"
-	StateGfrWeight             = "GFR_WEIGHT"
-	StateGfrDisease            = "GFR_DISEASE"
-	StateGfrResult             = "GFR_RESULT"
-	StateGfrNotEligible        = "GFR_NOT_ELIGIBLE"
-	StateAskSedation           = "ASK_SEDATION"
-	StateCheckPriorConsult     = "CHECK_PRIOR_CONSULTATION"
-	StateCheckMRCLimit         = "CHECK_MRC_LIMIT"
-	StateCheckAgeRestriction   = "CHECK_AGE_RESTRICTION"
+	StateCheckSpecialCups    = "CHECK_SPECIAL_CUPS"
+	StateAskGestationalWeeks = "ASK_GESTATIONAL_WEEKS"
+	StateCheckExisting       = "CHECK_EXISTING"
+	StateAppointmentExists   = "APPOINTMENT_EXISTS"
+	StateAskContrasted       = "ASK_CONTRASTED"
+	StateAskPregnancy        = "ASK_PREGNANCY"
+	StatePregnancyBlock      = "PREGNANCY_BLOCK"
+	StateAskBabyWeight       = "ASK_BABY_WEIGHT"
+	StateGfrCreatinine       = "GFR_CREATININE"
+	StateGfrHeight           = "GFR_HEIGHT"
+	StateGfrWeight           = "GFR_WEIGHT"
+	StateGfrDisease          = "GFR_DISEASE"
+	StateGfrResult           = "GFR_RESULT"
+	StateGfrNotEligible      = "GFR_NOT_ELIGIBLE"
+	StateAskSedation         = "ASK_SEDATION"
+	StateCheckPriorConsult   = "CHECK_PRIOR_CONSULTATION"
+	StateCheckMRCLimit       = "CHECK_MRC_LIMIT"
+	StateCheckAgeRestriction = "CHECK_AGE_RESTRICTION"
 )
 
 // === Búsqueda y Agendamiento ===
 const (
-	StateSearchSlots        = "SEARCH_SLOTS"
-	StateSlotSearchRetry    = "SLOT_SEARCH_RETRY"
-	StateShowSlots          = "SHOW_SLOTS"
-	StateNoSlotsAvailable   = "NO_SLOTS_AVAILABLE"
-	StateOfferWaitingList   = "OFFER_WAITING_LIST"
-	StateConfirmBooking     = "CONFIRM_BOOKING"
-	StateReconfirmBooking   = "RECONFIRM_BOOKING"
-	StateCreateAppointment  = "CREATE_APPOINTMENT"
-	StateBookingSuccess     = "BOOKING_SUCCESS"
-	StateBookingFailed      = "BOOKING_FAILED"
+	StateSearchSlots       = "SEARCH_SLOTS"
+	StateSlotSearchRetry   = "SLOT_SEARCH_RETRY"
+	StateShowSlots         = "SHOW_SLOTS"
+	StateNoSlotsAvailable  = "NO_SLOTS_AVAILABLE"
+	StateOfferWaitingList  = "OFFER_WAITING_LIST"
+	StateConfirmBooking    = "CONFIRM_BOOKING"
+	StateReconfirmBooking  = "RECONFIRM_BOOKING"
+	StateCreateAppointment = "CREATE_APPOINTMENT"
+	StateBookingSuccess    = "BOOKING_SUCCESS"
+	StateBookingFailed     = "BOOKING_FAILED"
 )
 
 // === Post-Acción y Cierre ===
@@ -176,44 +176,44 @@ var stateTypes = map[string]StateType{
 	StateShowHelp:           StateTypeAutomatic,
 
 	// Entity Management
-	StateCheckEntity:     StateTypeAutomatic,
-	StateConfirmEntity:   StateTypeInteractive,
-	StateChangeEntity:    StateTypeInteractive,
-	StateAskClientType:   StateTypeInteractive,
-	StateShowEntityList:  StateTypeAutomatic,
-	StateAskEntityNumber: StateTypeInteractive,
+	StateCheckEntity:         StateTypeAutomatic,
+	StateConfirmEntity:       StateTypeInteractive,
+	StateChangeEntity:        StateTypeInteractive,
+	StateAskClientType:       StateTypeInteractive,
+	StateShowEntityList:      StateTypeAutomatic,
+	StateAskEntityNumber:     StateTypeInteractive,
 	StateAskEpsRegimen:       StateTypeInteractive,
 	StateConfirmMunicipality: StateTypeInteractive,
-	StateOutOfHoursMenu:  StateTypeInteractive,
+	StateOutOfHoursMenu:      StateTypeInteractive,
 
 	// Registro
-	StateRegistrationStart:   StateTypeInteractive,
-	StateRegDocumentType:         StateTypeInteractive,
-	StateRegDocumentIssuePlace:   StateTypeInteractive,
-	StateRegFirstSurname:         StateTypeInteractive,
-	StateRegSecondSurname:    StateTypeInteractive,
-	StateRegFirstName:        StateTypeInteractive,
-	StateRegSecondName:       StateTypeInteractive,
-	StateRegBirthDate:        StateTypeInteractive,
-	StateRegBirthPlace:       StateTypeInteractive,
-	StateRegGender:           StateTypeInteractive,
-	StateRegBloodType:        StateTypeInteractive,
-	StateRegMaritalStatus:    StateTypeInteractive,
-	StateRegAddress:          StateTypeInteractive,
-	StateRegPhone:            StateTypeInteractive,
-	StateRegPhone2:           StateTypeInteractive,
-	StateRegEmail:            StateTypeInteractive,
-	StateRegOccupation:       StateTypeInteractive,
-	StateRegMunicipality:     StateTypeInteractive,
-	StateRegBarrio:           StateTypeInteractive,
-	StateRegClientType:       StateTypeInteractive,
-	StateRegUserType:         StateTypeInteractive,
-	StateRegAffiliationType:  StateTypeInteractive,
-	StateRegEntity:           StateTypeInteractive,
-	StateRegZone:             StateTypeInteractive,
-	StateRegSelectCorrection: StateTypeInteractive,
-	StateConfirmRegistration: StateTypeInteractive,
-	StateCreatePatient:       StateTypeAutomatic,
+	StateRegistrationStart:     StateTypeInteractive,
+	StateRegDocumentType:       StateTypeInteractive,
+	StateRegDocumentIssuePlace: StateTypeInteractive,
+	StateRegFirstSurname:       StateTypeInteractive,
+	StateRegSecondSurname:      StateTypeInteractive,
+	StateRegFirstName:          StateTypeInteractive,
+	StateRegSecondName:         StateTypeInteractive,
+	StateRegBirthDate:          StateTypeInteractive,
+	StateRegBirthPlace:         StateTypeInteractive,
+	StateRegGender:             StateTypeInteractive,
+	StateRegBloodType:          StateTypeInteractive,
+	StateRegMaritalStatus:      StateTypeInteractive,
+	StateRegAddress:            StateTypeInteractive,
+	StateRegPhone:              StateTypeInteractive,
+	StateRegPhone2:             StateTypeInteractive,
+	StateRegEmail:              StateTypeInteractive,
+	StateRegOccupation:         StateTypeInteractive,
+	StateRegMunicipality:       StateTypeInteractive,
+	StateRegBarrio:             StateTypeInteractive,
+	StateRegClientType:         StateTypeInteractive,
+	StateRegUserType:           StateTypeInteractive,
+	StateRegAffiliationType:    StateTypeInteractive,
+	StateRegEntity:             StateTypeInteractive,
+	StateRegZone:               StateTypeInteractive,
+	StateRegSelectCorrection:   StateTypeInteractive,
+	StateConfirmRegistration:   StateTypeInteractive,
+	StateCreatePatient:         StateTypeAutomatic,
 
 	// Consulta de Citas
 	StateFetchAppointments: StateTypeAutomatic,
@@ -222,11 +222,11 @@ var stateTypes = map[string]StateType{
 	StateNoAppointments:    StateTypeInteractive,
 
 	// Confirmación / Cancelación
-	StateConfirmAppointment:     StateTypeInteractive,
-	StateAppointmentConfirmed:   StateTypeAutomatic,
-	StateCancelAppointment:      StateTypeInteractive,
-	StateCancelReason:           StateTypeInteractive,
-	StateAppointmentCancelled:   StateTypeAutomatic,
+	StateConfirmAppointment:      StateTypeInteractive,
+	StateAppointmentConfirmed:    StateTypeAutomatic,
+	StateCancelAppointment:       StateTypeInteractive,
+	StateCancelReason:            StateTypeInteractive,
+	StateAppointmentCancelled:    StateTypeAutomatic,
 	StateConfirmRescheduleNotif:  StateTypeInteractive,
 	StateConfirmCancelNotif:      StateTypeInteractive,
 	StateNotifPending:            StateTypeInteractive,
@@ -268,8 +268,8 @@ var stateTypes = map[string]StateType{
 	StateShowSlots:         StateTypeInteractive,
 	StateNoSlotsAvailable:  StateTypeAutomatic,
 	StateOfferWaitingList:  StateTypeInteractive,
-	StateConfirmBooking:     StateTypeInteractive,
-	StateReconfirmBooking:   StateTypeInteractive,
+	StateConfirmBooking:    StateTypeInteractive,
+	StateReconfirmBooking:  StateTypeInteractive,
 	StateCreateAppointment: StateTypeAutomatic,
 	StateBookingSuccess:    StateTypeAutomatic,
 	StateBookingFailed:     StateTypeAutomatic,

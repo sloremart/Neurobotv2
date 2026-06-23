@@ -25,30 +25,36 @@ func (m *mockPatientRepo) FindByDocument(ctx context.Context, docType, doc strin
 	}
 	return nil, nil
 }
+
 func (m *mockPatientRepo) FindByID(ctx context.Context, id string) (*domain.Patient, error) {
 	if m.findByIDFn != nil {
 		return m.findByIDFn(ctx, id)
 	}
 	return nil, nil
 }
+
 func (m *mockPatientRepo) Create(ctx context.Context, input domain.CreatePatientInput) (string, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, input)
 	}
 	return "new-id", nil
 }
+
 func (m *mockPatientRepo) UpdateEntity(ctx context.Context, patientID, entityCode string) error {
 	if m.updateEntityFn != nil {
 		return m.updateEntityFn(ctx, patientID, entityCode)
 	}
 	return nil
 }
+
 func (m *mockPatientRepo) UpdateContract(ctx context.Context, patientID, contractCode string) error {
 	return nil
 }
+
 func (m *mockPatientRepo) UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error {
 	return nil
 }
+
 func (m *mockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phone, email string) error {
 	if m.updateContactInfoFn != nil {
 		return m.updateContactInfoFn(ctx, patientID, phone, email)
@@ -108,9 +114,9 @@ func TestLookupByDocument_Error(t *testing.T) {
 
 func TestCalculateAge(t *testing.T) {
 	tests := []struct {
-		name     string
-		birth    time.Time
-		wantAge  int
+		name    string
+		birth   time.Time
+		wantAge int
 	}{
 		{"exact_birthday", time.Date(time.Now().Year()-30, time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.UTC), 30},
 		{"not_yet", time.Date(time.Now().Year()-30, time.Now().Month()+1, 1, 0, 0, 0, 0, time.UTC), 29},

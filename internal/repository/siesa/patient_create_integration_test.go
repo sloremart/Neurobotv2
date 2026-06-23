@@ -3,7 +3,8 @@
 // Integration test for the patient-creation flow against a real SIESA database.
 // Run with: go test -tags integration -run TestCreatePatient -v ./internal/repository/siesa/
 // Requires SIESA_DSN, e.g.
-//   sqlserver://sa:pass@host.docker.internal:1433?database=ZeusSalud_Neuro&encrypt=disable
+//
+//	sqlserver://sa:pass@host.docker.internal:1433?database=ZeusSalud_Neuro&encrypt=disable
 package siesa
 
 import (
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	_ "github.com/microsoft/go-mssqldb"
+
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 )
 

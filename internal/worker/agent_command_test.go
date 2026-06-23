@@ -4,10 +4,10 @@ import "testing"
 
 func TestParseAgentCommand_Orden(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		action   string
-		data     string
+		name   string
+		input  string
+		action string
+		data   string
 	}{
 		{
 			name:   "orden with description",

@@ -8,6 +8,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/microsoft/go-mssqldb"
+
 	"github.com/neuro-bot/neuro-bot/internal/config"
 )
 

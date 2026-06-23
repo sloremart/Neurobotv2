@@ -24,21 +24,27 @@ func (m *mockPatientRepo) FindByDocument(ctx context.Context, docType, doc strin
 	}
 	return nil, nil
 }
+
 func (m *mockPatientRepo) FindByID(ctx context.Context, id string) (*domain.Patient, error) {
 	return nil, nil
 }
+
 func (m *mockPatientRepo) Create(ctx context.Context, input domain.CreatePatientInput) (string, error) {
 	return "", nil
 }
+
 func (m *mockPatientRepo) UpdateEntity(ctx context.Context, patientID, entityCode string) error {
 	return nil
 }
+
 func (m *mockPatientRepo) UpdateContract(ctx context.Context, patientID, contractCode string) error {
 	return nil
 }
+
 func (m *mockPatientRepo) UpdateMunicipality(ctx context.Context, patientID, depCode, muniCode string) error {
 	return nil
 }
+
 func (m *mockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phone, email string) error {
 	if m.updateContactInfoFn != nil {
 		return m.updateContactInfoFn(ctx, patientID, phone, email)

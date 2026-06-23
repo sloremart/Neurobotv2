@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
@@ -125,9 +126,9 @@ type NotificationManager struct {
 	tracker         EventLogger
 
 	// Cambio 13: real-time WL notification on cancellation
-	slotSearcher    SlotSearcher
-	apptChecker     FutureAppointmentChecker
-	wlChecker       WaitingListChecker
+	slotSearcher SlotSearcher
+	apptChecker  FutureAppointmentChecker
+	wlChecker    WaitingListChecker
 }
 
 // NewNotificationManager creates a new notification manager.
@@ -937,10 +938,10 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		"team_fallback", m.cfg.BirdTeamFallback,
 	)
 
-	commands := fmt.Sprintf("Comandos disponibles:\n"+
-		"  /bot resume NOTIF_PENDING confirm — Confirmar la cita\n"+
-		"  /bot resume NOTIF_PENDING reschedule — Reprogramar la cita\n"+
-		"  /bot resume NOTIF_PENDING cancel — Cancelar la cita\n"+
+	commands := fmt.Sprintf("Comandos disponibles:\n" +
+		"  /bot resume NOTIF_PENDING confirm — Confirmar la cita\n" +
+		"  /bot resume NOTIF_PENDING reschedule — Reprogramar la cita\n" +
+		"  /bot resume NOTIF_PENDING cancel — Cancelar la cita\n" +
 		"  /bot cerrar — Cerrar la conversacion",
 	)
 

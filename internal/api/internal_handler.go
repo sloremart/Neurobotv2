@@ -79,8 +79,8 @@ type InternalHandler struct {
 	tracker         InternalEventLogger
 	cfg             *config.Config
 	startTime       time.Time
-	reminderRunner  ReminderRunner      // optional: manual trigger for WA reminders
-	sessionReader   SessionDebugReader  // optional: session debug queries
+	reminderRunner  ReminderRunner     // optional: manual trigger for WA reminders
+	sessionReader   SessionDebugReader // optional: session debug queries
 }
 
 // NewInternalHandler creates a new internal handler.
@@ -483,8 +483,8 @@ type RescheduleAgendaRequest struct {
 	AgendaID       int    `json:"agenda_id"`
 	DoctorDocument string `json:"doctor_document"`
 	OldDate        string `json:"old_date"`      // YYYY-MM-DD
-	NewDate        string `json:"new_date"`       // YYYY-MM-DD
-	NewAgendaID    *int   `json:"new_agenda_id"`  // nullable: if set → different-agenda reschedule
+	NewDate        string `json:"new_date"`      // YYYY-MM-DD
+	NewAgendaID    *int   `json:"new_agenda_id"` // nullable: if set → different-agenda reschedule
 	Reason         string `json:"reason"`
 	NotifyPatients bool   `json:"notify_patients"`
 }
@@ -666,12 +666,12 @@ func (h *InternalHandler) handleRescheduleSameAgenda(ctx context.Context, w http
 
 	if h.tracker != nil {
 		h.tracker.LogEvent(ctx, "", "", "admin_reschedule_agenda", map[string]interface{}{
-			"agenda_id":             req.AgendaID,
-			"old_date":              req.OldDate,
-			"new_date":              req.NewDate,
-			"scenario":              "same_agenda",
-			"appointments_updated":  updated,
-			"patients_to_notify":    toNotify,
+			"agenda_id":            req.AgendaID,
+			"old_date":             req.OldDate,
+			"new_date":             req.NewDate,
+			"scenario":             "same_agenda",
+			"appointments_updated": updated,
+			"patients_to_notify":   toNotify,
 		})
 	}
 
@@ -681,8 +681,8 @@ func (h *InternalHandler) handleRescheduleSameAgenda(ctx context.Context, w http
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "ok",
-		"updated": updated,
+		"status":    "ok",
+		"updated":   updated,
 		"to_notify": toNotify,
 	})
 }
@@ -782,9 +782,9 @@ func (h *InternalHandler) HandleWaitingListCheck(w http.ResponseWriter, r *http.
 	}
 
 	type cupsInfo struct {
-		CupsCode  string `json:"cups_code"`
-		Waiting   int    `json:"waiting"`
-		Notified  int    `json:"notified,omitempty"`
+		CupsCode string `json:"cups_code"`
+		Waiting  int    `json:"waiting"`
+		Notified int    `json:"notified,omitempty"`
 	}
 	var results []cupsInfo
 	totalNotified := 0
@@ -876,9 +876,9 @@ func (h *InternalHandler) HandleDailyKPIs(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"kpis":                     kpis,
-		"notification_breakdown":   breakdown,
-		"appointment_breakdown":    apptBreakdown,
+		"kpis":                   kpis,
+		"notification_breakdown": breakdown,
+		"appointment_breakdown":  apptBreakdown,
 	})
 }
 

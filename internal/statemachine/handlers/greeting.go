@@ -316,12 +316,12 @@ func showHelpHandler() sm.StateHandler {
 
 		// Auto-close: combinar ambos mensajes y cerrar sesion
 		if sess.GetContext("help_source") == "ooh" {
-			return buildAutoCloseResult(msg1 + "\n\n" + msg2).
+			return buildAutoCloseResult(msg1+"\n\n"+msg2).
 				WithClearCtx("help_source").
 				WithEvent("help_shown", nil), nil
 		}
 
-		return buildAutoCloseResult(msg1 + "\n\n" + msg2).
+		return buildAutoCloseResult(msg1+"\n\n"+msg2).
 			WithEvent("help_shown", nil), nil
 	}
 }
