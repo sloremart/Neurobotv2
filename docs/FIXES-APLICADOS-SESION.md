@@ -3,7 +3,8 @@
 Correcciones derivadas de la **auditoría general** (`docs/AUDITORIA-CODEBASE.md`) y el **review del diff** (`docs/REVIEW-DIFF-SESION.md`).
 Criterio: **solo cambios seguros** (observabilidad, fixes que restauran el comportamiento intencionado, refactors equivalentes, comentarios/código muerto). Cada cambio con build+tests verdes; tests nuevos donde aplica.
 
-> Excluidos a propósito (cambian diseño/comportamiento o son riesgosos, se abordan aparte): multi-slot 1cita/N-slots, GAP-3 precio MRC (entidad→contrato), `horacan` granularidad (N4), `RescheduleDate` 12h/24h (N6, código muerto), borrar estados del registro (N11), reorden de filtro médico-preferido (N8, inalcanzable), batch audit single-INSERT (N5, refactor no urgente).
+> Excluidos a propósito (cambian diseño/comportamiento o son riesgosos, se abordan aparte): multi-slot 1cita/N-slots, GAP-3 precio MRC (entidad→contrato), `horacan` granularidad (N4), `RescheduleDate` 12h/24h (N6, código muerto), borrar estados del registro (N11), reorden de filtro médico-preferido (N8, inalcanzable).
+> (Nota: el "batch audit single-INSERT" SÍ se aplicó después, como N-34 del Lote C.)
 
 ## Estado
 
@@ -62,7 +63,7 @@ Tests nuevos: `MaskDocument` (+disabled), `RateLimiter_SameHostDifferentPorts`. 
 
 ## Pendientes (fuera de esta rama, requieren decisión)
 - 🔵 Estructural: multi-slot 1cita/N-slots; GAP-3 precio MRC (entidad→contrato).
-- 🟡 Latentes/código muerto: N4 (horacan granularidad), N6 (RescheduleDate 12h/24h), N8 (orden filtro médico-preferido), N11 (estados huérfanos del registro), N5 (batch audit single-INSERT).
+- 🟡 Latentes/código muerto: N4 (horacan granularidad), N6 (RescheduleDate 12h/24h), N8 (orden filtro médico-preferido), N11 (estados huérfanos del registro).
 - ⚠️ Pre-despliegue: K1 — validar firma de webhooks de voz con una llamada IVR real.
 
 Leyenda: ⏳ pendiente · 🔧 en curso · ✅ aplicado+verificado
