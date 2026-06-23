@@ -297,6 +297,65 @@ func TestGetAvailableSlots_ConsecutiveSpaces(t *testing.T) {
 	}
 }
 
+// TestGetAvailableSlots_ContrastWindowConsecutive verifica el fix N1: en un bloque
+// consecutivo contrastado, NINGÚN slot del bloque puede caer fuera de la ventana 7–17h,
+// no solo el inicial. Slots de 30 min, Espacios=2, contraste:
+//   - inicio 16:00 → 2º slot 16:30 (<17:00) → VÁLIDO
+//   - inicio 16:30 → 2º slot 17:00 (>=17:00) → INVÁLIDO (antes del fix se aceptaba)
+//   - inicio 17:00 → el slot inicial ya cae fuera de ventana → INVÁLIDO
+func TestGetAvailableSlots_ContrastWindowConsecutive(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "16:00", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "16:30", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "17:00", 1, 30),
+			}, nil
+		},
+	}
+	svc := NewSlotService(&mockProcedureRepo{}, scheduleRepo)
+	// CUPS 890271 no tiene ventana propia → aísla la ventana de contraste.
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode: "890271", Espacios: 2, IsContrasted: true, MaxSlots: 20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161600" {
+		t.Errorf("esperaba solo 16:00 (bloque dentro de 7-17h), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_CupWindowConsecutive verifica el fix N9: la ventana específica de
+// CUPS (879420 TAC → 10–15h) también se aplica a cada slot del bloque consecutivo.
+// Slots de 30 min, Espacios=2:
+//   - inicio 14:00 → 2º slot 14:30 (<15:00) → VÁLIDO
+//   - inicio 14:30 → 2º slot 15:00 (>=15:00) → INVÁLIDO (antes del fix se aceptaba)
+//   - inicio 15:00 → slot inicial fuera de ventana → INVÁLIDO
+func TestGetAvailableSlots_CupWindowConsecutive(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "14:00", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "14:30", 1, 30),
+				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "15:00", 1, 30),
+			}, nil
+		},
+	}
+	// El asunto debe resolver para que el flujo siga; TAC 879420 usa la ventana 10-15h.
+	procRepo := &mockProcedureRepo{findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 3, nil }}
+	svc := NewSlotService(procRepo, scheduleRepo)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode: "879420", Espacios: 2, MaxSlots: 20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161400" {
+		t.Errorf("esperaba solo 14:00 (bloque dentro de 10-15h), got %+v", slots)
+	}
+}
+
 func TestGetAvailableSlots_FindSlotsError(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
 		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {

@@ -1029,7 +1029,12 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 		subjectType := 0
 		if procRepo != nil {
 			for _, p := range procedures {
-				if a, aerr := procRepo.FindSubjectTypeForCups(ctx, p.CupCode); aerr == nil && a > 0 {
+				a, aerr := procRepo.FindSubjectTypeForCups(ctx, p.CupCode)
+				if aerr != nil {
+					slog.Warn("find_subject_for_cups_failed", "cup_code", p.CupCode, "error", aerr)
+					continue
+				}
+				if a > 0 {
 					subjectType = a
 					break
 				}

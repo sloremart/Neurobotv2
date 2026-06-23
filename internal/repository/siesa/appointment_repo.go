@@ -829,11 +829,10 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 // citas.id is referenced by FK constraints (CitasObservaciones, E_Payment, E_Payment_Logs,
 // Recordatorio_mail_deta), so a physical DELETE fails at runtime whenever a child row exists,
 // and SIESA itself never hard-deletes appointments. So this delegates to CancelBatch, which:
-//  1. removes any prior CANCELLED twin occupying the same composite PK slot (to avoid a PK
-//     collision when flipping estado→'C') — that is the only row physically deleted, and it
-//     is NOT the target appointment;
-//  2. marks the target appointments estado='C' (+ motivo_cancela / observacion);
-//  3. releases their slots (programacion_medico_detalle.IdCita = NULL).
+//  1. marks the target appointments estado='C' (+ motivo_cancela / observación) and sets
+//     horacan = hora actual, which keeps the composite PK unique and avoids a collision with a
+//     prior cancelled row of the same slot (this replaced the old "cancelled twin" DELETE);
+//  2. releases their slots (programacion_medico_detalle.IdCita = NULL).
 //
 // Net effect: the appointment stays in SIESA marked cancelled, exactly like Cancel/CancelBatch.
 // See the cancellation-flow NOTE above Cancel re: immediate slot release.

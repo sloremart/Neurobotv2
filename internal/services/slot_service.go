@@ -174,7 +174,19 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			free := freeByAgendaDay[agendaDay{row.AgendaID, date}]
 			allFree := true
 			for i := 1; i < query.Espacios; i++ {
-				if !free[minutes+i*row.DurationMin] {
+				slotMin := minutes + i*row.DurationMin
+				if !free[slotMin] {
+					allFree = false
+					break
+				}
+				// N1+N9: reaplicar las ventanas horarias a CADA slot del bloque, no solo al
+				// inicial. Un bloque que arranca dentro de ventana no debe extenderse fuera de
+				// ella (la cota inferior no hace falta: los slots van hacia adelante en el tiempo).
+				if query.IsContrasted && slotMin >= 17*60 {
+					allFree = false
+					break
+				}
+				if cupHasWindow && slotMin >= cupMaxHour*60 {
 					allFree = false
 					break
 				}

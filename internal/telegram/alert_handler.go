@@ -185,11 +185,13 @@ var sensitiveAttrKeys = map[string]bool{
 }
 
 // redactValue enmascara un valor dejando solo extremos como pista (p.ej. "10***89").
+// Opera sobre runas (no bytes) para no partir caracteres UTF-8 multibyte (ej. "Iván").
 func redactValue(s string) string {
-	if len(s) <= 4 {
+	r := []rune(s)
+	if len(r) <= 4 {
 		return "***"
 	}
-	return s[:2] + "***" + s[len(s)-2:]
+	return string(r[:2]) + "***" + string(r[len(r)-2:])
 }
 
 func formatAttr(a slog.Attr) string {

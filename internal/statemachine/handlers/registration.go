@@ -38,8 +38,9 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: registrationStartHandler(),
 	})
-	// Tipo de documento: 15 tipos del catálogo SIESA sis_tipo_documento. WhatsApp limita las
-	// listas interactivas a 10 filas, por eso se ofrece como menú de texto numerado.
+	// Tipo de documento: 12 tipos del catálogo SIESA sis_tipo_documento (de los 15 totales se
+	// excluyen AS/MS/SI "sin identificación"). WhatsApp limita las listas interactivas a 10
+	// filas, por eso se ofrece como menú de texto numerado.
 	m.Register(sm.StateRegDocumentType, withCorrectionRedirect(regDocumentTypeHandler()))
 	m.Register(sm.StateRegDocumentIssuePlace, regDocumentIssuePlaceHandler())
 	m.Register(sm.StateRegFirstSurname, withCorrectionRedirect(regFieldHandler("reg_first_surname", "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondSurname, "Si tienes *segundo apellido*, escríbelo. Si no, responde *NA*:")))
@@ -284,7 +285,7 @@ func docTypeMenuText() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// parseDocType resolves a user reply (a 1..15 number, or the code itself) to a catalog code,
+// parseDocType resolves a user reply (a 1..N number where N=len(documentTypeCatalog)=12, or the code itself) to a catalog code,
 // or "" when invalid.
 func parseDocType(input string) string {
 	s := strings.ToUpper(strings.TrimSpace(input))
@@ -299,7 +300,7 @@ func parseDocType(input string) string {
 	return ""
 }
 
-// REG_DOCUMENT_TYPE — menú de texto numerado (15 tipos del catálogo SIESA).
+// REG_DOCUMENT_TYPE — menú de texto numerado (12 tipos del catálogo SIESA).
 func regDocumentTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		retry := sm.ValidateWithRetry(sess, msg.Text,
@@ -745,7 +746,10 @@ func finalizeSanitasMunicipality(ctx context.Context, sess *session.Session, pat
 	// Persistir municipio/departamento si el paciente los cambió.
 	changed := depCode != sess.GetContext("patient_dep") || muniCode != sess.GetContext("patient_muni")
 	if changed && patientSvc != nil && patientID != "" && depCode != "" && muniCode != "" {
-		_ = patientSvc.UpdateMunicipality(ctx, patientID, depCode, muniCode)
+		// Best-effort con traza si falla el UPDATE a sis_paci (observabilidad / Ley 1581).
+		if err := patientSvc.UpdateMunicipality(ctx, patientID, depCode, muniCode); err != nil {
+			slog.Warn("update_municipality_failed", "patient_id", patientID, "dep", depCode, "muni", muniCode, "error", err)
+		}
 		r.WithContext("patient_dep", depCode).
 			WithContext("patient_muni", muniCode)
 	}

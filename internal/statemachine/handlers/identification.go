@@ -253,7 +253,11 @@ func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *servic
 	)
 	r.WithContext("patient_contract", contract)
 	if patientSvc != nil && patientID != "" {
-		_ = patientSvc.UpdateContract(ctx, patientID, contract)
+		// Best-effort: la cita usa el contrato del contexto en memoria, pero si el UPDATE a
+		// sis_paci falla queremos traza (Ley 1581 / diagnóstico de contención con la UI SIESA).
+		if err := patientSvc.UpdateContract(ctx, patientID, contract); err != nil {
+			slog.Warn("update_contract_failed", "patient_id", patientID, "contract", contract, "error", err)
+		}
 	}
 }
 
