@@ -568,6 +568,12 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 //
 // No hay umbral fijo: hay sufijos registrados para 2,3,4 y también 6,8,12,16,24,32,48,72 según
 // el procedimiento. qty=1 siempre va como código base con Cantidad=1 (igual que la UI).
+// cupVariantExistsQuery comprueba si un código {base}-{qty} está registrado en sis_proc_precios.
+// @p1 = código con sufijo. Devuelve 1 si existe, 0 si no. (Lo usa CreateAppointmentProcedure.)
+const cupVariantExistsQuery = `SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM sis_proc_precios WITH (NOLOCK) WHERE Codigo_proc = @p1
+) THEN 1 ELSE 0 END`
+
 func chooseCupStorage(baseCup string, qty int, variantExists bool) (code string, storedQty int) {
 	if qty >= 2 && variantExists {
 		return fmt.Sprintf("%s-%d", baseCup, qty), 1
@@ -657,10 +663,8 @@ func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input 
 	variantExists := false
 	if qty >= 2 {
 		var found int
-		_ = r.db.QueryRowContext(ctx,
-			`SELECT CASE WHEN EXISTS (
-			    SELECT 1 FROM sis_proc_precios WITH (NOLOCK) WHERE Codigo_proc = @p1
-			) THEN 1 ELSE 0 END`, fmt.Sprintf("%s-%d", baseCup, qty)).Scan(&found)
+		_ = r.db.QueryRowContext(ctx, cupVariantExistsQuery,
+			fmt.Sprintf("%s-%d", baseCup, qty)).Scan(&found)
 		variantExists = found == 1
 	}
 	cupCode, storedQty := chooseCupStorage(baseCup, qty, variantExists)
@@ -763,22 +767,11 @@ func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs str
 	}()
 }
 
-// WriteCreationAudit registra el alta de la cita en SIESA replicando lo que hace la UI al
-// crearla: UNA fila en log_citas (evento APARTAR CITA) + su DETALLE en log_citas_procedimientos
-// (una fila por CUPS de citas_procedimientos, enlazada por id_log = log_citas.id recién creado).
-//
-// Verificado contra el histórico (2026-06-23): la UI puebla log_citas_procedimientos solo para
-// citas de procedimiento/imagen (las consultas usan citas_procedimientos_asuntos y NO generan
-// detalle → lcp=0). Por eso el INSERT del detalle lee de citas_procedimientos: en una consulta no
-// hay filas y queda en 0, igual que la UI. No hay trigger sobre estas tablas; la auditoría la
-// escribe la aplicación, así que el bot debe hacerlo.
-//
-// Se llama DESPUÉS de insertar los CUPS (no dentro de Create) porque el detalle necesita que las
-// filas de citas_procedimientos ya existan. Best-effort y ASÍNCRONO (igual que writeAuditLog): no
-// bloquea ni rompe el flujo de reserva. El header + detalle van en un mismo batch para que
-// SCOPE_IDENTITY() devuelva el id_log correcto del log_citas recién insertado.
-func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID, observations string) {
-	const query = `
+// creationAuditQuery es el SQL exacto que ejecuta WriteCreationAudit (extraído como constante
+// para que el test de integración valide el MISMO SQL de producción). Inserta la fila de
+// log_citas (APARTAR CITA) y, en el mismo batch, su detalle en log_citas_procedimientos enlazado
+// por id_log = SCOPE_IDENTITY(). @p1 = id de la cita, @p2 = observación, @p3 = usuario (bot).
+const creationAuditQuery = `
 	DECLARE @idlog BIGINT;
 
 	INSERT INTO log_citas (
@@ -805,6 +798,21 @@ func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID,
 	       ISNULL(cp.Cantidad, 1), cp.Servicio
 	FROM citas_procedimientos cp WHERE cp.id_cita = @p1;`
 
+// WriteCreationAudit registra el alta de la cita en SIESA replicando lo que hace la UI al
+// crearla: UNA fila en log_citas (evento APARTAR CITA) + su DETALLE en log_citas_procedimientos
+// (una fila por CUPS de citas_procedimientos, enlazada por id_log = log_citas.id recién creado).
+//
+// Verificado contra el histórico (2026-06-23): la UI puebla log_citas_procedimientos solo para
+// citas de procedimiento/imagen (las consultas usan citas_procedimientos_asuntos y NO generan
+// detalle → lcp=0). Por eso el INSERT del detalle lee de citas_procedimientos: en una consulta no
+// hay filas y queda en 0, igual que la UI. No hay trigger sobre estas tablas; la auditoría la
+// escribe la aplicación, así que el bot debe hacerlo.
+//
+// Se llama DESPUÉS de insertar los CUPS (no dentro de Create) porque el detalle necesita que las
+// filas de citas_procedimientos ya existan. Best-effort y ASÍNCRONO (igual que writeAuditLog): no
+// bloquea ni rompe el flujo de reserva. El header + detalle van en un mismo batch para que
+// SCOPE_IDENTITY() devuelva el id_log correcto del log_citas recién insertado.
+func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID, observations string) {
 	bgCtx := context.WithoutCancel(ctx)
 	go func() {
 		defer func() {
@@ -814,7 +822,7 @@ func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID,
 		}()
 		cctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
 		defer cancel()
-		if _, err := r.db.ExecContext(cctx, query, appointmentID, observations, siesaBotUserID); err != nil {
+		if _, err := r.db.ExecContext(cctx, creationAuditQuery, appointmentID, observations, siesaBotUserID); err != nil {
 			slog.Warn("creation_audit_write_failed", "appointment_id", appointmentID, "error", err)
 		}
 	}()
