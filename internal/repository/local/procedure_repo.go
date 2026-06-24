@@ -26,7 +26,7 @@ func NewProcedureRepo(db *sql.DB) *ProcedureRepo {
 // procedureColumns is the shared projection for single-row lookups.
 // Las columnas Antares `servicio_id`/`servicio` (y antes `tipo`, `especialidad_id`,
 // `horario_especifico_id`) ya NO se leen: la clasificación del CUPS sale del `asunto_id` de
-// SIESA (ver serviceNameForAsunto), no del catálogo Antares.
+// SIESA (ver serviceNameForSubjectType), no del catálogo Antares.
 const procedureColumns = `id, codigo_cups, nombre, COALESCE(descripcion, ''),
 	COALESCE(preparacion, ''), COALESCE(direccion, ''),
 	COALESCE(video_url, ''), COALESCE(audio_url, ''),
@@ -34,12 +34,12 @@ const procedureColumns = `id, codigo_cups, nombre, COALESCE(descripcion, ''),
 
 func (r *ProcedureRepo) scanOne(row *sql.Row) (*domain.Procedure, error) {
 	var p domain.Procedure
-	var asuntoID, active int
+	var subjectTypeID, active int
 	err := row.Scan(
 		&p.ID, &p.Code, &p.Name, &p.Description,
 		&p.Preparation, &p.Address,
 		&p.VideoURL, &p.AudioURL,
-		&asuntoID, &active,
+		&subjectTypeID, &active,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -47,20 +47,19 @@ func (r *ProcedureRepo) scanOne(row *sql.Row) (*domain.Procedure, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.Asunto = asuntoID
-	p.ServiceName = serviceNameForAsunto(asuntoID)
+	p.ServiceName = serviceNameForSubjectType(subjectTypeID)
 	p.IsActive = (active == 1)
 	return &p, nil
 }
 
-// serviceNameForAsunto traduce el asunto de SIESA al nombre de servicio clínico que usan las
-// reglas de agrupación (forceServiceByCode lo sobreescribe para códigos específicos). Reemplaza
-// la antigua columna Antares `servicio`. Mapa derivado del catálogo real (cups_procedimientos):
+// serviceNameForSubjectType traduce el asunto (subject type) de SIESA al nombre de servicio
+// clínico que usan las reglas de agrupación (forceServiceByCode lo sobreescribe para códigos
+// específicos). Reemplaza la antigua columna Antares `servicio`. Mapa derivado del catálogo real:
 //
 //	Fisiatría: 1,7,15   Radiografía: 2   Tomografía: 3,12
 //	Resonancia: 4,17    Ecografía: 6,19  Neurología: 8,9,10,11,16   (resto → General)
-func serviceNameForAsunto(asunto int) string {
-	switch asunto {
+func serviceNameForSubjectType(subjectType int) string {
+	switch subjectType {
 	case 1, 7, 15:
 		return "Fisiatria"
 	case 2:

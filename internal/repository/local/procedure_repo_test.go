@@ -2,10 +2,10 @@ package local
 
 import "testing"
 
-// TestServiceNameForAsunto verifica el mapa asunto→servicio (Capa 1 de la clasificación),
+// TestServiceNameForSubjectType verifica el mapa asunto→servicio (Capa 1 de la clasificación),
 // que reemplazó la columna Antares `servicio`. forceServiceByCode (en services) sobreescribe
 // para códigos específicos; este mapa es la fuente base por asunto.
-func TestServiceNameForAsunto(t *testing.T) {
+func TestServiceNameForSubjectType(t *testing.T) {
 	cases := map[int]string{
 		1: "Fisiatria", 7: "Fisiatria", 15: "Fisiatria",
 		2:  "Radiografia",
@@ -26,9 +26,9 @@ func TestServiceNameForAsunto(t *testing.T) {
 		0:  "General",
 		99: "General",
 	}
-	for asunto, want := range cases {
-		if got := serviceNameForAsunto(asunto); got != want {
-			t.Errorf("serviceNameForAsunto(%d) = %q, want %q", asunto, got, want)
+	for subjectType, want := range cases {
+		if got := serviceNameForSubjectType(subjectType); got != want {
+			t.Errorf("serviceNameForSubjectType(%d) = %q, want %q", subjectType, got, want)
 		}
 	}
 }
