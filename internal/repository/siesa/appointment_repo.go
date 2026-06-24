@@ -556,6 +556,25 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 // CreateAppointmentProcedure / CreateAppointmentProcedureBatch
 // ────────────────────────────────────────────────────────────────────────────
 
+// chooseCupStorage decide cómo registrar un CUPS en citas_procedimientos.
+//
+// Regla VERIFICADA contra el histórico de SIESA (2026-06-24): la UI usa la variante con
+// sufijo {base}-{qty} SOLO si está registrada en sis_proc_precios (variantExists), y en ese
+// caso Cantidad=1; si no existe, usa el código base con Cantidad=qty. Ejemplos del mismo CUPS:
+//
+//	930860 qty=4 → "930860-4"/1   (930860-4 existe)
+//	930860 qty=2 → "930860"/2     (930860-2 NO existe)
+//	1005927 qty=3 → "1005927-3"/1 (existe; el viejo umbral qty>4 lo habría guardado mal)
+//
+// No hay umbral fijo: hay sufijos registrados para 2,3,4 y también 6,8,12,16,24,32,48,72 según
+// el procedimiento. qty=1 siempre va como código base con Cantidad=1 (igual que la UI).
+func chooseCupStorage(baseCup string, qty int, variantExists bool) (code string, storedQty int) {
+	if qty >= 2 && variantExists {
+		return fmt.Sprintf("%s-%d", baseCup, qty), 1
+	}
+	return baseCup, qty
+}
+
 func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	apptID := strconv.Itoa(input.AppointmentID)
 
@@ -634,17 +653,22 @@ func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input 
 		).Scan(&servicio)
 	}
 
-	// Construir código interno SIESA: "{base}-{qty}" solo cuando qty > 4.
-	// Cantidades 1-4 usan el código base con el campo Cantidad.
-	cupCode := baseCup
-	if qty > 4 {
-		cupCode = fmt.Sprintf("%s-%d", baseCup, qty)
+	// ¿Existe la variante con sufijo {base}-{qty} en sis_proc_precios? (ver chooseCupStorage)
+	variantExists := false
+	if qty >= 2 {
+		var found int
+		_ = r.db.QueryRowContext(ctx,
+			`SELECT CASE WHEN EXISTS (
+			    SELECT 1 FROM sis_proc_precios WITH (NOLOCK) WHERE Codigo_proc = @p1
+			) THEN 1 ELSE 0 END`, fmt.Sprintf("%s-%d", baseCup, qty)).Scan(&found)
+		variantExists = found == 1
 	}
+	cupCode, storedQty := chooseCupStorage(baseCup, qty, variantExists)
 
 	_, err := r.db.ExecContext(ctx, `
 	INSERT INTO citas_procedimientos (id_procedimiento, tipo, id_cita, Servicio, Cantidad)
 	VALUES (@p1, '256', @p2, @p3, @p4)`,
-		cupCode, apptID, servicio, qty)
+		cupCode, apptID, servicio, storedQty)
 	return err
 }
 
