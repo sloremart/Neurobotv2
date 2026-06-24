@@ -395,25 +395,15 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		userType = "02"
 	}
 
-	// serviceType: NULL for consultations (subjects 7-11); for procedures look up from SIESA history.
+	// tipo_servicio (cabecera): NULL para consultas; para procedimientos/imágenes, el Servicio
+	// CANÓNICO desde la tabla `servicios` por (contrato, cod_proc) — igual que el detalle
+	// (ver resolveProcServicio). Reemplaza la derivación por historia (ORDER BY fecha DESC).
 	var serviceType interface{}
 	if !isConsultationSubject(subjectType) && len(input.Procedures) > 0 {
 		baseCups := strings.SplitN(input.Procedures[0].CupCode, "-", 2)[0]
-		var svcID int
-		_ = r.db.QueryRowContext(ctx, `
-			SELECT TOP 1 ISNULL(cp.Servicio,0)
-			FROM citas_procedimientos cp WITH (NOLOCK)
-			JOIN citas c WITH (NOLOCK) ON c.id = cp.id_cita
-			WHERE LEFT(cp.id_procedimiento, @p2) = @p1 AND cp.Servicio > 0
-			ORDER BY c.fecha DESC`,
-			baseCups, len(baseCups)).Scan(&svcID)
-		if svcID == 0 {
-			_ = r.db.QueryRowContext(ctx,
-				`SELECT TOP 1 ISNULL(Servicio,0) FROM AsuntoPctos WITH (NOLOCK) WHERE CodProcedimiento = @p1`, baseCups,
-			).Scan(&svcID)
-		}
-		if svcID > 0 {
-			serviceType = svcID
+		contratoInt, _ := strconv.Atoi(contractCode)
+		if svc := r.resolveProcServicio(ctx, contratoInt, baseCups, input.Procedures[0].CupCode); svc > 0 {
+			serviceType = svc
 		}
 	}
 
@@ -581,13 +571,43 @@ func chooseCupStorage(baseCup string, qty int, variantExists bool) (code string,
 	return baseCup, qty
 }
 
+// catchAllServicio es el código de servicio "catch-all" (27) que SIESA insertó en masa sobre casi
+// todo (contrato, cod_proc) — sus filas en `servicios` ocupan un bloque de id contiguo y no
+// distinguen por ninguna columna. Corresponde a la línea de electrodiagnóstico, pero NUNCA es el
+// servicio primario de un asunto; el servicio específico del procedimiento es siempre el otro.
+//
+// DECISIÓN DATA-DRIVEN (2026-06-24): la BD no define cómo desambiguar 18-vs-27 (las tablas
+// médico-servicio/combo están vacías) y la clínica aún no tiene respuesta. Se decide excluir el 27
+// porque coincide con 569/572 (99,5%) de las citas limpias de los últimos 4 días; los 3 casos que
+// guardaron 27 son elecciones de operador minoritarias. Pendiente confirmación clínica (doc dudas).
+const catchAllServicio = 27
+
+// resolveProcServicio devuelve el Servicio canónico de un procedimiento/imagen desde la tabla
+// `servicios` por (contrato, cod_proc), excluyendo catchAllServicio. Reemplaza la antigua
+// derivación por historia (ORDER BY fecha DESC), que era frágil y podía heredar asignaciones
+// contaminadas de citas viejas. Verificado contra la BD (2026-06-24): excluyendo el catch-all,
+// (contrato, cod_proc) da un Servicio único (0 ambigüedad en 572 citas; corrige 3 registros
+// históricos erróneos). Devuelve 0 si el CUPS no está cubierto por el contrato.
+func (r *AppointmentRepo) resolveProcServicio(ctx context.Context, contrato int, baseCup, fullCup string) int {
+	if contrato == 0 {
+		return 0
+	}
+	var servicio int
+	_ = r.db.QueryRowContext(ctx, `
+		SELECT TOP 1 codigo FROM servicios WITH (NOLOCK)
+		WHERE contrato = @p1 AND codigo <> @p2 AND cod_proc IN (@p3, @p4)
+		ORDER BY codigo`,
+		contrato, catchAllServicio, baseCup, fullCup).Scan(&servicio)
+	return servicio
+}
+
 func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	apptID := strconv.Itoa(input.AppointmentID)
 
-	var subjectType int
+	var subjectType, contrato int
 	_ = r.db.QueryRowContext(ctx,
-		`SELECT ISNULL(asunto,0) FROM citas WITH (NOLOCK) WHERE id = @p1`, apptID,
-	).Scan(&subjectType)
+		`SELECT ISNULL(asunto,0), ISNULL(TRY_CONVERT(INT, contrato),0) FROM citas WITH (NOLOCK) WHERE id = @p1`, apptID,
+	).Scan(&subjectType, &contrato)
 
 	qty := input.Quantity
 	if qty == 0 {
@@ -595,31 +615,14 @@ func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input 
 	}
 
 	if isConsultationSubject(subjectType) {
-		// Look up Servicio and NomProcedimiento from SIESA history for this CUPS+subject.
+		// Servicio y NomProcedimiento CANÓNICOS desde AsuntoPctos por asunto (relación 1:1 verificada
+		// contra la BD). NO se derivan de citas pasadas: la historia puede estar contaminada (asuntos
+		// mal asignados por la versión vieja del bot), y AsuntoPctos es la fuente oficial.
 		var serviceID int
 		var procName string
-		_ = r.db.QueryRowContext(ctx, `
-			SELECT TOP 1 ISNULL(cpa.Servicio,0), ISNULL(cpa.NomProcedimiento,'')
-			FROM citas_procedimientos_asuntos cpa WITH (NOLOCK)
-			JOIN citas c WITH (NOLOCK) ON c.id = cpa.IdCita
-			WHERE cpa.CodProcedimiento = @p1 AND c.asunto = @p2 AND cpa.Servicio > 0
-			ORDER BY c.fecha DESC`,
-			input.CupCode, subjectType).Scan(&serviceID, &procName)
-
-		// Fallback: AsuntoPctos has canonical Servicio and NomProcedimiento (history-independent)
-		if serviceID == 0 || procName == "" {
-			var svcFb int
-			var nameFb string
-			_ = r.db.QueryRowContext(ctx,
-				`SELECT TOP 1 ISNULL(Servicio,0), ISNULL(NomProcedimiento,'') FROM AsuntoPctos WITH (NOLOCK) WHERE Asunto = @p1`, subjectType,
-			).Scan(&svcFb, &nameFb)
-			if serviceID == 0 && svcFb > 0 {
-				serviceID = svcFb
-			}
-			if procName == "" && nameFb != "" {
-				procName = nameFb
-			}
-		}
+		_ = r.db.QueryRowContext(ctx,
+			`SELECT TOP 1 ISNULL(Servicio,0), ISNULL(NomProcedimiento,'') FROM AsuntoPctos WITH (NOLOCK) WHERE Asunto = @p1`,
+			subjectType).Scan(&serviceID, &procName)
 		if procName == "" {
 			procName = input.CupCode
 		}
@@ -644,20 +647,10 @@ func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input 
 		}
 	}
 
-	// Buscar Servicio desde historial de SIESA para este código de procedimiento.
-	var servicio int
-	_ = r.db.QueryRowContext(ctx, `
-		SELECT TOP 1 ISNULL(cp.Servicio,0)
-		FROM citas_procedimientos cp WITH (NOLOCK)
-		JOIN citas c WITH (NOLOCK) ON c.id = cp.id_cita
-		WHERE LEFT(cp.id_procedimiento, @p2) = @p1 AND cp.Servicio > 0
-		ORDER BY c.fecha DESC`,
-		baseCup, len(baseCup)).Scan(&servicio)
-	if servicio == 0 {
-		_ = r.db.QueryRowContext(ctx,
-			`SELECT TOP 1 ISNULL(Servicio,0) FROM AsuntoPctos WITH (NOLOCK) WHERE CodProcedimiento = @p1`, baseCup,
-		).Scan(&servicio)
-	}
+	// Servicio CANÓNICO desde la tabla `servicios` por (contrato, cod_proc), excluyendo el catch-all
+	// (ver resolveProcServicio). Reemplaza la derivación por historia (ORDER BY fecha DESC), que era
+	// frágil y podía heredar asignaciones contaminadas.
+	servicio := r.resolveProcServicio(ctx, contrato, baseCup, input.CupCode)
 
 	// ¿Existe la variante con sufijo {base}-{qty} en sis_proc_precios? (ver chooseCupStorage)
 	variantExists := false

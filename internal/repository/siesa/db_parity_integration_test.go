@@ -9,6 +9,8 @@ package siesa
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +59,74 @@ func TestCupSuffixMatchesHistory(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFindPriceMatchesHistory valida, contra la BD real, que el FindPrice REAL del bot (SoatRepo)
+// reproduce exactamente el precio que la UI guardó en citas_procedimientos_asuntos.Valor para las
+// consultas históricas. Para cada consulta toma su CUPS y el manual del contrato de la cita, corre
+// SoatRepo.FindPrice(cup, manual) y asevera que devuelve el mismo valor unitario almacenado.
+//
+// ALCANCE: esto prueba el COMPONENTE de búsqueda de precio (origen sis_proc_precios + valor
+// unitario). NO cubre la resolución de QUÉ manual usa el bot en vivo (patient_entity → EntityRepo →
+// contrato principal), que es una capa aparte: aquí se usa el manual del contrato real de la cita.
+func TestFindPriceMatchesHistory(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	repo := NewSoatRepo(db)
+
+	type histRow struct {
+		cup    string
+		manual string
+		valor  float64
+	}
+	var hist []histRow
+	rs, err := db.QueryContext(ctx, `
+		SELECT TOP 25 cpa.CodProcedimiento, CAST(ct.manual AS VARCHAR(20)), cpa.Valor
+		FROM citas_procedimientos_asuntos cpa WITH (NOLOCK)
+		JOIN citas c WITH (NOLOCK) ON c.id = cpa.IdCita
+		JOIN contratos ct WITH (NOLOCK) ON ct.codigo = TRY_CAST(c.contrato AS INT)
+		WHERE c.fecha_solicitud >= DATEADD(DAY, -10, CAST(GETDATE() AS DATE))
+		  AND ISNULL(cpa.Valor, 0) > 0
+		ORDER BY cpa.IdCita DESC`)
+	if err != nil {
+		t.Fatalf("query histórico: %v", err)
+	}
+	for rs.Next() {
+		var r histRow
+		if err := rs.Scan(&r.cup, &r.manual, &r.valor); err != nil {
+			rs.Close()
+			t.Fatal(err)
+		}
+		hist = append(hist, r)
+	}
+	rs.Close()
+	if len(hist) == 0 {
+		t.Skip("no hay consultas con Valor en el rango")
+	}
+
+	mismatches := 0
+	for _, r := range hist {
+		price, err := repo.FindPrice(ctx, r.cup, r.manual)
+		if err != nil {
+			t.Errorf("FindPrice(%s, manual=%s): %v", r.cup, r.manual, err)
+			mismatches++
+			continue
+		}
+		if price == nil {
+			t.Errorf("FindPrice(%s, manual=%s) = nil, histórico guardó %.2f", r.cup, r.manual, r.valor)
+			mismatches++
+			continue
+		}
+		if math.Abs(*price-r.valor) > 0.01 {
+			t.Errorf("FindPrice(%s, manual=%s) = %.2f, histórico cpa.Valor = %.2f", r.cup, r.manual, *price, r.valor)
+			mismatches++
+		}
+	}
+	if mismatches > 0 {
+		t.Fatalf("%d/%d consultas con precio distinto al histórico", mismatches, len(hist))
+	}
+	t.Logf("OK: %d consultas — FindPrice del bot == cpa.Valor histórico (unitario)", len(hist))
 }
 
 // TestWriteCreationAuditMatchesUI ejecuta el SQL EXACTO de WriteCreationAudit (creationAuditQuery)
@@ -205,4 +275,67 @@ func TestPriceManualFromContract(t *testing.T) {
 	}
 	t.Logf("OK: por contrato (manual %s)=%.0f  vs  por entidad (manual %s)=%.0f — el fix usa el del contrato",
 		byContract.PriceType, *priceContract, byEntity.PriceType, *priceEntity)
+}
+
+// TestProcServicioMatchesHistory valida, contra la BD real, que resolveProcServicio (la regla
+// "servicios por (contrato, cod_proc) excluyendo el catch-all 27") reproduce el Servicio que la
+// UI ha venido guardando en citas_procedimientos, sobre los últimos 4 días con datos. Se espera
+// >=98% de coincidencia: los pocos mismatch son elecciones de operador que guardaron el catch-all.
+func TestProcServicioMatchesHistory(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	repo := NewAppointmentRepo(db)
+
+	var cutoff string
+	if err := db.QueryRowContext(ctx, `
+		SELECT CONVERT(VARCHAR(10), MIN(d), 120) FROM (
+		  SELECT DISTINCT TOP 4 CAST(fecha_solicitud AS DATE) AS d
+		  FROM citas WITH (NOLOCK) WHERE fecha_solicitud IS NOT NULL ORDER BY d DESC) x`).Scan(&cutoff); err != nil {
+		t.Fatalf("cutoff: %v", err)
+	}
+
+	type row struct {
+		cup      string
+		contrato int
+		stored   int
+	}
+	var data []row
+	rs, err := db.QueryContext(ctx, `
+		SELECT cp.id_procedimiento, ISNULL(TRY_CONVERT(INT, c.contrato),0), cp.Servicio
+		FROM citas_procedimientos cp WITH (NOLOCK)
+		JOIN citas c WITH (NOLOCK) ON c.id = cp.id_cita
+		WHERE c.fecha_solicitud >= @p1 AND ISNULL(cp.Servicio,0) > 0`, cutoff)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for rs.Next() {
+		var r row
+		if err := rs.Scan(&r.cup, &r.contrato, &r.stored); err != nil {
+			rs.Close()
+			t.Fatal(err)
+		}
+		data = append(data, r)
+	}
+	rs.Close()
+	if len(data) == 0 {
+		t.Skip("sin procedimientos con Servicio en la ventana")
+	}
+
+	match := 0
+	for _, r := range data {
+		base := r.cup
+		if i := strings.LastIndex(base, "-"); i > 0 {
+			base = base[:i]
+		}
+		if repo.resolveProcServicio(ctx, r.contrato, base, r.cup) == r.stored {
+			match++
+		}
+	}
+	ratio := float64(match) / float64(len(data))
+	if ratio < 0.98 {
+		t.Errorf("solo %d/%d (%.1f%%) coinciden con la regla; esperado >=98%%", match, len(data), ratio*100)
+	}
+	t.Logf("OK: %d/%d (%.1f%%) coinciden con resolveProcServicio en ventana de 4 días (desde %s)",
+		match, len(data), ratio*100, cutoff)
 }
