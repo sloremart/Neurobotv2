@@ -7,8 +7,8 @@ type Procedure struct {
 	Code           string // Código CUPS
 	Name           string
 	Description    string
-	ServiceID      int
-	ServiceName    string
+	Asunto         int    // asunto_id de SIESA (catálogo local). Clasifica el CUPS.
+	ServiceName    string // nombre de servicio clínico DERIVADO del asunto (no de Antares)
 	Preparation    string
 	Address        string
 	VideoURL       string

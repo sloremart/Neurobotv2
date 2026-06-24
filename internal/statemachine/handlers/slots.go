@@ -892,30 +892,10 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 		var anyPricingFailed bool
 		procedures := make([]domain.CreateProcedureInput, 0, len(currentGroup.Cups))
 		for _, cupEntry := range currentGroup.Cups {
-			// Get procedure data to obtain service_id and service_name
-			var serviceID int
-			if procRepo != nil {
-				procData, err := procRepo.FindByCode(ctx, cupEntry.Code)
-				if err != nil {
-					slog.Warn("FindByCode error for appointment procedure service_id",
-						"cup_code", cupEntry.Code,
-						"error", err,
-					)
-				}
-				if procData != nil {
-					serviceID = procData.ServiceID
-					slog.Debug("FindByCode result for appointment procedure",
-						"cup_code", cupEntry.Code,
-						"service_id", procData.ServiceID,
-					)
-				} else {
-					slog.Warn("FindByCode returned nil for appointment procedure",
-						"cup_code", cupEntry.Code,
-					)
-				}
-			} else {
-				slog.Warn("procRepo is nil, cannot get service_id")
-			}
+			// El Servicio del procedimiento ya NO se deriva aquí (era el ServiceID Antares, muerto):
+			// el repo lo resuelve de forma canónica desde la tabla `servicios` (resolveProcServicio)
+			// al insertar. Se deja en 0 (el repo lo ignora y recalcula).
+			serviceID := 0
 
 			// Get price from SOAT table based on the patient's CONTRACT manual.
 			// GAP-3 (doc dudas §8): el manual debe salir del CONTRATO del paciente

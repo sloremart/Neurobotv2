@@ -24,10 +24,10 @@ func NewProcedureRepo(db *sql.DB) *ProcedureRepo {
 }
 
 // procedureColumns is the shared projection for single-row lookups.
-// `tipo`, `especialidad_id` and `horario_especifico_id` were dropped as dead code
-// during the SIESA migration, so Type/SpecialtyID/SpecificScheduleID stay zero-valued.
+// Las columnas Antares `servicio_id`/`servicio` (y antes `tipo`, `especialidad_id`,
+// `horario_especifico_id`) ya NO se leen: la clasificación del CUPS sale del `asunto_id` de
+// SIESA (ver serviceNameForAsunto), no del catálogo Antares.
 const procedureColumns = `id, codigo_cups, nombre, COALESCE(descripcion, ''),
-	COALESCE(servicio_id, 0), COALESCE(servicio, ''),
 	COALESCE(preparacion, ''), COALESCE(direccion, ''),
 	COALESCE(video_url, ''), COALESCE(audio_url, ''),
 	asunto_id, COALESCE(activo, 1)`
@@ -37,7 +37,6 @@ func (r *ProcedureRepo) scanOne(row *sql.Row) (*domain.Procedure, error) {
 	var asuntoID, active int
 	err := row.Scan(
 		&p.ID, &p.Code, &p.Name, &p.Description,
-		&p.ServiceID, &p.ServiceName,
 		&p.Preparation, &p.Address,
 		&p.VideoURL, &p.AudioURL,
 		&asuntoID, &active,
@@ -48,8 +47,35 @@ func (r *ProcedureRepo) scanOne(row *sql.Row) (*domain.Procedure, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.Asunto = asuntoID
+	p.ServiceName = serviceNameForAsunto(asuntoID)
 	p.IsActive = (active == 1)
 	return &p, nil
+}
+
+// serviceNameForAsunto traduce el asunto de SIESA al nombre de servicio clínico que usan las
+// reglas de agrupación (forceServiceByCode lo sobreescribe para códigos específicos). Reemplaza
+// la antigua columna Antares `servicio`. Mapa derivado del catálogo real (cups_procedimientos):
+//
+//	Fisiatría: 1,7,15   Radiografía: 2   Tomografía: 3,12
+//	Resonancia: 4,17    Ecografía: 6,19  Neurología: 8,9,10,11,16   (resto → General)
+func serviceNameForAsunto(asunto int) string {
+	switch asunto {
+	case 1, 7, 15:
+		return "Fisiatria"
+	case 2:
+		return "Radiografia"
+	case 3, 12:
+		return "Tomografia"
+	case 4, 17:
+		return "Resonancia"
+	case 6, 19:
+		return "Ecografia"
+	case 8, 9, 10, 11, 16:
+		return "Neurologia"
+	default:
+		return "General"
+	}
 }
 
 func (r *ProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {
