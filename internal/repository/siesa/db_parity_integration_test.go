@@ -162,3 +162,47 @@ func TestWriteCreationAuditMatchesUI(t *testing.T) {
 	}
 	t.Logf("OK: cita %d -> 1 log_citas (id=%d) + %d detalle(s) idénticos al histórico UI", cita, idlog, len(gotCP))
 }
+
+// TestPriceManualFromContract valida el fix GAP-3 (doc dudas §8): el manual del precio debe salir
+// del CONTRATO del paciente, no de la entidad. Caso MRC: contrato 6 → manual 8 → $53.560 por 890374;
+// la entidad EPS005 resuelve al contrato principal (menor código = 4, EVENTO, manual 11) → $57.649.
+// Demuestra que entidad y contrato dan manuales/precios distintos y que el del contrato es el correcto.
+func TestPriceManualFromContract(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	entRepo := NewEntityRepo(db)
+	soat := NewSoatRepo(db)
+	const cup = "890374"
+
+	byContract, err := entRepo.FindByCode(ctx, "6")
+	if err != nil || byContract == nil {
+		t.Fatalf("FindByCode(contrato 6): %v", err)
+	}
+	if byContract.PriceType != "8" {
+		t.Fatalf("contrato 6: manual = %q, esperado 8", byContract.PriceType)
+	}
+
+	byEntity, err := entRepo.FindByCode(ctx, "EPS005")
+	if err != nil || byEntity == nil {
+		t.Fatalf("FindByCode(EPS005): %v", err)
+	}
+	if byEntity.PriceType == byContract.PriceType {
+		t.Skipf("entidad y contrato dan el mismo manual (%q): el caso del bug no se reproduce con los datos actuales", byContract.PriceType)
+	}
+
+	priceContract, err := soat.FindPrice(ctx, cup, byContract.PriceType) // manual 8
+	if err != nil || priceContract == nil {
+		t.Fatalf("FindPrice(%s, %s): %v", cup, byContract.PriceType, err)
+	}
+	priceEntity, err := soat.FindPrice(ctx, cup, byEntity.PriceType) // manual del contrato principal
+	if err != nil || priceEntity == nil {
+		t.Fatalf("FindPrice(%s, %s): %v", cup, byEntity.PriceType, err)
+	}
+	if *priceContract >= *priceEntity {
+		t.Errorf("esperaba precio MRC (manual %s=%.0f) MENOR que por entidad (manual %s=%.0f)",
+			byContract.PriceType, *priceContract, byEntity.PriceType, *priceEntity)
+	}
+	t.Logf("OK: por contrato (manual %s)=%.0f  vs  por entidad (manual %s)=%.0f — el fix usa el del contrato",
+		byContract.PriceType, *priceContract, byEntity.PriceType, *priceEntity)
+}

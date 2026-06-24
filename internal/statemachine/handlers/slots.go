@@ -917,11 +917,21 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 				slog.Warn("procRepo is nil, cannot get service_id")
 			}
 
-			// Get price from SOAT table based on entity's price type
+			// Get price from SOAT table based on the patient's CONTRACT manual.
+			// GAP-3 (doc dudas §8): el manual debe salir del CONTRATO del paciente
+			// (patient_contract, ya resuelto por régimen/municipio), NO de la entidad.
+			// FindByCode con un código de contrato numérico devuelve el manual de ESE contrato;
+			// con la entidad devolvía el del contrato principal (menor código) → cobraba tarifa
+			// de Evento (manual 11) a pacientes MRC (contrato 5/6, manual 8). Fallback a la
+			// entidad solo si no hay contrato en la sesión.
+			priceLookupCode := entity
+			if pc := sess.GetContext("patient_contract"); pc != "" {
+				priceLookupCode = pc
+			}
 			var unitValue float64
 			var pricingFailed bool
 			if soatRepo != nil && entityRepo != nil {
-				entityData, entityErr := entityRepo.FindByCode(ctx, entity)
+				entityData, entityErr := entityRepo.FindByCode(ctx, priceLookupCode)
 				if entityErr != nil {
 					pricingFailed = true
 					slog.Warn("entity_lookup_error_for_price",
@@ -962,6 +972,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 					}
 					slog.Debug("soat_price_resolved",
 						"entity_code", entity,
+						"price_lookup_code", priceLookupCode,
 						"price_type", priceType,
 						"cup_code", cupEntry.Code,
 						"unit_value", unitValue,
