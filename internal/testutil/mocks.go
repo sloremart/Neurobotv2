@@ -90,6 +90,7 @@ type MockAppointmentRepo struct {
 	FindPendingByDateFn          func(ctx context.Context, date string) ([]domain.Appointment, error)
 	RescheduleDateFn             func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
 	SlotCountForAppointmentFn    func(ctx context.Context, apptID string) (int, error)
+	WriteCreationAuditFn         func(ctx context.Context, appointmentID, observations string)
 }
 
 func (m *MockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -217,6 +218,13 @@ func (m *MockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptI
 		return m.SlotCountForAppointmentFn(ctx, apptID)
 	}
 	return 0, nil
+}
+
+// WriteCreationAudit invokes the configured function (no-op by default).
+func (m *MockAppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID, observations string) {
+	if m.WriteCreationAuditFn != nil {
+		m.WriteCreationAuditFn(ctx, appointmentID, observations)
+	}
 }
 
 // MockScheduleRepo implements repository.ScheduleRepository.

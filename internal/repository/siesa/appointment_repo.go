@@ -524,8 +524,10 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 
-	// Auditoría SIESA (best-effort, no rompe la reserva): registrar el alta de la cita.
-	r.writeAuditLog(ctx, fmt.Sprintf("%d", newID), "APARTAR CITA", input.Observations)
+	// Auditoría SIESA: se difiere a WriteCreationAudit, llamado por el servicio DESPUÉS de
+	// insertar los CUPS (citas_procedimientos). La UI registra log_citas + su detalle
+	// log_citas_procedimientos juntos, y el detalle necesita que las filas de CUPS ya existan;
+	// aquí dentro de Create todavía no se han insertado.
 
 	// Resolve doctor name from sis_medi (avoids returning cod_medi as DoctorName)
 	var doctorName string
@@ -733,6 +735,63 @@ func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs str
 		defer cancel()
 		if _, err := r.db.ExecContext(cctx, query, id, obs, evento, siesaBotUserID); err != nil {
 			slog.Warn("audit_log_write_failed", "appointment_id", id, "evento", evento, "error", err)
+		}
+	}()
+}
+
+// WriteCreationAudit registra el alta de la cita en SIESA replicando lo que hace la UI al
+// crearla: UNA fila en log_citas (evento APARTAR CITA) + su DETALLE en log_citas_procedimientos
+// (una fila por CUPS de citas_procedimientos, enlazada por id_log = log_citas.id recién creado).
+//
+// Verificado contra el histórico (2026-06-23): la UI puebla log_citas_procedimientos solo para
+// citas de procedimiento/imagen (las consultas usan citas_procedimientos_asuntos y NO generan
+// detalle → lcp=0). Por eso el INSERT del detalle lee de citas_procedimientos: en una consulta no
+// hay filas y queda en 0, igual que la UI. No hay trigger sobre estas tablas; la auditoría la
+// escribe la aplicación, así que el bot debe hacerlo.
+//
+// Se llama DESPUÉS de insertar los CUPS (no dentro de Create) porque el detalle necesita que las
+// filas de citas_procedimientos ya existan. Best-effort y ASÍNCRONO (igual que writeAuditLog): no
+// bloquea ni rompe el flujo de reserva. El header + detalle van en un mismo batch para que
+// SCOPE_IDENTITY() devuelva el id_log correcto del log_citas recién insertado.
+func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID, observations string) {
+	const query = `
+	DECLARE @idlog BIGINT;
+
+	INSERT INTO log_citas (
+	    autoid, cod_medi, fecha_usuario_desea_cita, fecha, hora, meridiano, estado,
+	    asunto, observacion, empresa, fecha_solicitud, motivo, horacan,
+	    cod_user_asigna_cita, tipo_servicio, id_sede, primera_vez_control, contrato,
+	    formaSolicitud, lugarAtencion, tipoUsuario, EntornoAtencion, es_terapia, fecha_evento,
+	    tipo_evento, usuario_evento, id_cita_modificada
+	)
+	SELECT
+	    autoid, cod_medi, fecha_usuario_desea_cita, fecha, hora, meridiano, estado,
+	    asunto, @p2, empresa, fecha_solicitud, motivo, horacan,
+	    cod_user_asigna_cita, tipo_servicio, id_sede, primera_vez_control, contrato,
+	    formaSolicitud, lugarAtencion, tipoUsuario, EntornoAtencion, NULL,
+	    CONVERT(VARCHAR(50), GETDATE(), 100),
+	    'APARTAR CITA', @p3, id
+	FROM citas WHERE id = @p1;
+
+	SET @idlog = SCOPE_IDENTITY();
+
+	INSERT INTO log_citas_procedimientos
+	    (id_procedimiento, tipo, id_cita, estado, id_log, cantidad, Servicio)
+	SELECT cp.id_procedimiento, cp.tipo, cp.id_cita, 0, @idlog,
+	       ISNULL(cp.Cantidad, 1), cp.Servicio
+	FROM citas_procedimientos cp WHERE cp.id_cita = @p1;`
+
+	bgCtx := context.WithoutCancel(ctx)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("creation_audit_panic", "appointment_id", appointmentID, "recover", rec)
+			}
+		}()
+		cctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
+		defer cancel()
+		if _, err := r.db.ExecContext(cctx, query, appointmentID, observations, siesaBotUserID); err != nil {
+			slog.Warn("creation_audit_write_failed", "appointment_id", appointmentID, "error", err)
 		}
 	}()
 }

@@ -21,6 +21,7 @@ type mockAppointmentRepo struct {
 	findByAgendaAndDateFn   func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
 	createFn                func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
 	slotCountFn             func(ctx context.Context, apptID string) (int, error)
+	writeCreationAuditFn    func(ctx context.Context, appointmentID, observations string)
 }
 
 func (m *mockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -107,6 +108,12 @@ func (m *mockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptI
 	return 0, nil
 }
 
+func (m *mockAppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID, observations string) {
+	if m.writeCreationAuditFn != nil {
+		m.writeCreationAuditFn(ctx, appointmentID, observations)
+	}
+}
+
 func (m *mockAppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }
@@ -183,6 +190,42 @@ func TestSlotCountForAppointment(t *testing.T) {
 	}
 	if gotID != "7160" {
 		t.Errorf("esperaba apptID=7160, got %q", gotID)
+	}
+}
+
+// TestCreateWithConsecutive_WritesCreationAudit verifica que el alta dispara la auditoría
+// (log_citas + log_citas_procedimientos) con el id de la cita creada, después de los CUPS.
+func TestCreateWithConsecutive_WritesCreationAudit(t *testing.T) {
+	var auditedID, auditedObs string
+	called := false
+	repo := &mockAppointmentRepo{
+		createFn: func(_ context.Context, _ domain.CreateAppointmentInput) (*domain.Appointment, error) {
+			return &domain.Appointment{ID: "7160"}, nil
+		},
+		writeCreationAuditFn: func(_ context.Context, appointmentID, observations string) {
+			called = true
+			auditedID = appointmentID
+			auditedObs = observations
+		},
+	}
+	svc := NewAppointmentService(repo, nil)
+
+	id, err := svc.CreateWithConsecutive(context.Background(),
+		domain.CreateAppointmentInput{Observations: "obs-x"}, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != "7160" {
+		t.Errorf("esperaba id 7160, got %q", id)
+	}
+	if !called {
+		t.Fatal("esperaba que WriteCreationAudit fuera invocado")
+	}
+	if auditedID != "7160" {
+		t.Errorf("esperaba auditar id 7160, got %q", auditedID)
+	}
+	if auditedObs != "obs-x" {
+		t.Errorf("esperaba observations 'obs-x', got %q", auditedObs)
 	}
 }
 

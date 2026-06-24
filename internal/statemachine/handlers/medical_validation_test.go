@@ -79,6 +79,8 @@ func (m *mockApptRepo) SlotCountForAppointment(_ context.Context, _ string) (int
 	return 0, nil
 }
 
+func (m *mockApptRepo) WriteCreationAudit(_ context.Context, _, _ string) {}
+
 func (m *mockApptRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	return nil
 }

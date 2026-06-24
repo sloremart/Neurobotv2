@@ -377,6 +377,10 @@ func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input do
 		return "", fmt.Errorf("create appointment procedure: %w", err)
 	}
 
+	// Auditoría SIESA: con los CUPS ya insertados, registrar log_citas + log_citas_procedimientos
+	// (paridad con la UI). Best-effort/asíncrono — no afecta el resultado del agendamiento.
+	s.repo.WriteCreationAudit(ctx, appt.ID, input.Observations)
+
 	return appt.ID, nil
 }
 

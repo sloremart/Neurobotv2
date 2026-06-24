@@ -41,6 +41,10 @@ type AppointmentRepository interface {
 	// están asociados a la cita (IdCita = apptID). Es la fuente de verdad del número
 	// de espacios que ocupa una cita multi-slot (1 cita / N slots).
 	SlotCountForAppointment(ctx context.Context, apptID string) (int, error)
+	// WriteCreationAudit registra el alta de la cita en SIESA: una fila en log_citas
+	// (APARTAR CITA) + su detalle en log_citas_procedimientos (una por CUPS de
+	// citas_procedimientos). Best-effort/asíncrono. Se llama tras insertar los CUPS.
+	WriteCreationAudit(ctx context.Context, appointmentID, observations string)
 }
 
 // ScheduleRepository — agendas, horarios y excepciones.

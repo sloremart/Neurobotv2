@@ -115,6 +115,8 @@ func (m *mockApptRepoNotif) SlotCountForAppointment(_ context.Context, _ string)
 	return 0, nil
 }
 
+func (m *mockApptRepoNotif) WriteCreationAudit(_ context.Context, _, _ string) {}
+
 func newTestBirdClient() (*bird.Client, *httptest.Server) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

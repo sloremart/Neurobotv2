@@ -96,6 +96,8 @@ func (m *mockApptRepoAPI) SlotCountForAppointment(_ context.Context, _ string) (
 	return 0, nil
 }
 
+func (m *mockApptRepoAPI) WriteCreationAudit(_ context.Context, _, _ string) {}
+
 // --- mock event logger ---
 
 type mockEventLoggerAPI struct {
