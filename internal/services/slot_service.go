@@ -111,20 +111,25 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		}
 	}
 
-	// Intervalo REAL por (agenda, día) = menor gap entre slots libres consecutivos.
-	// SIESA no almacena el intervalo (pm.intervalo y pmd.intervalo son NULL); el real varía
-	// por agenda (8/10/20 min). Usar el gap real evita el bug de asumir 30: para multi-slot,
-	// la verificación de consecutivos debe mirar minutes+i*intervaloReal, no +i*30.
+	// Intervalo REAL (grilla) por (agenda, día). SIESA no almacena el intervalo
+	// (pm.intervalo y pmd.intervalo son NULL); el real varía por agenda (8/10/20 min).
+	//
+	// Se calcula como el MCD de los gaps entre slots LIBRES, no el menor gap: si entre dos
+	// libres hay un slot ya ocupado, el menor gap observado se infla (p.ej. grilla 10 con
+	// 07:10 ocupado → libres 07:00 y 07:20 → gap 20). El MCD recupera la grilla real porque
+	// todo gap es múltiplo de la grilla: MCD(20,30)=10 aun sin observar un gap de 10. Esto
+	// hace que la verificación de consecutivos exija adyacencia FÍSICA (la misma que reclama
+	// repo.Create por filas contiguas en Fecha), evitando ofrecer inicios que el claim rechaza.
 	intervalByAgendaDay := make(map[agendaDay]int)
 	for key, mins := range minutesByAgendaDay {
 		sort.Ints(mins)
-		best := 0
+		grid := 0
 		for i := 1; i < len(mins); i++ {
-			if g := mins[i] - mins[i-1]; g > 0 && (best == 0 || g < best) {
-				best = g
+			if g := mins[i] - mins[i-1]; g > 0 {
+				grid = gcd(grid, g)
 			}
 		}
-		intervalByAgendaDay[key] = best // 0 si solo hay un slot ese día
+		intervalByAgendaDay[key] = grid // 0 si solo hay un slot ese día
 	}
 
 	// If the preferred doctor has any slot, restrict to them; otherwise keep everyone.
@@ -250,6 +255,15 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 
 	slog.Debug("slot_search_complete", "cups_code", query.CupsCode, "slots_found", len(out), "espacios_required", query.Espacios)
 	return out, nil
+}
+
+// gcd devuelve el máximo común divisor de a y b (no negativos). gcd(0,x)=x, por lo que
+// acumular gcd(grid, gap) sobre todos los gaps recupera la grilla base de la agenda.
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 // cupTimeRestriction returns the allowed hour window (minHour, maxHour) for CUPS codes

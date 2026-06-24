@@ -425,6 +425,55 @@ func TestGetAvailableSlots_ConsecutiveRealInterval(t *testing.T) {
 	}
 }
 
+// TestGetAvailableSlots_GridIntervalGCD prueba el fix C: el intervalo (grilla) se deriva con
+// el MCD de los gaps entre libres, no el menor gap. Libres a 08:00, 08:20, 08:50 (gaps 20 y 30):
+// un gap de 30 prueba que la grilla ≤ 10 (30 no es múltiplo de 20), así que MCD(20,30)=10. Con
+// grilla=10 NINGÚN par de libres es físicamente adyacente, por lo que con Espacios=2 no debe
+// ofrecerse ningún inicio (el claim de repo.Create reclama filas contiguas y los rechazaría).
+// Con el viejo min-gap=20 se habría ofrecido 08:00 (08:20 libre) → oferta falsa.
+func TestGetAvailableSlots_GridIntervalGCD(t *testing.T) {
+	rows := func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+		return []domain.AvailableSlotRow{
+			slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:00", 1, 30),
+			slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:20", 1, 30),
+			slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:50", 1, 30),
+		}, nil
+	}
+	svc := NewSlotService(&mockProcedureRepo{}, &mockScheduleRepo{findAvailableSlotsFn: rows})
+
+	// Espacios=1: los 3 slots son válidos como cita simple.
+	single, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "890271", Espacios: 1, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(single) != 3 {
+		t.Fatalf("Espacios=1: esperaba 3 slots, got %d", len(single))
+	}
+	if single[0].Duration != 10 {
+		t.Errorf("esperaba grilla derivada=10 (MCD de 20 y 30), got %d", single[0].Duration)
+	}
+
+	// Espacios=2: ningún par contiguo a grilla 10 → 0 inicios válidos.
+	multi, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "890271", Espacios: 2, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(multi) != 0 {
+		t.Fatalf("Espacios=2: esperaba 0 inicios (grilla 10, sin pares adyacentes), got %d: %+v", len(multi), multi)
+	}
+}
+
+func TestGCD(t *testing.T) {
+	cases := []struct{ a, b, want int }{
+		{0, 20, 20}, {20, 30, 10}, {20, 0, 20}, {12, 8, 4}, {10, 10, 10}, {0, 0, 0},
+	}
+	for _, c := range cases {
+		if got := gcd(c.a, c.b); got != c.want {
+			t.Errorf("gcd(%d,%d)=%d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestGetAvailableSlots_FindSlotsError(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
 		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {

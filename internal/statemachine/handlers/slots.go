@@ -1075,8 +1075,11 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 		apptID, err := apptSvc.CreateWithConsecutive(ctx, input, espacios)
 		if err != nil {
 			errMsg := err.Error()
-			// Detect slot taken: explicit check OR MySQL duplicate/constraint violation
-			if strings.Contains(errMsg, "slot_taken") || strings.Contains(errMsg, "Duplicate entry") {
+			// Detect slot taken: explicit check OR MySQL duplicate/constraint violation.
+			// "slots_consecutivos_insuficientes" (multi-slot: no caben N slots contiguos libres)
+			// también es un fallo de disponibilidad → el paciente debe re-buscar, no auto-cerrar.
+			if strings.Contains(errMsg, "slot_taken") || strings.Contains(errMsg, "Duplicate entry") ||
+				strings.Contains(errMsg, "slots_consecutivos_insuficientes") {
 				slog.Warn("create_appointment_slot_taken",
 					"session_id", sess.ID,
 					"phone", utils.MaskPhone(msg.Phone),

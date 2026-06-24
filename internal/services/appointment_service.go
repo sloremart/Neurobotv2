@@ -427,6 +427,14 @@ func (s *AppointmentService) FindLastDoctorForCups(ctx context.Context, patientI
 	return s.repo.FindLastDoctorForCups(ctx, patientID, cups)
 }
 
+// SlotCountForAppointment devuelve el número real de slots que ocupa la cita en SIESA
+// (1 cita / N slots). Es la fuente de verdad para re-reservar la misma cantidad de
+// espacios al reagendar; NO debe derivarse de len(block), que con el modelo multi-slot
+// vale 1 sin importar cuántos slots ocupe la cita.
+func (s *AppointmentService) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
+	return s.repo.SlotCountForAppointment(ctx, apptID)
+}
+
 func (s *AppointmentService) FindBlockByAppointmentID(ctx context.Context, apptID string) (*domain.Appointment, []domain.Appointment, error) {
 	appt, err := s.repo.FindByID(ctx, apptID)
 	if err != nil || appt == nil {

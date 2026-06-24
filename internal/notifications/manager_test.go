@@ -111,6 +111,10 @@ func (m *mockApptRepoNotif) RescheduleDate(ctx context.Context, agendaID int, do
 	return 0, nil
 }
 
+func (m *mockApptRepoNotif) SlotCountForAppointment(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 func newTestBirdClient() (*bird.Client, *httptest.Server) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

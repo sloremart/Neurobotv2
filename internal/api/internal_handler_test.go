@@ -92,6 +92,10 @@ func (m *mockApptRepoAPI) RescheduleDate(ctx context.Context, agendaID int, doct
 	return 0, nil
 }
 
+func (m *mockApptRepoAPI) SlotCountForAppointment(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 // --- mock event logger ---
 
 type mockEventLoggerAPI struct {
