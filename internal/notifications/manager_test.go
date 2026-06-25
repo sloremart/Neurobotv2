@@ -1951,3 +1951,62 @@ func TestCheckWaitingListForCups_ClaimThenSend(t *testing.T) {
 		t.Errorf("esperaba 0 notificados (ya reclamada), got %d", count)
 	}
 }
+
+// mockPersister implementa NotificationPersister capturando la resolucion.
+type mockPersister struct {
+	resolvedPhone  string
+	resolvedStatus string
+}
+
+func (m *mockPersister) Upsert(_ context.Context, _, _, _, _, _, _ string, _ int, _ time.Time) error {
+	return nil
+}
+func (m *mockPersister) UpdateCallID(_ context.Context, _, _ string) error { return nil }
+func (m *mockPersister) Resolve(_ context.Context, phone, status string) error {
+	m.resolvedPhone = phone
+	m.resolvedStatus = status
+	return nil
+}
+
+func (m *mockPersister) DeleteHistoryOlderThan(_ context.Context, _ int) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockPersister) FindExpired(_ context.Context) ([]PendingRow, error) { return nil, nil }
+
+func (m *mockPersister) FindAll(_ context.Context) ([]PendingRow, error) { return nil, nil }
+
+func TestResponseStatus(t *testing.T) {
+	cases := map[string]string{
+		"confirm": "confirmed", "cancel": "cancelled", "reschedule": "rescheduled",
+		"schedule": "wl_scheduled", "decline": "declined", "acknowledge": "acknowledged",
+		"weird": "responded",
+	}
+	for in, want := range cases {
+		if got := responseStatus(in); got != want {
+			t.Errorf("responseStatus(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+// TestHandleResponse_ResolvesWithStatus verifica que al responder, la notificacion se ARCHIVA
+// (Resolve) con el estado segun la respuesta, en vez de borrarse sin traza.
+func TestHandleResponse_ResolvesWithStatus(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+	cfg := &config.Config{}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+	p := &mockPersister{}
+	mgr.SetPersister(p)
+
+	// Tipo waiting_list sin waitingListRepo: HandleResponse resuelve y archiva sin correr sub-handler.
+	mgr.RegisterPending(PendingNotification{Type: "waiting_list", Phone: "+573001112233", ConversationID: "conv-x"})
+	mgr.HandleResponse("+573001112233", "confirm", "conv-x")
+
+	if p.resolvedStatus != "confirmed" {
+		t.Errorf("esperaba Resolve con status 'confirmed', got %q", p.resolvedStatus)
+	}
+	if p.resolvedPhone != "+573001112233" {
+		t.Errorf("esperaba phone +573001112233, got %q", p.resolvedPhone)
+	}
+}

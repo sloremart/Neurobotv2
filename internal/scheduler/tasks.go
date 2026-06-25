@@ -338,6 +338,16 @@ func (t *Tasks) cleanup(ctx context.Context) error {
 		}
 	}
 
+	// Borrar historial de notificaciones > 45 días (notification_history) para que no crezca.
+	if t.NotifyManager != nil {
+		n, err := t.NotifyManager.CleanupHistory(ctx, 45)
+		if err != nil {
+			slog.Error("notification history cleanup error", "error", err)
+		} else if n > 0 {
+			slog.Info("notification history cleaned", "deleted", n)
+		}
+	}
+
 	return nil
 }
 

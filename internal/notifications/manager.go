@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,7 +64,8 @@ type PreparationFinder interface {
 type NotificationPersister interface {
 	Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID string, retryCount int, expiresAt time.Time) error
 	UpdateCallID(ctx context.Context, phone, callID string) error
-	Delete(ctx context.Context, phone string) error
+	Resolve(ctx context.Context, phone, status string) error
+	DeleteHistoryOlderThan(ctx context.Context, days int) (int64, error)
 	FindExpired(ctx context.Context) ([]PendingRow, error)
 	FindAll(ctx context.Context) ([]PendingRow, error)
 }
@@ -163,6 +165,15 @@ func (m *NotificationManager) SetPersister(p NotificationPersister) {
 	m.persister = p
 }
 
+// CleanupHistory borra el historial de notificaciones (notification_history) con más de `days`
+// días, para que la tabla de auditoría no crezca indefinidamente. Devuelve cuántas borró.
+func (m *NotificationManager) CleanupHistory(ctx context.Context, days int) (int64, error) {
+	if m.persister == nil {
+		return 0, nil
+	}
+	return m.persister.DeleteHistoryOlderThan(ctx, days)
+}
+
 // SetCallTracker injects the KPI tracker for IVR call records.
 func (m *NotificationManager) SetCallTracker(ct CallTracker) {
 	m.callTracker = ct
@@ -252,14 +263,15 @@ func (m *NotificationManager) HandleResponse(phone, payload, conversationID stri
 		}
 	}
 
-	// Remove from DB
+	normalized := normalizePostback(payload)
+
+	// Mover a notification_history con el estado según la respuesta del paciente (evidencia +
+	// conversation_id), y quitar de la tabla activa.
 	if m.persister != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		m.persister.Delete(ctx, phone)
+		_ = m.persister.Resolve(ctx, phone, responseStatus(normalized))
 	}
-
-	normalized := normalizePostback(payload)
 
 	switch pending.Type {
 	case "confirmation":
@@ -348,7 +360,7 @@ func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) b
 		if m.persister != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			m.persister.Delete(ctx, phone)
+			_ = m.persister.Resolve(ctx, phone, "escalated_agent")
 		}
 		// Actualizar caché con el convID del mensaje entrante (puede diferir del template)
 		if conversationID != "" {
@@ -449,7 +461,7 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 		if m.persister != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			m.persister.Delete(ctx, phone)
+			_ = m.persister.Resolve(ctx, phone, "escalated_to_ivr")
 		}
 		slog.Info("IVR sent (followup disabled), pending cleared", "phone", utils.MaskPhone(phone))
 		return
@@ -542,7 +554,7 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 			p.Timer.Stop()
 		}
 		if m.persister != nil {
-			m.persister.Delete(ctx, phone)
+			_ = m.persister.Resolve(ctx, phone, "confirmed")
 		}
 
 		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, p.AppointmentID)
@@ -595,7 +607,7 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 			p.Timer.Stop()
 		}
 		if m.persister != nil {
-			m.persister.Delete(ctx, phone)
+			_ = m.persister.Resolve(ctx, phone, "cancelled")
 		}
 
 		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, p.AppointmentID)
@@ -801,8 +813,8 @@ func (m *NotificationManager) checkExpired(ctx context.Context) {
 		if _, ok := m.pending.Load(row.Phone); ok {
 			m.handleTimeout(row.Phone)
 		} else {
-			// Stale DB row — remove it
-			m.persister.Delete(ctx, row.Phone)
+			// Stale DB row — moverla a historial como expirada
+			_ = m.persister.Resolve(ctx, row.Phone, "expired")
 		}
 	}
 }
@@ -832,11 +844,12 @@ func (m *NotificationManager) handleTimeout(phone string) {
 		m.callIDMap.Delete(pending.CallID)
 	}
 
-	// Remove from DB (will be re-inserted if retry)
+	// Mover a historial como expirada (sin respuesta). Si hay reintento/escalación, se re-inserta
+	// una nueva pendiente más abajo.
 	if m.persister != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		m.persister.Delete(ctx, phone)
+		_ = m.persister.Resolve(ctx, phone, "expired")
 	}
 
 	// Resolve conversationID if still empty (template sends don't always return it).
@@ -897,6 +910,27 @@ func normalizePostback(payload string) string {
 		return "decline"
 	default:
 		return payload
+	}
+}
+
+// responseStatus mapea la respuesta del paciente (payload ya normalizado por normalizePostback) al
+// estado con el que se archiva la notificación en notification_history.
+func responseStatus(normalized string) string {
+	switch strings.ToLower(normalized) {
+	case "confirm":
+		return "confirmed"
+	case "cancel":
+		return "cancelled"
+	case "reschedule":
+		return "rescheduled"
+	case "schedule":
+		return "wl_scheduled"
+	case "decline":
+		return "declined"
+	case "acknowledge":
+		return "acknowledged"
+	default:
+		return "responded"
 	}
 }
 

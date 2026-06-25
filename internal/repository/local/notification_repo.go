@@ -44,11 +44,38 @@ func (r *NotificationRepo) UpdateCallID(ctx context.Context, phone, callID strin
 	return err
 }
 
-// Delete removes a pending notification by phone.
-func (r *NotificationRepo) Delete(ctx context.Context, phone string) error {
-	_, err := r.db.ExecContext(ctx,
-		`DELETE FROM notification_pending WHERE phone = ?`, phone)
-	return err
+// Resolve mueve la notificación pendiente a notification_history con su estado final (confirmed,
+// cancelled, rescheduled, expired, escalated_to_ivr, agent_resolved, ...) y la quita de la tabla
+// activa. Conserva conversation_id/bird_message_id para tener evidencia (en qué chat, qué desenlace).
+// Si no hay fila pendiente para ese phone, es no-op.
+func (r *NotificationRepo) Resolve(ctx context.Context, phone, status string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO notification_history
+		   (phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, status, created_at, resolved_at)
+		 SELECT phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, ?, created_at, NOW()
+		 FROM notification_pending WHERE phone = ?`, status, phone); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM notification_pending WHERE phone = ?`, phone); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteHistoryOlderThan borra el historial de notificaciones con más de `days` días (por
+// resolved_at) para que la tabla no crezca indefinidamente. Devuelve cuántos borró.
+func (r *NotificationRepo) DeleteHistoryOlderThan(ctx context.Context, days int) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM notification_history WHERE resolved_at < (NOW() - INTERVAL ? DAY)`, days)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // FindExpired returns all pending notifications whose expires_at has passed.
