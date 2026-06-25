@@ -84,7 +84,7 @@ func RegisterSlotHandlers(
 	slotSvc *services.SlotService,
 	apptSvc *services.AppointmentService,
 	procRepo repository.ProcedureRepository,
-	soatRepo repository.SoatRepository,
+	priceRepo repository.PriceRepository,
 	entityRepo repository.EntityRepository,
 	waitingListRepo WaitingListCreator,
 	addrMapper *services.AddressMapper,
@@ -118,7 +118,7 @@ func RegisterSlotHandlers(
 		Handler: confirmBookingHandler(),
 	})
 	m.Register(sm.StateReconfirmBooking, reconfirmBookingHandler(addrMapper))
-	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, soatRepo, entityRepo, procRepo, birdClient))
+	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, priceRepo, entityRepo, procRepo, birdClient))
 	m.Register(sm.StateBookingSuccess, bookingSuccessHandler(addrMapper))
 	m.Register(sm.StateBookingFailed, bookingFailedHandler())
 }
@@ -798,7 +798,7 @@ func reconfirmBookingHandler(addrMapper *services.AddressMapper) sm.StateHandler
 }
 
 // CREATE_APPOINTMENT (automático) — crea la cita en la BD externa.
-func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo repository.SoatRepository, entityRepo repository.EntityRepository, procRepo repository.ProcedureRepository, birdClient *bird.Client) sm.StateHandler {
+func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, procRepo repository.ProcedureRepository, birdClient *bird.Client) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		slog.Info("create_appointment_handler_started",
 			"session_id", sess.ID,
@@ -910,7 +910,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 			}
 			var unitValue float64
 			var pricingFailed bool
-			if soatRepo != nil && entityRepo != nil {
+			if priceRepo != nil && entityRepo != nil {
 				entityData, entityErr := entityRepo.FindByCode(ctx, priceLookupCode)
 				if entityErr != nil {
 					pricingFailed = true
@@ -931,10 +931,10 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 					if len(priceType) == 1 {
 						priceType = "0" + priceType
 					}
-					price, priceErr := soatRepo.FindPrice(ctx, cupEntry.Code, priceType)
+					price, priceErr := priceRepo.FindPrice(ctx, cupEntry.Code, priceType)
 					if priceErr != nil {
 						pricingFailed = true
-						slog.Warn("soat_price_lookup_error",
+						slog.Warn("price_lookup_error",
 							"entity_code", entity,
 							"price_type", priceType,
 							"cup_code", cupEntry.Code,
@@ -942,7 +942,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 						)
 					} else if price == nil {
 						pricingFailed = true
-						slog.Warn("soat_price_not_found",
+						slog.Warn("price_not_found",
 							"entity_code", entity,
 							"price_type", priceType,
 							"cup_code", cupEntry.Code,
@@ -950,7 +950,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, soatRepo rep
 					} else {
 						unitValue = *price
 					}
-					slog.Debug("soat_price_resolved",
+					slog.Debug("price_resolved",
 						"entity_code", entity,
 						"price_lookup_code", priceLookupCode,
 						"price_type", priceType,

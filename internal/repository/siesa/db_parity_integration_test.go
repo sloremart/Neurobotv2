@@ -61,10 +61,10 @@ func TestCupSuffixMatchesHistory(t *testing.T) {
 	}
 }
 
-// TestFindPriceMatchesHistory valida, contra la BD real, que el FindPrice REAL del bot (SoatRepo)
+// TestFindPriceMatchesHistory valida, contra la BD real, que el FindPrice REAL del bot (PriceRepo)
 // reproduce exactamente el precio que la UI guardó en citas_procedimientos_asuntos.Valor para las
 // consultas históricas. Para cada consulta toma su CUPS y el manual del contrato de la cita, corre
-// SoatRepo.FindPrice(cup, manual) y asevera que devuelve el mismo valor unitario almacenado.
+// PriceRepo.FindPrice(cup, manual) y asevera que devuelve el mismo valor unitario almacenado.
 //
 // ALCANCE: esto prueba el COMPONENTE de búsqueda de precio (origen sis_proc_precios + valor
 // unitario). NO cubre la resolución de QUÉ manual usa el bot en vivo (patient_entity → EntityRepo →
@@ -73,7 +73,7 @@ func TestFindPriceMatchesHistory(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	ctx := context.Background()
-	repo := NewSoatRepo(db)
+	repo := NewPriceRepo(db)
 
 	type histRow struct {
 		cup    string
@@ -242,7 +242,7 @@ func TestPriceManualFromContract(t *testing.T) {
 	defer db.Close()
 	ctx := context.Background()
 	entRepo := NewEntityRepo(db)
-	soat := NewSoatRepo(db)
+	priceRepo := NewPriceRepo(db)
 	const cup = "890374"
 
 	byContract, err := entRepo.FindByCode(ctx, "6")
@@ -261,11 +261,11 @@ func TestPriceManualFromContract(t *testing.T) {
 		t.Skipf("entidad y contrato dan el mismo manual (%q): el caso del bug no se reproduce con los datos actuales", byContract.PriceType)
 	}
 
-	priceContract, err := soat.FindPrice(ctx, cup, byContract.PriceType) // manual 8
+	priceContract, err := priceRepo.FindPrice(ctx, cup, byContract.PriceType) // manual 8
 	if err != nil || priceContract == nil {
 		t.Fatalf("FindPrice(%s, %s): %v", cup, byContract.PriceType, err)
 	}
-	priceEntity, err := soat.FindPrice(ctx, cup, byEntity.PriceType) // manual del contrato principal
+	priceEntity, err := priceRepo.FindPrice(ctx, cup, byEntity.PriceType) // manual del contrato principal
 	if err != nil || priceEntity == nil {
 		t.Fatalf("FindPrice(%s, %s): %v", cup, byEntity.PriceType, err)
 	}

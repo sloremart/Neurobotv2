@@ -10,23 +10,24 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 )
 
-var _ repository.SoatRepository = (*SoatRepo)(nil)
+var _ repository.PriceRepository = (*PriceRepo)(nil)
 
-// SoatRepo retrieves procedure prices from SIESA's sis_proc_precios table.
+// PriceRepo retrieves procedure prices from SIESA's sis_proc_precios table.
 // tariffType must be the contratos.manual code as a string (e.g. "11" for Sanitas).
 // In the SIESA EntityRepo, entity.PriceType is set to this manual code.
-type SoatRepo struct {
+type PriceRepo struct {
 	db *sql.DB
 }
 
-func NewSoatRepo(db *sql.DB) *SoatRepo {
-	return &SoatRepo{db: db}
+// NewPriceRepo crea el repositorio de precios/tarifas sobre sis_proc_precios.
+func NewPriceRepo(db *sql.DB) *PriceRepo {
+	return &PriceRepo{db: db}
 }
 
 // FindPrice looks up the price for a CUPS code in sis_proc_precios.
 // tariffType = contratos.manual as string (e.g. "11").
 // Returns nil when not found; *0.0 when price is zero.
-func (r *SoatRepo) FindPrice(ctx context.Context, cupCode, tariffType string) (*float64, error) {
+func (r *PriceRepo) FindPrice(ctx context.Context, cupCode, tariffType string) (*float64, error) {
 	if tariffType == "" {
 		return nil, nil
 	}

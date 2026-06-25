@@ -371,12 +371,13 @@ func (m *MockMunicipalityRepo) SearchBarrios(ctx context.Context, name, depCode,
 	return nil, nil
 }
 
-// MockSoatRepo implements repository.SoatRepository.
-type MockSoatRepo struct {
+// MockPriceRepo implements repository.PriceRepository.
+type MockPriceRepo struct {
 	FindPriceFn func(ctx context.Context, cupCode, entityCode string) (float64, error)
 }
 
-func (m *MockSoatRepo) FindPrice(ctx context.Context, cupCode, entityCode string) (float64, error) {
+// FindPrice devuelve el precio configurado (o 0 por defecto).
+func (m *MockPriceRepo) FindPrice(ctx context.Context, cupCode, entityCode string) (float64, error) {
 	if m.FindPriceFn != nil {
 		return m.FindPriceFn(ctx, cupCode, entityCode)
 	}

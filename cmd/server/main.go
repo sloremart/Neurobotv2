@@ -209,7 +209,7 @@ func main() {
 	var slotSvc *services.SlotService
 	if repos != nil && appointmentSvc != nil {
 		slotSvc = services.NewSlotService(repos.Procedure, repos.Schedule)
-		handlers.RegisterSlotHandlers(machine, slotSvc, appointmentSvc, repos.Procedure, repos.Soat, repos.Entity, waitingListRepo, addrMapper, birdClient)
+		handlers.RegisterSlotHandlers(machine, slotSvc, appointmentSvc, repos.Procedure, repos.Price, repos.Entity, waitingListRepo, addrMapper, birdClient)
 	}
 	// Fase 11: Post-Acción y Escalación
 	handlers.RegisterPostActionHandlers(machine, birdClient)
@@ -510,7 +510,7 @@ func initRepositories(driver string, externalDB, localDB *sql.DB) *repository.Re
 			Schedule:     siesa.NewScheduleRepo(externalDB),
 			Procedure:    repository.NewCachedProcedureRepo(localrepo.NewProcedureRepo(localDB), 60*time.Minute),
 			Entity:       repository.NewCachedEntityRepo(siesa.NewEntityRepo(externalDB), 30*time.Minute),
-			Soat:         siesa.NewSoatRepo(externalDB),
+			Price:        siesa.NewPriceRepo(externalDB),
 			Municipality: siesa.NewMunicipalityRepo(externalDB),
 		}
 	default:

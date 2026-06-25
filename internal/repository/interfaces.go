@@ -61,11 +61,11 @@ type ScheduleRepository interface {
 	DeleteWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error)
 }
 
-// SoatRepository — búsqueda de precios por CUPS según tarifa.
+// PriceRepository — búsqueda de precios por CUPS según tarifa.
 // Implementación actual: siesa (tabla: sis_proc_precios)
 // FindPrice returns nil when the CUPS code is not found in the SOAT table,
 // and *0.0 when the tariff is legitimately zero.
-type SoatRepository interface {
+type PriceRepository interface {
 	FindPrice(ctx context.Context, cupCode, tariffType string) (*float64, error)
 }
 
@@ -107,5 +107,5 @@ type Repositories struct {
 	Procedure    ProcedureRepository
 	Entity       EntityRepository
 	Municipality MunicipalityRepository
-	Soat         SoatRepository
+	Price        PriceRepository
 }
