@@ -375,27 +375,32 @@ siguiente. Cada una se valida con `go test -race` + lint y se commitea por separ
   **ordenados**; con `FLOW_TRACE_LEVEL=outcome` solo aparece `booked`; con `=off`, ninguno; el `phone`
   sale enmascarado.
 
-### Fase 1 — Consulta por tipo + flujos núcleo restantes
+### Fase 1 — Consulta por tipo + flujos núcleo restantes — ✅ HECHA (2026-06-25)
 - Endpoint `GET /flow-events?flow=&outcome=&reason=&from=&to=`. Instrumentar **agendamiento** y
   **recordatorio/IVR** (§3.2, §3.3).
 - **Aceptación:** un flujo de agendamiento que termina en `gfr_blocked` aparece en
   `/flow-events?flow=agendar&outcome=blocked`; un error de OCR aparece en `?outcome=error`.
 
-### Fase 2 — Reconciliación de invariantes + Telegram
+### Fase 2 — Reconciliación de invariantes + Telegram — ✅ HECHA (2026-06-25)
 - Job §10.6 en `data_cleanup`; emite `flow=invariante outcome=error`. `trace_id` en `AlertHandler`.
 - **Aceptación:** sembrando un slot huérfano de prueba, el job emite una anomalía consultable por
   `GET /anomalies`; la alerta de Telegram incluye el `trace_id`.
 
-### Fase 3 — Agregación + rollup
+### Fase 3 — Agregación + rollup — ✅ HECHA (2026-06-25)
 - Endpoint `GET /flow-stats` (funnel + distribución de terminales + tasa de error). Rollup nocturno
   `flow_events → flow_daily_stats`. Retención 45d de crudos.
 - **Aceptación:** `/flow-stats?flow=agendar` devuelve el funnel con la caída por paso; el rollup del día
   anterior cuadra con el conteo de crudos.
 
-### Fase 4 — Resto de flujos
+### Fase 4 — Resto de flujos — ✅ HECHA (2026-06-25)
 - Instrumentar registro, mis citas, entidad/EPS, identificación, admin, escalación, agente, scheduler,
-  infra (según §3A).
-- **Aceptación:** cada flujo tiene su recorrido consultable por `trace_id` en `milestone`.
+  infra (según §3A). Ejecutada en sub-lotes para minimizar riesgo:
+  - **Lote A** — identificación + entidad/EPS + registro. ✅
+  - **Lote B** — mis citas + escalación (incluye agente: resume/reset/close, escalation_expired). ✅
+  - **Lote C** — scheduler (`task_completed`/`task_failed`), admin_agenda (`agenda_cancelled`/
+    `agenda_rescheduled`/`patients_notified`), infra (`session_abandoned`, `phone_lock_timeout`). ✅
+- **Aceptación:** cada flujo tiene su recorrido consultable por `trace_id` en `milestone`. El test
+  `TestCatalog_AllEmittedStepsRegistered` verifica que todo step emitido tiene entrada en el catálogo §3A.
 
 ---
 

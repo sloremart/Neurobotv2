@@ -125,6 +125,19 @@ var catalog = map[string]stepSpec{
 	"escalacion/agent_closed":       {LvOutcome, "ok", ""},
 	"escalacion/escalation_expired": {LvOutcome, "info", ""},
 
+	// Tareas del scheduler (§3A) — trace task:<name>:<date>
+	"scheduler/task_completed": {LvOutcome, "ok", ""},
+	"scheduler/task_failed":    {LvError, "error", ""},
+
+	// Admin agenda (§3A) — trace agenda:<id>:<date>
+	"admin_agenda/agenda_cancelled":   {LvOutcome, "ok", "agenda"},
+	"admin_agenda/agenda_rescheduled": {LvOutcome, "ok", "agenda"},
+	"admin_agenda/patients_notified":  {LvMilestone, "ok", ""},
+
+	// Infra / transversal (§3A)
+	"infra/session_abandoned":  {LvOutcome, "info", ""}, // trace sess:<id>
+	"infra/phone_lock_timeout": {LvError, "error", ""},  // trace infra:phone_lock_timeout
+
 	// Reconciliación de invariantes (§4) — anomalía de "mal comportamiento silencioso".
 	"invariante/anomaly": {LvError, "error", ""},
 }

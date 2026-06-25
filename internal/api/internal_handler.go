@@ -15,6 +15,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/logging"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/services"
@@ -671,11 +672,21 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 				}
 			}
 			slog.Info("agenda cancellation notifications sent", "notified", notified, "total", len(patients))
+			observability.Emit(agendaTrace(req.AgendaID, req.Date), "admin_agenda", "patients_notified",
+				observability.EmitOpts{Attrs: map[string]interface{}{"n": notified, "count": len(patients)}})
 		}()
 	}
 
 	slog.Info("agenda cancelled", "agenda_id", req.AgendaID, "date", req.Date,
 		"cancelled", cancelled, "to_notify", toNotify)
+
+	observability.Emit(agendaTrace(req.AgendaID, req.Date), "admin_agenda", "agenda_cancelled",
+		observability.EmitOpts{
+			Reason:  req.Reason,
+			RefType: "agenda",
+			RefID:   strconv.Itoa(req.AgendaID),
+			Attrs:   map[string]interface{}{"n": cancelled},
+		})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -683,6 +694,11 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 		"cancelled": cancelled,
 		"to_notify": toNotify,
 	})
+}
+
+// agendaTrace builds the observability trace_id for an admin agenda action (yyyymmdd, no dashes).
+func agendaTrace(agendaID int, date string) string {
+	return observability.TraceAgenda(strconv.Itoa(agendaID), strings.ReplaceAll(date, "-", ""))
 }
 
 // --- Reschedule Agenda ---
@@ -828,6 +844,14 @@ func (h *InternalHandler) handleRescheduleWithNewAgenda(ctx context.Context, w h
 		"old_date", req.OldDate, "new_date", req.NewDate, "cancelled", cancelled,
 		"wd_deleted", wdDeleted, "to_notify", toNotify)
 
+	observability.Emit(agendaTrace(req.AgendaID, req.NewDate), "admin_agenda", "agenda_rescheduled",
+		observability.EmitOpts{
+			Reason:  req.Reason,
+			RefType: "agenda",
+			RefID:   strconv.Itoa(req.AgendaID),
+			Attrs:   map[string]interface{}{"n": cancelled, "count": toNotify},
+		})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "ok",
@@ -887,6 +911,14 @@ func (h *InternalHandler) handleRescheduleSameAgenda(ctx context.Context, w http
 	slog.Info("agenda rescheduled (same agenda)", "agenda_id", req.AgendaID,
 		"old_date", req.OldDate, "new_date", req.NewDate, "updated", updated,
 		"wd_updated", wdUpdated, "to_notify", toNotify)
+
+	observability.Emit(agendaTrace(req.AgendaID, req.NewDate), "admin_agenda", "agenda_rescheduled",
+		observability.EmitOpts{
+			Reason:  req.Reason,
+			RefType: "agenda",
+			RefID:   strconv.Itoa(req.AgendaID),
+			Attrs:   map[string]interface{}{"n": updated, "count": toNotify},
+		})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -974,6 +1006,8 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 			}
 		}
 		slog.Info("reschedule notifications sent", "notified", notified, "total", len(patients))
+		observability.Emit(agendaTrace(req.AgendaID, req.NewDate), "admin_agenda", "patients_notified",
+			observability.EmitOpts{Attrs: map[string]interface{}{"n": notified, "count": len(patients)}})
 	}()
 
 	return toNotify

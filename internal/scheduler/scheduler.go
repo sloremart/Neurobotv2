@@ -7,6 +7,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 )
 
 // defaultTaskTimeout es el backstop por-ejecución (N-39): acota una tarea colgada sin matar las
@@ -99,13 +101,23 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 
 		slog.Info(label+" starting", "task", task.Name)
 		start := time.Now()
+		trace := observability.TraceTask(task.Name, runAt.Format("20060102"))
 		if err := task.Fn(taskCtx); err != nil {
+			dur := time.Since(start).Milliseconds()
 			slog.Error(label+" failed", "task", task.Name, "error", err,
-				"duration_ms", time.Since(start).Milliseconds())
+				"duration_ms", dur)
+			observability.Emit(trace, "scheduler", "task_failed", observability.EmitOpts{
+				Reason: err.Error(),
+				Attrs:  map[string]interface{}{"duration_ms": dur},
+			})
 			return
 		}
+		dur := time.Since(start).Milliseconds()
 		slog.Info(label+" completed", "task", task.Name,
-			"duration_ms", time.Since(start).Milliseconds())
+			"duration_ms", dur)
+		observability.Emit(trace, "scheduler", "task_completed", observability.EmitOpts{
+			Attrs: map[string]interface{}{"duration_ms": dur},
+		})
 
 		// Persistir el last-run con un ctx INDEPENDIENTE y acotado: una tarea que SÍ terminó debe
 		// registrar su corrida aunque el apagado esté cancelando el ctx de la app, para no

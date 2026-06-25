@@ -338,6 +338,8 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 	// 2. Adquirir lock por teléfono (serializa mensajes del mismo usuario)
 	if err := p.sessionManager.PhoneMutex().Lock(lockCtx, msg.Phone); err != nil {
 		slog.Warn("phone lock timeout", "phone", utils.MaskPhone(msg.Phone), "error", err)
+		observability.Emit("infra:phone_lock_timeout", "infra", "phone_lock_timeout",
+			observability.EmitOpts{Phone: msg.Phone, Reason: "message"})
 		// Notify patient so they know their message was received but delayed
 		p.birdClient.SendText(msg.Phone, "",
 			"Tu mensaje anterior está siendo procesado. Por favor espera un momento antes de enviar otro mensaje.")
@@ -544,6 +546,8 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 
 	if err := p.sessionManager.PhoneMutex().Lock(lockCtx, cmd.Phone); err != nil {
 		slog.Warn("phone lock timeout (agent cmd)", "phone", utils.MaskPhone(cmd.Phone), "error", err)
+		observability.Emit("infra:phone_lock_timeout", "infra", "phone_lock_timeout",
+			observability.EmitOpts{Phone: cmd.Phone, Reason: "agent_cmd"})
 		return
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(cmd.Phone)

@@ -162,6 +162,11 @@ func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
 		"escalacion": {
 			"escalated", "agent_resumed", "agent_closed", "escalation_expired",
 		},
+		"scheduler": {"task_completed", "task_failed"},
+		"admin_agenda": {
+			"agenda_cancelled", "agenda_rescheduled", "patients_notified",
+		},
+		"infra": {"session_abandoned", "phone_lock_timeout"},
 	}
 	for flow, steps := range emitted {
 		for _, s := range steps {

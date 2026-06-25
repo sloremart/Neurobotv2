@@ -283,6 +283,11 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 			}
 			slog.Info("session closed by inactivity",
 				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber), "idle_min", elapsedMin)
+			observability.Emit(observability.TraceSession(s.ID), "infra", "session_abandoned",
+				observability.EmitOpts{
+					Phone: s.PhoneNumber,
+					Attrs: map[string]interface{}{"duration_ms": elapsed.Milliseconds()},
+				})
 
 		} else if elapsedMin >= deps.ReminderMin && s.Reminders == 0 {
 			// Single reminder with close warning
