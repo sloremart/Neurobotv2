@@ -142,55 +142,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			continue
 		}
 
-		// Construir lista única de nombres de procedimientos.
-		// En SIESA, CupName puede ser igual al código si el catálogo de Antares no está cargado;
-		// en ese caso se resuelve el nombre real consultando ProcedureRepo (Antares).
-		// Si el paciente tiene varias citas ese día (a horas distintas), se muestra la hora de cada
-		// una en el texto: el param appointment_time del template solo refleja una. Con una sola
-		// cita, se deja solo el nombre (la hora va en appointment_time).
-		multiAppt := len(group) > 1
-		var procedures []string
-		for _, appt := range group {
-			seen := make(map[string]bool)
-			var names []string
-			for _, proc := range appt.Procedures {
-				code := proc.CupCode
-				if code == "" || seen[code] {
-					continue
-				}
-				seen[code] = true
-				name := proc.CupName
-				if name == "" || name == code {
-					if t.ProcedureRepo != nil {
-						// Usar código base para lookup en Antares (SIESA almacena "891509-16", Antares solo tiene "891509")
-						lookupCode := utils.BaseCupCode(code)
-						if p, err := t.ProcedureRepo.FindByCode(ctx, lookupCode); err == nil && p != nil && p.Name != "" {
-							name = p.Name
-						}
-					}
-				}
-				if name == "" {
-					name = code
-				}
-				names = append(names, name)
-			}
-			if len(names) == 0 {
-				names = []string{"Procedimiento"}
-			}
-			entry := strings.Join(names, ", ")
-			if multiAppt {
-				entry += " (" + services.FormatTimeSlot(appt.TimeSlot) + ")"
-			}
-			procedures = append(procedures, entry)
-		}
-		if len(procedures) == 0 {
-			procedures = []string{"Procedimiento"}
-		}
-		proceduresText := strings.Join(procedures, " y ")
-		// Acotar por el límite de caracteres del body del template de WhatsApp (rune-safe).
-		if r := []rune(proceduresText); len(r) > 600 {
-			proceduresText = string(r[:599]) + "…"
-		}
+		proceduresText := buildReminderProcedures(ctx, group, t.ProcedureRepo)
 
 		appointmentDate := utils.FormatFriendlyDate(firstAppt.Date)
 		appointmentTime := services.FormatTimeSlot(firstAppt.TimeSlot)
@@ -577,6 +529,53 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// buildReminderProcedures arma el texto de procedimientos del recordatorio. Si el paciente tiene
+// VARIAS citas ese día (a horas distintas) incluye la hora de cada una, porque el param
+// appointment_time del template solo refleja una; con una sola cita deja solo el nombre (la hora va
+// en appointment_time). CupName puede venir igual al código si el catálogo no está cargado: en ese
+// caso resuelve el nombre real vía procRepo. Rune-safe y acotado al límite del body de WhatsApp.
+func buildReminderProcedures(ctx context.Context, group []domain.Appointment, procRepo repository.ProcedureRepository) string {
+	multiAppt := len(group) > 1
+	var procedures []string
+	for _, appt := range group {
+		seen := make(map[string]bool)
+		var names []string
+		for _, proc := range appt.Procedures {
+			code := proc.CupCode
+			if code == "" || seen[code] {
+				continue
+			}
+			seen[code] = true
+			name := proc.CupName
+			if (name == "" || name == code) && procRepo != nil {
+				if p, err := procRepo.FindByCode(ctx, utils.BaseCupCode(code)); err == nil && p != nil && p.Name != "" {
+					name = p.Name
+				}
+			}
+			if name == "" {
+				name = code
+			}
+			names = append(names, name)
+		}
+		if len(names) == 0 {
+			names = []string{"Procedimiento"}
+		}
+		entry := strings.Join(names, ", ")
+		if multiAppt {
+			entry += " (" + services.FormatTimeSlot(appt.TimeSlot) + ")"
+		}
+		procedures = append(procedures, entry)
+	}
+	if len(procedures) == 0 {
+		return "Procedimiento"
+	}
+	text := strings.Join(procedures, " y ")
+	if r := []rune(text); len(r) > 600 { // límite del body del template de WhatsApp (rune-safe)
+		text = string(r[:599]) + "…"
+	}
+	return text
 }
 
 func groupAppointmentsByPatient(appointments []domain.Appointment) map[string][]domain.Appointment {

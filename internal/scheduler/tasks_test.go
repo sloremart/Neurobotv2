@@ -1265,3 +1265,38 @@ func TestGroupAppointmentsByPatient_PreservesOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildReminderProcedures valida el texto del recordatorio: con UNA cita solo el nombre (la
+// hora va en el param appointment_time del template); con VARIAS citas el mismo día, la hora de
+// cada una embebida (porque appointment_time solo refleja una).
+func TestBuildReminderProcedures(t *testing.T) {
+	appt := func(slot, code, name string) domain.Appointment {
+		return domain.Appointment{
+			TimeSlot:   slot,
+			Procedures: []domain.AppointmentProcedure{{CupCode: code, CupName: name}},
+		}
+	}
+
+	// Una sola cita -> solo el nombre, sin hora.
+	single := []domain.Appointment{appt("202603150900", "890274", "Consulta Neurologia")}
+	if got := buildReminderProcedures(context.Background(), single, nil); got != "Consulta Neurologia" {
+		t.Errorf("single: got %q", got)
+	}
+
+	// Varias citas el mismo dia -> cada una con su hora.
+	multi := []domain.Appointment{
+		appt("202603150900", "890274", "Consulta Neurologia"),
+		appt("202603151400", "883902", "Resonancia"),
+	}
+	got := buildReminderProcedures(context.Background(), multi, nil)
+	want := "Consulta Neurologia (9:00 AM) y Resonancia (2:00 PM)"
+	if got != want {
+		t.Errorf("multi: got %q, want %q", got, want)
+	}
+
+	// Sin procedimientos -> placeholder, sin panic.
+	empty := []domain.Appointment{{TimeSlot: "202603150900"}}
+	if got := buildReminderProcedures(context.Background(), empty, nil); got != "Procedimiento" {
+		t.Errorf("empty: got %q", got)
+	}
+}
