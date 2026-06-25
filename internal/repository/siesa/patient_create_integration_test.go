@@ -50,7 +50,7 @@ func TestCreatePatientFlow(t *testing.T) {
 
 	birth, _ := time.Parse("2006-01-02", "1990-05-15")
 	in := domain.CreatePatientInput{
-		DocumentType: docType, DocumentNumber: doc, DocumentIssuePlace: "Acacías",
+		DocumentType: docType, DocumentNumber: doc,
 		FirstName: "JUAN", SecondName: "TEST", FirstSurname: "PRUEBA", SecondSurname: "BOT",
 		BirthDate: birth, Gender: "M",
 		Phone: "3001234567", Phone2: "3019998877", Email: "test.bot@example.com",

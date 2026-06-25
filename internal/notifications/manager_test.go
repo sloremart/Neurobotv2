@@ -1295,7 +1295,8 @@ func TestSelfReschedule_FromConfirmation(t *testing.T) {
 			appt.ID = id
 			appt.PatientID = "PAT-200"
 			appt.Entity = "EPS-GOLD"
-			appt.DoctorID = "DOC-555"
+			appt.DoctorID = "55"            // cod_medi interno — NO debe usarse para preferred_doctor_doc
+			appt.DoctorDocument = "DOC-555" // cédula — el valor correcto (N14)
 			appt.Observations = "Contrastada y Sedacion"
 			return &appt, nil
 		},

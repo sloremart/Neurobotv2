@@ -96,6 +96,50 @@ func TestFormatAttr_RedactsSensitiveKeys(t *testing.T) {
 	}
 }
 
+// TestRedactPII_MasksDigitRuns verifica el fix K3: secuencias de 6+ dígitos (cédulas/teléfonos)
+// se enmascaran aunque vengan embebidas en texto libre, no solo en claves reconocidas.
+func TestRedactPII_MasksDigitRuns(t *testing.T) {
+	cases := []struct {
+		name, in, mustNotContain, mustContain string
+	}{
+		{"cedula embebida en mensaje", "patient_create_failed doc=1000000689 entidad=EPS005", "1000000689", "EPS005"},
+		{"telefono en texto", "no contesta el 3001234567", "3001234567", ""},
+		{"numero corto (<6) no se toca", "agenda 7159 ok", "", "7159"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := redactPII(c.in)
+			if c.mustNotContain != "" && strings.Contains(got, c.mustNotContain) {
+				t.Errorf("redactPII(%q) = %q; NO debía contener %q", c.in, got, c.mustNotContain)
+			}
+			if c.mustContain != "" && !strings.Contains(got, c.mustContain) {
+				t.Errorf("redactPII(%q) = %q; debía contener %q", c.in, got, c.mustContain)
+			}
+		})
+	}
+}
+
+// TestFormatAttr_RedactsEmbeddedPII_UnlistedKey verifica K3: una clave NO listada cuyo valor
+// trae un documento embebido también se enmascara (defensa en profundidad).
+func TestFormatAttr_RedactsEmbeddedPII_UnlistedKey(t *testing.T) {
+	out := formatAttr(slog.String("error", "insert sis_paci failed for 1000000689"))
+	if strings.Contains(out, "1000000689") {
+		t.Errorf("PII embebida en clave no listada no fue enmascarada: %q", out)
+	}
+}
+
+// TestFormatMessage_RedactsPIIInMessage verifica K3: el documento que viaja en el propio
+// r.Message (no en un attr) se redacta antes de enviar a Telegram.
+func TestFormatMessage_RedactsPIIInMessage(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	h := NewAlertHandler(inner, &Client{})
+	record := slog.NewRecord(time.Now(), slog.LevelError, "patient_not_found doc 1000000689", 0)
+	out := h.formatMessage(record)
+	if strings.Contains(out, "1000000689") {
+		t.Errorf("formatMessage no redactó el documento del mensaje: %q", out)
+	}
+}
+
 func TestAlertHandler_BelowError_NotSent(t *testing.T) {
 	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
 	handler := NewAlertHandler(inner, &Client{})

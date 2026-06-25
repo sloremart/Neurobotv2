@@ -365,7 +365,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				WithContext("is_contrasted", isContrasted).
 				WithContext("is_sedated", isSedated).
 				WithContext("espacios", fmt.Sprintf("%d", espacios)).
-				WithContext("preferred_doctor_doc", selectedAppt.DoctorID).
+				WithContext("preferred_doctor_doc", selectedAppt.DoctorDocument). // N14: cédula, no cod_medi
 				WithContext("total_procedures", "1").
 				WithContext("current_procedure_idx", "0").
 				WithContext("reschedule_appt_id", selectedAppt.ID).

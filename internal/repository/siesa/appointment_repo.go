@@ -160,7 +160,8 @@ func inParamsAsInt(ids []string, startAt int) (clause string, args []interface{}
 // lowest active contract (4, Evento, manual 11) — wrong billing manual for MRC patients.
 func lookupContract(ctx context.Context, db *sql.DB, entityInput, patientContract string) (company, contractCode string, regime int, err error) {
 	if patientContract != "" {
-		err = db.QueryRowContext(ctx,
+		err = db.QueryRowContext(
+			ctx,
 			`SELECT ISNULL(empresa,''), CAST(codigo AS VARCHAR(20)), ISNULL(regimen,1) FROM contratos WITH (NOLOCK) WHERE codigo = @p1 AND activo = 1`,
 			patientContract,
 		).Scan(&company, &contractCode, &regime)
@@ -173,13 +174,15 @@ func lookupContract(ctx context.Context, db *sql.DB, entityInput, patientContrac
 		err = nil // contract not found/active → fall through to entity-based resolution
 	}
 	if codeInt, convErr := strconv.Atoi(entityInput); convErr == nil {
-		err = db.QueryRowContext(ctx,
+		err = db.QueryRowContext(
+			ctx,
 			`SELECT ISNULL(empresa,''), CAST(codigo AS VARCHAR(20)), ISNULL(regimen,1) FROM contratos WITH (NOLOCK) WHERE codigo = @p1`,
 			codeInt,
 		).Scan(&company, &contractCode, &regime)
 	} else {
 		// company code (e.g. "EPS005") → first active contract
-		err = db.QueryRowContext(ctx,
+		err = db.QueryRowContext(
+			ctx,
 			`SELECT TOP 1 ISNULL(empresa,''), CAST(codigo AS VARCHAR(20)), ISNULL(regimen,1) FROM contratos WITH (NOLOCK) WHERE empresa = @p1 AND activo = 1 ORDER BY codigo`,
 			entityInput,
 		).Scan(&company, &contractCode, &regime)
@@ -202,7 +205,8 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 
 	var meridiano string
 	var hhmm24 int
-	err := r.db.QueryRowContext(ctx, `
+	err := r.db.QueryRowContext(
+		ctx, `
 	SELECT CAST(c.id AS VARCHAR(20)),
 	       CAST(c.fecha AS DATE),
 	       ISNULL(c.hora,''),
@@ -436,7 +440,8 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	//     tiene DEFAULT y la UI la llena en el 100% de las citas (verificado contra histórico 4d,
 	//     ambas sedes = '05'). Sin esto quedaba NULL y se propagaba NULL al log_citas (que la copia).
 	var newID int64
-	err = tx.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(
+		ctx, `
 	INSERT INTO citas (
 	    autoid, cod_medi, fecha, hora, meridiano, estado,
 	    asunto, empresa, contrato, fecha_solicitud,
@@ -466,7 +471,8 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	}
 
 	// Claim slot with optimistic lock (AND IdCita IS NULL)
-	result, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(
+		ctx, `
 	UPDATE programacion_medico_detalle
 	SET IdCita = @p1
 	WHERE IdProgramacionMedico = @p2
@@ -524,7 +530,8 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 
 	// Resolve doctor name from sis_medi (avoids returning cod_medi as DoctorName)
 	var doctorName string
-	_ = r.db.QueryRowContext(ctx,
+	_ = r.db.QueryRowContext(
+		ctx,
 		`SELECT ISNULL(RTRIM(nombre),'') FROM sis_medi WITH (NOLOCK) WHERE codigo = @p1`, doctorCodeInt,
 	).Scan(&doctorName)
 	if doctorName == "" {
@@ -608,7 +615,8 @@ func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input 
 	apptID := strconv.Itoa(input.AppointmentID)
 
 	var subjectType, contrato int
-	_ = r.db.QueryRowContext(ctx,
+	_ = r.db.QueryRowContext(
+		ctx,
 		`SELECT ISNULL(asunto,0), ISNULL(TRY_CONVERT(INT, contrato),0) FROM citas WITH (NOLOCK) WHERE id = @p1`, apptID,
 	).Scan(&subjectType, &contrato)
 
@@ -1098,7 +1106,8 @@ func (r *AppointmentRepo) FindLastDoctorForCups(ctx context.Context, patientID s
 	allArgs := append([]interface{}{patientID}, cupArgs...)
 
 	var doc string
-	err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
+	err := r.db.QueryRowContext(
+		ctx, fmt.Sprintf(`
 	SELECT TOP 1 CAST(m.cedula AS VARCHAR(20))
 	FROM citas c WITH (NOLOCK)
 	JOIN citas_procedimientos cp WITH (NOLOCK) ON cp.id_cita = c.id
@@ -1134,7 +1143,8 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 	allArgs := append([]interface{}{startDate, endDate}, cupsArgs...)
 
 	var count int
-	err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
+	err := r.db.QueryRowContext(
+		ctx, fmt.Sprintf(`
 	SELECT ISNULL(SUM(
 	    CASE WHEN CHARINDEX('-', cp.id_procedimiento) > 0
 	              AND TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10)) IS NOT NULL
@@ -1267,7 +1277,13 @@ func (r *AppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doct
 	UPDATE pmd SET IdCita = c.id
 	FROM programacion_medico_detalle pmd
 	JOIN citas c ON c.id_programacion = pmd.IdProgramacionMedico
-	    AND CONVERT(VARCHAR(5), pmd.Fecha, 108) = c.hora
+	    -- N6: c.hora está en 12h ('07:15') y pmd.Fecha en 24h. Reconstruir la hora 24h
+	    -- desde c.hora + c.meridiano para que el match no falle en horarios PM.
+	    AND CONVERT(VARCHAR(5), pmd.Fecha, 108) =
+	        RIGHT('0' + CONVERT(VARCHAR(2),
+	            CASE WHEN c.meridiano = 'pm' AND CONVERT(INT, LEFT(c.hora, 2)) <> 12 THEN CONVERT(INT, LEFT(c.hora, 2)) + 12
+	                 WHEN c.meridiano = 'am' AND CONVERT(INT, LEFT(c.hora, 2)) = 12 THEN 0
+	                 ELSE CONVERT(INT, LEFT(c.hora, 2)) END), 2) + ':' + RIGHT(c.hora, 2)
 	WHERE c.id_programacion = @p1 AND CAST(c.cod_medi AS VARCHAR(20)) = @p2
 	  AND c.fecha = @p3 AND c.estado <> 'C'
 	  AND pmd.Fecha >= @p3 AND pmd.Fecha < DATEADD(DAY, 1, @p3) AND pmd.IdCita IS NULL`,
@@ -1391,7 +1407,8 @@ func (r *AppointmentRepo) lookupSubjectTypeFromHistory(ctx context.Context, proc
 
 		// Search in procedures/imaging (citas_procedimientos)
 		var subjectType int
-		_ = r.db.QueryRowContext(ctx, `
+		_ = r.db.QueryRowContext(
+			ctx, `
 		SELECT TOP 1 c.asunto
 		FROM citas c WITH (NOLOCK)
 		JOIN citas_procedimientos cp WITH (NOLOCK) ON cp.id_cita = c.id
@@ -1406,7 +1423,8 @@ func (r *AppointmentRepo) lookupSubjectTypeFromHistory(ctx context.Context, proc
 		}
 
 		// Search in consultations (citas_procedimientos_asuntos)
-		_ = r.db.QueryRowContext(ctx, `
+		_ = r.db.QueryRowContext(
+			ctx, `
 		SELECT TOP 1 c.asunto
 		FROM citas c WITH (NOLOCK)
 		JOIN citas_procedimientos_asuntos cpa WITH (NOLOCK) ON cpa.IdCita = c.id
@@ -1422,7 +1440,8 @@ func (r *AppointmentRepo) lookupSubjectTypeFromHistory(ctx context.Context, proc
 
 		// No history: query AsuntoPctos (SIESA catalog).
 		// Prevents incorrect default: 890274 → subject 8 (neurology), not 1 (physiatry).
-		_ = r.db.QueryRowContext(ctx,
+		_ = r.db.QueryRowContext(
+			ctx,
 			`SELECT TOP 1 Asunto FROM AsuntoPctos WITH (NOLOCK) WHERE CodProcedimiento = @p1`, baseCups,
 		).Scan(&subjectType)
 		if subjectType > 0 {

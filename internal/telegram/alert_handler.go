@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -141,7 +142,9 @@ func (h *AlertHandler) formatMessage(r slog.Record) string {
 
 	b.WriteString("<b>ERROR | neuro-bot</b>\n")
 	b.WriteString("━━━━━━━━━━━━━━━━━\n")
-	b.WriteString(escapeHTML(r.Message))
+	// K3: el propio mensaje puede llevar PII inline (cédula/teléfono) que no está en un attr
+	// con clave reconocible → redactar secuencias largas de dígitos antes de enviar a Telegram.
+	b.WriteString(escapeHTML(redactPII(r.Message)))
 	b.WriteString("\n")
 
 	// Collect attributes
@@ -181,7 +184,21 @@ var sensitiveAttrKeys = map[string]bool{
 	"doc": true, "cedula": true, "cédula": true, "document": true, "documento": true,
 	"num_id": true, "numid": true, "numero_documento": true, "patient_doc": true,
 	"name": true, "nombre": true, "nombres": true, "patient_name": true, "paciente": true,
-	"phone": true, "telefono": true, "teléfono": true, "celular": true,
+	"phone": true, "telefono": true, "teléfono": true, "celular": true, "patient_phone": true,
+	// K3: claves de texto libre que suelen arrastrar PII (Ley 1581).
+	"observacion": true, "observaciones": true, "observations": true, "direccion": true,
+	"dirección": true, "address": true, "input": true, "last_input": true, "text": true,
+	"content": true, "body": true,
+}
+
+// digitRunRe captura secuencias de 6+ dígitos (cédulas, teléfonos) que podrían ser PII,
+// aunque vengan embebidas en un mensaje o en el valor de una clave no listada (K3).
+var digitRunRe = regexp.MustCompile(`\d{6,}`)
+
+// redactPII enmascara secuencias largas de dígitos dentro de un texto libre, dejando los
+// extremos como pista. No toca claves estructuradas (esas se redactan por nombre en formatAttr).
+func redactPII(s string) string {
+	return digitRunRe.ReplaceAllStringFunc(s, redactValue)
 }
 
 // redactValue enmascara un valor dejando solo extremos como pista (p.ej. "10***89").
@@ -196,8 +213,14 @@ func redactValue(s string) string {
 
 func formatAttr(a slog.Attr) string {
 	val := a.Value.String()
-	if sensitiveAttrKeys[strings.ToLower(a.Key)] {
+	switch {
+	case sensitiveAttrKeys[strings.ToLower(a.Key)]:
+		// Clave reconocida como sensible → redactar el valor completo.
 		val = redactValue(val)
+	default:
+		// K3: claves no listadas todavía pueden traer PII embebida (p.ej. un documento dentro
+		// de un mensaje de error) → enmascarar secuencias largas de dígitos por si acaso.
+		val = redactPII(val)
 	}
 	return fmt.Sprintf("<code>%s</code>: %s", escapeHTML(a.Key), escapeHTML(val))
 }

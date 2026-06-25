@@ -304,7 +304,9 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				query.MonthFilter = func(year, month int) (bool, error) {
 					blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month)
 					if err != nil {
-						return true, nil // fail-open
+						// N-30: fail-open (no bloquear el mes ante un error transitorio) pero loguear.
+						slog.Warn("mrc_month_filter_error_fail_open", "cups_code", code, "year", year, "month", month, "error", err)
+						return true, nil
 					}
 					return !blocked, nil
 				}
@@ -345,6 +347,8 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 					query.MonthFilter = func(year, month int) (bool, error) {
 						blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month)
 						if err != nil {
+							// N-30: fail-open con log (igual que la rama principal de búsqueda).
+							slog.Warn("mrc_month_filter_error_fail_open", "cups_code", code, "year", year, "month", month, "error", err)
 							return true, nil
 						}
 						return !blocked, nil
@@ -367,7 +371,8 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				eventType = "slot_search_timeout"
 			}
 			return sm.NewResult(sm.StateSlotSearchRetry).
-				WithButtons(msg,
+				WithButtons(
+					msg,
 					sm.Button{Text: "Intentar de nuevo", Payload: "retry"},
 					sm.Button{Text: "Volver al menú", Payload: "menu"},
 				).
@@ -539,7 +544,8 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 
 		return sm.NewResult(sm.StateConfirmBooking).
 			WithContext("selected_slot_id", selected.TimeSlot).
-			WithButtons(summary,
+			WithButtons(
+				summary,
 				sm.Button{Text: "Confirmar cita", Payload: "booking_confirm"},
 				sm.Button{Text: "Elegir otro horario", Payload: "booking_change"},
 			).
@@ -828,7 +834,8 @@ func confirmBookingHandler() sm.StateHandler {
 				confirmMsg = "⚠️ Al confirmar, tu cita actual será *cancelada* y se asignará este nuevo horario.\n\n¿Deseas continuar con la reprogramación?"
 			}
 			return sm.NewResult(sm.StateReconfirmBooking).
-				WithButtons(confirmMsg,
+				WithButtons(
+					confirmMsg,
 					sm.Button{Text: "Sí, confirmar", Payload: "reconfirm_yes"},
 					sm.Button{Text: "No, volver", Payload: "reconfirm_no"},
 				).
@@ -854,7 +861,8 @@ func reconfirmBookingHandler(addrMapper *services.AddressMapper) sm.StateHandler
 			}
 			result.Messages = nil
 			return sm.NewResult(sess.CurrentState).
-				WithButtons("¿Estás seguro de *confirmar* esta cita?",
+				WithButtons(
+					"¿Estás seguro de *confirmar* esta cita?",
 					sm.Button{Text: "Sí, confirmar", Payload: "reconfirm_yes"},
 					sm.Button{Text: "No, volver", Payload: "reconfirm_no"},
 				), nil
@@ -862,7 +870,8 @@ func reconfirmBookingHandler(addrMapper *services.AddressMapper) sm.StateHandler
 
 		switch selected {
 		case "reconfirm_yes":
-			slog.Info("reconfirm_yes_received",
+			slog.Info(
+				"reconfirm_yes_received",
 				"session_id", sess.ID,
 				"phone", utils.MaskPhone(sess.PhoneNumber),
 				"selected_slot_id", sess.GetContext("selected_slot_id"),
@@ -893,7 +902,8 @@ func reconfirmBookingHandler(addrMapper *services.AddressMapper) sm.StateHandler
 			}
 			summary := buildBookingSummary(sess, slot, addrMapper)
 			return sm.NewResult(sm.StateConfirmBooking).
-				WithButtons(summary,
+				WithButtons(
+					summary,
 					sm.Button{Text: "Confirmar cita", Payload: "booking_confirm"},
 					sm.Button{Text: "Elegir otro horario", Payload: "booking_change"},
 				), nil
@@ -906,7 +916,8 @@ func reconfirmBookingHandler(addrMapper *services.AddressMapper) sm.StateHandler
 // CREATE_APPOINTMENT (automático) — crea la cita en la BD externa.
 func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, procRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		slog.Info("create_appointment_handler_started",
+		slog.Info(
+			"create_appointment_handler_started",
 			"session_id", sess.ID,
 			"phone", utils.MaskPhone(sess.PhoneNumber),
 			"selected_slot_id", sess.GetContext("selected_slot_id"),
@@ -918,7 +929,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			if len(preview) > 200 {
 				preview = preview[:200] + "..."
 			}
-			slog.Warn("create_appointment_slot_not_found",
+			slog.Warn(
+				"create_appointment_slot_not_found",
 				"session_id", sess.ID,
 				"selected_slot_id", sess.GetContext("selected_slot_id"),
 				"available_slots_json_preview", preview,
@@ -946,7 +958,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				espacios = 1
 			}
 			if cupsCode != "" {
-				slog.Warn("procedures_json_recovered_from_context",
+				slog.Warn(
+					"procedures_json_recovered_from_context",
 					"session_id", sess.ID,
 					"phone", utils.MaskPhone(msg.Phone),
 					"cups_code", cupsCode,
@@ -961,7 +974,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				recovered, _ := json.Marshal(groups)
 				sess.SetContext("procedures_json", string(recovered))
 			} else {
-				slog.Error("create_appointment_invalid_procedures_json",
+				slog.Error(
+					"create_appointment_invalid_procedures_json",
 					"session_id", sess.ID,
 					"phone", utils.MaskPhone(msg.Phone),
 					"error", err,
@@ -1020,14 +1034,16 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				entityData, entityErr := entityRepo.FindByCode(ctx, priceLookupCode)
 				if entityErr != nil {
 					pricingFailed = true
-					slog.Warn("entity_lookup_error_for_price",
+					slog.Warn(
+						"entity_lookup_error_for_price",
 						"entity_code", entity,
 						"cup_code", cupEntry.Code,
 						"error", entityErr,
 					)
 				} else if entityData == nil {
 					pricingFailed = true
-					slog.Warn("entity_not_found_for_price",
+					slog.Warn(
+						"entity_not_found_for_price",
 						"entity_code", entity,
 						"cup_code", cupEntry.Code,
 					)
@@ -1040,7 +1056,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 					price, priceErr := priceRepo.FindPrice(ctx, cupEntry.Code, priceType)
 					if priceErr != nil {
 						pricingFailed = true
-						slog.Warn("price_lookup_error",
+						slog.Warn(
+							"price_lookup_error",
 							"entity_code", entity,
 							"price_type", priceType,
 							"cup_code", cupEntry.Code,
@@ -1048,7 +1065,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 						)
 					} else if price == nil {
 						pricingFailed = true
-						slog.Warn("price_not_found",
+						slog.Warn(
+							"price_not_found",
 							"entity_code", entity,
 							"price_type", priceType,
 							"cup_code", cupEntry.Code,
@@ -1056,7 +1074,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 					} else {
 						unitValue = *price
 					}
-					slog.Debug("price_resolved",
+					slog.Debug(
+						"price_resolved",
 						"entity_code", entity,
 						"price_lookup_code", priceLookupCode,
 						"price_type", priceType,
@@ -1077,13 +1096,15 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			quantity := cupEntry.Quantity
 			if origQty, found := originalQuantities[cupEntry.Code]; found && origQty > 0 {
 				quantity = origQty
-				slog.Debug("Using original OCR quantity",
+				slog.Debug(
+					"Using original OCR quantity",
 					"cup_code", cupEntry.Code,
 					"grouped_quantity", cupEntry.Quantity,
 					"original_quantity", origQty,
 				)
 			} else {
-				slog.Debug("Using grouped quantity (not found in OCR)",
+				slog.Debug(
+					"Using grouped quantity (not found in OCR)",
 					"cup_code", cupEntry.Code,
 					"grouped_quantity", cupEntry.Quantity,
 				)
@@ -1106,7 +1127,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 		// persistir Valor=0): se usa EXACTAMENTE el mismo flujo/mensaje que el gate de cobertura
 		// para precio 0 (ofrecer particular o agente), no un mensaje aparte.
 		if anyPricingFailed {
-			slog.Warn("booking_blocked_no_price",
+			slog.Warn(
+				"booking_blocked_no_price",
 				"session_id", sess.ID,
 				"cups_name", sess.GetContext("cups_name"),
 				"entity", entity,
@@ -1128,7 +1150,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 		// Parse date
 		date, _ := time.Parse("2006-01-02", slot.Date)
 
-		slog.Debug("Creating appointment with CUPS from current group only",
+		slog.Debug(
+			"Creating appointment with CUPS from current group only",
 			"procedures_count", len(procedures),
 			"current_group_service", currentGroup.ServiceType,
 			"current_group_cups", currentGroup.Cups,
@@ -1196,7 +1219,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			// también es un fallo de disponibilidad → el paciente debe re-buscar, no auto-cerrar.
 			if strings.Contains(errMsg, "slot_taken") || strings.Contains(errMsg, "Duplicate entry") ||
 				strings.Contains(errMsg, "slots_consecutivos_insuficientes") {
-				slog.Warn("create_appointment_slot_taken",
+				slog.Warn(
+					"create_appointment_slot_taken",
 					"session_id", sess.ID,
 					"phone", utils.MaskPhone(msg.Phone),
 					"time_slot", slot.TimeSlot,
@@ -1210,7 +1234,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			if errors.Is(err, context.DeadlineExceeded) {
 				reason = "timeout"
 			}
-			slog.Error("create_appointment_create_failed",
+			slog.Error(
+				"create_appointment_create_failed",
 				"session_id", sess.ID,
 				"phone", utils.MaskPhone(msg.Phone),
 				"patient_name", sess.GetContext("patient_name"),
@@ -1222,7 +1247,8 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				WithContext("booking_failure_reason", reason).
 				WithEvent("appointment_create_error", map[string]interface{}{"error": errMsg}), nil
 		}
-		slog.Info("create_appointment_success",
+		slog.Info(
+			"create_appointment_success",
 			"session_id", sess.ID,
 			"appointment_id", apptID,
 			"time_slot", slot.TimeSlot,

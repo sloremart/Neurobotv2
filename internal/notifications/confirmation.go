@@ -410,7 +410,9 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		"reschedule_skip_cancel":     "0",
 		"reschedule_conversation_id": pending.ConversationID,
 		"reschedule_bird_msg_id":     pending.BirdMessageID,
-		"preferred_doctor_doc":       appt.DoctorID,
+		// N14: preferred_doctor_doc debe ser la cédula (sis_medi.cedula), no cod_medi —
+		// slot_service hace match contra DoctorDocument. DoctorID nunca casaba.
+		"preferred_doctor_doc": appt.DoctorDocument,
 
 		// Display keys for confirmation prompt
 		"notif_appt_date": utils.FormatFriendlyDate(appt.Date),

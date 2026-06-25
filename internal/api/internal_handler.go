@@ -321,7 +321,7 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 			})
 
 			if h.tracker != nil {
-				h.tracker.LogEvent(context.Background(), "", phone, "notification_sent", map[string]interface{}{
+				h.tracker.LogEvent(ctx, "", phone, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
 					"type":            "confirmation",
 					"appointment_id":  firstAppt.ID,
 					"bird_msg_id":     msgID,
@@ -472,7 +472,7 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 				})
 
 				if h.tracker != nil {
-					h.tracker.LogEvent(context.Background(), "", phone, "notification_sent", map[string]interface{}{
+					h.tracker.LogEvent(ctx, "", phone, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
 						"type":            "cancellation",
 						"appointment_id":  firstAppt.ID,
 						"bird_msg_id":     msgID,
@@ -775,7 +775,7 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 			})
 
 			if h.tracker != nil {
-				h.tracker.LogEvent(context.Background(), "", phone, "notification_sent", map[string]interface{}{
+				h.tracker.LogEvent(ctx, "", phone, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
 					"type":            "reschedule",
 					"appointment_id":  firstAppt.ID,
 					"bird_msg_id":     msgID,
@@ -1065,7 +1065,9 @@ func (h *InternalHandler) HandleHealthKPIs(w http.ResponseWriter, r *http.Reques
 
 // HandleTestAlert triggers a test slog.Error to verify Telegram alerting works end-to-end.
 func (h *InternalHandler) HandleTestAlert(w http.ResponseWriter, r *http.Request) {
-	slog.Error("test alert: telegram integration check",
+	//nolint:gosec // G706: r.RemoteAddr lo fija el servidor (host:port), no es input de usuario; endpoint admin.
+	slog.Error(
+		"test alert: telegram integration check",
 		"source", "manual_test",
 		"triggered_by", r.RemoteAddr,
 	)

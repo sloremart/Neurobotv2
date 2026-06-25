@@ -27,40 +27,35 @@ type Patient struct {
 	ContractCode    string
 	AffiliationType string
 	UserType        string
-	Occupation      string
 	Level           string
 	MaritalStatus   string
-	BirthPlace      string
 	EducationLevel  string
 	CountryCode     string
 }
 
 type CreatePatientInput struct {
-	DocumentType       string
-	DocumentNumber     string
-	DocumentIssuePlace string
-	FirstName          string
-	SecondName         string
-	FirstSurname       string
-	SecondSurname      string
-	BirthDate          time.Time
-	Gender             string
-	Phone              string
-	Phone2             string // celular secundario → sis_paci.telefono_alternativo
-	Email              string
-	Address            string
-	DepartmentCode     string // cod_dep en SIESA (ej: "50")
-	CityCode           string // cod_muni en SIESA (ej: "001")
-	Zone               string
-	EntityCode         string
-	AffiliationType    string // C=Cotizante, B=Beneficiario, O=Otro → tipo_afilia 1/2/3
-	UserType           string // "1"-"9" → tipo_usuario
-	Occupation         string
-	Level              string
-	MaritalStatus      string // "1"-"5" → estadoCivil
-	BloodType          string // sis_tiposangre.valor (ej. "O+") → tipo_sangre
-	Barrio             string // sis_barrios.codigo → sis_paci.barrio (bigint)
-	BirthPlace         string
-	EducationLevel     string
-	CountryCode        string
+	DocumentType    string
+	DocumentNumber  string
+	FirstName       string
+	SecondName      string
+	FirstSurname    string
+	SecondSurname   string
+	BirthDate       time.Time
+	Gender          string
+	Phone           string
+	Phone2          string // celular secundario → sis_paci.telefono_alternativo
+	Email           string
+	Address         string
+	DepartmentCode  string // cod_dep en SIESA (ej: "50")
+	CityCode        string // cod_muni en SIESA (ej: "001")
+	Zone            string
+	EntityCode      string
+	AffiliationType string // C=Cotizante, B=Beneficiario, O=Otro → tipo_afilia 1/2/3
+	UserType        string // "1"-"9" → tipo_usuario
+	Level           string
+	MaritalStatus   string // "1"-"5" → estadoCivil
+	BloodType       string // sis_tiposangre.valor (ej. "O+") → tipo_sangre
+	Barrio          string // sis_barrios.codigo → sis_paci.barrio (bigint)
+	EducationLevel  string
+	CountryCode     string
 }

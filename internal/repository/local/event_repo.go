@@ -68,7 +68,8 @@ func (r *EventRepo) InsertBatch(ctx context.Context, events []ChatEvent) error {
 
 	for _, event := range events {
 		dataJSON, _ := json.Marshal(event.EventData)
-		if _, err := stmt.ExecContext(ctx,
+		if _, err := stmt.ExecContext(
+			ctx,
 			event.SessionID, event.PhoneNumber, event.EventType, string(dataJSON),
 			nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt,
 		); err != nil {
@@ -306,13 +307,14 @@ type NotificationBreakdown struct {
 // GetNotificationBreakdown returns notification_sent counts broken down by type for a date.
 func (r *EventRepo) GetNotificationBreakdown(ctx context.Context, date time.Time) (*NotificationBreakdown, error) {
 	dateStr := date.Format("2006-01-02")
+	nextDayStr := date.AddDate(0, 0, 1).Format("2006-01-02") // N-44: rango half-open SARGABLE
 	bd := &NotificationBreakdown{}
 
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT JSON_UNQUOTE(JSON_EXTRACT(event_data, '$.type')) AS ntype, COUNT(*) AS cnt
 		 FROM chat_events
-		 WHERE DATE(created_at) = ? AND event_type = 'notification_sent'
-		 GROUP BY ntype`, dateStr)
+		 WHERE created_at >= ? AND created_at < ? AND event_type = 'notification_sent'
+		 GROUP BY ntype`, dateStr, nextDayStr)
 	if err != nil {
 		return nil, fmt.Errorf("get notification breakdown: %w", err)
 	}
@@ -347,6 +349,7 @@ type AppointmentBreakdown struct {
 // GetAppointmentBreakdown returns appointment_created counts broken down by service and CUPS for a date.
 func (r *EventRepo) GetAppointmentBreakdown(ctx context.Context, date time.Time) (*AppointmentBreakdown, error) {
 	dateStr := date.Format("2006-01-02")
+	nextDayStr := date.AddDate(0, 0, 1).Format("2006-01-02") // N-44: rango half-open SARGABLE
 	bd := &AppointmentBreakdown{
 		ByService: make(map[string]int),
 		ByCups:    make(map[string]int),
@@ -359,8 +362,8 @@ func (r *EventRepo) GetAppointmentBreakdown(ctx context.Context, date time.Time)
 			JSON_UNQUOTE(JSON_EXTRACT(event_data, '$.cups_name')) AS cups_name,
 			COUNT(*) AS cnt
 		 FROM chat_events
-		 WHERE DATE(created_at) = ? AND event_type = 'appointment_created'
-		 GROUP BY service_type, cups_code, cups_name`, dateStr)
+		 WHERE created_at >= ? AND created_at < ? AND event_type = 'appointment_created'
+		 GROUP BY service_type, cups_code, cups_name`, dateStr, nextDayStr)
 	if err != nil {
 		return nil, fmt.Errorf("get appointment breakdown: %w", err)
 	}
