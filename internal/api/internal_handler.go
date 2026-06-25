@@ -225,6 +225,49 @@ func (h *InternalHandler) HandleFlowEvents(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleAnomalies lista las anomalías de reconciliación de invariantes (flow=invariante).
+// GET /api/internal/anomalies?from=YYYY-MM-DD&to=YYYY-MM-DD&reason=&limit=
+func (h *InternalHandler) HandleAnomalies(w http.ResponseWriter, r *http.Request) {
+	if h.flowReader == nil {
+		http.Error(w, "flow tracing not configured", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	to := time.Now()
+	from := to.AddDate(0, 0, -7) // default: últimos 7 días
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			from = t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			to = t.AddDate(0, 0, 1)
+		}
+	}
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	events, err := h.flowReader.FindByFilter(r.Context(), "invariante", "", q.Get("reason"), from, to, limit)
+	if err != nil {
+		slog.Error("anomalies query failed", "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	out := make([]map[string]interface{}, 0, len(events))
+	for _, e := range events {
+		out = append(out, flowEventJSON(e))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"count":     len(out),
+		"anomalies": out,
+	})
+}
+
 // HandleSendReminders manually triggers the WhatsApp confirmation reminders task.
 // Useful for testing or catch-up without waiting for the 07:00 scheduler.
 func (h *InternalHandler) HandleSendReminders(w http.ResponseWriter, r *http.Request) {

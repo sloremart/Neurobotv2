@@ -140,6 +140,19 @@ func TestFormatMessage_RedactsPIIInMessage(t *testing.T) {
 	}
 }
 
+// TestFormatMessage_ShowsTraceID verifica que el trace_id de una anomalía aparece en la alerta de
+// Telegram (Fase 2) para saltar directo al recorrido por /flow-trace.
+func TestFormatMessage_ShowsTraceID(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	h := NewAlertHandler(inner, &Client{})
+	record := slog.NewRecord(time.Now(), slog.LevelError, "reconcile anomalies detected", 0)
+	record.Add("trace_id", "wl:123", "count", 2)
+	out := h.formatMessage(record)
+	if !strings.Contains(out, "wl:123") {
+		t.Errorf("trace_id no aparece en la alerta: %q", out)
+	}
+}
+
 func TestAlertHandler_BelowError_NotSent(t *testing.T) {
 	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
 	handler := NewAlertHandler(inner, &Client{})

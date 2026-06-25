@@ -147,6 +147,14 @@ func (h *AlertHandler) formatMessage(r slog.Record) string {
 	b.WriteString(escapeHTML(redactPII(r.Message)))
 	b.WriteString("\n")
 
+	// trace_id prominente (Fase 2 observabilidad): permite saltar directo al recorrido completo
+	// con GET /api/internal/flow-trace?trace_id=<...>. No es PII.
+	if tid := traceIDFromRecord(h.attrs, r); tid != "" {
+		b.WriteString("<b>trace:</b> <code>")
+		b.WriteString(escapeHTML(tid))
+		b.WriteString("</code>\n")
+	}
+
 	// Collect attributes
 	var details []string
 
@@ -223,6 +231,24 @@ func formatAttr(a slog.Attr) string {
 		val = redactPII(val)
 	}
 	return fmt.Sprintf("<code>%s</code>: %s", escapeHTML(a.Key), escapeHTML(val))
+}
+
+// traceIDFromRecord extrae el atributo "trace_id" del record (o de los attrs pre-cargados).
+func traceIDFromRecord(pre []slog.Attr, r slog.Record) string {
+	for _, a := range pre {
+		if a.Key == "trace_id" {
+			return a.Value.String()
+		}
+	}
+	var tid string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "trace_id" {
+			tid = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return tid
 }
 
 func escapeHTML(s string) string {

@@ -48,7 +48,8 @@ type Tasks struct {
 	ProcedureRepo   repository.ProcedureRepository // for IVR address lookup
 	Cfg             *config.Config
 	Tracker         EventLogger
-	InboxRepo       InboxCleaner // WAL cleanup (optional)
+	InboxRepo       InboxCleaner              // WAL cleanup (optional)
+	Reconciler      *observability.Reconciler // reconciliación de invariantes (Fase 2, optional)
 }
 
 // RegisterAll registers the 4 scheduled tasks.
@@ -362,6 +363,12 @@ func (t *Tasks) cleanup(ctx context.Context) error {
 		} else if n > 0 {
 			slog.Info("notification history cleaned", "deleted", n)
 		}
+	}
+
+	// Reconciliación de invariantes (Fase 2 observabilidad): cruza acciones del bot vs estado real
+	// sobre la ventana reciente y emite anomalías consultables (/anomalies) + alerta Telegram.
+	if t.Reconciler != nil {
+		t.Reconciler.Run(ctx)
 	}
 
 	return nil

@@ -93,13 +93,17 @@ var catalog = map[string]stepSpec{
 	"notif_recordatorio/escalated":     {LvOutcome, "escalated", ""},
 	"notif_recordatorio/expired":       {LvOutcome, "info", ""},
 	"notif_recordatorio/error":         {LvError, "error", ""},
+
+	// Reconciliación de invariantes (§4) — anomalía de "mal comportamiento silencioso".
+	"invariante/anomaly": {LvError, "error", ""},
 }
 
-// EmitOpts son los datos variables de un evento. Outcome vacío usa el del catálogo.
+// EmitOpts son los datos variables de un evento. Outcome/RefType vacíos usan los del catálogo.
 type EmitOpts struct {
 	Outcome string
 	Reason  string
 	Phone   string // se enmascara antes de persistir
+	RefType string // override del refType del catálogo (p.ej. anomalías que referencian distintos artefactos)
 	RefID   string
 	Attrs   map[string]interface{}
 }
@@ -170,6 +174,10 @@ func (t *Tracer) emit(traceID, flow, step string, opts EmitOpts) {
 	if outcome == "" {
 		outcome = spec.outcome
 	}
+	refType := spec.refType
+	if opts.RefType != "" {
+		refType = opts.RefType
+	}
 	phone := ""
 	if opts.Phone != "" {
 		phone = utils.MaskPhone(opts.Phone)
@@ -177,7 +185,7 @@ func (t *Tracer) emit(traceID, flow, step string, opts EmitOpts) {
 	ev := domain.FlowEvent{
 		TraceID: traceID, Flow: flow, Step: step, Level: int(spec.level),
 		Outcome: outcome, Reason: opts.Reason, Phone: phone,
-		RefType: spec.refType, RefID: opts.RefID, Attrs: sanitizeAttrs(opts.Attrs),
+		RefType: refType, RefID: opts.RefID, Attrs: sanitizeAttrs(opts.Attrs),
 		CreatedAt: time.Now(),
 	}
 	select {

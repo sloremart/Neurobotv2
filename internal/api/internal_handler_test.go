@@ -899,3 +899,30 @@ func TestHandleFlowEvents_NotConfigured(t *testing.T) {
 		t.Errorf("status = %d, want 503", w.Code)
 	}
 }
+
+func TestHandleAnomalies_FiltersInvariante(t *testing.T) {
+	fake := &fakeFlowReader{events: []domain.FlowEvent{{Flow: "invariante", Step: "anomaly", Outcome: "error", Reason: "orphan_slot"}}}
+	h := &InternalHandler{}
+	h.SetFlowReader(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/anomalies?reason=orphan_slot", nil)
+	w := httptest.NewRecorder()
+	h.HandleAnomalies(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if fake.gotFlow != "invariante" || fake.gotReason != "orphan_slot" {
+		t.Errorf("filtros: flow=%q reason=%q, want invariante/orphan_slot", fake.gotFlow, fake.gotReason)
+	}
+	var resp struct {
+		Count     int                      `json:"count"`
+		Anomalies []map[string]interface{} `json:"anomalies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 1 || len(resp.Anomalies) != 1 {
+		t.Errorf("count=%d anomalies=%d, want 1/1", resp.Count, len(resp.Anomalies))
+	}
+}

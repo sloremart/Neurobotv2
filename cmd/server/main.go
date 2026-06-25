@@ -355,6 +355,16 @@ func main() {
 			Tracker:         tracker,
 			InboxRepo:       inboxRepo,
 		}
+		// Reconciliación de invariantes (Fase 2 observabilidad): checks locales + SIESA (bot-filtered).
+		reconciler := observability.NewReconciler()
+		reconciler.Register("wl_stuck", observability.StuckWaitingListCheck(localDB, 25))
+		reconciler.Register("zombie_escalated", observability.ZombieEscalatedCheck(localDB, 1))
+		if externalDB != nil {
+			reconciler.Register("orphan_slot", observability.OrphanSlotCheck(externalDB, 4))
+			reconciler.Register("consulta_valor_cero", observability.ConsultaValorCeroCheck(externalDB, 4))
+		}
+		schedulerTasks.Reconciler = reconciler
+
 		schedulerTasks.RegisterAll(sched)
 		sched.RunMissedTasks(ctx) // Catch-up missed tasks before starting the regular loop
 		safeGo("scheduler", func() { sched.Start(ctx) })
@@ -412,6 +422,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/sessions/context", internalHandler.HandleSessionContext)
 		internalMux.HandleFunc("GET /api/internal/flow-trace", internalHandler.HandleFlowTrace)
 		internalMux.HandleFunc("GET /api/internal/flow-events", internalHandler.HandleFlowEvents)
+		internalMux.HandleFunc("GET /api/internal/anomalies", internalHandler.HandleAnomalies)
 		mux.Handle(
 			"/api/internal/",
 			api.RateLimiter(30, time.Minute)(
