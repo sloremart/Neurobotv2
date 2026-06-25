@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -73,11 +72,11 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 
 	// 4. Derive flags from Observations
 	isContrasted := "0"
-	if strings.Contains(appt.Observations, "Contrastada") {
+	if utils.ObservationHasContrast(appt.Observations) {
 		isContrasted = "1"
 	}
 	isSedated := "0"
-	if strings.Contains(appt.Observations, "Sedaci") {
+	if utils.ObservationHasSedation(appt.Observations) {
 		isSedated = "1"
 	}
 

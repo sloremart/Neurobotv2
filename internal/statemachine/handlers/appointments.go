@@ -52,7 +52,7 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 		Options:     []string{"reschedule_yes", "reschedule_no"},
 		ErrorMsg:    "Por favor selecciona una de las opciones.",
 		RetryPrompt: confirmReschedulePrompt,
-		Handler:     confirmRescheduleNotifHandler(),
+		Handler:     confirmRescheduleNotifHandler(apptSvc, procRepo),
 	})
 
 	confirmCancelPrompt := func(sess *session.Session, result *sm.StateResult) {
@@ -308,19 +308,18 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 			}
 
 			isContrasted := "0"
-			if strings.Contains(selectedAppt.Observations, "Contrastada") {
+			if utils.ObservationHasContrast(selectedAppt.Observations) {
 				isContrasted = "1"
 			}
 			isSedated := "0"
-			if strings.Contains(selectedAppt.Observations, "Sedaci") {
+			if utils.ObservationHasSedation(selectedAppt.Observations) {
 				isSedated = "1"
 			}
 
-			block := apptSvc.FindConsecutiveBlock(appointments, selectedID)
 			// Modelo multi-slot: una cita ocupa N slots (programacion_medico_detalle.IdCita).
 			// El conteo real de slots de la cita es la fuente de verdad de cuántos espacios
-			// re-reservar; len(block) vale 1 con este modelo y subreservaría la cita.
-			espacios := len(block)
+			// re-reservar; el override por SlotCountForAppointment/SpacesForCUPS de abajo manda.
+			espacios := 1
 			if n, scErr := apptSvc.SlotCountForAppointment(ctx, selectedID); scErr == nil && n > espacios {
 				espacios = n
 			}
@@ -496,11 +495,25 @@ func noAppointmentsHandler() sm.StateHandler {
 // confirmRescheduleNotifHandler handles CONFIRM_RESCHEDULE_NOTIF state.
 // Patient pressed "Reprogramar" on the proactive confirmation template.
 // We ask them to confirm (1/2) before launching the slot search flow.
-func confirmRescheduleNotifHandler() sm.StateHandler {
+func confirmRescheduleNotifHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
 		switch selected {
 		case "reschedule_yes":
+			// Si el paciente tiene varias citas ese día (notificadas juntas), se le deja elegir
+			// CUÁL reprogramar (no se pueden reagendar todas a un mismo horario).
+			apptID := sess.GetContext("reschedule_appt_id")
+			if apptID == "" {
+				apptID = sess.GetContext("notif_appt_id")
+			}
+			if a, dayAppts, ferr := apptSvc.FindBlockByAppointmentID(ctx, apptID); ferr == nil && a != nil && len(dayAppts) > 1 {
+				apptJSON, _ := json.Marshal(dayAppts)
+				listMsg := buildAppointmentList(ctx, apptSvc, dayAppts, procRepo)
+				return sm.NewResult(sm.StateListAppointments).
+					WithContext("appointments_json", string(apptJSON)).
+					WithList("Tienes varias citas ese día. ¿Cuál deseas reprogramar?\n\n"+listMsg.body, listMsg.button, listMsg.section).
+					WithEvent("notif_reschedule_select", map[string]interface{}{"count": len(dayAppts)}), nil
+			}
 			return sm.NewResult(sm.StateSearchSlots).
 				WithEvent("notification_reschedule_confirmed", nil), nil
 		default: // reschedule_no
@@ -625,6 +638,17 @@ func notifPendingHandler(apptSvc *services.AppointmentService, procRepo reposito
 				WithEvent("notif_pending_confirmed", map[string]interface{}{"appointment_id": apptID}), nil
 
 		case "reschedule":
+			// Si el paciente tiene varias citas ese día (notificadas juntas en un mismo mensaje),
+			// no se puede reagendar "todas" a un mismo horario: se le deja elegir CUÁL reprogramar
+			// (reutiliza la lista de "Mis citas"). Con una sola cita, se reagenda directo.
+			if a, dayAppts, ferr := apptSvc.FindBlockByAppointmentID(ctx, apptID); ferr == nil && a != nil && len(dayAppts) > 1 {
+				apptJSON, _ := json.Marshal(dayAppts)
+				listMsg := buildAppointmentList(ctx, apptSvc, dayAppts, procRepo)
+				return sm.NewResult(sm.StateListAppointments).
+					WithContext("appointments_json", string(apptJSON)).
+					WithList("Tienes varias citas ese día. ¿Cuál deseas reprogramar?\n\n"+listMsg.body, listMsg.button, listMsg.section).
+					WithEvent("notif_reschedule_select", map[string]interface{}{"count": len(dayAppts)}), nil
+			}
 			return sm.NewResult(sm.StateSearchSlots).
 				WithContext("reschedule_appt_id", apptID).
 				WithEvent("notif_pending_reschedule", nil), nil
@@ -789,6 +813,17 @@ func buildNotifConfirmDetail(allAppts []domain.Appointment, appt *domain.Appoint
 
 // --- Helpers privados ---
 
+// selectedAppointments devuelve solo la cita seleccionada (modelo 1 cita = N slots; ya no se
+// agrupan citas consecutivas estilo Antares). Vacío si no se encuentra.
+func selectedAppointments(appointments []domain.Appointment, selectedID string) []domain.Appointment {
+	for i := range appointments {
+		if appointments[i].ID == selectedID {
+			return []domain.Appointment{appointments[i]}
+		}
+	}
+	return nil
+}
+
 // executeConfirmAppointment realiza la confirmación de la cita, guardando el conversationID como medio.
 // Busca preparaciones, video/audio y dirección con Maps URL para enviarlas al paciente.
 func executeConfirmAppointment(ctx context.Context, sess *session.Session, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) (*sm.StateResult, error) {
@@ -799,7 +834,7 @@ func executeConfirmAppointment(ctx context.Context, sess *session.Session, apptS
 		return buildAutoCloseResult("No pudimos procesar tu cita en este momento."), nil
 	}
 
-	block := apptSvc.FindConsecutiveBlock(appointments, selectedID)
+	block := selectedAppointments(appointments, selectedID)
 	if len(block) == 0 {
 		return sm.NewResult(sm.StateListAppointments).
 			WithText("No encontramos esa cita. Por favor selecciona otra de la lista.").
@@ -876,7 +911,7 @@ func executeCancelAppointment(ctx context.Context, sess *session.Session, apptSv
 		return buildAutoCloseResult("No pudimos procesar tu cita en este momento."), nil
 	}
 
-	block := apptSvc.FindConsecutiveBlock(appointments, selectedID)
+	block := selectedAppointments(appointments, selectedID)
 	if len(block) == 0 {
 		return sm.NewResult(sm.StateListAppointments).
 			WithText("No encontramos esa cita. Por favor selecciona otra de la lista.").
@@ -941,7 +976,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 	var appointments []domain.Appointment
 	json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appointments)
 
-	block := apptSvc.FindConsecutiveBlock(appointments, selectedID)
+	block := selectedAppointments(appointments, selectedID)
 	if len(block) == 0 {
 		return sm.NewResult(sm.StateListAppointments).
 			WithText("Cita no encontrada. Selecciona otra.").
@@ -1017,7 +1052,7 @@ func buildAppointmentDetail(ctx context.Context, apptSvc *services.AppointmentSe
 		return ""
 	}
 
-	block := apptSvc.FindConsecutiveBlock(appointments, selectedID)
+	block := selectedAppointments(appointments, selectedID)
 
 	statusText := "Pendiente"
 	if appt.Confirmed {
@@ -1078,8 +1113,9 @@ type appointmentListData struct {
 }
 
 // buildAppointmentList constructs the list display for appointments.
-// Each appointment is shown as its own row (no block grouping for display).
-// Block grouping is only used in confirm/cancel actions via FindConsecutiveBlock.
+// Each appointment is shown as its own row (modelo 1 cita = N slots; sin agrupar citas
+// consecutivas estilo Antares). Las acciones de confirmar/cancelar actúan solo sobre la
+// cita seleccionada vía selectedAppointments.
 func buildAppointmentList(ctx context.Context, _ *services.AppointmentService, appointments []domain.Appointment, procRepo repository.ProcedureRepository) appointmentListData {
 	maxShow := 10
 	// N-43: propagar el ctx del handler en lugar de context.Background() para el lookup de procRepo.

@@ -1176,14 +1176,15 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			Procedures:   procedures,
 		}
 
-		// Pre-fetch old block BEFORE creating the new appointment.
-		// FindConsecutiveBlock uses FindByAgendaAndDate, so if the patient rescheduled
-		// to the same day/agenda/doctor the new appointment would appear in the results
-		// and get included in the "old block", causing it to be cancelled alongside the original.
+		// Pre-fetch old appointment BEFORE creating the new one.
+		// FindBlockByAppointmentID ahora devuelve TODAS las citas del paciente ese día;
+		// al reagendar solo debemos cancelar la cita que se reprograma (modelo 1 cita = N slots).
 		rescheduleApptID := sess.GetContext("reschedule_appt_id")
 		var oldBlockToCancel []domain.Appointment
 		if rescheduleApptID != "" && sess.GetContext("reschedule_skip_cancel") != "1" {
-			_, oldBlockToCancel, _ = apptSvc.FindBlockByAppointmentID(ctx, rescheduleApptID)
+			if oldAppt, _, ferr := apptSvc.FindBlockByAppointmentID(ctx, rescheduleApptID); ferr == nil && oldAppt != nil {
+				oldBlockToCancel = []domain.Appointment{*oldAppt}
+			}
 		}
 
 		espacios, _ := strconv.Atoi(sess.GetContext("espacios"))

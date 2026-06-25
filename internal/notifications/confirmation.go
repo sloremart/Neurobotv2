@@ -344,11 +344,11 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 	}
 
 	isContrasted := "0"
-	if strings.Contains(appt.Observations, "Contrastada") {
+	if utils.ObservationHasContrast(appt.Observations) {
 		isContrasted = "1"
 	}
 	isSedated := "0"
-	if strings.Contains(appt.Observations, "Sedaci") {
+	if utils.ObservationHasSedation(appt.Observations) {
 		isSedated = "1"
 	}
 

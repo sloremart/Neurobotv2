@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strconv"
 	"time"
 
@@ -54,75 +53,6 @@ func (s *AppointmentService) GetPatientAppointmentsForDate(ctx context.Context, 
 		}
 	}
 	return result, nil
-}
-
-// FindConsecutiveBlock detecta un bloque de citas consecutivas a partir de una cita.
-// Regla: mismo paciente + mismo doctor + mismo día + misma agenda + horas consecutivas.
-// Recibe la lista completa de citas del paciente (ya obtenida) para evitar otra query.
-func (s *AppointmentService) FindConsecutiveBlock(appointments []domain.Appointment, mainApptID string) []domain.Appointment {
-	var mainAppt *domain.Appointment
-	for i, a := range appointments {
-		if a.ID == mainApptID {
-			mainAppt = &appointments[i]
-			break
-		}
-	}
-	if mainAppt == nil {
-		return nil
-	}
-
-	// Filtrar por mismo día + mismo doctor + misma agenda + mismo paciente
-	dateStr := mainAppt.Date.Format("2006-01-02")
-	var sameDayGroup []domain.Appointment
-	for _, a := range appointments {
-		if a.Date.Format("2006-01-02") == dateStr &&
-			a.DoctorID == mainAppt.DoctorID &&
-			a.AgendaID == mainAppt.AgendaID &&
-			a.PatientID == mainAppt.PatientID {
-			sameDayGroup = append(sameDayGroup, a)
-		}
-	}
-
-	if len(sameDayGroup) <= 1 {
-		return sameDayGroup
-	}
-
-	// Ordenar por timeslot
-	sort.Slice(sameDayGroup, func(i, j int) bool {
-		return sameDayGroup[i].TimeSlot < sameDayGroup[j].TimeSlot
-	})
-
-	// Inferir duración desde el gap entre los dos primeros
-	gap := ParseTimeSlotToMinutes(sameDayGroup[1].TimeSlot) - ParseTimeSlotToMinutes(sameDayGroup[0].TimeSlot)
-	if gap <= 0 {
-		return []domain.Appointment{*mainAppt}
-	}
-
-	// Construir sub-bloques con gap consistente
-	var blocks [][]domain.Appointment
-	current := []domain.Appointment{sameDayGroup[0]}
-
-	for i := 1; i < len(sameDayGroup); i++ {
-		diff := ParseTimeSlotToMinutes(sameDayGroup[i].TimeSlot) - ParseTimeSlotToMinutes(sameDayGroup[i-1].TimeSlot)
-		if diff == gap {
-			current = append(current, sameDayGroup[i])
-		} else {
-			blocks = append(blocks, current)
-			current = []domain.Appointment{sameDayGroup[i]}
-		}
-	}
-	blocks = append(blocks, current)
-
-	// Encontrar el bloque que contiene la cita principal
-	for _, block := range blocks {
-		for _, a := range block {
-			if a.ID == mainApptID {
-				return block
-			}
-		}
-	}
-
-	return []domain.Appointment{*mainAppt}
 }
 
 // ConfirmBlock confirma todas las citas del bloque atómicamente.
@@ -445,7 +375,6 @@ func (s *AppointmentService) createAppointmentProcedureRecords(ctx context.Conte
 	return nil
 }
 
-// FindBlockByAppointmentID fetches the full consecutive block for an appointment.
 // FindLastDoctorForCups returns the document of the last doctor who attended the patient for any of the given CUPS codes.
 func (s *AppointmentService) FindLastDoctorForCups(ctx context.Context, patientID string, cups []string) (string, error) {
 	return s.repo.FindLastDoctorForCups(ctx, patientID, cups)
@@ -459,24 +388,22 @@ func (s *AppointmentService) SlotCountForAppointment(ctx context.Context, apptID
 	return s.repo.SlotCountForAppointment(ctx, apptID)
 }
 
+// FindBlockByAppointmentID devuelve la cita y TODAS las citas del paciente ese día
+// (modelo 1 cita = N slots; ya no se agrupan citas consecutivas estilo Antares).
 func (s *AppointmentService) FindBlockByAppointmentID(ctx context.Context, apptID string) (*domain.Appointment, []domain.Appointment, error) {
 	appt, err := s.repo.FindByID(ctx, apptID)
 	if err != nil || appt == nil {
 		return nil, nil, err
 	}
-
-	dateStr := appt.Date.Format("2006-01-02")
-	dayAppts, err := s.repo.FindByAgendaAndDate(ctx, appt.AgendaID, dateStr)
-	if err != nil {
-		return appt, []domain.Appointment{*appt}, nil // Fallback: single appointment
+	dayAppts, derr := s.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
+	if derr != nil {
+		// Degradación intencional: si falla la consulta del día, actuar al menos sobre la cita.
+		return appt, []domain.Appointment{*appt}, nil //nolint:nilerr
 	}
-
-	block := s.FindConsecutiveBlock(dayAppts, apptID)
-	if len(block) == 0 {
-		block = []domain.Appointment{*appt}
+	if len(dayAppts) == 0 {
+		return appt, []domain.Appointment{*appt}, nil
 	}
-
-	return appt, block, nil
+	return appt, dayAppts, nil
 }
 
 // GetFirstCupName retorna el nombre del primer procedimiento de una cita

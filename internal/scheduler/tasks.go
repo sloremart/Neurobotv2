@@ -145,9 +145,14 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 		// Construir lista única de nombres de procedimientos.
 		// En SIESA, CupName puede ser igual al código si el catálogo de Antares no está cargado;
 		// en ese caso se resuelve el nombre real consultando ProcedureRepo (Antares).
-		seen := make(map[string]bool)
+		// Si el paciente tiene varias citas ese día (a horas distintas), se muestra la hora de cada
+		// una en el texto: el param appointment_time del template solo refleja una. Con una sola
+		// cita, se deja solo el nombre (la hora va en appointment_time).
+		multiAppt := len(group) > 1
 		var procedures []string
 		for _, appt := range group {
+			seen := make(map[string]bool)
+			var names []string
 			for _, proc := range appt.Procedures {
 				code := proc.CupCode
 				if code == "" || seen[code] {
@@ -167,13 +172,25 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 				if name == "" {
 					name = code
 				}
-				procedures = append(procedures, name)
+				names = append(names, name)
 			}
+			if len(names) == 0 {
+				names = []string{"Procedimiento"}
+			}
+			entry := strings.Join(names, ", ")
+			if multiAppt {
+				entry += " (" + services.FormatTimeSlot(appt.TimeSlot) + ")"
+			}
+			procedures = append(procedures, entry)
 		}
 		if len(procedures) == 0 {
 			procedures = []string{"Procedimiento"}
 		}
 		proceduresText := strings.Join(procedures, " y ")
+		// Acotar por el límite de caracteres del body del template de WhatsApp (rune-safe).
+		if r := []rune(proceduresText); len(r) > 600 {
+			proceduresText = string(r[:599]) + "…"
+		}
 
 		appointmentDate := utils.FormatFriendlyDate(firstAppt.Date)
 		appointmentTime := services.FormatTimeSlot(firstAppt.TimeSlot)

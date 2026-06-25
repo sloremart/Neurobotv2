@@ -229,39 +229,6 @@ func TestCreateWithConsecutive_WritesCreationAudit(t *testing.T) {
 	}
 }
 
-func TestFindConsecutiveBlock(t *testing.T) {
-	svc := NewAppointmentService(&mockAppointmentRepo{}, nil)
-
-	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
-
-	// 3 consecutive appointments: 0700, 0730, 0800 (same doctor, same agenda, same patient)
-	appointments := []domain.Appointment{
-		{ID: "a1", Date: date, TimeSlot: "202603150700", DoctorID: "doc1", AgendaID: 1, PatientID: "p1"},
-		{ID: "a2", Date: date, TimeSlot: "202603150730", DoctorID: "doc1", AgendaID: 1, PatientID: "p1"},
-		{ID: "a3", Date: date, TimeSlot: "202603150800", DoctorID: "doc1", AgendaID: 1, PatientID: "p1"},
-		// Isolated appointment (different doctor + different patient)
-		{ID: "a4", Date: date, TimeSlot: "202603150900", DoctorID: "doc2", AgendaID: 2, PatientID: "p2"},
-	}
-
-	// Block starting from a1 should include a1, a2, a3
-	block := svc.FindConsecutiveBlock(appointments, "a1")
-	if len(block) != 3 {
-		t.Errorf("expected block of 3, got %d", len(block))
-	}
-
-	// a4 is isolated → block of 1
-	block4 := svc.FindConsecutiveBlock(appointments, "a4")
-	if len(block4) != 1 {
-		t.Errorf("expected block of 1 for isolated appointment, got %d", len(block4))
-	}
-
-	// Non-existent appointment → nil
-	blockNil := svc.FindConsecutiveBlock(appointments, "nonexistent")
-	if blockNil != nil {
-		t.Errorf("expected nil for non-existent appointment, got %v", blockNil)
-	}
-}
-
 func TestCheckSOATLimit_NonSOAT(t *testing.T) {
 	svc := NewAppointmentService(&mockAppointmentRepo{}, nil)
 
@@ -736,12 +703,13 @@ func TestFindBlockByAppointmentID_Found(t *testing.T) {
 			}
 			return nil, nil
 		},
-		findByAgendaAndDateFn: func(ctx context.Context, agendaID int, dateStr string) ([]domain.Appointment, error) {
-			// Return 3 consecutive appointments on the same day/doctor/agenda/patient
+		findUpcomingByPatientFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			// El "bloque" ahora son TODAS las citas del paciente ese día (incluso en agendas
+			// distintas), no el bloque consecutivo Antares. AgendaID 1/2/3 lo demuestra.
 			return []domain.Appointment{
 				{ID: "a1", Date: date, TimeSlot: "202603150800", DoctorID: "doc1", AgendaID: 1, PatientID: "p1"},
-				{ID: "a2", Date: date, TimeSlot: "202603150830", DoctorID: "doc1", AgendaID: 1, PatientID: "p1"},
-				{ID: "a3", Date: date, TimeSlot: "202603150900", DoctorID: "doc1", AgendaID: 1, PatientID: "p1"},
+				{ID: "a2", Date: date, TimeSlot: "202603151400", DoctorID: "doc2", AgendaID: 2, PatientID: "p1"},
+				{ID: "a3", Date: date, TimeSlot: "202603151600", DoctorID: "doc3", AgendaID: 3, PatientID: "p1"},
 			}, nil
 		},
 	}
@@ -757,32 +725,9 @@ func TestFindBlockByAppointmentID_Found(t *testing.T) {
 	if appt.ID != "a1" {
 		t.Errorf("expected appointment ID 'a1', got %q", appt.ID)
 	}
-	// Block should contain all 3 consecutive appointments
+	// El bloque = todas las citas del paciente ese día (3, en agendas distintas)
 	if len(block) != 3 {
 		t.Errorf("expected block of 3, got %d", len(block))
-	}
-}
-
-func TestFindConsecutiveBlock_DoesNotMixPatients(t *testing.T) {
-	svc := NewAppointmentService(&mockAppointmentRepo{}, nil)
-	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
-
-	// Same doctor, same agenda, consecutive slots, BUT different patients
-	appointments := []domain.Appointment{
-		{ID: "a1", Date: date, TimeSlot: "202603150700", DoctorID: "doc1", AgendaID: 1, PatientID: "p1"},
-		{ID: "a2", Date: date, TimeSlot: "202603150730", DoctorID: "doc1", AgendaID: 1, PatientID: "p2"},
-		{ID: "a3", Date: date, TimeSlot: "202603150800", DoctorID: "doc1", AgendaID: 1, PatientID: "p3"},
-	}
-
-	// Each appointment should be a block of 1 (not grouped with other patients)
-	block1 := svc.FindConsecutiveBlock(appointments, "a1")
-	if len(block1) != 1 {
-		t.Errorf("expected block of 1 for patient p1, got %d (was grouping other patients' appointments!)", len(block1))
-	}
-
-	block2 := svc.FindConsecutiveBlock(appointments, "a2")
-	if len(block2) != 1 {
-		t.Errorf("expected block of 1 for patient p2, got %d", len(block2))
 	}
 }
 
