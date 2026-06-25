@@ -342,6 +342,7 @@ func applyResonanciaRules(g CUPSGroup) CUPSGroup {
 
 	// Check if any combination rule applies (all codes in rule must be present)
 	combinationSpaces := -1
+	var matchedComboCodes []string // códigos de la combinación que efectivamente matcheó
 	for _, combo := range resonanciaCombinations {
 		allPresent := true
 		for _, code := range combo.codes {
@@ -356,6 +357,7 @@ func applyResonanciaRules(g CUPSGroup) CUPSGroup {
 			} else {
 				combinationSpaces = combo.simple
 			}
+			matchedComboCodes = combo.codes
 			break // use first matching combination
 		}
 	}
@@ -370,15 +372,14 @@ func applyResonanciaRules(g CUPSGroup) CUPSGroup {
 			if c.Code == sedacionResonanciaCode {
 				continue
 			}
+			// inCombo se evalúa SOLO contra la combinación que efectivamente matcheó (no contra
+			// todas): un CUP que pertenece a OTRA combinación NO aplicada debe contar sus slots
+			// individuales. Antes el loop recorría todas las combinaciones y lo excluía → sub-reserva.
 			inCombo := false
-			for _, combo := range resonanciaCombinations {
-				if combinationSpaces >= 0 {
-					for _, cc := range combo.codes {
-						if cc == c.Code {
-							inCombo = true
-							break
-						}
-					}
+			for _, cc := range matchedComboCodes {
+				if cc == c.Code {
+					inCombo = true
+					break
 				}
 			}
 			if !inCombo {
