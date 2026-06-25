@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"syscall"
 	"time"
 
@@ -519,32 +520,61 @@ func initRepositories(driver string, externalDB, localDB *sql.DB) *repository.Re
 	}
 }
 
+// N-47: cache en memoria del resultado del health-check para evitar hacer Ping a
+// localDB y externalDB (SIESA) en cada hit a /health. Los Pings solo se ejecutan si
+// el ultimo resultado tiene mas de healthCacheTTL de antiguedad.
+const healthCacheTTL = 5 * time.Second
+
+type healthCache struct {
+	mu        sync.Mutex
+	lastCheck time.Time
+	health    map[string]string
+	critical  bool
+}
+
 func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
+	cache := &healthCache{}
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		health := map[string]string{"status": "ok"}
-		critical := false
+		cache.mu.Lock()
+		// N-47: si el resultado cacheado sigue vigente, responderlo sin Ping.
+		if cache.health == nil || time.Since(cache.lastCheck) >= healthCacheTTL {
+			health := map[string]string{"status": "ok"}
+			critical := false
 
-		if err := localDB.Ping(); err != nil {
-			health["local_db"] = "error"
-			health["status"] = "critical"
-			critical = true
-		} else {
-			health["local_db"] = "ok"
+			pingCtx, cancelPing := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancelPing()
+
+			if err := localDB.PingContext(pingCtx); err != nil {
+				health["local_db"] = "error"
+				health["status"] = "critical"
+				critical = true
+			} else {
+				health["local_db"] = "ok"
+			}
+
+			if externalDB == nil {
+				health["external_db"] = "not connected"
+				if health["status"] == "ok" {
+					health["status"] = "degraded"
+				}
+			} else if err := externalDB.PingContext(pingCtx); err != nil {
+				health["external_db"] = "error"
+				if health["status"] == "ok" {
+					health["status"] = "degraded"
+				}
+			} else {
+				health["external_db"] = "ok"
+			}
+
+			cache.health = health
+			cache.critical = critical
+			cache.lastCheck = time.Now()
 		}
 
-		if externalDB == nil {
-			health["external_db"] = "not connected"
-			if health["status"] == "ok" {
-				health["status"] = "degraded"
-			}
-		} else if err := externalDB.Ping(); err != nil {
-			health["external_db"] = "error"
-			if health["status"] == "ok" {
-				health["status"] = "degraded"
-			}
-		} else {
-			health["external_db"] = "ok"
-		}
+		health := cache.health
+		critical := cache.critical
+		cache.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
 		if critical {

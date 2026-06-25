@@ -255,10 +255,19 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 	go func() {
 		defer recoverLog("send-agenda-confirmations")
 
+		// N-45: no hay ctx de aplicación cancelable disponible aquí; acotamos el
+		// envío con un timeout para que respete una parada razonable.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
 		patients := groupAppointmentsByPatientID(appointments)
 		sent, skipped := 0, 0
 
 		for _, group := range patients {
+			// Detener envíos si el contexto fue cancelado (apagado/timeout)
+			if ctx.Err() != nil {
+				break
+			}
 			firstAppt := group[0]
 			phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
 			if phone == "" {
@@ -322,7 +331,10 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 			}
 
 			sent++
-			time.Sleep(2 * time.Second)
+			// Rate limit (respeta cancelación)
+			if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+				break
+			}
 		}
 
 		slog.Info("agenda confirmations complete",
@@ -409,8 +421,18 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 		// Send notifications in background goroutine to avoid blocking HTTP response
 		go func() {
 			defer recoverLog("cancel-agenda-notify")
+
+			// N-45: no hay ctx de aplicación cancelable disponible aquí; acotamos el
+			// envío con un timeout para que respete una parada razonable.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
 			notified := 0
 			for _, group := range patients {
+				// Detener envíos si el contexto fue cancelado (apagado/timeout)
+				if ctx.Err() != nil {
+					break
+				}
 				firstAppt := group[0]
 				phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
 				if phone == "" {
@@ -459,7 +481,10 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 				}
 
 				notified++
-				time.Sleep(2 * time.Second) // Rate limit between messages
+				// Rate limit between messages (respeta cancelación)
+				if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+					break
+				}
 			}
 			slog.Info("agenda cancellation notifications sent", "notified", notified, "total", len(patients))
 		}()
@@ -698,8 +723,18 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 
 	go func() {
 		defer recoverLog("reschedule-agenda-notify")
+
+		// N-45: no hay ctx de aplicación cancelable disponible aquí; acotamos el
+		// envío con un timeout para que respete una parada razonable.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
 		notified := 0
 		for _, group := range patients {
+			// Detener envíos si el contexto fue cancelado (apagado/timeout)
+			if ctx.Err() != nil {
+				break
+			}
 			firstAppt := group[0]
 			phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
 			if phone == "" {
@@ -749,7 +784,10 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 			}
 
 			notified++
-			time.Sleep(2 * time.Second) // Rate limit
+			// Rate limit (respeta cancelación)
+			if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+				break
+			}
 		}
 		slog.Info("reschedule notifications sent", "notified", notified, "total", len(patients))
 	}()

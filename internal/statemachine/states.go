@@ -35,33 +35,30 @@ const (
 
 // === Registro de Paciente Nuevo ===
 const (
-	StateRegistrationStart     = "REGISTRATION_START"
-	StateRegDocumentType       = "REG_DOCUMENT_TYPE"
-	StateRegDocumentIssuePlace = "REG_DOCUMENT_ISSUE_PLACE"
-	StateRegFirstSurname       = "REG_FIRST_SURNAME"
-	StateRegSecondSurname      = "REG_SECOND_SURNAME"
-	StateRegFirstName          = "REG_FIRST_NAME"
-	StateRegSecondName         = "REG_SECOND_NAME"
-	StateRegBirthDate          = "REG_BIRTH_DATE"
-	StateRegBirthPlace         = "REG_BIRTH_PLACE"
-	StateRegGender             = "REG_GENDER"
-	StateRegBloodType          = "REG_BLOOD_TYPE"
-	StateRegMaritalStatus      = "REG_MARITAL_STATUS"
-	StateRegAddress            = "REG_ADDRESS"
-	StateRegPhone              = "REG_PHONE"
-	StateRegPhone2             = "REG_PHONE2"
-	StateRegEmail              = "REG_EMAIL"
-	StateRegOccupation         = "REG_OCCUPATION"
-	StateRegMunicipality       = "REG_MUNICIPALITY"
-	StateRegBarrio             = "REG_BARRIO"
-	StateRegClientType         = "REG_CLIENT_TYPE"
-	StateRegUserType           = "REG_USER_TYPE"
-	StateRegAffiliationType    = "REG_AFFILIATION_TYPE"
-	StateRegEntity             = "REG_ENTITY"
-	StateRegZone               = "REG_ZONE"
-	StateRegSelectCorrection   = "REG_SELECT_CORRECTION"
-	StateConfirmRegistration   = "CONFIRM_REGISTRATION"
-	StateCreatePatient         = "CREATE_PATIENT"
+	StateRegistrationStart   = "REGISTRATION_START"
+	StateRegDocumentType     = "REG_DOCUMENT_TYPE"
+	StateRegFirstSurname     = "REG_FIRST_SURNAME"
+	StateRegSecondSurname    = "REG_SECOND_SURNAME"
+	StateRegFirstName        = "REG_FIRST_NAME"
+	StateRegSecondName       = "REG_SECOND_NAME"
+	StateRegBirthDate        = "REG_BIRTH_DATE"
+	StateRegGender           = "REG_GENDER"
+	StateRegBloodType        = "REG_BLOOD_TYPE"
+	StateRegMaritalStatus    = "REG_MARITAL_STATUS"
+	StateRegAddress          = "REG_ADDRESS"
+	StateRegPhone            = "REG_PHONE"
+	StateRegPhone2           = "REG_PHONE2"
+	StateRegEmail            = "REG_EMAIL"
+	StateRegMunicipality     = "REG_MUNICIPALITY"
+	StateRegBarrio           = "REG_BARRIO"
+	StateRegClientType       = "REG_CLIENT_TYPE"
+	StateRegUserType         = "REG_USER_TYPE"
+	StateRegAffiliationType  = "REG_AFFILIATION_TYPE"
+	StateRegEntity           = "REG_ENTITY"
+	StateRegZone             = "REG_ZONE"
+	StateRegSelectCorrection = "REG_SELECT_CORRECTION"
+	StateConfirmRegistration = "CONFIRM_REGISTRATION"
+	StateCreatePatient       = "CREATE_PATIENT"
 )
 
 // === Consulta de Citas ===
@@ -188,33 +185,30 @@ var stateTypes = map[string]StateType{
 	StateOutOfHoursMenu:      StateTypeInteractive,
 
 	// Registro
-	StateRegistrationStart:     StateTypeInteractive,
-	StateRegDocumentType:       StateTypeInteractive,
-	StateRegDocumentIssuePlace: StateTypeInteractive,
-	StateRegFirstSurname:       StateTypeInteractive,
-	StateRegSecondSurname:      StateTypeInteractive,
-	StateRegFirstName:          StateTypeInteractive,
-	StateRegSecondName:         StateTypeInteractive,
-	StateRegBirthDate:          StateTypeInteractive,
-	StateRegBirthPlace:         StateTypeInteractive,
-	StateRegGender:             StateTypeInteractive,
-	StateRegBloodType:          StateTypeInteractive,
-	StateRegMaritalStatus:      StateTypeInteractive,
-	StateRegAddress:            StateTypeInteractive,
-	StateRegPhone:              StateTypeInteractive,
-	StateRegPhone2:             StateTypeInteractive,
-	StateRegEmail:              StateTypeInteractive,
-	StateRegOccupation:         StateTypeInteractive,
-	StateRegMunicipality:       StateTypeInteractive,
-	StateRegBarrio:             StateTypeInteractive,
-	StateRegClientType:         StateTypeInteractive,
-	StateRegUserType:           StateTypeInteractive,
-	StateRegAffiliationType:    StateTypeInteractive,
-	StateRegEntity:             StateTypeInteractive,
-	StateRegZone:               StateTypeInteractive,
-	StateRegSelectCorrection:   StateTypeInteractive,
-	StateConfirmRegistration:   StateTypeInteractive,
-	StateCreatePatient:         StateTypeAutomatic,
+	StateRegistrationStart:   StateTypeInteractive,
+	StateRegDocumentType:     StateTypeInteractive,
+	StateRegFirstSurname:     StateTypeInteractive,
+	StateRegSecondSurname:    StateTypeInteractive,
+	StateRegFirstName:        StateTypeInteractive,
+	StateRegSecondName:       StateTypeInteractive,
+	StateRegBirthDate:        StateTypeInteractive,
+	StateRegGender:           StateTypeInteractive,
+	StateRegBloodType:        StateTypeInteractive,
+	StateRegMaritalStatus:    StateTypeInteractive,
+	StateRegAddress:          StateTypeInteractive,
+	StateRegPhone:            StateTypeInteractive,
+	StateRegPhone2:           StateTypeInteractive,
+	StateRegEmail:            StateTypeInteractive,
+	StateRegMunicipality:     StateTypeInteractive,
+	StateRegBarrio:           StateTypeInteractive,
+	StateRegClientType:       StateTypeInteractive,
+	StateRegUserType:         StateTypeInteractive,
+	StateRegAffiliationType:  StateTypeInteractive,
+	StateRegEntity:           StateTypeInteractive,
+	StateRegZone:             StateTypeInteractive,
+	StateRegSelectCorrection: StateTypeInteractive,
+	StateConfirmRegistration: StateTypeInteractive,
+	StateCreatePatient:       StateTypeAutomatic,
 
 	// Consulta de Citas
 	StateFetchAppointments: StateTypeAutomatic,

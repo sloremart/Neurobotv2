@@ -30,6 +30,18 @@ func recoverLog(name string) {
 	}
 }
 
+// sleepWithContext espera la duración indicada o retorna antes si el contexto se cancela.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // InboxPersister abstracts message inbox operations for crash recovery (WAL pattern).
 type InboxPersister interface {
 	InsertIfNotExists(ctx context.Context, id, phone, rawBody, msgType string, receivedAt time.Time) (bool, error)

@@ -180,11 +180,20 @@ func (r *EventRepo) GetDailyKPIs(ctx context.Context, date time.Time) (*DailyKPI
 	dateStr := date.Format("2006-01-02")
 	kpis := &DailyKPIs{Date: dateStr}
 
+	// N-44: rango half-open SARGABLE en lugar de DATE(created_at)=? (no sargable, full scan).
+	// nextDayStr es el inicio del dia siguiente; el rango [dateStr, nextDayStr) cubre
+	// exactamente el mismo dia que DATE(created_at)=dateStr.
+	dayStart, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse kpi date: %w", err)
+	}
+	nextDayStr := dayStart.AddDate(0, 0, 1).Format("2006-01-02")
+
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT event_type, COUNT(*) as cnt
 		 FROM chat_events
-		 WHERE DATE(created_at) = ?
-		 GROUP BY event_type`, dateStr)
+		 WHERE created_at >= ? AND created_at < ?
+		 GROUP BY event_type`, dateStr, nextDayStr)
 	if err != nil {
 		return nil, fmt.Errorf("get daily kpis: %w", err)
 	}
@@ -279,7 +288,7 @@ func (r *EventRepo) GetDailyKPIs(ctx context.Context, date time.Time) (*DailyKPI
 		 )), 0)
 		 FROM chat_events ce
 		 WHERE ce.event_type IN ('session_completed', 'session_closed_inactivity')
-		 AND DATE(ce.created_at) = ?`, dateStr).Scan(&kpis.AvgSessionDuration); err != nil {
+		 AND ce.created_at >= ? AND ce.created_at < ?`, dateStr, nextDayStr).Scan(&kpis.AvgSessionDuration); err != nil {
 		slog.Warn("kpi avg session duration query failed", "date", dateStr, "error", err)
 	}
 

@@ -42,7 +42,6 @@ func RegisterRegistrationHandlers(
 	// excluyen AS/MS/SI "sin identificación"). WhatsApp limita las listas interactivas a 10
 	// filas, por eso se ofrece como menú de texto numerado.
 	m.Register(sm.StateRegDocumentType, withCorrectionRedirect(regDocumentTypeHandler()))
-	m.Register(sm.StateRegDocumentIssuePlace, regDocumentIssuePlaceHandler())
 	m.Register(sm.StateRegFirstSurname, withCorrectionRedirect(regFieldHandler("reg_first_surname", "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondSurname, "Si tienes *segundo apellido*, escríbelo. Si no, responde *NA*:")))
 	m.Register(sm.StateRegSecondSurname, regOptionalFieldHandler("reg_second_surname", "Si tienes segundo apellido, escríbelo. Si no, responde *NA*:", sm.StateRegFirstName, "Por favor escribe tu *primer nombre* (solo letras, sin números ni símbolos):"))
 	m.Register(sm.StateRegFirstName, withCorrectionRedirect(regFieldHandler("reg_first_name", "Por favor escribe tu primer nombre (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondName, "Si tienes *segundo nombre*, escríbelo. Si no, responde *NA*:")))
@@ -311,32 +310,6 @@ func regDocumentTypeHandler() sm.StateHandler {
 		sess.RetryCount = 0
 		return sm.NewResult(sm.StateRegFirstSurname).
 			WithContext("reg_document_type", parseDocType(msg.Text)).
-			WithText("Por favor escribe tu *primer apellido* (solo letras, sin números ni símbolos):"), nil
-	}
-}
-
-// REG_DOCUMENT_ISSUE_PLACE — lugar de expedición, truncated to 15 chars (DB column char(15)).
-func regDocumentIssuePlaceHandler() sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		input := strings.TrimSpace(msg.Text)
-
-		if sm.IsReservedKeyword(input) {
-			input = ""
-		}
-
-		retryResult := sm.ValidateWithRetry(sess, input, validateNotEmpty,
-			"Respuesta no válida. Ciudad donde se expidió tu documento (ej.: Villavicencio):")
-		if retryResult != nil {
-			return retryResult, nil
-		}
-
-		value := strings.ToUpper(input)
-		if len(value) > 15 {
-			value = value[:15]
-		}
-
-		return sm.NewResult(sm.StateRegFirstSurname).
-			WithContext("reg_document_issue_place", value).
 			WithText("Por favor escribe tu *primer apellido* (solo letras, sin números ni símbolos):"), nil
 	}
 }
@@ -839,29 +812,28 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 		}
 
 		input := domain.CreatePatientInput{
-			DocumentType:       sess.GetContext("reg_document_type"),
-			DocumentNumber:     sess.GetContext("patient_doc"),
-			DocumentIssuePlace: sess.GetContext("reg_document_issue_place"),
-			FirstName:          sess.GetContext("reg_first_name"),
-			SecondName:         sess.GetContext("reg_second_name"),
-			FirstSurname:       sess.GetContext("reg_first_surname"),
-			SecondSurname:      sess.GetContext("reg_second_surname"),
-			BirthDate:          birthDate,
-			Gender:             sess.GetContext("reg_gender"),
-			Phone:              sess.GetContext("reg_phone"),
-			Phone2:             sess.GetContext("reg_phone2"),
-			Email:              sess.GetContext("reg_email"),
-			Address:            sess.GetContext("reg_address"),
-			DepartmentCode:     sess.GetContext("reg_department"),
-			CityCode:           sess.GetContext("reg_municipality"),
-			Zone:               sess.GetContext("reg_zone"),
-			EntityCode:         entityCode,
-			AffiliationType:    sess.GetContext("reg_affiliation_type"),
-			UserType:           sess.GetContext("reg_user_type"),
-			MaritalStatus:      sess.GetContext("reg_marital_status"),
-			BloodType:          sess.GetContext("reg_blood_type"),
-			Barrio:             sess.GetContext("reg_barrio"),
-			CountryCode:        "170",
+			DocumentType:    sess.GetContext("reg_document_type"),
+			DocumentNumber:  sess.GetContext("patient_doc"),
+			FirstName:       sess.GetContext("reg_first_name"),
+			SecondName:      sess.GetContext("reg_second_name"),
+			FirstSurname:    sess.GetContext("reg_first_surname"),
+			SecondSurname:   sess.GetContext("reg_second_surname"),
+			BirthDate:       birthDate,
+			Gender:          sess.GetContext("reg_gender"),
+			Phone:           sess.GetContext("reg_phone"),
+			Phone2:          sess.GetContext("reg_phone2"),
+			Email:           sess.GetContext("reg_email"),
+			Address:         sess.GetContext("reg_address"),
+			DepartmentCode:  sess.GetContext("reg_department"),
+			CityCode:        sess.GetContext("reg_municipality"),
+			Zone:            sess.GetContext("reg_zone"),
+			EntityCode:      entityCode,
+			AffiliationType: sess.GetContext("reg_affiliation_type"),
+			UserType:        sess.GetContext("reg_user_type"),
+			MaritalStatus:   sess.GetContext("reg_marital_status"),
+			BloodType:       sess.GetContext("reg_blood_type"),
+			Barrio:          sess.GetContext("reg_barrio"),
+			CountryCode:     "170",
 		}
 
 		patientID, err := patientSvc.Create(ctx, input)

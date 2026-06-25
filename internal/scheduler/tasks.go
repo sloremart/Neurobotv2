@@ -122,6 +122,10 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 	skipped := 0
 
 	for _, group := range patientGroups {
+		// Detener envíos si el contexto fue cancelado (apagado)
+		if ctx.Err() != nil {
+			break
+		}
 		firstAppt := group[0]
 
 		phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
@@ -223,8 +227,10 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 		sent++
 
-		// Rate limiting: 2 seconds between sends
-		time.Sleep(2 * time.Second)
+		// Rate limiting: 2 seconds between sends (respeta cancelación)
+		if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+			break
+		}
 	}
 
 	slog.Info("whatsapp reminders complete", "sent", sent, "skipped", skipped)
@@ -263,6 +269,10 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 
 	sent := 0
 	for _, pending := range targets {
+		// Detener llamadas si el contexto fue cancelado (apagado)
+		if ctx.Err() != nil {
+			break
+		}
 		if !t.Cfg.IsPhoneWhitelisted(pending.Phone) {
 			continue
 		}
@@ -314,7 +324,10 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 		slog.Info("ivr call initiated", "phone", utils.MaskPhone(pending.Phone), "appointment_id", pending.AppointmentID)
 
 		sent++
-		time.Sleep(3 * time.Second) // Rate limit for calls
+		// Rate limit for calls (respeta cancelación)
+		if err := sleepWithContext(ctx, 3*time.Second); err != nil {
+			break
+		}
 	}
 
 	slog.Info("voice reminders complete", "sent", sent, "targets", len(targets))
@@ -380,6 +393,10 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 	totalNotified := 0
 
 	for _, cupsCode := range cupsCodes {
+		// Detener envíos si el contexto fue cancelado (apagado)
+		if ctx.Err() != nil {
+			break
+		}
 		// 3. Buscar slots disponibles (usar primera entry como referencia)
 		entries, err := t.WaitingListRepo.GetWaitingByCups(ctx, cupsCode, 1)
 		if err != nil {
@@ -433,6 +450,10 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 		}
 
 		for _, entry := range entriesToNotify {
+			// Detener envíos si el contexto fue cancelado (apagado)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if !t.Cfg.IsPhoneWhitelisted(entry.PhoneNumber) {
 				continue
 			}
@@ -516,7 +537,10 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 			totalNotified++
 			slog.Info("waiting list notification sent", "phone", utils.MaskPhone(entry.PhoneNumber), "entry_id", entry.ID)
 
-			time.Sleep(2 * time.Second) // Rate limit
+			// Rate limit (respeta cancelación)
+			if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -525,6 +549,18 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 }
 
 // === Helpers ===
+
+// sleepWithContext espera la duración indicada o retorna antes si el contexto se cancela.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
 func groupAppointmentsByPatient(appointments []domain.Appointment) map[string][]domain.Appointment {
 	groups := make(map[string][]domain.Appointment)
