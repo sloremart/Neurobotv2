@@ -254,6 +254,42 @@ func TestEvaluateTasks_TaskFnError_DoesNotCrash(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// TestScheduler_WaitDrainsInFlightTasks cubre N-37: Wait() espera a que las tareas en vuelo
+// terminen (con deadline), para que el apagado no las mate a medio camino.
+func TestScheduler_WaitDrainsInFlightTasks(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var done atomic.Bool
+	release := make(chan struct{})
+	s.AddTask(ScheduledTask{
+		Name: "slow", Hour: 10, Minute: 0,
+		Fn: func(_ context.Context) error {
+			<-release
+			done.Store(true)
+			return nil
+		},
+	})
+
+	now := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC)
+	s.evaluateTasks(context.Background(), now, make(map[string]time.Time))
+
+	// La tarea está bloqueada → Wait con deadline corto NO debe drenar.
+	if s.Wait(50 * time.Millisecond) {
+		t.Error("expected Wait to time out while task is in-flight")
+	}
+	if done.Load() {
+		t.Error("task should still be blocked")
+	}
+
+	// Liberar y drenar.
+	close(release)
+	if !s.Wait(2 * time.Second) {
+		t.Error("expected Wait to drain after task released")
+	}
+	if !done.Load() {
+		t.Error("task should have completed after drain")
+	}
+}
+
 func TestEvaluateTasks_EmptyTaskList(t *testing.T) {
 	s := NewScheduler(time.UTC)
 	now := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC)

@@ -5,8 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 	"time"
 )
+
+// defaultTaskTimeout es el backstop por-ejecución (N-39): acota una tarea colgada sin matar las
+// corridas largas legítimas (los recordatorios diarios sobre volúmenes reales tardan minutos).
+const defaultTaskTimeout = 1 * time.Hour
 
 // RunRepo persists the last successful execution of scheduled tasks.
 type RunRepo interface {
@@ -25,19 +30,96 @@ type ScheduledTask struct {
 
 // Scheduler executes tasks at configured times using a 1-minute ticker.
 type Scheduler struct {
-	tasks    []ScheduledTask
-	timezone *time.Location
-	runRepo  RunRepo // optional — persists run times for crash catch-up
+	tasks       []ScheduledTask
+	timezone    *time.Location
+	runRepo     RunRepo // optional — persists run times for crash catch-up
+	wg          sync.WaitGroup
+	taskTimeout time.Duration
 }
 
 // NewScheduler creates a new scheduler with the given timezone.
 func NewScheduler(tz *time.Location) *Scheduler {
-	return &Scheduler{timezone: tz}
+	return &Scheduler{timezone: tz, taskTimeout: defaultTaskTimeout}
 }
 
 // SetRunRepo injects the repo for persisting task run times.
 func (s *Scheduler) SetRunRepo(repo RunRepo) {
 	s.runRepo = repo
+}
+
+// SetTaskTimeout sobreescribe el backstop por-ejecución (N-39). <=0 lo ignora.
+func (s *Scheduler) SetTaskTimeout(d time.Duration) {
+	if d > 0 {
+		s.taskTimeout = d
+	}
+}
+
+// Wait drena las tareas en vuelo hasta `timeout`. Se llama en el apagado, tras cancelar el ctx
+// (las tareas paran rápido por N-38), para que ninguna goroutine muera a media escritura ni se
+// pierda un last-run ya completado. Devuelve true si todas drenaron a tiempo.
+func (s *Scheduler) Wait(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		slog.Warn("scheduler: in-flight tasks did not drain within timeout", "timeout", timeout)
+		return false
+	}
+}
+
+// runTask ejecuta una tarea en su propia goroutine, trackeada por el WaitGroup (N-37) y acotada
+// por un timeout por-ejecución (N-39). Persiste el last-run solo si la tarea terminó con éxito.
+func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.Time, label string) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC in "+label,
+					"task", task.Name,
+					"error", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+			}
+		}()
+
+		// N-39: timeout por-ejecución como backstop. Hereda la cancelación del ctx de la app,
+		// así que en el apagado la tarea para rápido (sleeps cancelables, N-38).
+		timeout := s.taskTimeout
+		if timeout <= 0 {
+			timeout = defaultTaskTimeout // robustez ante construcción por literal
+		}
+		taskCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		slog.Info(label+" starting", "task", task.Name)
+		start := time.Now()
+		if err := task.Fn(taskCtx); err != nil {
+			slog.Error(label+" failed", "task", task.Name, "error", err,
+				"duration_ms", time.Since(start).Milliseconds())
+			return
+		}
+		slog.Info(label+" completed", "task", task.Name,
+			"duration_ms", time.Since(start).Milliseconds())
+
+		// Persistir el last-run con un ctx INDEPENDIENTE y acotado: una tarea que SÍ terminó debe
+		// registrar su corrida aunque el apagado esté cancelando el ctx de la app, para no
+		// re-ejecutarse (y re-notificar) en el siguiente arranque.
+		if s.runRepo != nil {
+			// WithoutCancel: deriva del ctx de la app (conserva valores) pero NO se cancela en el
+			// apagado, así una tarea que terminó persiste su last-run para no re-ejecutarse.
+			pctx, pcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			if err := s.runRepo.SetLastRun(pctx, task.Name, runAt); err != nil {
+				slog.Error("persist "+label+" run", "task", task.Name, "error", err)
+			}
+			pcancel()
+		}
+	}()
 }
 
 // AddTask registers a task to be executed at the configured time.
@@ -114,32 +196,7 @@ func (s *Scheduler) RunMissedTasks(ctx context.Context) {
 			"scheduled_at", scheduledToday,
 		)
 
-		go func(t ScheduledTask) {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("PANIC in scheduler catch-up task",
-						"task", t.Name,
-						"error", fmt.Sprintf("%v", r),
-						"stack", string(debug.Stack()),
-					)
-				}
-			}()
-			slog.Info("scheduler catch-up: running missed task", "task", t.Name)
-			start := time.Now()
-
-			if err := t.Fn(ctx); err != nil {
-				slog.Error("scheduler catch-up failed", "task", t.Name, "error", err,
-					"duration_ms", time.Since(start).Milliseconds())
-			} else {
-				slog.Info("scheduler catch-up completed", "task", t.Name,
-					"duration_ms", time.Since(start).Milliseconds())
-				if s.runRepo != nil {
-					if err := s.runRepo.SetLastRun(context.Background(), t.Name, time.Now()); err != nil {
-						slog.Error("persist catch-up run", "task", t.Name, "error", err)
-					}
-				}
-			}
-		}(task)
+		s.runTask(ctx, task, time.Now(), "scheduler catch-up")
 	}
 }
 
@@ -175,33 +232,7 @@ func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun ma
 		lastRun[key] = now
 		executed = append(executed, task.Name)
 
-		go func(t ScheduledTask) {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("PANIC in scheduler task",
-						"task", t.Name,
-						"error", fmt.Sprintf("%v", r),
-						"stack", string(debug.Stack()),
-					)
-				}
-			}()
-			slog.Info("scheduler task starting", "task", t.Name)
-			start := time.Now()
-
-			if err := t.Fn(ctx); err != nil {
-				slog.Error("scheduler task failed", "task", t.Name, "error", err,
-					"duration_ms", time.Since(start).Milliseconds())
-			} else {
-				slog.Info("scheduler task completed", "task", t.Name,
-					"duration_ms", time.Since(start).Milliseconds())
-				// Persist successful run time
-				if s.runRepo != nil {
-					if err := s.runRepo.SetLastRun(context.Background(), t.Name, now); err != nil {
-						slog.Error("persist scheduler run", "task", t.Name, "error", err)
-					}
-				}
-			}
-		}(task)
+		s.runTask(ctx, task, now, "scheduler task")
 	}
 
 	return executed

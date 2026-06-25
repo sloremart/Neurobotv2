@@ -328,10 +328,11 @@ func main() {
 	}
 
 	var schedulerTasks *scheduler.Tasks
+	var sched *scheduler.Scheduler
 	if repos != nil && notifyManager != nil {
 		schedulerRunRepo := localrepo.NewSchedulerRunRepo(localDB)
 
-		sched := scheduler.NewScheduler(loc)
+		sched = scheduler.NewScheduler(loc)
 		sched.SetRunRepo(schedulerRunRepo)
 		schedulerTasks = &scheduler.Tasks{
 			AppointmentRepo: repos.Appointment,
@@ -451,6 +452,13 @@ func main() {
 		slog.Info("shutdown complete")
 	case <-time.After(20 * time.Second):
 		slog.Error("shutdown timeout: worker pool did not stop within 20s")
+	}
+
+	// 3. Drenar tareas del scheduler en vuelo (N-37) antes de cerrar conexiones (DB se cierra en
+	// los defers al retornar). El ctx ya fue cancelado, así que las tareas paran rápido (N-38);
+	// las que terminan persisten su last-run para no re-ejecutarse en el arranque.
+	if sched != nil {
+		sched.Wait(20 * time.Second)
 	}
 }
 

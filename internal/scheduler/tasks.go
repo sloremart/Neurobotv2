@@ -143,6 +143,17 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			continue
 		}
 
+		// Idempotencia (N-37): si ya existe un pending para este teléfono (recordatorio ya enviado
+		// hoy; restaurado desde BD tras un reinicio), no reenviar. Hace seguro el re-run del
+		// catch-up cuando una corrida previa quedó cortada a media lista: notifica solo a los que
+		// faltaban, sin duplicar. En la corrida normal de las 07:00 aún no hay pending para la cita
+		// de mañana, así que no altera el flujo establecido.
+		if t.NotifyManager != nil && t.NotifyManager.HasPending(phone) {
+			skipped++
+			slog.Debug("skip reminder - already pending (idempotent re-run)", "phone", utils.MaskPhone(phone))
+			continue
+		}
+
 		proceduresText := buildReminderProcedures(ctx, group, t.ProcedureRepo)
 
 		appointmentDate := utils.FormatFriendlyDate(firstAppt.Date)
