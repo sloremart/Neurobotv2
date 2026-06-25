@@ -24,6 +24,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/logging"
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/repository/siesa"
@@ -57,7 +58,8 @@ func main() {
 	// Configurar logger
 	initLogger(cfg.LogLevel, cfg.LogDir)
 
-	slog.Info("bot starting",
+	slog.Info(
+		"bot starting",
 		"pid", os.Getpid(),
 		"version", "1.0",
 	)
@@ -65,7 +67,8 @@ func main() {
 	// Capture panics in the log file (otherwise only visible in docker logs)
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("PANIC — bot crashed",
+			slog.Error(
+				"PANIC — bot crashed",
 				"error", fmt.Sprintf("%v", r),
 				"stack", string(debug.Stack()),
 			)
@@ -225,6 +228,12 @@ func main() {
 	eventRepo := localrepo.NewEventRepo(localDB)
 	tracker := tracking.NewEventTracker(eventRepo)
 
+	// Observabilidad de flujos (Fase 0): traza de negocio estructurada (flow_events).
+	flowRepo := localrepo.NewFlowRepo(localDB)
+	flowTracer := observability.New(flowRepo, observability.ParseLevel(cfg.FlowTraceLevel))
+	observability.Init(flowTracer)
+	safeGo("flow-tracer", func() { flowTracer.Start(ctx) })
+
 	// Fase 22: Notification persistence + preparations + tracking
 	notifRepo := localrepo.NewNotificationRepo(localDB)
 	callRepo := localrepo.NewCallRepo(localDB)
@@ -369,6 +378,7 @@ func main() {
 			internalHandler.SetReminderRunner(schedulerTasks)
 		}
 		internalHandler.SetSessionReader(sessionRepo)
+		internalHandler.SetFlowReader(flowRepo)
 	}
 
 	// HTTP Server
@@ -400,7 +410,9 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/events", internalHandler.HandleEvents)
 		internalMux.HandleFunc("GET /api/internal/sessions", internalHandler.HandleSessions)
 		internalMux.HandleFunc("GET /api/internal/sessions/context", internalHandler.HandleSessionContext)
-		mux.Handle("/api/internal/",
+		internalMux.HandleFunc("GET /api/internal/flow-trace", internalHandler.HandleFlowTrace)
+		mux.Handle(
+			"/api/internal/",
 			api.RateLimiter(30, time.Minute)(
 				api.MaxBodySize(
 					api.InternalAuth(cfg.InternalAPIKey)(internalMux),
@@ -417,7 +429,8 @@ func main() {
 		IdleTimeout:  time.Duration(cfg.HTTPIdleTimeout) * time.Second,
 	}
 	safeGo("http-server", func() {
-		slog.Info("server starting",
+		slog.Info(
+			"server starting",
 			"port", cfg.Port,
 			"timezone", cfg.Timezone,
 			"workers", cfg.WorkerPoolSize,
@@ -599,7 +612,8 @@ func safeGo(name string, f func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("PANIC in background goroutine",
+				slog.Error(
+					"PANIC in background goroutine",
 					"goroutine", name,
 					"error", fmt.Sprintf("%v", r),
 					"stack", string(debug.Stack()),

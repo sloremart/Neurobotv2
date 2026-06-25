@@ -34,6 +34,9 @@ type Config struct {
 	// External DB Driver — R-ARQ-01
 	ExternalDBDriver string // "siesa" (only supported driver; legacy "datosipsndx" removed)
 
+	// Observabilidad de flujos (docs/OBSERVABILIDAD.md): off|error|outcome|milestone|full.
+	FlowTraceLevel string
+
 	// Bird
 	BirdAPIURL                     string
 	BirdAPIKeyWA                   string
@@ -165,6 +168,9 @@ func Load() *Config {
 
 		// External DB Driver
 		ExternalDBDriver: getEnv("EXTERNAL_DB_DRIVER", "siesa"),
+
+		// Observabilidad de flujos (default milestone = recorrido de negocio consultable).
+		FlowTraceLevel: getEnv("FLOW_TRACE_LEVEL", "milestone"),
 
 		// Bird
 		BirdAPIURL:                     os.Getenv("BIRD_API_URL"),

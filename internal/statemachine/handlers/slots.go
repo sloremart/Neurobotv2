@@ -14,6 +14,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -656,6 +657,10 @@ func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo Wai
 				"error": err.Error(),
 			}), nil
 	}
+	observability.Emit(observability.TraceWaitingList(entry.ID), "lista_espera", "enrolled",
+		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{
+			"cups": cupsCode, "espacios": entry.Espacios, "trigger": "auto",
+		}})
 
 	autoMsg := "No hay horarios disponibles para *" + cupsName + "*.\n\n" +
 		"Te hemos inscrito automáticamente en la *lista de espera*.\n" +
@@ -780,6 +785,13 @@ func offerWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
 							"error": err.Error(),
 						}), nil
 				}
+			}
+
+			if wlRepo != nil {
+				observability.Emit(observability.TraceWaitingList(entry.ID), "lista_espera", "enrolled",
+					observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{
+						"cups": cupsCode, "espacios": entry.Espacios, "trigger": "manual",
+					}})
 			}
 
 			wlMsg := "Te hemos inscrito en la *lista de espera*.\n\n" +
@@ -1290,6 +1302,9 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				"waiting_list_id": wlID,
 				"appointment_id":  apptID,
 			})
+			// Cierra el recorrido de lista de espera en su propia traza (pivote por ref cita_id).
+			observability.Emit(observability.TraceWaitingList(wlID), "lista_espera", "booked",
+				observability.EmitOpts{Phone: sess.PhoneNumber, RefID: apptID})
 		}
 
 		return result, nil

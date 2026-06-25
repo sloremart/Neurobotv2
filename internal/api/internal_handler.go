@@ -61,6 +61,11 @@ type SessionDebugReader interface {
 	GetAllContext(ctx context.Context, sessionID string) (map[string]string, error)
 }
 
+// FlowTraceReader reads the business-flow trace (flow_events) for the observability endpoints.
+type FlowTraceReader interface {
+	FindByTrace(ctx context.Context, traceID string) ([]domain.FlowEvent, error)
+}
+
 // InternalEventLogger logs events for auditing (matches tracking.EventTracker).
 type InternalEventLogger interface {
 	LogEvent(ctx context.Context, sessionID, phone, eventType string, data map[string]interface{})
@@ -81,6 +86,7 @@ type InternalHandler struct {
 	startTime       time.Time
 	reminderRunner  ReminderRunner     // optional: manual trigger for WA reminders
 	sessionReader   SessionDebugReader // optional: session debug queries
+	flowReader      FlowTraceReader    // optional: flow-events trace queries
 }
 
 // NewInternalHandler creates a new internal handler.
@@ -120,6 +126,53 @@ func (h *InternalHandler) SetReminderRunner(r ReminderRunner) {
 // SetSessionReader injects the session debug reader for session/context queries.
 func (h *InternalHandler) SetSessionReader(r SessionDebugReader) {
 	h.sessionReader = r
+}
+
+// SetFlowReader injects the flow-events reader for the observability endpoints.
+func (h *InternalHandler) SetFlowReader(r FlowTraceReader) {
+	h.flowReader = r
+}
+
+// HandleFlowTrace returns the ordered timeline of a flow run by trace_id.
+// GET /api/internal/flow-trace?trace_id=wl:123
+func (h *InternalHandler) HandleFlowTrace(w http.ResponseWriter, r *http.Request) {
+	if h.flowReader == nil {
+		http.Error(w, "flow tracing not configured", http.StatusServiceUnavailable)
+		return
+	}
+	traceID := r.URL.Query().Get("trace_id")
+	if traceID == "" {
+		http.Error(w, "trace_id is required", http.StatusBadRequest)
+		return
+	}
+	events, err := h.flowReader.FindByTrace(r.Context(), traceID)
+	if err != nil {
+		//nolint:gosec // G706: trace_id es un parámetro de un endpoint admin (tras API key), no input público.
+		slog.Error("flow-trace query failed", "trace_id", traceID, "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	out := make([]map[string]interface{}, 0, len(events))
+	for _, e := range events {
+		out = append(out, map[string]interface{}{
+			"ts":       e.CreatedAt,
+			"flow":     e.Flow,
+			"step":     e.Step,
+			"level":    e.Level,
+			"outcome":  e.Outcome,
+			"reason":   e.Reason,
+			"phone":    e.Phone,
+			"ref_type": e.RefType,
+			"ref_id":   e.RefID,
+			"attrs":    e.Attrs,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"trace_id": traceID,
+		"count":    len(out),
+		"events":   out,
+	})
 }
 
 // HandleSendReminders manually triggers the WhatsApp confirmation reminders task.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
@@ -54,8 +55,13 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 		if !m.cfg.IsPhoneWhitelisted(entry.PhoneNumber) {
 			continue
 		}
+		trace := observability.TraceWaitingList(entry.ID)
 		// FIFO con skip: si no cabe en la capacidad restante, intentar el siguiente (más chico).
 		if entry.Espacios > remaining {
+			observability.Emit(trace, "lista_espera", "skipped", observability.EmitOpts{
+				Phone: entry.PhoneNumber, Reason: "too_big",
+				Attrs: map[string]interface{}{"espacios": entry.Espacios, "remaining": remaining},
+			})
 			continue
 		}
 		// Ya tiene cita para este CUP → no notificar.
@@ -69,6 +75,8 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 				slog.Warn("wl_check: update duplicate status", "entry_id", entry.ID, "error", uerr)
 			}
 			slog.Info("wl_check: duplicate found", "entry_id", entry.ID, "cups_code", cupsCode)
+			observability.Emit(trace, "lista_espera", "duplicate_found",
+				observability.EmitOpts{Phone: entry.PhoneNumber})
 			continue
 		}
 		// ¿Existe un bloque contiguo del tamaño que requiere ESTA entrada, con sus restricciones?
@@ -78,8 +86,14 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 			continue
 		}
 		if len(slots) == 0 {
+			observability.Emit(trace, "lista_espera", "skipped",
+				observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "no_block"})
 			continue // no hay bloque contiguo para esta entrada → siguiente (FIFO con skip)
 		}
+		observability.Emit(trace, "lista_espera", "slot_match", observability.EmitOpts{
+			Phone: entry.PhoneNumber,
+			Attrs: map[string]interface{}{"espacios": entry.Espacios, "remaining": remaining},
+		})
 		// Claim-then-send: reclamar SOLO si sigue en 'waiting' (evita doble notificación, N-33).
 		claimed, cerr := m.wlChecker.MarkNotified(ctx, entry.ID)
 		if cerr != nil {
@@ -87,6 +101,8 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 			continue
 		}
 		if !claimed {
+			observability.Emit(trace, "lista_espera", "claim_lost",
+				observability.EmitOpts{Phone: entry.PhoneNumber})
 			continue // otra corrida concurrente ya la reclamó
 		}
 		// Enviar; si falla, revertir a 'waiting' para que se reintente.
@@ -149,9 +165,11 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 			{Type: "string", Key: "clinic_name", Value: m.cfg.CenterName},
 		},
 	}
+	trace := observability.TraceWaitingList(entry.ID)
 	msgID, err := m.birdClient.SendTemplate(entry.PhoneNumber, tmpl)
 	if err != nil {
 		slog.Error("wl_check: send template", "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
+		observability.Emit(trace, "lista_espera", "notify_failed", observability.EmitOpts{Phone: entry.PhoneNumber})
 		return false
 	}
 
@@ -179,6 +197,10 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 			})
 	}
 
+	observability.Emit(trace, "lista_espera", "notified", observability.EmitOpts{
+		Phone: entry.PhoneNumber, RefID: msgID,
+		Attrs: map[string]interface{}{"cups": cupsCode},
+	})
 	slog.Info("wl_check: notification sent",
 		"phone", utils.MaskPhone(entry.PhoneNumber),
 		"entry_id", entry.ID,
