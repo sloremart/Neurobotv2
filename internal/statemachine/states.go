@@ -125,16 +125,17 @@ const (
 
 // === Búsqueda y Agendamiento ===
 const (
-	StateSearchSlots       = "SEARCH_SLOTS"
-	StateSlotSearchRetry   = "SLOT_SEARCH_RETRY"
-	StateShowSlots         = "SHOW_SLOTS"
-	StateNoSlotsAvailable  = "NO_SLOTS_AVAILABLE"
-	StateOfferWaitingList  = "OFFER_WAITING_LIST"
-	StateConfirmBooking    = "CONFIRM_BOOKING"
-	StateReconfirmBooking  = "RECONFIRM_BOOKING"
-	StateCreateAppointment = "CREATE_APPOINTMENT"
-	StateBookingSuccess    = "BOOKING_SUCCESS"
-	StateBookingFailed     = "BOOKING_FAILED"
+	StateSearchSlots        = "SEARCH_SLOTS"
+	StateCoverageNoConvenio = "COVERAGE_NO_CONVENIO"
+	StateSlotSearchRetry    = "SLOT_SEARCH_RETRY"
+	StateShowSlots          = "SHOW_SLOTS"
+	StateNoSlotsAvailable   = "NO_SLOTS_AVAILABLE"
+	StateOfferWaitingList   = "OFFER_WAITING_LIST"
+	StateConfirmBooking     = "CONFIRM_BOOKING"
+	StateReconfirmBooking   = "RECONFIRM_BOOKING"
+	StateCreateAppointment  = "CREATE_APPOINTMENT"
+	StateBookingSuccess     = "BOOKING_SUCCESS"
+	StateBookingFailed      = "BOOKING_FAILED"
 )
 
 // === Post-Acción y Cierre ===
@@ -263,16 +264,17 @@ var stateTypes = map[string]StateType{
 	StateCheckAgeRestriction: StateTypeAutomatic,
 
 	// Búsqueda y Agendamiento
-	StateSearchSlots:       StateTypeAutomatic,
-	StateSlotSearchRetry:   StateTypeInteractive,
-	StateShowSlots:         StateTypeInteractive,
-	StateNoSlotsAvailable:  StateTypeAutomatic,
-	StateOfferWaitingList:  StateTypeInteractive,
-	StateConfirmBooking:    StateTypeInteractive,
-	StateReconfirmBooking:  StateTypeInteractive,
-	StateCreateAppointment: StateTypeAutomatic,
-	StateBookingSuccess:    StateTypeAutomatic,
-	StateBookingFailed:     StateTypeAutomatic,
+	StateSearchSlots:        StateTypeAutomatic,
+	StateCoverageNoConvenio: StateTypeInteractive,
+	StateSlotSearchRetry:    StateTypeInteractive,
+	StateShowSlots:          StateTypeInteractive,
+	StateNoSlotsAvailable:   StateTypeAutomatic,
+	StateOfferWaitingList:   StateTypeInteractive,
+	StateConfirmBooking:     StateTypeInteractive,
+	StateReconfirmBooking:   StateTypeInteractive,
+	StateCreateAppointment:  StateTypeAutomatic,
+	StateBookingSuccess:     StateTypeAutomatic,
+	StateBookingFailed:      StateTypeAutomatic,
 
 	// Post-Acción y Cierre
 	StatePostActionMenu:  StateTypeInteractive,

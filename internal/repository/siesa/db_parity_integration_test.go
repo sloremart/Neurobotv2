@@ -339,3 +339,39 @@ func TestProcServicioMatchesHistory(t *testing.T) {
 	t.Logf("OK: %d/%d (%.1f%%) coinciden con resolveProcServicio en ventana de 4 días (desde %s)",
 		match, len(data), ratio*100, cutoff)
 }
+
+// TestCoverageRuleAgainstDB valida, contra la BD real, la regla del gate de cobertura:
+// precio 0 o inexistente en sis_proc_precios = SIN convenio (no cubierto); precio > 0 = cubierto.
+// Casos reales: 890264 (1ª fisiatría) en manual 8 (Sanitas MRC) → $0 → no cubierto; 890274
+// (neurología) en manual 8 → >0 → cubierto; manual 11 (Sanitas Evento) y 45 (Ejército) → cubierto.
+func TestCoverageRuleAgainstDB(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	price := NewPriceRepo(db)
+
+	cases := []struct {
+		cup, manual string
+		wantCovered bool
+	}{
+		{"890264", "8", false}, // Sanitas MRC: 890264 (1ª fisiatría) = $0 → sin convenio
+		{"890274", "8", true},  // Sanitas MRC: 890274 (neurología) = $53.560 → cubierto
+		{"890274", "11", true}, // Sanitas Evento: cubierto
+		{"890264", "45", true}, // Ejército: cubierto
+	}
+	for _, c := range cases {
+		p, err := price.FindPrice(ctx, c.cup, c.manual)
+		if err != nil {
+			t.Fatalf("FindPrice(%s, manual=%s): %v", c.cup, c.manual, err)
+		}
+		covered := p != nil && *p > 0
+		if covered != c.wantCovered {
+			val := "nil"
+			if p != nil {
+				val = fmt.Sprintf("%.2f", *p)
+			}
+			t.Errorf("cobertura(%s, manual %s) = %v, esperado %v (precio=%s)", c.cup, c.manual, covered, c.wantCovered, val)
+		}
+	}
+	t.Logf("OK: regla de cobertura (precio>0 = convenio) validada contra la BD")
+}

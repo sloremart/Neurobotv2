@@ -90,7 +90,8 @@ func RegisterSlotHandlers(
 	addrMapper *services.AddressMapper,
 	birdClient *bird.Client,
 ) {
-	m.Register(sm.StateSearchSlots, searchSlotsHandler(slotSvc, apptSvc, procRepo))
+	m.Register(sm.StateSearchSlots, searchSlotsHandler(slotSvc, apptSvc, procRepo, priceRepo, entityRepo))
+	m.Register(sm.StateCoverageNoConvenio, coverageNoConvenioHandler())
 	m.Register(sm.StateSlotSearchRetry, slotSearchRetryHandler())
 	m.Register(sm.StateShowSlots, showSlotsHandler(addrMapper))
 	m.Register(sm.StateNoSlotsAvailable, noSlotsHandler(waitingListRepo))
@@ -123,8 +124,62 @@ func RegisterSlotHandlers(
 	m.Register(sm.StateBookingFailed, bookingFailedHandler())
 }
 
+// isCupCovered indica si el contrato del paciente tiene CONVENIO para el CUP: existe tarifa > 0
+// en sis_proc_precios para (manual del contrato, CUP). Precio 0 o no encontrado = SIN convenio
+// (regla de negocio confirmada). Usa el mismo origen de precio que el agendamiento (contrato del
+// paciente, fix GAP-3). Devuelve error cuando el chequeo no se pudo completar — el caller hace
+// fail-open (no bloquear el agendamiento por un fallo técnico).
+func isCupCovered(ctx context.Context, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, sess *session.Session, cup string) (bool, error) {
+	if priceRepo == nil || entityRepo == nil {
+		return false, fmt.Errorf("repos no disponibles")
+	}
+	lookupCode := sess.GetContext("patient_contract")
+	if lookupCode == "" {
+		lookupCode = sess.GetContext("patient_entity")
+	}
+	if lookupCode == "" {
+		return false, fmt.Errorf("sin contrato/entidad en sesión")
+	}
+	entityData, err := entityRepo.FindByCode(ctx, lookupCode)
+	if err != nil {
+		return false, fmt.Errorf("entidad: %w", err)
+	}
+	if entityData == nil || entityData.PriceType == "" {
+		return false, fmt.Errorf("entidad sin manual")
+	}
+	price, err := priceRepo.FindPrice(ctx, cup, entityData.PriceType)
+	if err != nil {
+		return false, fmt.Errorf("findprice: %w", err)
+	}
+	return price != nil && *price > 0, nil
+}
+
+// COVERAGE_NO_CONVENIO (interactivo) — el contrato del paciente no cubre el CUP; ofrece continuar
+// como particular (que sí tiene tarifa) o escalar a un agente.
+func coverageNoConvenioHandler() sm.StateHandler {
+	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		result, selected := sm.ValidateButtonResponse(sess, msg, "cov_particular", "cov_agente")
+		if result != nil {
+			return result, nil // input inválido (retry) o escalamiento, ya resuelto
+		}
+		if selected == "cov_agente" {
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText("Te comunicamos con un agente para gestionar tu cita.").
+				WithEvent("coverage_escalate_agent", nil), nil
+		}
+		// cov_particular → cambiar a PARTICULAR y re-buscar (el particular siempre tiene tarifa > 0,
+		// así el gate no se vuelve a disparar). Se limpia patient_contract para que lookupContract
+		// resuelva el contrato particular al agendar.
+		return sm.NewResult(sm.StateSearchSlots).
+			WithContext("patient_entity", particularEntityCode).
+			WithClearCtx("patient_contract").
+			WithText("Perfecto, continuamos como *particular*. Buscando horarios disponibles...").
+			WithEvent("coverage_continue_particular", nil), nil
+	}
+}
+
 // SEARCH_SLOTS (automático) — busca slots disponibles con todos los filtros.
-func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) sm.StateHandler {
+func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsCode := sess.GetContext("cups_code")
 		alternativeCodes := sess.GetContext("alternative_cups_codes")
@@ -134,6 +189,28 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 		espacios, _ := strconv.Atoi(sess.GetContext("espacios"))
 		if espacios == 0 {
 			espacios = 1
+		}
+
+		// Gate de cobertura (solo en la primera búsqueda, no en paginación "ver más"): si el
+		// contrato del paciente NO tiene convenio para el CUP (precio 0 o inexistente en
+		// sis_proc_precios), no se busca slot ni se agenda; se ofrece particular o agente.
+		// Fail-OPEN: si el chequeo falla por un error técnico, se continúa normal (no bloquear).
+		if sess.GetContext("slots_after_date") == "" {
+			if covered, checkErr := isCupCovered(ctx, priceRepo, entityRepo, sess, cupsCode); checkErr == nil && !covered {
+				cupsName := sess.GetContext("cups_name")
+				if cupsName == "" {
+					cupsName = cupsCode
+				}
+				return sm.NewResult(sm.StateCoverageNoConvenio).
+					WithButtons(
+						fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Puedes agendarlo como *particular*, que tiene un costo.\n\n¿Cómo deseas continuar?", cupsName),
+						sm.Button{Text: "Continuar particular", Payload: "cov_particular"},
+						sm.Button{Text: "Hablar con agente", Payload: "cov_agente"},
+					).
+					WithEvent("coverage_no_convenio", map[string]interface{}{"cup": cupsCode}), nil
+			} else if checkErr != nil {
+				slog.Warn("coverage_check_failed_fail_open", "cup", cupsCode, "error", checkErr)
+			}
 		}
 
 		// Try to find slots with the primary CUPS code first, then alternatives
