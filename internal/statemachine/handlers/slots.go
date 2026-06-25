@@ -21,6 +21,33 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
+// currentProcQuantity devuelve la cantidad total del procedimiento (grupo) que se está agendando,
+// leída de procedures_json + current_procedure_idx. La orden llega con el CUP base y la cantidad
+// real (del OCR, notación "(#N)") vive en CUPSEntry.Quantity. Se suma sobre los CUPS del grupo
+// (mín. 1). Se usa para que el tope mensual MRC sume la cantidad real de esta orden, no 1.
+func currentProcQuantity(sess *session.Session) int {
+	var groups []services.CUPSGroup
+	if err := json.Unmarshal([]byte(sess.GetContext("procedures_json")), &groups); err != nil {
+		return 1
+	}
+	idx, _ := strconv.Atoi(sess.GetContext("current_procedure_idx"))
+	if idx < 0 || idx >= len(groups) {
+		return 1
+	}
+	total := 0
+	for _, c := range groups[idx].Cups {
+		if c.Quantity > 0 {
+			total += c.Quantity
+		} else {
+			total++
+		}
+	}
+	if total < 1 {
+		total = 1
+	}
+	return total
+}
+
 // WaitingListCreator is the interface needed by the OFFER_WAITING_LIST handler.
 type WaitingListCreator interface {
 	Create(ctx context.Context, entry *domain.WaitingListEntry) error
@@ -273,8 +300,9 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 			// MRC monthly limit filter (MRC patient + mrcGroup CUPS)
 			if sess.GetContext("mrc_limit_check") == "1" && apptSvc != nil {
 				contract := sess.GetContext("patient_contract")
+				qty := currentProcQuantity(sess)
 				query.MonthFilter = func(year, month int) (bool, error) {
-					blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, year, month)
+					blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month)
 					if err != nil {
 						return true, nil // fail-open
 					}
@@ -313,8 +341,9 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				}
 				if sess.GetContext("mrc_limit_check") == "1" && apptSvc != nil {
 					contract := sess.GetContext("patient_contract")
+					qty := currentProcQuantity(sess)
 					query.MonthFilter = func(year, month int) (bool, error) {
-						blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, year, month)
+						blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month)
 						if err != nil {
 							return true, nil
 						}

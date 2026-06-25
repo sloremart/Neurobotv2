@@ -405,7 +405,9 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 		if t.AppointmentSvc != nil && services.IsMRCPatient(firstEntry.ContractCode) {
 			if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 				query.MonthFilter = func(year, month int) (bool, error) {
-					blocked, err := t.AppointmentSvc.CheckMRCLimitForMonth(ctx, cupsCode, firstEntry.ContractCode, year, month)
+					// quantity=0 → se deriva del sufijo del CUP: la entrada de waiting list no persiste
+					// la cantidad del OCR (a diferencia del flujo en vivo, que sí la pasa).
+					blocked, err := t.AppointmentSvc.CheckMRCLimitForMonth(ctx, cupsCode, firstEntry.ContractCode, 0, year, month)
 					if err != nil {
 						slog.Warn("wl_check: mrc month filter error (fail-open)", "cups_code", cupsCode, "year", year, "month", month, "error", err)
 						return true, nil // fail-open
@@ -450,7 +452,7 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 			// 5b. Solo para pacientes MRC (contrato 5/6): verificar cupo MRC antes de notificar
 			if t.AppointmentSvc != nil && services.IsMRCPatient(entry.ContractCode) {
 				if _, _, found := services.IsMRCGroupCups(cupsCode); found {
-					blocked, _, err := t.AppointmentSvc.CheckMRCLimit(ctx, cupsCode, entry.ContractCode)
+					blocked, _, err := t.AppointmentSvc.CheckMRCLimit(ctx, cupsCode, entry.ContractCode, 0)
 					if err != nil {
 						slog.Warn("wl_check: mrc limit error", "cups_code", cupsCode, "entry_id", entry.ID, "error", err)
 					} else if blocked {

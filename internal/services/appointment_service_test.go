@@ -265,7 +265,7 @@ func TestFindConsecutiveBlock(t *testing.T) {
 func TestCheckSOATLimit_NonSOAT(t *testing.T) {
 	svc := NewAppointmentService(&mockAppointmentRepo{}, nil)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "890271", "4")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "890271", "4", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestCheckSOATLimit_WithinLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, _, err := svc.CheckMRCLimit(context.Background(), "861411", "6")
+	blocked, _, err := svc.CheckMRCLimit(context.Background(), "861411", "6", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestCheckSOATLimit_ExceedsLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "6")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "6", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestCheckMRCLimit_EventoContract_NotBlocked(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "4")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "4", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func TestCheckSOATLimit_Disabled(t *testing.T) {
 	cfg := &config.Config{CupsGroupLimitsEnabled: false}
 	svc := NewAppointmentService(repo, cfg)
 
-	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "6")
+	blocked, msg, err := svc.CheckMRCLimit(context.Background(), "861411", "6", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestCheckMRCLimitForMonth_WithinLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 2026, 4)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestCheckMRCLimitForMonth_AtLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 2026, 3)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestCheckMRCLimitForMonth_NonMRCContract(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 2026, 3)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,6 +429,53 @@ func TestIsMRCGroupCups(t *testing.T) {
 	_, _, found2 := IsMRCGroupCups("890271")
 	if found2 {
 		t.Error("890271 should not be in any soat group")
+	}
+
+	// Un CUP con sufijo debe reconocerse por su base (891509-8 → grupo de 891509).
+	groupName3, _, found3 := IsMRCGroupCups("891509-8")
+	if !found3 {
+		t.Error("expected 891509-8 to be matched by base 891509")
+	}
+	if groupName3 != "otros_procedimientos" {
+		t.Errorf("expected otros_procedimientos, got %s", groupName3)
+	}
+}
+
+// El umbral suma la cantidad real de la orden. La orden llega con el CUP BASE (891509) y la cantidad
+// se define en el OCR y se pasa en `quantity`. Escenario: consumido=930, tope otros_procedimientos=932.
+func TestCheckMRCLimit_OrderQuantityCrossesCap(t *testing.T) {
+	repo := &mockAppointmentRepo{
+		countMonthlyByGroupFn: func(_ context.Context, _ []string, _, _ int) (int, error) {
+			return 930, nil // otros_procedimientos max=932
+		},
+	}
+	svc := NewAppointmentService(repo, nil)
+
+	// Base + quantity 8 → 930 + 8 = 938 > 932 → bloquea.
+	blocked, _, err := svc.CheckMRCLimit(context.Background(), "891509", "5", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocked {
+		t.Error("expected blocked: 930 + 8 = 938 > 932")
+	}
+
+	// Base + quantity 1 → 930 + 1 = 931 <= 932 → cabe.
+	blocked2, _, err := svc.CheckMRCLimit(context.Background(), "891509", "5", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked2 {
+		t.Error("expected not blocked: 930 + 1 = 931 <= 932")
+	}
+
+	// Fallback: quantity=0 con un CUP que ya trae el sufijo → usa el sufijo (8) → bloquea.
+	blocked3, _, err := svc.CheckMRCLimit(context.Background(), "891509-8", "5", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocked3 {
+		t.Error("expected blocked via fallback del sufijo: 930 + 8 = 938 > 932")
 	}
 }
 

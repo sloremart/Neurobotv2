@@ -11,6 +11,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // ConfirmationLogger persiste registros estructurados de confirmación localmente.
@@ -234,10 +235,14 @@ func IsMRCPatient(contractCode string) bool {
 }
 
 // IsMRCGroupCups returns the group name, max per month, and whether the CUPS code belongs to an MRC group.
+// El match es por CUP BASE (sin sufijo): una orden "891509-8" pertenece al grupo de "891509". Sin
+// esto, un CUP con sufijo no se reconocería como del grupo (los grupos listan en su mayoría el base)
+// y se saltaría la validación de tope. Espeja el conteo de CountMonthlyByGroup, que agrupa por base.
 func IsMRCGroupCups(cupsCode string) (groupName string, maxPerMonth int, found bool) {
+	base := utils.BaseCupCode(cupsCode)
 	for name, group := range mrcGroups {
 		for _, code := range group.CupsCodes {
-			if code == cupsCode {
+			if code == cupsCode || utils.BaseCupCode(code) == base {
 				return name, group.MaxPerMonth, true
 			}
 		}
@@ -285,9 +290,21 @@ func (s *AppointmentService) CheckPriorConsultation(ctx context.Context, cupsCod
 	return false, doctor, "", nil
 }
 
+// orderQuantity resuelve la cantidad de la orden en curso. La orden normalmente llega con el CUP
+// BASE (sin sufijo) y la cantidad se define antes, en el OCR (notación "(#N)", ver ocr_service.go),
+// así que el caller la pasa en `quantity`. Si no se pasó (<1) se cae al sufijo del CUP (CupQuantity),
+// que cubre el caso en que el código sí trae la variante embebida.
+func orderQuantity(cupsCode string, quantity int) int {
+	if quantity >= 1 {
+		return quantity
+	}
+	return utils.CupQuantity(cupsCode)
+}
+
 // CheckMRCLimit verifica si el grupo CUPS ha alcanzado el límite mensual (mes actual).
 // Solo aplica a pacientes MRC (contrato 5/6). Deshabilitado con CUPS_GROUP_LIMITS_ENABLED=false.
-func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contractCode string) (bool, string, error) {
+// quantity = cantidad del procedimiento actual (del OCR); 0 → se deriva del sufijo del CUP.
+func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contractCode string, quantity int) (bool, string, error) {
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
 		return false, "", nil
 	}
@@ -306,8 +323,10 @@ func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contra
 		return false, "", err
 	}
 
-	if count >= maxPerMonth {
-		return true, fmt.Sprintf("Se ha alcanzado el límite mensual de %d citas para %s (MRC). Por favor contacta a la clínica.", maxPerMonth, groupName), nil
+	// Se evalúa si la NUEVA orden cabe en el cupo del mes: consumido + cantidad de esta orden.
+	// Bloquear con `count >= max` dejaba pasar la cita que CRUZA el tope (ej: 930/932 + orden de 8 → 938).
+	if count+orderQuantity(cupsCode, quantity) > maxPerMonth {
+		return true, fmt.Sprintf("Se ha alcanzado el límite mensual de %d para %s (MRC). Por favor contacta a la clínica.", maxPerMonth, groupName), nil
 	}
 
 	return false, "", nil
@@ -315,7 +334,7 @@ func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contra
 
 // CheckMRCLimitForMonth verifica si el grupo CUPS ha alcanzado el límite MRC para un mes específico.
 // Retorna true si está bloqueado (al límite). Solo aplica a pacientes MRC (contrato 5/6).
-func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, contractCode string, year, month int) (bool, error) {
+func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, contractCode string, quantity, year, month int) (bool, error) {
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
 		return false, nil
 	}
@@ -333,7 +352,8 @@ func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode
 		return false, err
 	}
 
-	return count >= maxPerMonth, nil
+	// Cabe en el mes solo si consumido + cantidad de esta orden no supera el tope (ver CheckMRCLimit).
+	return count+orderQuantity(cupsCode, quantity) > maxPerMonth, nil
 }
 
 // HasExistingAppointment verifica si el paciente ya tiene una cita futura para el CUPS.

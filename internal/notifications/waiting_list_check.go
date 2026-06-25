@@ -70,7 +70,8 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 	if m.apptSvc != nil && services.IsMRCPatient(entry.ContractCode) {
 		if _, _, found := services.IsMRCGroupCups(cupsCode); found {
 			query.MonthFilter = func(year, month int) (bool, error) {
-				blocked, err := m.apptSvc.CheckMRCLimitForMonth(ctx, cupsCode, entry.ContractCode, year, month)
+				// quantity=0 → fallback al sufijo del CUP (waiting list no persiste la cantidad del OCR).
+				blocked, err := m.apptSvc.CheckMRCLimitForMonth(ctx, cupsCode, entry.ContractCode, 0, year, month)
 				if err != nil {
 					return true, nil // fail-open
 				}

@@ -1106,16 +1106,25 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 	// MRC monthly count for the given CUPS group.
 	//   - Filter c.contrato IN ('5','6'): only Sanitas MRC appointments count toward the cap
 	//     (BUG-06). Without it the count mixed every contract (e.g. EEG jun-2026: 1060 vs 58).
-	//   - SUM(ISNULL(cp.Cantidad,1)): Cantidad is the real number of procedures. The CUPS suffix
-	//     (e.g. 891901-16) is a billing VARIANT code, NOT a quantity multiplier (BUG-07).
-	//   - LEFT(...CHARINDEX...) still matches the base code so all variants of a CUPS are counted.
+	//   - Cantidad REAL (BUG-07 corregido; validado contra la BD 2026-06-24): el sufijo numérico SÍ
+	//     es la cantidad. Ej.: 891509-8 = 8 neuroconducciones aunque cp.Cantidad=1. Evidencia: (a) el
+	//     precio en sis_proc_precios es plano entre base y variantes (891509 = 891509-8) → es precio
+	//     UNITARIO; (b) al facturar, la clínica expande 891509-8 en 8 filas del CUP base. Por eso se
+	//     suma el SUFIJO numérico cuando existe, y cp.Cantidad solo cuando NO hay sufijo. El antiguo
+	//     SUM(Cantidad) subcontaba (1 por una variante de 8) → riesgo de pasar el tope del contrato.
+	//   - LEFT(...CHARINDEX...) matches the base code so all variants of a CUPS belong to the group.
 	// citas.contrato is varchar in SIESA, hence the string literals.
 	clause, cupsArgs := inParams(cupsCodes, 3)
 	allArgs := append([]interface{}{startDate, endDate}, cupsArgs...)
 
 	var count int
 	err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
-	SELECT ISNULL(SUM(ISNULL(cp.Cantidad, 1)), 0)
+	SELECT ISNULL(SUM(
+	    CASE WHEN CHARINDEX('-', cp.id_procedimiento) > 0
+	              AND TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10)) IS NOT NULL
+	         THEN TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10))
+	         ELSE ISNULL(cp.Cantidad, 1)
+	    END), 0)
 	FROM citas c WITH (NOLOCK)
 	JOIN citas_procedimientos cp WITH (NOLOCK) ON cp.id_cita = c.id
 	WHERE c.fecha >= @p1 AND c.fecha < @p2
