@@ -20,6 +20,10 @@ func TestResolveEPSContract(t *testing.T) {
 		{"sanitas bogota contributivo evento", entitySanitas, "1", "11", "001", "4"},
 		// MRC code but wrong department → Evento
 		{"sanitas mrc-code wrong-dep evento", entitySanitas, "1", "25", "006", "4"},
+		// K2: SANITAS con geo vacía → no se distingue MRC → cae a Evento (4/7). applyEPSContract
+		// loguea un warning en este caso (financiero; hoy inalcanzable, 0 casos en BD).
+		{"sanitas geo vacia contributivo evento", entitySanitas, "1", "", "", "4"},
+		{"sanitas geo vacia subsidiado evento", entitySanitas, "2", "", "", "7"},
 		// Other EPS (municipality irrelevant)
 		{"salud total contributivo", entitySaludTotal, "1", "", "", "13"},
 		{"salud total subsidiado", entitySaludTotal, "2", "", "", "12"},

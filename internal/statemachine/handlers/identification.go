@@ -209,6 +209,15 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 		if isEPSWithMatrix(selectedEntity) {
 			// SANITAS depends on the residence municipality → confirm/edit it first.
 			if selectedEntity == entitySanitas {
+				// K2: si el paciente Sanitas NO tiene municipio registrado, no se puede distinguir
+				// MRC de Evento → en vez de ofrecer "confirmar" algo vacío (que caería a Evento en
+				// silencio), se le OBLIGA a capturarlo antes de continuar. finalizeSanitasMunicipality
+				// lo persiste en sis_paci y resuelve el contrato correcto.
+				if sess.GetContext("patient_muni") == "" {
+					r.NextState = sm.StateConfirmMunicipality
+					r.WithText("Necesitamos registrar tu *municipio de residencia* para continuar.\n\nEscríbelo junto con el departamento (ej: *Acacías - Meta*):")
+					return
+				}
 				muniName := sess.GetContext("patient_muni_name")
 				if muniName == "" {
 					muniName = "el registrado"
@@ -244,6 +253,20 @@ func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *servic
 	contract := resolveEPSContract(entity, regimen, depCode, muniCode)
 	if contract == "" {
 		return
+	}
+	// K2: si es Sanitas y la geo (depto/municipio) viene vacía, no se puede distinguir MRC de
+	// Evento → resolveEPSContract cae a Evento (4/7) en SILENCIO, lo que mal-cobraría a un paciente
+	// MRC y lo dejaría fuera del tope mensual MRC. Hoy es inalcanzable (0 casos en BD), pero por ser
+	// financiero se deja traza para revisarlo manualmente si llegara a pasar.
+	if entity == entitySanitas && (depCode == "" || muniCode == "") {
+		slog.Warn("sanitas_contract_empty_geo",
+			"patient_id", patientID,
+			"regimen", regimen,
+			"dep", depCode,
+			"muni", muniCode,
+			"contract", contract,
+			"note", "geo vacía: posible MRC asignado como Evento; verificar contrato manualmente",
+		)
 	}
 	slog.Info("eps_contract_resolved",
 		"patient_id", patientID,
