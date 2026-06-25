@@ -314,7 +314,7 @@ func TestCreateAppointment_Success(t *testing.T) {
 	apptSvc := services.NewAppointmentService(repo, nil)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil, nil))
+	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil))
 
 	// Build procedures_json for a single group
 	groups := []services.CUPSGroup{
@@ -356,7 +356,7 @@ func TestCreateAppointment_SlotNotFound(t *testing.T) {
 	apptSvc := services.NewAppointmentService(repo, nil)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil, nil))
+	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil))
 
 	sess := testSess(sm.StateCreateAppointment)
 	// No available_slots_json or selected_slot_id -> slot not found
@@ -385,7 +385,7 @@ func TestCreateAppointment_SlotTakenError(t *testing.T) {
 	apptSvc := services.NewAppointmentService(repo, nil)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil, nil))
+	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil))
 
 	// Build procedures_json for a single group
 	groups := []services.CUPSGroup{
@@ -432,7 +432,7 @@ func TestCreateAppointment_GenericError(t *testing.T) {
 	apptSvc := services.NewAppointmentService(repo, nil)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil, nil))
+	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, nil, nil, nil))
 
 	// Build procedures_json for a single group
 	groups := []services.CUPSGroup{

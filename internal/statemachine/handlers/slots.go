@@ -146,7 +146,7 @@ func RegisterSlotHandlers(
 		Handler: confirmBookingHandler(),
 	})
 	m.Register(sm.StateReconfirmBooking, reconfirmBookingHandler(addrMapper))
-	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, priceRepo, entityRepo, procRepo, birdClient))
+	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, priceRepo, entityRepo, procRepo))
 	m.Register(sm.StateBookingSuccess, bookingSuccessHandler(addrMapper))
 	m.Register(sm.StateBookingFailed, bookingFailedHandler())
 }
@@ -904,7 +904,7 @@ func reconfirmBookingHandler(addrMapper *services.AddressMapper) sm.StateHandler
 }
 
 // CREATE_APPOINTMENT (automático) — crea la cita en la BD externa.
-func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, procRepo repository.ProcedureRepository, birdClient *bird.Client) sm.StateHandler {
+func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, procRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		slog.Info("create_appointment_handler_started",
 			"session_id", sess.ID,
@@ -1065,9 +1065,10 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 						"pricing_failed", pricingFailed,
 					)
 				}
-			} else {
-				pricingFailed = true
 			}
+			// Si priceRepo/entityRepo no están inyectados (solo en tests) NO se bloquea: en
+			// producción siempre están presentes y "sin convenio" se decide por el lookup real
+			// (price == nil / error de tarifa) de arriba, no por la ausencia de los repos.
 			if pricingFailed {
 				anyPricingFailed = true
 			}
@@ -1099,12 +1100,29 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			})
 		}
 
-		// Flag pricing failure in appointment observations for billing team
+		// N-22: precio null = sin convenio (igual que precio 0). El precio sale de (CUP, manual del
+		// CONTRATO del paciente) — el mismo que valida el gate de cobertura y el que se guarda en
+		// cpa.Valor. Si no se resolvió una tarifa válida para algún CUP, NO se agenda (evita
+		// persistir Valor=0): se usa EXACTAMENTE el mismo flujo/mensaje que el gate de cobertura
+		// para precio 0 (ofrecer particular o agente), no un mensaje aparte.
 		if anyPricingFailed {
-			if observations != "" {
-				observations += " | "
+			slog.Warn("booking_blocked_no_price",
+				"session_id", sess.ID,
+				"cups_name", sess.GetContext("cups_name"),
+				"entity", entity,
+				"contract", sess.GetContext("patient_contract"),
+			)
+			cupsName := sess.GetContext("cups_name")
+			if cupsName == "" {
+				cupsName = sess.GetContext("cups_code")
 			}
-			observations += "TARIFA PENDIENTE - REVISIÓN MANUAL"
+			return sm.NewResult(sm.StateCoverageNoConvenio).
+				WithButtons(
+					fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Puedes agendarlo como *particular*, que tiene un costo.\n\n¿Cómo deseas continuar?", cupsName),
+					sm.Button{Text: "Continuar particular", Payload: "cov_particular"},
+					sm.Button{Text: "Hablar con agente", Payload: "cov_agente"},
+				).
+				WithEvent("coverage_no_convenio", map[string]interface{}{"cup": sess.GetContext("cups_code")}), nil
 		}
 
 		// Parse date
@@ -1208,18 +1226,6 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			"appointment_id", apptID,
 			"time_slot", slot.TimeSlot,
 		)
-
-		// Notify agent if pricing could not be resolved (internal note, not visible to patient)
-		if anyPricingFailed && birdClient != nil && sess.ConversationID != "" {
-			note := fmt.Sprintf(
-				"⚠️ TARIFA PENDIENTE\n\n"+
-					"Cita #%s creada con precio SOAT sin resolver.\n"+
-					"Entidad: %s\n"+
-					"Procedimiento: %s\n\n"+
-					"Por favor verificar facturación manualmente.",
-				apptID, entity, sess.GetContext("cups_name"))
-			birdClient.SendInternalText(sess.ConversationID, note)
-		}
 
 		// Cancel old appointment if this is a self-service reschedule (block pre-fetched above)
 		if rescheduleApptID != "" && sess.GetContext("reschedule_skip_cancel") != "1" {
