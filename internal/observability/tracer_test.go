@@ -148,6 +148,14 @@ func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
 		"notif_recordatorio": {
 			"reminder_sent", "ivr_placed", "confirmed", "cancelled", "escalated", "error",
 		},
+		"identificacion": {"patient_lookup", "contact_updated", "lookup_failed"},
+		"entidad": {
+			"entity_selected", "contract_resolved", "sanitas_muni_forced",
+			"no_entities", "entity_update_failed",
+		},
+		"registro": {
+			"registration_started", "patient_created", "registration_abandoned", "patient_create_failed",
+		},
 	}
 	for flow, steps := range emitted {
 		for _, s := range steps {

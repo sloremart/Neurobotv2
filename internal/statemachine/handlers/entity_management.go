@@ -9,6 +9,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -82,7 +83,8 @@ func askClientTypeHandler() sm.StateHandler {
 				WithContext("client_type", label).
 				WithContext("entity_category", category).
 				WithContext("entity_type_index", indexStr).
-				WithButtons("Para tu EPS, indícanos tu régimen de afiliación:",
+				WithButtons(
+					"Para tu EPS, indícanos tu régimen de afiliación:",
 					sm.Button{Text: "Contributivo", Payload: "regimen_1"},
 					sm.Button{Text: "Subsidiado", Payload: "regimen_2"},
 				).
@@ -245,11 +247,15 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 		// escalar a un agente, como en la rama "sin entidades".
 		if entityCode == "" {
 			slog.Warn("entity_number: empty entity code, escalating", "index", index, "category", category)
+			observability.Emit(observability.TraceSession(sess.ID), "entidad", "no_entities",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "unresolved"})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Lo siento, no pude identificar tu entidad. Te comunico con un agente para ayudarte.").
 				WithEvent("entity_resolution_failed", map[string]interface{}{"index": index, "category": category}), nil
 		}
 
+		observability.Emit(observability.TraceSession(sess.ID), "entidad", "entity_selected",
+			observability.EmitOpts{Phone: sess.PhoneNumber})
 		r := sm.NewResult(sm.StateAskDocumentType).
 			WithContext("entity_number", fmt.Sprintf("%d", index)).
 			WithContext("menu_option", "agendar").

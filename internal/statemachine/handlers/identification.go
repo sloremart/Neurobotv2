@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -100,16 +101,21 @@ func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 		patient, err := patientSvc.LookupByDocument(ctx, docType, doc)
 		if err != nil {
 			slog.Error("patient_lookup_failed", "doc_len", len(doc), "error", err)
+			observability.Emit(observability.TraceSession(sess.ID), "identificacion", "lookup_failed",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return buildAutoCloseResult("Lo siento, hubo un problema al buscar tu información. Intenta más tarde.").
 				WithEvent("patient_lookup_error", map[string]interface{}{"error": err.Error()}), nil
 		}
 
 		if patient == nil {
+			observability.Emit(observability.TraceSession(sess.ID), "identificacion", "patient_lookup",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "not_found"})
 			menuOption := sess.GetContext("menu_option")
 
 			if menuOption == "agendar" {
 				return sm.NewResult(sm.StateRegistrationStart).
-					WithButtons("No encontramos un paciente con ese documento. Para agendar una cita necesitas registrarte primero.\n\n¿Deseas registrarte?",
+					WithButtons(
+						"No encontramos un paciente con ese documento. Para agendar una cita necesitas registrarte primero.\n\n¿Deseas registrarte?",
 						sm.Button{Text: "Sí, registrarme", Payload: "register_yes"},
 						sm.Button{Text: "No, gracias", Payload: "register_no"},
 					).
@@ -122,6 +128,8 @@ func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 		}
 
 		// Paciente encontrado → guardar datos en sesión
+		observability.Emit(observability.TraceSession(sess.ID), "identificacion", "patient_lookup",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "found"})
 		fullName := services.FormatFullName(patient)
 		age := services.FormatAge(patient.BirthDate)
 
@@ -137,7 +145,8 @@ func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 			WithContext("patient_dep", patient.DepartmentCode).
 			WithContext("patient_muni", patient.CityCode).
 			WithContext("patient_muni_name", patient.CityName).
-			WithButtons(fmt.Sprintf("Encontré este paciente:\n\n*%s*\nDocumento: %s\n\n¿Eres tú?", fullName, doc),
+			WithButtons(
+				fmt.Sprintf("Encontré este paciente:\n\n*%s*\nDocumento: %s\n\n¿Eres tú?", fullName, doc),
 				sm.Button{Text: "Sí, soy yo", Payload: "identity_yes"},
 				sm.Button{Text: "No, no soy yo", Payload: "identity_no"},
 			).
@@ -201,6 +210,8 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 			if patientSvc != nil && patientID != "" {
 				if err := patientSvc.UpdateEntity(ctx, patientID, selectedEntity); err != nil {
 					slog.Warn("update_entity_failed", "patient_id", patientID, "entity", selectedEntity, "error", err)
+					observability.Emit(observability.TraceSession(sess.ID), "entidad", "entity_update_failed",
+						observability.EmitOpts{Phone: sess.PhoneNumber})
 				}
 			}
 		}
@@ -214,6 +225,8 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 				// silencio), se le OBLIGA a capturarlo antes de continuar. finalizeSanitasMunicipality
 				// lo persiste en sis_paci y resuelve el contrato correcto.
 				if sess.GetContext("patient_muni") == "" {
+					observability.Emit(observability.TraceSession(sess.ID), "entidad", "sanitas_muni_forced",
+						observability.EmitOpts{Phone: sess.PhoneNumber})
 					r.NextState = sm.StateConfirmMunicipality
 					r.WithText("Necesitamos registrar tu *municipio de residencia* para continuar.\n\nEscríbelo junto con el departamento (ej: *Acacías - Meta*):")
 					return
@@ -223,14 +236,15 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 					muniName = "el registrado"
 				}
 				r.NextState = sm.StateConfirmMunicipality
-				r.WithButtons(fmt.Sprintf("Para asignar tu contrato SANITAS necesitamos confirmar tu municipio de residencia.\n\nTenemos registrado: *%s*\n\n¿Es correcto?", muniName),
+				r.WithButtons(
+					fmt.Sprintf("Para asignar tu contrato SANITAS necesitamos confirmar tu municipio de residencia.\n\nTenemos registrado: *%s*\n\n¿Es correcto?", muniName),
 					sm.Button{Text: "Sí, es correcto", Payload: "muni_ok"},
 					sm.Button{Text: "No, cambiar", Payload: "muni_change"},
 				)
 				return
 			}
 			// Other EPS only need the régimen.
-			applyEPSContract(ctx, r, patientSvc, sess.GetContext("patient_id"), selectedEntity, sess.GetContext("eps_regimen"), "", "")
+			applyEPSContract(ctx, sess, r, patientSvc, sess.GetContext("patient_id"), selectedEntity, sess.GetContext("eps_regimen"), "", "")
 		}
 
 		// PARTICULAR: clear any stored contract so lookupContract resolves the
@@ -249,7 +263,7 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 // stores it for the booking (patient_contract) and persists it to the patient
 // (sis_paci.contrato) — Option B: the contract stays tied to the patient and the
 // cita. No-op when the entity is not part of the matrix or the contract is empty.
-func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *services.PatientService, patientID, entity, regimen, depCode, muniCode string) {
+func applyEPSContract(ctx context.Context, sess *session.Session, r *sm.StateResult, patientSvc *services.PatientService, patientID, entity, regimen, depCode, muniCode string) {
 	contract := resolveEPSContract(entity, regimen, depCode, muniCode)
 	if contract == "" {
 		return
@@ -259,7 +273,8 @@ func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *servic
 	// MRC y lo dejaría fuera del tope mensual MRC. Hoy es inalcanzable (0 casos en BD), pero por ser
 	// financiero se deja traza para revisarlo manualmente si llegara a pasar.
 	if entity == entitySanitas && (depCode == "" || muniCode == "") {
-		slog.Warn("sanitas_contract_empty_geo",
+		slog.Warn(
+			"sanitas_contract_empty_geo",
 			"patient_id", patientID,
 			"regimen", regimen,
 			"dep", depCode,
@@ -268,7 +283,8 @@ func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *servic
 			"note", "geo vacía: posible MRC asignado como Evento; verificar contrato manualmente",
 		)
 	}
-	slog.Info("eps_contract_resolved",
+	slog.Info(
+		"eps_contract_resolved",
 		"patient_id", patientID,
 		"entity", entity,
 		"regimen", regimen,
@@ -277,6 +293,8 @@ func applyEPSContract(ctx context.Context, r *sm.StateResult, patientSvc *servic
 		"contract", contract,
 	)
 	r.WithContext("patient_contract", contract)
+	observability.Emit(observability.TraceSession(sess.ID), "entidad", "contract_resolved",
+		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"contrato": contract}})
 	if patientSvc != nil && patientID != "" {
 		// Best-effort: la cita usa el contrato del contexto en memoria, pero si el UPDATE a
 		// sis_paci falla queremos traza (Ley 1581 / diagnóstico de contención con la UI SIESA).
@@ -315,7 +333,8 @@ func showContactInfoHandler() sm.StateHandler {
 		phoneDisplay := utils.FormatPhoneDisplay(rawPhone)
 
 		return sm.NewResult(sm.StateConfirmContactInfo).
-			WithButtons(fmt.Sprintf("Tus datos de contacto registrados son:\n\nCelular: *%s*\nEmail: *%s*\n\nEs importante que estén actualizados ya que los usamos para enviarte recordatorios y confirmaciones de citas por WhatsApp.\n\n¿Son correctos?", phoneDisplay, rawEmail),
+			WithButtons(
+				fmt.Sprintf("Tus datos de contacto registrados son:\n\nCelular: *%s*\nEmail: *%s*\n\nEs importante que estén actualizados ya que los usamos para enviarte recordatorios y confirmaciones de citas por WhatsApp.\n\n¿Son correctos?", phoneDisplay, rawEmail),
 				sm.Button{Text: "Sí, son correctos", Payload: "contact_ok"},
 				sm.Button{Text: "No, actualizar", Payload: "contact_update"},
 			).
@@ -409,6 +428,9 @@ func updateContactInfoHandler(patientSvc *services.PatientService) sm.StateHandl
 			routeAfterContactInfo(ctx, sess, r, patientSvc)
 			return r, nil
 		}
+
+		observability.Emit(observability.TraceSession(sess.ID), "identificacion", "contact_updated",
+			observability.EmitOpts{Phone: sess.PhoneNumber})
 
 		// Actualizar contexto de sesión con los nuevos valores
 		r := sm.NewResult("").

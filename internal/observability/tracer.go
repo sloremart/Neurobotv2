@@ -94,6 +94,24 @@ var catalog = map[string]stepSpec{
 	"notif_recordatorio/expired":       {LvOutcome, "info", ""},
 	"notif_recordatorio/error":         {LvError, "error", ""},
 
+	// Identificación (§3A) — trace sess:<id>
+	"identificacion/patient_lookup":  {LvMilestone, "ok", ""},
+	"identificacion/contact_updated": {LvMilestone, "ok", ""},
+	"identificacion/lookup_failed":   {LvError, "error", ""},
+
+	// Entidad / EPS / Contrato (§3A) — trace sess:<id>
+	"entidad/entity_selected":      {LvMilestone, "ok", ""},
+	"entidad/contract_resolved":    {LvMilestone, "ok", ""},
+	"entidad/sanitas_muni_forced":  {LvMilestone, "ok", ""},
+	"entidad/no_entities":          {LvOutcome, "escalated", ""},
+	"entidad/entity_update_failed": {LvError, "error", ""},
+
+	// Registro (§3A) — trace sess:<id>
+	"registro/registration_started":   {LvMilestone, "ok", ""},
+	"registro/patient_created":        {LvOutcome, "ok", ""},
+	"registro/registration_abandoned": {LvOutcome, "info", ""},
+	"registro/patient_create_failed":  {LvError, "error", ""},
+
 	// Reconciliación de invariantes (§4) — anomalía de "mal comportamiento silencioso".
 	"invariante/anomaly": {LvError, "error", ""},
 }

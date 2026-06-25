@@ -10,6 +10,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -230,6 +231,8 @@ func registrationStartHandler() sm.StateHandler {
 		case "register_yes":
 			// El tipo de documento (reg_document_type) y el número (patient_doc) ya se pidieron
 			// antes de la búsqueda, así que el registro arranca directo en el primer apellido.
+			observability.Emit(observability.TraceSession(sess.ID), "registro", "registration_started",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			r := sm.NewResult(sm.StateRegFirstSurname).
 				WithText("¡Perfecto! Vamos a registrarte.\n\nPor favor escribe tu *primer apellido* (solo letras, sin números ni símbolos):").
 				WithEvent("registration_started", nil)
@@ -248,6 +251,8 @@ func registrationStartHandler() sm.StateHandler {
 
 			return r, nil
 		case "register_no":
+			observability.Emit(observability.TraceSession(sess.ID), "registro", "registration_abandoned",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return buildAutoCloseResult("Entendido. Si necesitas algo más, estamos aquí para ayudarte.").
 				WithEvent("registration_declined", nil), nil
 		}
@@ -354,7 +359,8 @@ func regBirthDateHandler() sm.StateHandler {
 		return sm.NewResult(sm.StateRegGender).
 			WithContext("reg_birth_date", parsedDate.Format("2006-01-02")).
 			WithContext("patient_age", fmt.Sprintf("%d", age)).
-			WithButtons("Selecciona tu *género*:",
+			WithButtons(
+				"Selecciona tu *género*:",
 				sm.Button{Text: "Masculino", Payload: "M"},
 				sm.Button{Text: "Femenino", Payload: "F"},
 			), nil
@@ -492,7 +498,8 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 				WithContext("reg_municipality", muniCode).
 				WithContext("reg_department", deptCode).
 				WithContext("reg_municipality_name", displayName).
-				WithButtons(fmt.Sprintf("Municipio seleccionado: *%s*\n\nSelecciona tu *zona*:", displayName),
+				WithButtons(
+					fmt.Sprintf("Municipio seleccionado: *%s*\n\nSelecciona tu *zona*:", displayName),
 					sm.Button{Text: "Urbana", Payload: "U"},
 					sm.Button{Text: "Rural", Payload: "R"},
 				), nil
@@ -511,7 +518,8 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 				WithContext("reg_municipality", "001").
 				WithContext("reg_department", "50").
 				WithContext("reg_municipality_name", "VILLAVICENCIO - META").
-				WithButtons("Municipio seleccionado: *VILLAVICENCIO - META*\n\nSelecciona tu *zona*:",
+				WithButtons(
+					"Municipio seleccionado: *VILLAVICENCIO - META*\n\nSelecciona tu *zona*:",
 					sm.Button{Text: "Urbana", Payload: "U"},
 					sm.Button{Text: "Rural", Payload: "R"},
 				), nil
@@ -544,7 +552,8 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 				WithContext("reg_municipality", results[0].MunicipalityCode).
 				WithContext("reg_department", results[0].DepartmentCode).
 				WithContext("reg_municipality_name", muniDisplay).
-				WithButtons(fmt.Sprintf("Municipio seleccionado: *%s*\n\nSelecciona tu *zona*:", muniDisplay),
+				WithButtons(
+					fmt.Sprintf("Municipio seleccionado: *%s*\n\nSelecciona tu *zona*:", muniDisplay),
 					sm.Button{Text: "Urbana", Payload: "U"},
 					sm.Button{Text: "Rural", Payload: "R"},
 				), nil
@@ -712,7 +721,7 @@ func confirmMunicipalityHandler(municipalityRepo repository.MunicipalityReposito
 func finalizeSanitasMunicipality(ctx context.Context, sess *session.Session, patientSvc *services.PatientService, depCode, muniCode string) *sm.StateResult {
 	r := sm.NewResult(sm.StateAskMedicalOrder)
 	patientID := sess.GetContext("patient_id")
-	applyEPSContract(ctx, r, patientSvc, patientID, entitySanitas, sess.GetContext("eps_regimen"), depCode, muniCode)
+	applyEPSContract(ctx, sess, r, patientSvc, patientID, entitySanitas, sess.GetContext("eps_regimen"), depCode, muniCode)
 
 	// Persistir municipio/departamento si el paciente los cambió.
 	changed := depCode != sess.GetContext("patient_dep") || muniCode != sess.GetContext("patient_muni")
@@ -794,7 +803,8 @@ func finishRegistrationWithBarrio(sess *session.Session, code, name string) *sm.
 	return sm.NewResult(sm.StateConfirmRegistration).
 		WithContext("reg_barrio", code).
 		WithContext("reg_barrio_name", name).
-		WithButtons(buildRegistrationSummary(sess),
+		WithButtons(
+			buildRegistrationSummary(sess),
 			sm.Button{Text: "✅ Sí, confirmar", Payload: "reg_confirm"},
 			sm.Button{Text: "✏️ Corregir datos", Payload: "reg_correct"},
 		)
@@ -838,12 +848,15 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 
 		patientID, err := patientSvc.Create(ctx, input)
 		if err != nil {
-			slog.Error("patient_create_failed",
+			slog.Error(
+				"patient_create_failed",
 				"doc", utils.MaskDocument(input.DocumentNumber),
 				"doc_type", input.DocumentType,
 				"entity", input.EntityCode,
 				"error", err.Error(),
 			)
+			observability.Emit(observability.TraceSession(sess.ID), "registro", "patient_create_failed",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return buildAutoCloseResult("Lo siento, hubo un error al crear tu registro. Por favor intenta más tarde o contacta a un agente.").
 				WithEvent("registration_failed", map[string]interface{}{"error": err.Error()}), nil
 		}
@@ -862,6 +875,9 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 		}
 		fullName := strings.Join(nameParts, " ")
 
+		observability.Emit(observability.TraceSession(sess.ID), "registro", "patient_created",
+			observability.EmitOpts{Phone: sess.PhoneNumber})
+
 		// Guardar datos del paciente en sesión
 		sess.PatientID = patientID
 		sess.PatientDoc = sess.GetContext("patient_doc")
@@ -877,7 +893,7 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 		// EPS contract resolution: the patient just entered régimen and municipality
 		// during registration, so resolve and persist the contract directly.
 		if isEPSWithMatrix(entityCode) {
-			applyEPSContract(ctx, r, patientSvc, patientID, entityCode,
+			applyEPSContract(ctx, sess, r, patientSvc, patientID, entityCode,
 				sess.GetContext("eps_regimen"),
 				sess.GetContext("reg_department"),
 				sess.GetContext("reg_municipality"))
@@ -895,26 +911,27 @@ func buildRegistrationSummary(sess *session.Session) string {
 		entityDisplay = sess.GetContext("reg_entity")
 	}
 
-	return fmt.Sprintf("*Resumen de tu registro:*\n\n"+
-		"*Datos personales*\n"+
-		"Documento: %s %s\n"+
-		"Nombre: %s %s %s %s\n"+
-		"Nacimiento: %s (Edad: %s)\n"+
-		"Género: %s\n"+
-		"RH: %s\n"+
-		"Estado civil: %s\n"+
-		"Teléfono: %s\n"+
-		"Email: %s\n\n"+
-		"*Afiliación*\n"+
-		"Entidad: %s\n"+
-		"Tipo usuario: %s\n"+
-		"Afiliación: %s\n\n"+
-		"*Dirección*\n"+
-		"Municipio: %s\n"+
-		"Zona: %s\n"+
-		"Dirección: %s\n"+
-		"Barrio: %s\n\n"+
-		"¿Los datos son correctos?",
+	return fmt.Sprintf(
+		"*Resumen de tu registro:*\n\n"+
+			"*Datos personales*\n"+
+			"Documento: %s %s\n"+
+			"Nombre: %s %s %s %s\n"+
+			"Nacimiento: %s (Edad: %s)\n"+
+			"Género: %s\n"+
+			"RH: %s\n"+
+			"Estado civil: %s\n"+
+			"Teléfono: %s\n"+
+			"Email: %s\n\n"+
+			"*Afiliación*\n"+
+			"Entidad: %s\n"+
+			"Tipo usuario: %s\n"+
+			"Afiliación: %s\n\n"+
+			"*Dirección*\n"+
+			"Municipio: %s\n"+
+			"Zona: %s\n"+
+			"Dirección: %s\n"+
+			"Barrio: %s\n\n"+
+			"¿Los datos son correctos?",
 		sess.GetContext("reg_document_type"), sess.GetContext("patient_doc"),
 		sess.GetContext("reg_first_name"), sess.GetContext("reg_second_name"),
 		sess.GetContext("reg_first_surname"), sess.GetContext("reg_second_surname"),
@@ -1097,7 +1114,8 @@ func withCorrectionRedirect(handler sm.StateHandler) sm.StateHandler {
 		redirect.WithClearCtx("reg_correction_mode")
 		redirect.Events = result.Events
 		redirect.WithText("Dato actualizado.").
-			WithButtons(buildRegistrationSummary(sess),
+			WithButtons(
+				buildRegistrationSummary(sess),
 				sm.Button{Text: "✅ Sí, confirmar", Payload: "reg_confirm"},
 				sm.Button{Text: "✏️ Corregir datos", Payload: "reg_correct"},
 			)
