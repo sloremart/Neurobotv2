@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -211,7 +212,8 @@ func (m *SessionManager) UpdateConversationID(ctx context.Context, phone, conver
 	}
 	s.ConversationID = conversationID
 	if err := m.repo.Save(ctx, s); err != nil {
-		slog.Error("update_conversation_id_failed",
+		slog.Error(
+			"update_conversation_id_failed",
 			"phone", utils.MaskPhone(phone),
 			"conversation_id", conversationID,
 			"session_id", s.ID,
@@ -314,6 +316,8 @@ func (m *SessionManager) checkExpiredEscalations(ctx context.Context, deps Inact
 		if deps.Tracker != nil {
 			deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_expired", nil)
 		}
+		observability.Emit(observability.TraceSession(s.ID), "escalacion", "escalation_expired",
+			observability.EmitOpts{Phone: s.PhoneNumber})
 		slog.Info("escalated session expired",
 			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
 			"conversation_id", fmt.Sprintf("%.8s", s.ConversationID))

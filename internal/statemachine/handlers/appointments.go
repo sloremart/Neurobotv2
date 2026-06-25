@@ -11,6 +11,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -130,6 +131,8 @@ func fetchAppointmentsHandler(apptSvc *services.AppointmentService, procRepo rep
 		}
 
 		if len(appointments) == 0 {
+			observability.Emit(observability.TraceSession(sess.ID), "mis_citas", "no_appointments",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return buildAutoCloseResult("No tienes citas pendientes o confirmadas.").
 				WithEvent("no_appointments_found", nil), nil
 		}
@@ -145,6 +148,8 @@ func fetchAppointmentsHandler(apptSvc *services.AppointmentService, procRepo rep
 		// Generar la lista aquí (LIST_APPOINTMENTS es interactivo, no auto-chain)
 		listMsg := buildAppointmentList(ctx, apptSvc, appointments, procRepo)
 
+		observability.Emit(observability.TraceSession(sess.ID), "mis_citas", "appointments_listed",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"count": len(appointments)}})
 		return sm.NewResult(sm.StateListAppointments).
 			WithContext("appointments_json", string(apptJSON)).
 			WithList(listMsg.body, listMsg.button, listMsg.section).
@@ -171,7 +176,8 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 					detail := buildAppointmentDetail(ctx, apptSvc, appts, a.ID, procRepo)
 					return sm.NewResult(sm.StateAppointmentAction).
 						WithContext("selected_appointment_id", msg.PostbackPayload).
-						WithList(detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
+						WithList(
+							detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
 							sm.ListSection{Title: "Acciones", Rows: appointmentActionRows()},
 						).
 						WithEvent("appointment_selected", map[string]interface{}{"id": msg.PostbackPayload}), nil
@@ -194,7 +200,8 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 				detail := buildAppointmentDetail(ctx, apptSvc, appts, selected.ID, procRepo)
 				return sm.NewResult(sm.StateAppointmentAction).
 					WithContext("selected_appointment_id", selected.ID).
-					WithList(detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
+					WithList(
+						detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
 						sm.ListSection{Title: "Acciones", Rows: appointmentActionRows()},
 					).
 					WithEvent("appointment_selected", map[string]interface{}{"id": selected.ID}), nil
@@ -246,7 +253,8 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 			}
 
 			return sm.NewResult(sess.CurrentState).
-				WithList(detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
+				WithList(
+					detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
 					sm.ListSection{Title: "Acciones", Rows: appointmentActionRows()},
 				), nil
 		}
@@ -254,7 +262,8 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 		switch selected {
 		case "appt_confirm":
 			return sm.NewResult(sm.StateConfirmAppointment).
-				WithButtons("¿Estás seguro de *confirmar* esta cita?",
+				WithButtons(
+					"¿Estás seguro de *confirmar* esta cita?",
 					sm.Button{Text: "Sí, confirmar", Payload: "confirm_yes"},
 					sm.Button{Text: "No, volver", Payload: "confirm_no"},
 				).
@@ -262,13 +271,16 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 
 		case "appt_cancel":
 			return sm.NewResult(sm.StateCancelAppointment).
-				WithButtons("¿Estás seguro de *cancelar* esta cita? Esta acción no se puede deshacer.",
+				WithButtons(
+					"¿Estás seguro de *cancelar* esta cita? Esta acción no se puede deshacer.",
 					sm.Button{Text: "Sí, cancelar", Payload: "cancel_yes"},
 					sm.Button{Text: "No, volver", Payload: "cancel_no"},
 				).
 				WithEvent("appointment_cancel_requested", nil), nil
 
 		case "appt_reschedule":
+			observability.Emit(observability.TraceSession(sess.ID), "mis_citas", "reschedule_started",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			// Extraer datos de la cita existente y buscar slots directamente.
 			// La cita vieja NO se cancela — solo se cancela cuando se crea la nueva
 			// (via reschedule_appt_id en createAppointmentHandler).
@@ -414,7 +426,8 @@ func confirmAppointmentHandler(apptSvc *services.AppointmentService, procRepo re
 			}
 			result.Messages = nil
 			return sm.NewResult(sess.CurrentState).
-				WithButtons("¿Estás seguro de *confirmar* esta cita?",
+				WithButtons(
+					"¿Estás seguro de *confirmar* esta cita?",
 					sm.Button{Text: "Sí, confirmar", Payload: "confirm_yes"},
 					sm.Button{Text: "No, volver", Payload: "confirm_no"},
 				), nil
@@ -443,7 +456,8 @@ func cancelAppointmentHandler(apptSvc *services.AppointmentService, procRepo rep
 			}
 			result.Messages = nil
 			return sm.NewResult(sess.CurrentState).
-				WithButtons("¿Estás seguro de *cancelar* esta cita? Esta acción no se puede deshacer.",
+				WithButtons(
+					"¿Estás seguro de *cancelar* esta cita? Esta acción no se puede deshacer.",
 					sm.Button{Text: "Sí, cancelar", Payload: "cancel_yes"},
 					sm.Button{Text: "No, volver", Payload: "cancel_no"},
 				), nil
@@ -471,7 +485,8 @@ func noAppointmentsHandler() sm.StateHandler {
 			}
 			result.Messages = nil
 			return sm.NewResult(sess.CurrentState).
-				WithButtons("No tienes citas pendientes o confirmadas.\n\n¿Qué deseas hacer?",
+				WithButtons(
+					"No tienes citas pendientes o confirmadas.\n\n¿Qué deseas hacer?",
 					sm.Button{Text: "Menú principal", Payload: "no_appt_menu"},
 					sm.Button{Text: "Terminar chat", Payload: "no_appt_end"},
 				), nil
@@ -758,10 +773,11 @@ func buildNotifConfirmDetail(allAppts []domain.Appointment, appt *domain.Appoint
 		proceduresText = "Procedimiento"
 	}
 
-	msg := fmt.Sprintf("✅ ¡Tu cita ha sido confirmada!\n\n"+
-		"*Fecha:* %s\n"+
-		"*Hora:* %s\n"+
-		"*Procedimiento:* %s",
+	msg := fmt.Sprintf(
+		"✅ ¡Tu cita ha sido confirmada!\n\n"+
+			"*Fecha:* %s\n"+
+			"*Hora:* %s\n"+
+			"*Procedimiento:* %s",
 		utils.FormatFriendlyDate(appt.Date),
 		services.FormatTimeSlot(appt.TimeSlot),
 		proceduresText,
@@ -894,6 +910,8 @@ func executeConfirmAppointment(ctx context.Context, sess *session.Session, apptS
 
 	msg += "\n\nRecuerda presentarte 30 minutos antes para realizar el proceso de facturación, con tu documento y orden médica."
 
+	observability.Emit(observability.TraceSession(sess.ID), "mis_citas", "appt_confirmed",
+		observability.EmitOpts{Phone: sess.PhoneNumber, RefID: sess.GetContext("selected_appointment_id")})
 	return buildAutoCloseResult(msg).
 		WithClearCtx("selected_appointment_id", "appointments_json").
 		WithEvent("appointment_confirmed", map[string]interface{}{
@@ -943,6 +961,8 @@ func executeCancelAppointment(ctx context.Context, sess *session.Session, apptSv
 	}
 	msg := cancelText
 
+	observability.Emit(observability.TraceSession(sess.ID), "mis_citas", "appt_cancelled",
+		observability.EmitOpts{Phone: sess.PhoneNumber, RefID: sess.GetContext("selected_appointment_id")})
 	return buildAutoCloseResult(msg).
 		WithClearCtx("selected_appointment_id", "appointments_json").
 		WithEvent("appointment_cancelled", map[string]interface{}{
@@ -965,7 +985,8 @@ func backToAppointmentAction(ctx context.Context, sess *session.Session, apptSvc
 	}
 
 	return sm.NewResult(sm.StateAppointmentAction).
-		WithList(detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
+		WithList(
+			detail+"\n\n¿Qué deseas hacer con esta cita?", "Ver opciones",
 			sm.ListSection{Title: "Acciones", Rows: appointmentActionRows()},
 		)
 }

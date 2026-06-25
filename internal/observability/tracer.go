@@ -112,6 +112,19 @@ var catalog = map[string]stepSpec{
 	"registro/registration_abandoned": {LvOutcome, "info", ""},
 	"registro/patient_create_failed":  {LvError, "error", ""},
 
+	// Mis citas (§3A) — trace sess:<id>
+	"mis_citas/appointments_listed": {LvMilestone, "ok", ""},
+	"mis_citas/appt_confirmed":      {LvOutcome, "ok", "cita"},
+	"mis_citas/appt_cancelled":      {LvOutcome, "ok", "cita"},
+	"mis_citas/reschedule_started":  {LvMilestone, "ok", ""},
+	"mis_citas/no_appointments":     {LvOutcome, "info", ""},
+
+	// Escalación a agente (§3A) — trace sess:<id>
+	"escalacion/escalated":          {LvOutcome, "escalated", ""},
+	"escalacion/agent_resumed":      {LvMilestone, "ok", ""},
+	"escalacion/agent_closed":       {LvOutcome, "ok", ""},
+	"escalacion/escalation_expired": {LvOutcome, "info", ""},
+
 	// Reconciliación de invariantes (§4) — anomalía de "mal comportamiento silencioso".
 	"invariante/anomaly": {LvError, "error", ""},
 }

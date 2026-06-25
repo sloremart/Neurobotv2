@@ -156,6 +156,12 @@ func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
 		"registro": {
 			"registration_started", "patient_created", "registration_abandoned", "patient_create_failed",
 		},
+		"mis_citas": {
+			"appointments_listed", "appt_confirmed", "appt_cancelled", "reschedule_started", "no_appointments",
+		},
+		"escalacion": {
+			"escalated", "agent_resumed", "agent_closed", "escalation_expired",
+		},
 	}
 	for flow, steps := range emitted {
 		for _, s := range steps {

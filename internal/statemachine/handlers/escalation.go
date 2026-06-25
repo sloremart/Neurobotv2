@@ -8,6 +8,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -34,7 +35,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 		}
 		sess.SetContext("pre_escalation_state", preState)
 
-		slog.Debug("escalation_start",
+		slog.Debug(
+			"escalation_start",
 			"session_id", sess.ID,
 			"phone", utils.MaskPhone(msg.Phone),
 			"cups_code", cupsCode,
@@ -62,7 +64,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 		// The Channels API response contains conversationId which gets cached.
 		patientNotified := false
 		if conversationID == "" {
-			slog.Warn("escalation_no_conversation_id",
+			slog.Warn(
+				"escalation_no_conversation_id",
 				"session_id", sess.ID,
 				"phone", utils.MaskPhone(msg.Phone),
 				"msg_conv_id", msg.ConversationID,
@@ -71,7 +74,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 			_, sendErr := birdClient.SendText(msg.Phone, "", "Te voy a conectar con un agente. Un momento por favor...")
 			patientNotified = true
 			if sendErr != nil {
-				slog.Error("escalation_pre_send_failed",
+				slog.Error(
+					"escalation_pre_send_failed",
 					"phone", utils.MaskPhone(msg.Phone),
 					"session_id", sess.ID,
 					"error", sendErr,
@@ -92,7 +96,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 
 		// 5. Try to escalate
 		if err := birdClient.EscalateToAgent(ctx, conversationID, msg.Phone, teamID, teamName, sess.PatientName, cfg.BirdTeamFallback); err != nil {
-			slog.Error("escalation failed",
+			slog.Error(
+				"escalation failed",
 				"error", err,
 				"phone", utils.MaskPhone(msg.Phone),
 				"team_id", teamID,
@@ -101,7 +106,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 			)
 			// Agent unavailable → fallback to restart/end menu
 			return sm.NewResult(sm.StateFallbackMenu).
-				WithButtons("No pudimos conectarte con un agente en este momento. ¿Qué deseas hacer?",
+				WithButtons(
+					"No pudimos conectarte con un agente en este momento. ¿Qué deseas hacer?",
 					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
 					sm.Button{Text: "Terminar chat", Payload: "action:end"},
 				).
@@ -131,6 +137,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 
 		// 8. Mark session as escalated (in-memory, persisted by worker pool)
 		sess.Status = session.StatusEscalated
+		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalated",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
 
 		return sm.NewResult(sm.StateEscalated).
 			WithContext("pre_escalation_state", preState).
