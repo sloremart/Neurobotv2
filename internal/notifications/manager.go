@@ -34,6 +34,10 @@ type PendingNotification struct {
 	RetryCount     int
 	InvalidInputs  int // free-text messages received while waiting for button press
 	CreatedAt      time.Time
+	// ExpiresAt es el instante de vencimiento de la entrada vigente. N-19: handleTimeout lo
+	// re-valida antes de actuar, para no procesar como "vencida" una entrada que fue re-armada
+	// (p.ej. el timer post-IVR de MarkIVRSent) cuando la dispara un trigger viejo.
+	ExpiresAt time.Time
 }
 
 // WaitingListFinder reads/updates waiting list entries (avoids importing repo/local directly).
@@ -132,7 +136,17 @@ type NotificationManager struct {
 	slotSearcher SlotSearcher
 	apptChecker  FutureAppointmentChecker
 	wlChecker    WaitingListChecker
+
+	// phoneLock serializa por-teléfono TODO acceso al estado de notificación (pending/callIDMap),
+	// que es propiedad exclusiva de este manager. Cierra el data race N-17 (campos de
+	// *PendingNotification mutados desde webhooks, timers y el scheduler) y el TOCTOU N-19. Es
+	// una instancia PROPIA (no la del worker pool): el worker no toca `pending`, así que un
+	// candado dedicado los protege al 100% y evita deadlocks al cruzar EnqueueVirtual.
+	phoneLock *session.PhoneMutex
 }
+
+// notifLockTimeout acota la ESPERA por el candado de un teléfono (no cuánto se sostiene).
+const notifLockTimeout = 30 * time.Second
 
 // NewNotificationManager creates a new notification manager.
 func NewNotificationManager(birdClient *bird.Client, apptSvc *services.AppointmentService, cfg *config.Config) *NotificationManager {
@@ -140,6 +154,29 @@ func NewNotificationManager(birdClient *bird.Client, apptSvc *services.Appointme
 		birdClient: birdClient,
 		apptSvc:    apptSvc,
 		cfg:        cfg,
+		phoneLock:  session.NewPhoneMutex(),
+	}
+}
+
+// lockPhone adquiere el candado por-teléfono del estado de notificación. Devuelve false si no
+// pudo (timeout); el caller debe abortar la operación. Si no hay candado configurado (tests que
+// construyen el manager por literal), procede sin serializar.
+func (m *NotificationManager) lockPhone(phone string) bool {
+	if m.phoneLock == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), notifLockTimeout)
+	defer cancel()
+	if err := m.phoneLock.Lock(ctx, phone); err != nil {
+		slog.Warn("notif_phone_lock_timeout", "phone", utils.MaskPhone(phone), "error", err)
+		return false
+	}
+	return true
+}
+
+func (m *NotificationManager) unlockPhone(phone string) {
+	if m.phoneLock != nil {
+		m.phoneLock.Unlock(phone)
 	}
 }
 
@@ -194,6 +231,11 @@ func (m *NotificationManager) SetWaitingListCheckDeps(ss SlotSearcher, ac Future
 // RegisterPending registers a pending notification with a type-appropriate timeout.
 // Confirmation/reschedule use configurable ConfirmFollowup1Hours; others default to 6h.
 func (m *NotificationManager) RegisterPending(notif PendingNotification) {
+	if !m.lockPhone(notif.Phone) {
+		return
+	}
+	defer m.unlockPhone(notif.Phone)
+
 	notif.CreatedAt = time.Now()
 
 	// Confirmation/reschedule: when followup disabled, keep pending alive until after 1 PM IVR
@@ -211,6 +253,7 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) {
 	}
 
 	expiresAt := notif.CreatedAt.Add(duration)
+	notif.ExpiresAt = expiresAt // N-19
 
 	// In-memory timer (handles timeout while running)
 	notif.Timer = time.AfterFunc(duration, func() {
@@ -236,6 +279,11 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) {
 // HandleResponse processes a patient's response to a proactive template.
 // Uses LoadAndDelete to atomically claim ownership and prevent race with handleTimeout.
 func (m *NotificationManager) HandleResponse(phone, payload, conversationID string) {
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
+
 	val, ok := m.pending.LoadAndDelete(phone)
 	if !ok {
 		slog.Warn("no pending notification for phone", "phone", utils.MaskPhone(phone), "payload", payload)
@@ -291,6 +339,11 @@ func (m *NotificationManager) HandleResponse(phone, payload, conversationID stri
 // Called when the pending notification was already removed from memory (escalated path),
 // so the appointment data is reconstructed from the session context.
 func (m *NotificationManager) HandleNotifPendingCommand(phone, action, convID, appointmentID, notifType string) {
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
+
 	slog.Info("agent handling notif_pending command",
 		"phone", utils.MaskPhone(phone),
 		"action", action,
@@ -332,6 +385,11 @@ func (m *NotificationManager) HasPending(phone string) bool {
 // Resends the confirmation prompt (up to 3 times) instead of starting a new bot session.
 // Returns true if the message was consumed (caller should not route to state machine).
 func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) bool {
+	if !m.lockPhone(phone) {
+		return false
+	}
+	defer m.unlockPhone(phone)
+
 	val, ok := m.pending.LoadAndDelete(phone) // atomic claim
 	if !ok {
 		return false
@@ -432,11 +490,20 @@ func (m *NotificationManager) GetPendingForIVR() []*PendingNotification {
 		targetRetry = 0
 	}
 	var result []*PendingNotification
-	m.pending.Range(func(_, val interface{}) bool {
+	m.pending.Range(func(key, val interface{}) bool {
+		phone, _ := key.(string)
+		if !m.lockPhone(phone) {
+			return true
+		}
 		p := val.(*PendingNotification)
 		if (p.Type == "confirmation" || p.Type == "reschedule") && p.RetryCount == targetRetry {
-			result = append(result, p)
+			// N-17: devolver una COPIA consistente (leída bajo el lock), no el puntero vivo del
+			// mapa, para que el scheduler no aliase un *PendingNotification que MarkIVRSent muta.
+			cp := *p
+			cp.Timer = nil
+			result = append(result, &cp)
 		}
+		m.unlockPhone(phone)
 		return true
 	})
 	return result
@@ -445,6 +512,11 @@ func (m *NotificationManager) GetPendingForIVR() []*PendingNotification {
 // MarkIVRSent updates a pending notification after IVR call was placed.
 // Stops old safety-net timer, sets RetryCount=3, starts post-IVR timer (minutes).
 func (m *NotificationManager) MarkIVRSent(phone string) {
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
+
 	val, ok := m.pending.Load(phone)
 	if !ok {
 		return
@@ -468,13 +540,14 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 	}
 
 	duration := time.Duration(safeMinutes(m.cfg.ConfirmPostIVRMinutes, 30)) * time.Minute
+	expiresAt := time.Now().Add(duration)
+	p.ExpiresAt = expiresAt // N-19
 	p.Timer = time.AfterFunc(duration, func() {
 		m.handleTimeout(phone)
 	})
 	m.pending.Store(phone, p)
 
 	if m.persister != nil {
-		expiresAt := time.Now().Add(duration)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := m.persister.Upsert(ctx, p.Phone, p.Type,
@@ -491,6 +564,11 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 // voice webhook (call_command_gather_finished), we can resolve the patient.
 // Also persists callId to DB (restart recovery) and inserts a KPI call record.
 func (m *NotificationManager) RegisterCallID(callID, phone string) {
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
+
 	m.callIDMap.Store(callID, phone)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -536,6 +614,11 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 		return
 	}
 	phone := val.(string)
+
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -676,6 +759,12 @@ func (m *NotificationManager) HandleVoiceCallCompleted(callID string) {
 		return // Already handled by gather result
 	}
 	phone := val.(string)
+
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
+
 	slog.Info("IVR: call completed without gather (no answer / voicemail)", "phone", utils.MaskPhone(phone), "callId", callID)
 
 	convID := ""
@@ -751,6 +840,7 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 			CallID:         row.CallID,
 			RetryCount:     row.RetryCount,
 			CreatedAt:      row.CreatedAt,
+			ExpiresAt:      row.ExpiresAt, // N-19
 		}
 
 		// Rebuild callIDMap so in-flight IVR webhooks are correlated after restart
@@ -832,12 +922,26 @@ func (m *NotificationManager) handleTimeout(phone string) {
 		}
 	}()
 
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
+
 	val, ok := m.pending.LoadAndDelete(phone)
 	if !ok {
 		return
 	}
 
 	pending := val.(*PendingNotification)
+
+	// N-19: si la entrada fue re-armada con un ExpiresAt futuro (p.ej. MarkIVRSent fijó el timer
+	// post-IVR), y este disparo viene de un trigger viejo (checkExpired sobre un snapshot de BD
+	// rancio, o un timer anterior), NO procesarla como vencida: re-insertarla y salir.
+	if !pending.ExpiresAt.IsZero() && time.Now().Before(pending.ExpiresAt) {
+		m.pending.Store(phone, pending)
+		slog.Debug("handleTimeout: entry re-armed, not expired yet — skipping", "phone", utils.MaskPhone(phone))
+		return
+	}
 
 	// Cleanup callIDMap
 	if pending.CallID != "" {

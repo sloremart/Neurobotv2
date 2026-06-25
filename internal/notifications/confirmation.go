@@ -184,14 +184,14 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 
 		pending.RetryCount = 1
 		duration := time.Duration(safeHours(m.cfg.ConfirmFollowup2Hours, 3)) * time.Hour
+		pending.ExpiresAt = time.Now().Add(duration) // N-19
 		pending.Timer = time.AfterFunc(duration, func() { m.handleTimeout(pending.Phone) })
 		m.pending.Store(pending.Phone, pending)
 
 		if m.persister != nil {
-			expiresAt := time.Now().Add(duration)
 			if err := m.persister.Upsert(context.Background(), pending.Phone, pending.Type,
 				pending.AppointmentID, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID,
-				pending.RetryCount, expiresAt); err != nil {
+				pending.RetryCount, pending.ExpiresAt); err != nil {
 				slog.Error("persist followup1", "phone", utils.MaskPhone(pending.Phone), "error", err)
 			}
 		}
@@ -209,14 +209,14 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 		pending.RetryCount = 2
 		// Safety-net timer: 2h (wait for 15:00 IVR task) + PostIVR minutes + 30min buffer
 		duration := 2*time.Hour + time.Duration(safeMinutes(m.cfg.ConfirmPostIVRMinutes, 30)+30)*time.Minute
+		pending.ExpiresAt = time.Now().Add(duration) // N-19
 		pending.Timer = time.AfterFunc(duration, func() { m.handleTimeout(pending.Phone) })
 		m.pending.Store(pending.Phone, pending)
 
 		if m.persister != nil {
-			expiresAt := time.Now().Add(duration)
 			if err := m.persister.Upsert(context.Background(), pending.Phone, pending.Type,
 				pending.AppointmentID, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID,
-				pending.RetryCount, expiresAt); err != nil {
+				pending.RetryCount, pending.ExpiresAt); err != nil {
 				slog.Error("persist followup2", "phone", utils.MaskPhone(pending.Phone), "error", err)
 			}
 		}

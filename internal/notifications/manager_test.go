@@ -641,6 +641,49 @@ func TestGetPendingForIVR(t *testing.T) {
 	}
 }
 
+// TestNotificationManager_ConcurrentPendingNoRace cubre N-17: varias goroutines golpean en
+// paralelo, sobre el MISMO teléfono, los métodos que leen/mutan los campos del *PendingNotification
+// (RegisterPending, RegisterCallID, MarkIVRSent, GetPendingForIVR). Con el candado por-teléfono
+// del manager no debe haber data race. Correr con -race; sin el lock, el detector dispara.
+func TestNotificationManager_ConcurrentPendingNoRace(t *testing.T) {
+	cfg := &config.Config{} // ConfirmFollowupEnabled=false → sin I/O de seguimiento
+	mgr := NewNotificationManager(nil, nil, cfg)
+	phone := "+573001234567"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 60; j++ {
+				switch (i + j) % 4 {
+				case 0:
+					mgr.RegisterPending(PendingNotification{
+						Type: "confirmation", Phone: phone,
+						AppointmentID: "APT-1", ConversationID: "conv-1",
+					})
+				case 1:
+					mgr.RegisterCallID("call-x", phone)
+				case 2:
+					mgr.MarkIVRSent(phone)
+				case 3:
+					_ = mgr.GetPendingForIVR()
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if p, ok := mgr.LoadPendingForTest(phone); ok && p.Timer != nil {
+		p.Timer.Stop()
+	}
+
+	// Invariante: un solo teléfono ⇒ a lo sumo una entrada pendiente (nunca duplicados).
+	if n := mgr.PendingCount(); n > 1 {
+		t.Errorf("expected at most 1 pending entry for a single phone, got %d", n)
+	}
+}
+
 func TestMarkIVRSent(t *testing.T) {
 	// Followup chain enabled → IVR is not the last step; pending survives with a post-IVR timer.
 	cfg := &config.Config{ConfirmFollowupEnabled: true, ConfirmPostIVRMinutes: 30}
