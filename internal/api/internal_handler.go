@@ -64,6 +64,24 @@ type SessionDebugReader interface {
 // FlowTraceReader reads the business-flow trace (flow_events) for the observability endpoints.
 type FlowTraceReader interface {
 	FindByTrace(ctx context.Context, traceID string) ([]domain.FlowEvent, error)
+	FindByFilter(ctx context.Context, flow, outcome, reason string, from, to time.Time, limit int) ([]domain.FlowEvent, error)
+}
+
+// flowEventJSON da forma a un FlowEvent para las respuestas de los endpoints de observabilidad.
+func flowEventJSON(e domain.FlowEvent) map[string]interface{} {
+	return map[string]interface{}{
+		"ts":       e.CreatedAt,
+		"trace_id": e.TraceID,
+		"flow":     e.Flow,
+		"step":     e.Step,
+		"level":    e.Level,
+		"outcome":  e.Outcome,
+		"reason":   e.Reason,
+		"phone":    e.Phone,
+		"ref_type": e.RefType,
+		"ref_id":   e.RefID,
+		"attrs":    e.Attrs,
+	}
 }
 
 // InternalEventLogger logs events for auditing (matches tracking.EventTracker).
@@ -154,24 +172,56 @@ func (h *InternalHandler) HandleFlowTrace(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]map[string]interface{}, 0, len(events))
 	for _, e := range events {
-		out = append(out, map[string]interface{}{
-			"ts":       e.CreatedAt,
-			"flow":     e.Flow,
-			"step":     e.Step,
-			"level":    e.Level,
-			"outcome":  e.Outcome,
-			"reason":   e.Reason,
-			"phone":    e.Phone,
-			"ref_type": e.RefType,
-			"ref_id":   e.RefID,
-			"attrs":    e.Attrs,
-		})
+		out = append(out, flowEventJSON(e))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"trace_id": traceID,
 		"count":    len(out),
 		"events":   out,
+	})
+}
+
+// HandleFlowEvents consulta eventos de flujo por tipo, acotado por ventana temporal.
+// GET /api/internal/flow-events?flow=&outcome=&reason=&from=YYYY-MM-DD&to=YYYY-MM-DD&limit=
+func (h *InternalHandler) HandleFlowEvents(w http.ResponseWriter, r *http.Request) {
+	if h.flowReader == nil {
+		http.Error(w, "flow tracing not configured", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	to := time.Now()
+	from := to.Add(-24 * time.Hour) // default: últimas 24h
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			from = t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			to = t.AddDate(0, 0, 1) // half-open: incluye todo el día 'to'
+		}
+	}
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	events, err := h.flowReader.FindByFilter(r.Context(), q.Get("flow"), q.Get("outcome"), q.Get("reason"), from, to, limit)
+	if err != nil {
+		slog.Error("flow-events query failed", "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	out := make([]map[string]interface{}, 0, len(events))
+	for _, e := range events {
+		out = append(out, flowEventJSON(e))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"count":  len(out),
+		"events": out,
 	})
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -344,7 +345,8 @@ func (m *NotificationManager) HandleNotifPendingCommand(phone, action, convID, a
 	}
 	defer m.unlockPhone(phone)
 
-	slog.Info("agent handling notif_pending command",
+	slog.Info(
+		"agent handling notif_pending command",
 		"phone", utils.MaskPhone(phone),
 		"action", action,
 		"appointment_id", appointmentID,
@@ -473,7 +475,8 @@ func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) b
 			})
 	}
 
-	slog.Info("notification invalid input — resent prompt",
+	slog.Info(
+		"notification invalid input — resent prompt",
 		"phone", utils.MaskPhone(phone),
 		"type", p.Type,
 		"invalid_inputs", p.InvalidInputs,
@@ -664,6 +667,8 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 			if m.callTracker != nil {
 				_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "error")
 			}
+			observability.Emit(observability.TraceNotif(p.AppointmentID), "notif_recordatorio", "error",
+				observability.EmitOpts{Phone: phone, Reason: "ivr_confirm_persist"})
 		} else {
 			m.ivrInternalNote(p.ConversationID, phone, callID,
 				"✅ *IVR — Cita CONFIRMADA por el paciente via llamada telefonica.*\n"+
@@ -675,6 +680,8 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 				m.tracker.LogEvent(ctx, "", phone, "notification_confirmed_ivr",
 					map[string]interface{}{"appointment_id": p.AppointmentID, "call_id": callID})
 			}
+			observability.Emit(observability.TraceNotif(p.AppointmentID), "notif_recordatorio", "confirmed",
+				observability.EmitOpts{Phone: phone, Reason: "ivr"})
 		}
 
 	case keys != "":
@@ -718,6 +725,8 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 			if m.callTracker != nil {
 				_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "error")
 			}
+			observability.Emit(observability.TraceNotif(p.AppointmentID), "notif_recordatorio", "error",
+				observability.EmitOpts{Phone: phone, Reason: "ivr_cancel_persist"})
 		} else {
 			m.ivrInternalNote(p.ConversationID, phone, callID,
 				"❌ *IVR — Cita CANCELADA por el paciente via llamada telefonica.*\n"+
@@ -729,6 +738,8 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 				m.tracker.LogEvent(ctx, "", phone, "notification_cancelled_ivr",
 					map[string]interface{}{"appointment_id": p.AppointmentID, "call_id": callID, "keys": keys})
 			}
+			observability.Emit(observability.TraceNotif(p.AppointmentID), "notif_recordatorio", "cancelled",
+				observability.EmitOpts{Phone: phone, Reason: "ivr"})
 		}
 
 	default:
@@ -914,7 +925,8 @@ func (m *NotificationManager) checkExpired(ctx context.Context) {
 func (m *NotificationManager) handleTimeout(phone string) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("PANIC in handleTimeout",
+			slog.Error(
+				"PANIC in handleTimeout",
 				"phone", utils.MaskPhone(phone),
 				"error", fmt.Sprintf("%v", r),
 				"stack", string(debug.Stack()),
@@ -1101,18 +1113,20 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		"Requiere gestion manual del agente.",
 		p.AppointmentID, apptDate, apptTime, cupsName)
 
-	slog.Info("escalateNotifToAgent",
+	slog.Info(
+		"escalateNotifToAgent",
 		"phone", utils.MaskPhone(p.Phone),
 		"conv_id", convID,
 		"appointment_id", p.AppointmentID,
 		"team_fallback", m.cfg.BirdTeamFallback,
 	)
 
-	commands := fmt.Sprintf("Comandos disponibles:\n" +
-		"  /bot resume NOTIF_PENDING confirm — Confirmar la cita\n" +
-		"  /bot resume NOTIF_PENDING reschedule — Reprogramar la cita\n" +
-		"  /bot resume NOTIF_PENDING cancel — Cancelar la cita\n" +
-		"  /bot cerrar — Cerrar la conversacion",
+	commands := fmt.Sprintf(
+		"Comandos disponibles:\n" +
+			"  /bot resume NOTIF_PENDING confirm — Confirmar la cita\n" +
+			"  /bot resume NOTIF_PENDING reschedule — Reprogramar la cita\n" +
+			"  /bot resume NOTIF_PENDING cancel — Cancelar la cita\n" +
+			"  /bot cerrar — Cerrar la conversacion",
 	)
 
 	// Send patient message first — this populates the convID cache via Channels API if empty
@@ -1135,7 +1149,8 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	if err := m.birdClient.EscalateToAgent(ctx, convID, p.Phone,
 		m.cfg.BirdTeamFallback, "Call Center",
 		patientName, m.cfg.BirdTeamFallback); err != nil {
-		slog.Error("escalateNotifToAgent: EscalateToAgent failed",
+		slog.Error(
+			"escalateNotifToAgent: EscalateToAgent failed",
 			"phone", utils.MaskPhone(p.Phone),
 			"conv_id", convID,
 			"team", m.cfg.BirdTeamFallback,

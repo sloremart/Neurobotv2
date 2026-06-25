@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 )
@@ -70,7 +71,46 @@ func (r *FlowRepo) FindByTrace(ctx context.Context, traceID string) ([]domain.Fl
 		return nil, fmt.Errorf("flow_events find by trace: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	return scanFlowRows(rows)
+}
 
+// FindByFilter consulta eventos por tipo, SIEMPRE acotada por la ventana [from, to). flow/outcome/
+// reason vacíos = sin filtrar por ese campo. limit acota el resultado (default 200, máx 1000).
+func (r *FlowRepo) FindByFilter(ctx context.Context, flow, outcome, reason string, from, to time.Time, limit int) ([]domain.FlowEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	where := "created_at >= ? AND created_at < ?"
+	args := []interface{}{from, to}
+	if flow != "" {
+		where += " AND flow = ?"
+		args = append(args, flow)
+	}
+	if outcome != "" {
+		where += " AND outcome = ?"
+		args = append(args, outcome)
+	}
+	if reason != "" {
+		where += " AND reason = ?"
+		args = append(args, reason)
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`SELECT id, trace_id, flow, step, level, outcome,
+	        COALESCE(reason,''), COALESCE(phone,''), COALESCE(ref_type,''), COALESCE(ref_id,''),
+	        COALESCE(attrs,''), created_at
+	 FROM flow_events WHERE %s ORDER BY created_at DESC, id DESC LIMIT ?`, where)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("flow_events find by filter: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanFlowRows(rows)
+}
+
+// scanFlowRows materializa las filas (columnas en el orden de los SELECT de este repo).
+func scanFlowRows(rows *sql.Rows) ([]domain.FlowEvent, error) {
 	var out []domain.FlowEvent
 	for rows.Next() {
 		var e domain.FlowEvent

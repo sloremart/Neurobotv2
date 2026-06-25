@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -44,6 +45,8 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 			// (quedaría con confirmación falsa y sin reintento). Avisar + escalar a agente.
 			slog.Error("confirm: confirm appointments failed, escalating", "error", err, "appointment_id", pending.AppointmentID)
 			_, _ = m.birdClient.SendText(phone, pending.ConversationID, "Tuvimos un inconveniente al confirmar tu cita. Un agente te ayudará en un momento.")
+			observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "error",
+				observability.EmitOpts{Phone: phone, Reason: "wa_confirm_persist"})
 			m.escalateToAgent(pending, escalationSystemFailure)
 			return
 		}
@@ -65,10 +68,11 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 		}
 
 		// Build confirmation message with details
-		msg := fmt.Sprintf("Tu cita ha sido confirmada!\n\n"+
-			"*Fecha:* %s\n"+
-			"*Hora:* %s\n"+
-			"*Procedimiento:* %s",
+		msg := fmt.Sprintf(
+			"Tu cita ha sido confirmada!\n\n"+
+				"*Fecha:* %s\n"+
+				"*Hora:* %s\n"+
+				"*Procedimiento:* %s",
 			utils.FormatFriendlyDate(appt.Date),
 			services.FormatTimeSlot(appt.TimeSlot),
 			proceduresText,
@@ -144,6 +148,8 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 				})
 		}
 
+		observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "confirmed",
+			observability.EmitOpts{Phone: phone, Reason: "whatsapp"})
 		slog.Info("proactive confirmation success",
 			"phone", utils.MaskPhone(phone),
 			"appointment_id", pending.AppointmentID,
@@ -286,7 +292,8 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		m.birdClient.EscalateToAgent(
 			ctx, pending.ConversationID, pending.Phone,
 			m.cfg.BirdTeamFallback, "Call Center",
-			patientName, m.cfg.BirdTeamFallback)
+			patientName, m.cfg.BirdTeamFallback,
+		)
 	}
 
 	// 5. Log event
@@ -297,6 +304,12 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 				"retry_count":    pending.RetryCount,
 			})
 	}
+	escReason := "no_response"
+	if reason == escalationSystemFailure {
+		escReason = "system_failure"
+	}
+	observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "escalated",
+		observability.EmitOpts{Phone: pending.Phone, Reason: escReason})
 
 	slog.Info("confirmation escalated to agent",
 		"phone", utils.MaskPhone(pending.Phone),

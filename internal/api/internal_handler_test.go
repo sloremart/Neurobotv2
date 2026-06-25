@@ -842,3 +842,60 @@ func TestGroupAppointmentsByPatientID_Empty(t *testing.T) {
 		t.Errorf("expected 0 groups, got %d", len(groups))
 	}
 }
+
+// --- flow-events endpoint ---
+
+type fakeFlowReader struct {
+	gotFlow, gotOutcome, gotReason string
+	gotLimit                       int
+	events                         []domain.FlowEvent
+}
+
+func (f *fakeFlowReader) FindByTrace(_ context.Context, _ string) ([]domain.FlowEvent, error) {
+	return f.events, nil
+}
+
+func (f *fakeFlowReader) FindByFilter(_ context.Context, flow, outcome, reason string, _, _ time.Time, limit int) ([]domain.FlowEvent, error) {
+	f.gotFlow, f.gotOutcome, f.gotReason, f.gotLimit = flow, outcome, reason, limit
+	return f.events, nil
+}
+
+func TestHandleFlowEvents_PassesFilters(t *testing.T) {
+	fake := &fakeFlowReader{events: []domain.FlowEvent{{Flow: "agendar", Step: "gfr_blocked", Outcome: "blocked"}}}
+	h := &InternalHandler{}
+	h.SetFlowReader(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/flow-events?flow=agendar&outcome=blocked&limit=50", nil)
+	w := httptest.NewRecorder()
+	h.HandleFlowEvents(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if fake.gotFlow != "agendar" || fake.gotOutcome != "blocked" || fake.gotLimit != 50 {
+		t.Errorf("filtros mal pasados: flow=%q outcome=%q limit=%d", fake.gotFlow, fake.gotOutcome, fake.gotLimit)
+	}
+	var resp struct {
+		Count  int                      `json:"count"`
+		Events []map[string]interface{} `json:"events"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 1 || len(resp.Events) != 1 {
+		t.Fatalf("count=%d events=%d, want 1/1", resp.Count, len(resp.Events))
+	}
+	if resp.Events[0]["outcome"] != "blocked" {
+		t.Errorf("event outcome = %v, want blocked", resp.Events[0]["outcome"])
+	}
+}
+
+func TestHandleFlowEvents_NotConfigured(t *testing.T) {
+	h := &InternalHandler{}
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/flow-events", nil)
+	w := httptest.NewRecorder()
+	h.HandleFlowEvents(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+}

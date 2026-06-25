@@ -14,6 +14,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -55,7 +56,8 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator) sm.StateHandler {
 			if sess.GetContext("_prompted_has_order") == "" {
 				return sm.NewResult(sess.CurrentState).
 					WithContext("_prompted_has_order", "1").
-					WithButtons("¿Cuentas con una *orden médica* para este procedimiento?",
+					WithButtons(
+						"¿Cuentas con una *orden médica* para este procedimiento?",
 						sm.Button{Text: "Sí, tengo orden", Payload: "has_order_yes"},
 						sm.Button{Text: "No tengo orden", Payload: "has_order_no"},
 					), nil
@@ -151,6 +153,8 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 					msg = "El análisis de la imagen tardó demasiado. ¿Qué deseas hacer?"
 					eventType = "ocr_timeout"
 				}
+				observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_failed",
+					observability.EmitOpts{Phone: sess.PhoneNumber, Reason: eventType})
 				return sm.NewResult(sess.CurrentState).
 					WithButtons(msg, ocrRetryButtons(birdClient)...).
 					WithEvent(eventType, map[string]interface{}{"error": err.Error()}), nil
@@ -158,7 +162,8 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 
 			if !ocrResult.Success || len(ocrResult.Cups) == 0 {
 				return sm.NewResult(sess.CurrentState).
-					WithButtons("No pudimos leer procedimientos en esta imagen.\n\n¿Qué deseas hacer?",
+					WithButtons(
+						"No pudimos leer procedimientos en esta imagen.\n\n¿Qué deseas hacer?",
 						ocrRetryButtons(birdClient)...,
 					).
 					WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil
@@ -170,6 +175,8 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 			r := sm.NewResult(sm.StateValidateOCR).
 				WithContext("ocr_cups_json", string(cupsJSON)).
 				WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})
 
 			// Guardar documento extraído para verificación posterior
 			if ocrResult.Document != "" {
@@ -189,7 +196,8 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 					// Re-check agent availability (button may have been shown before agents went offline)
 					if birdClient != nil && !birdClient.HasAvailableAgents() {
 						return sm.NewResult(sess.CurrentState).
-							WithButtons("En este momento no hay agentes disponibles. ¿Qué deseas hacer?",
+							WithButtons(
+								"En este momento no hay agentes disponibles. ¿Qué deseas hacer?",
 								sm.Button{Text: "Enviar de nuevo", Payload: "retry_photo"},
 							).
 							WithEvent("agent_unavailable_at_escalation", nil), nil
@@ -248,6 +256,8 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 		cups = valid
 
 		if len(cups) == 0 {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "cups_none",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("No pudimos procesar los procedimientos de tu orden médica. Te voy a comunicar con un agente para que pueda ayudarte.").
 				WithEvent("ocr_no_valid_cups", map[string]interface{}{"skipped": skipped}), nil
@@ -278,7 +288,8 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 
 		return sm.NewResult(sm.StateConfirmOCRResult).
 			WithContext("ocr_cups_json", string(cupsJSON)).
-			WithButtons(summary,
+			WithButtons(
+				summary,
 				sm.Button{Text: "Sí, correcto", Payload: "ocr_correct"},
 				sm.Button{Text: "No, corregir", Payload: "ocr_incorrect"},
 			), nil
@@ -432,7 +443,8 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 
 		case "ocr_incorrect":
 			return sm.NewResult(sm.StateUploadMedicalOrder).
-				WithButtons("Entendido. ¿Qué deseas hacer?",
+				WithButtons(
+					"Entendido. ¿Qué deseas hacer?",
 					ocrRetryButtons(birdClient)...,
 				).
 				WithClearCtx("ocr_cups_json").
@@ -447,7 +459,8 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 func ocrFailedHandler(birdClient *bird.Client) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		return sm.NewResult(sm.StateUploadMedicalOrder).
-			WithButtons("No pudimos procesar tu orden médica. ¿Qué deseas hacer?",
+			WithButtons(
+				"No pudimos procesar tu orden médica. ¿Qué deseas hacer?",
 				ocrRetryButtons(birdClient)...,
 			).
 			WithEvent("ocr_failed_redirect", nil), nil

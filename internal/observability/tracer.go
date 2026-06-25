@@ -69,6 +69,30 @@ var catalog = map[string]stepSpec{
 	"lista_espera/declined":          {LvOutcome, "info", ""},
 	"lista_espera/booked":            {LvOutcome, "ok", "cita"},
 	"lista_espera/expired":           {LvOutcome, "info", ""},
+
+	// Agendamiento (§3.2 / §3A) — trace sess:<id>
+	"agendar/ocr_ok":              {LvMilestone, "ok", ""},
+	"agendar/ocr_failed":          {LvError, "error", ""},
+	"agendar/cups_none":           {LvOutcome, "escalated", ""},
+	"agendar/gfr_blocked":         {LvOutcome, "blocked", ""},
+	"agendar/pregnancy_blocked":   {LvOutcome, "blocked", ""},
+	"agendar/special_escalated":   {LvOutcome, "escalated", ""},
+	"agendar/already_has_appt":    {LvOutcome, "blocked", ""},
+	"agendar/coverage_particular": {LvMilestone, "ok", ""},
+	"agendar/coverage_escalated":  {LvOutcome, "escalated", ""},
+	"agendar/slots_found":         {LvMilestone, "ok", ""},
+	"agendar/no_slots":            {LvOutcome, "blocked", ""},
+	"agendar/booking_success":     {LvOutcome, "ok", "cita"},
+	"agendar/booking_failed":      {LvError, "error", ""},
+
+	// Recordatorio / IVR (§3.3 / §3A) — trace notif:<apptID>
+	"notif_recordatorio/reminder_sent": {LvMilestone, "ok", "bird_msg"},
+	"notif_recordatorio/ivr_placed":    {LvMilestone, "ok", "call"},
+	"notif_recordatorio/confirmed":     {LvOutcome, "ok", ""},
+	"notif_recordatorio/cancelled":     {LvOutcome, "ok", ""},
+	"notif_recordatorio/escalated":     {LvOutcome, "escalated", ""},
+	"notif_recordatorio/expired":       {LvOutcome, "info", ""},
+	"notif_recordatorio/error":         {LvError, "error", ""},
 }
 
 // EmitOpts son los datos variables de un evento. Outcome vacío usa el del catálogo.
@@ -231,8 +255,8 @@ func TraceSession(sessionID string) string { return "sess:" + sessionID }
 // TraceWaitingList correlaciona el recorrido completo de una entrada de lista de espera.
 func TraceWaitingList(entryID string) string { return "wl:" + entryID }
 
-// TraceNotif correlaciona un recordatorio por cita+día (yyyymmdd = fecha de la cita).
-func TraceNotif(apptID, yyyymmdd string) string { return "notif:" + apptID + ":" + yyyymmdd }
+// TraceNotif correlaciona el recorrido de un recordatorio por cita (apptID ya es único).
+func TraceNotif(apptID string) string { return "notif:" + apptID }
 
 // TraceAgenda correlaciona una operación admin sobre una agenda en una fecha.
 func TraceAgenda(agendaID, yyyymmdd string) string { return "agenda:" + agendaID + ":" + yyyymmdd }

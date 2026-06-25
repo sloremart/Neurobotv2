@@ -191,6 +191,8 @@ func coverageNoConvenioHandler() sm.StateHandler {
 			return result, nil // input inválido (retry) o escalamiento, ya resuelto
 		}
 		if selected == "cov_agente" {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "coverage_escalated",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Te comunicamos con un agente para gestionar tu cita.").
 				WithEvent("coverage_escalate_agent", nil), nil
@@ -198,6 +200,8 @@ func coverageNoConvenioHandler() sm.StateHandler {
 		// cov_particular → cambiar a PARTICULAR y re-buscar (el particular siempre tiene tarifa > 0,
 		// así el gate no se vuelve a disparar). Se limpia patient_contract para que lookupContract
 		// resuelva el contrato particular al agendar.
+		observability.Emit(observability.TraceSession(sess.ID), "agendar", "coverage_particular",
+			observability.EmitOpts{Phone: sess.PhoneNumber})
 		return sm.NewResult(sm.StateSearchSlots).
 			WithContext("patient_entity", particularEntityCode).
 			WithClearCtx("patient_contract").
@@ -381,6 +385,8 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 		}
 
 		if len(slots) == 0 {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "no_slots",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"cups": cupsCode}})
 			return sm.NewResult(sm.StateNoSlotsAvailable).
 				WithEvent("no_slots_found", map[string]interface{}{"cups_code": cupsCode}), nil
 		}
@@ -418,6 +424,8 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 			WithContext("available_slots_json", string(slotsJSON)).
 			WithText(msgText.String()).
 			WithEvent("slots_found", map[string]interface{}{"count": len(slots)})
+		observability.Emit(observability.TraceSession(sess.ID), "agendar", "slots_found",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"count": len(slots)}})
 
 		// Persist procedure metadata so it's available in later turns (confirm/success)
 		if prep := sess.GetContext("cups_preparation"); prep != "" {
@@ -1297,6 +1305,9 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				"reschedule_from": rescheduleApptID,
 			})
 
+		observability.Emit(observability.TraceSession(sess.ID), "agendar", "booking_success",
+			observability.EmitOpts{Phone: sess.PhoneNumber, RefID: apptID})
+
 		if wlID := sess.GetContext("waiting_list_entry_id"); wlID != "" {
 			result.WithEvent("waiting_list_booking_success", map[string]interface{}{
 				"waiting_list_id": wlID,
@@ -1401,6 +1412,8 @@ func bookingFailedHandler() sm.StateHandler {
 				WithEvent("booking_timeout", nil), nil
 
 		default:
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "booking_failed",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: reason})
 			return buildAutoCloseResult("Ocurrió un error al crear la cita. Por favor intenta más tarde.").
 				WithEvent("booking_failed", map[string]interface{}{"reason": reason}), nil
 		}

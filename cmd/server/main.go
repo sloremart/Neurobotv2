@@ -411,6 +411,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/sessions", internalHandler.HandleSessions)
 		internalMux.HandleFunc("GET /api/internal/sessions/context", internalHandler.HandleSessionContext)
 		internalMux.HandleFunc("GET /api/internal/flow-trace", internalHandler.HandleFlowTrace)
+		internalMux.HandleFunc("GET /api/internal/flow-events", internalHandler.HandleFlowEvents)
 		mux.Handle(
 			"/api/internal/",
 			api.RateLimiter(30, time.Minute)(

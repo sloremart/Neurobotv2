@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -107,7 +108,8 @@ func askContrastedHandler() sm.StateHandler {
 		if sess.GetContext("_prompted_contrast") == "" {
 			return sm.NewResult(sess.CurrentState).
 				WithContext("_prompted_contrast", "1").
-				WithButtons("¿Tu examen requiere *medio de contraste*?\n\n(Esto debe indicarlo tu orden médica)",
+				WithButtons(
+					"¿Tu examen requiere *medio de contraste*?\n\n(Esto debe indicarlo tu orden médica)",
 					sm.Button{Text: "Sí, con contraste", Payload: "contrast_yes"},
 					sm.Button{Text: "No, sin contraste", Payload: "contrast_no"},
 				), nil
@@ -141,7 +143,8 @@ func askContrastedHandler() sm.StateHandler {
 			} else if age < 1 {
 				// Bebé (any gender) → preguntar peso
 				r.NextState = sm.StateAskBabyWeight
-				r.WithButtons("¿Cuál fue el peso del bebé al nacer?",
+				r.WithButtons(
+					"¿Cuál fue el peso del bebé al nacer?",
 					sm.Button{Text: "Bajo peso", Payload: "baby_low"},
 					sm.Button{Text: "Peso normal", Payload: "baby_normal"},
 				)
@@ -189,7 +192,8 @@ func askPregnancyHandler() sm.StateHandler {
 		if sess.GetContext("_prompted_pregnancy") == "" {
 			return sm.NewResult(sess.CurrentState).
 				WithContext("_prompted_pregnancy", "1").
-				WithButtons("¿Estás embarazada?",
+				WithButtons(
+					"¿Estás embarazada?",
 					sm.Button{Text: "Sí", Payload: "pregnant_yes"},
 					sm.Button{Text: "No", Payload: "pregnant_no"},
 				), nil
@@ -209,6 +213,8 @@ func askPregnancyHandler() sm.StateHandler {
 
 		switch selected {
 		case "pregnant_yes":
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "pregnancy_blocked",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return sm.NewResult(sm.StatePregnancyBlock).
 				WithContext("is_pregnant", "1").
 				WithClearCtx("_prompted_pregnancy").
@@ -287,7 +293,8 @@ func gfrCreatinineHandler() sm.StateHandler {
 		case age < 40:
 			// 15-39: preguntar enfermedad
 			r.NextState = sm.StateGfrDisease
-			r.WithButtons("¿Padeces alguna de estas condiciones?",
+			r.WithButtons(
+				"¿Padeces alguna de estas condiciones?",
 				sm.Button{Text: "Ninguna", Payload: "disease_none"},
 				sm.Button{Text: "Enfermedad renal", Payload: "disease_renal"},
 				sm.Button{Text: "Diabetes", Payload: "disease_diabetica"},
@@ -398,6 +405,8 @@ func gfrResultHandler(gfrSvc *services.GFRService) sm.StateHandler {
 
 		if !result.Eligible {
 			r.NextState = sm.StateGfrNotEligible
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "gfr_blocked",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 		} else {
 			r.NextState = sm.StateAskSedation
 		}
@@ -443,7 +452,8 @@ func askSedationHandler() sm.StateHandler {
 		if sess.GetContext("_prompted_sedation") == "" {
 			return sm.NewResult(sess.CurrentState).
 				WithContext("_prompted_sedation", "1").
-				WithButtons("¿Tu examen requiere *sedación*?\n\n(Esto lo indica tu médico, generalmente para niños o pacientes con claustrofobia)",
+				WithButtons(
+					"¿Tu examen requiere *sedación*?\n\n(Esto lo indica tu médico, generalmente para niños o pacientes con claustrofobia)",
 					sm.Button{Text: "Sí, con sedación", Payload: "sedated_yes"},
 					sm.Button{Text: "No, sin sedación", Payload: "sedated_no"},
 				), nil
@@ -486,6 +496,8 @@ func checkExistingHandler(apptSvc *services.AppointmentService) sm.StateHandler 
 		}
 
 		if hasExisting {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "already_has_appt",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"cups": cupsCode}})
 			return sm.NewResult(sm.StateAppointmentExists).
 				WithEvent("existing_appointment_found", map[string]interface{}{"cups_code": cupsCode}), nil
 		}
@@ -610,6 +622,8 @@ func checkSpecialCupsHandler() sm.StateHandler {
 
 		// Sleep study → escalate to agent (requires special scheduling)
 		if isSleepStudy(cupsCode) {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "special_escalated",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "sleep_study", Attrs: map[string]interface{}{"cups": cupsCode}})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Los *estudios del sueño* requieren una coordinación especial. Te comunicaremos con un agente para programar tu cita.").
 				WithEvent("special_cups_sleep_study", map[string]interface{}{"cups_code": cupsCode}), nil

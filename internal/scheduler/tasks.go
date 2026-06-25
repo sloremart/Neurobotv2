@@ -11,6 +11,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -205,6 +206,8 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 					"conversation_id": convID,
 				})
 		}
+		observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "reminder_sent",
+			observability.EmitOpts{Phone: phone, RefID: msgID})
 
 		sent++
 
@@ -301,6 +304,8 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 			t.Tracker.LogEvent(ctx, "", pending.Phone, "notification_ivr_sent",
 				map[string]interface{}{"appointment_id": pending.AppointmentID})
 		}
+		observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "ivr_placed",
+			observability.EmitOpts{Phone: pending.Phone, RefID: callID})
 
 		slog.Info("ivr call initiated", "phone", utils.MaskPhone(pending.Phone), "appointment_id", pending.AppointmentID)
 

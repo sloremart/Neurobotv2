@@ -132,15 +132,63 @@ func TestParseLevel(t *testing.T) {
 	}
 }
 
-// TestCatalog_WaitingListRegistered: todos los steps que la lista de espera emite tienen entrada.
-func TestCatalog_WaitingListRegistered(t *testing.T) {
-	steps := []string{
-		"enrolled", "slot_match", "skipped", "claim_lost", "duplicate_found",
-		"notified", "notify_failed", "response_schedule", "declined", "booked", "expired",
+// TestCatalog_AllEmittedStepsRegistered: todos los steps que el código emite tienen entrada en el
+// catálogo (impide desincronización código↔§3A). Listar aquí cada step instrumentado.
+func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
+	emitted := map[string][]string{
+		"lista_espera": {
+			"enrolled", "slot_match", "skipped", "claim_lost", "duplicate_found",
+			"notified", "notify_failed", "response_schedule", "declined", "booked", "expired",
+		},
+		"agendar": {
+			"ocr_ok", "ocr_failed", "cups_none", "gfr_blocked", "pregnancy_blocked",
+			"special_escalated", "already_has_appt", "coverage_particular", "coverage_escalated",
+			"slots_found", "no_slots", "booking_success", "booking_failed",
+		},
+		"notif_recordatorio": {
+			"reminder_sent", "ivr_placed", "confirmed", "cancelled", "escalated", "error",
+		},
 	}
-	for _, s := range steps {
-		if _, ok := catalog["lista_espera/"+s]; !ok {
-			t.Errorf("catalog sin entrada para lista_espera/%s", s)
+	for flow, steps := range emitted {
+		for _, s := range steps {
+			if _, ok := catalog[flow+"/"+s]; !ok {
+				t.Errorf("catalog sin entrada para %s/%s", flow, s)
+			}
+		}
+	}
+}
+
+// TestCatalog_Classification verifica que los hitos clave salen con el nivel y outcome correctos
+// (criterio de aceptación Fase 1: gfr_blocked→blocked, ocr_failed→error son consultables por tipo).
+func TestCatalog_Classification(t *testing.T) {
+	got := runEmits(LvFull, func(tr *Tracer) {
+		tr.emit("sess:1", "agendar", "gfr_blocked", EmitOpts{})
+		tr.emit("sess:1", "agendar", "ocr_failed", EmitOpts{})
+		tr.emit("sess:1", "agendar", "booking_success", EmitOpts{RefID: "c1"})
+		tr.emit("notif:1", "notif_recordatorio", "confirmed", EmitOpts{})
+		tr.emit("notif:1", "notif_recordatorio", "error", EmitOpts{})
+	})
+	want := map[string]struct {
+		level   int
+		outcome string
+	}{
+		"gfr_blocked":     {int(LvOutcome), "blocked"},
+		"ocr_failed":      {int(LvError), "error"},
+		"booking_success": {int(LvOutcome), "ok"},
+		"confirmed":       {int(LvOutcome), "ok"},
+		"error":           {int(LvError), "error"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d events, want %d", len(got), len(want))
+	}
+	for _, e := range got {
+		w, ok := want[e.Step]
+		if !ok {
+			t.Errorf("step inesperado %q", e.Step)
+			continue
+		}
+		if e.Level != w.level || e.Outcome != w.outcome {
+			t.Errorf("%s: level=%d outcome=%q, want level=%d outcome=%q", e.Step, e.Level, e.Outcome, w.level, w.outcome)
 		}
 	}
 }
