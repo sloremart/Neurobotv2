@@ -1003,7 +1003,7 @@ func (c *Client) listAgents(statusFilter string) ([]AgentInfo, error) {
 // AssignFeedItem assigns a conversation to a team+agent in Bird Inbox.
 // First searches for the feed item by conversationId (feed item ID != conversation ID),
 // then PATCHes using the actual feed item ID. Retries the search if not found yet.
-func (c *Client) AssignFeedItem(conversationID, teamID, agentID string) error {
+func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, agentID string) error {
 	if conversationID == "" {
 		return nil
 	}
@@ -1022,7 +1022,9 @@ func (c *Client) AssignFeedItem(conversationID, teamID, agentID string) error {
 	// Search → PATCH with retries (feed item may not be indexed yet)
 	for attempt := 0; attempt <= 3; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			if err := sleepWithContext(ctx, time.Duration(attempt)*time.Second); err != nil {
+				return err
+			}
 		}
 
 		feedItemID, feedID, err := c.searchFeedItem(conversationID)
@@ -1407,7 +1409,7 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 // Flow: resolve conversationID (API lookup if needed) → mark conversation →
 // list active agents → pick least loaded in teamID →
 // fallback to fallbackTeamID → assign to team without agent if nobody available.
-func (c *Client) EscalateToAgent(conversationID, phone, teamID, teamName, patientName, fallbackTeamID string) error {
+func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, teamID, teamName, patientName, fallbackTeamID string) error {
 	// If no conversationID or it might be stale, try API lookup by phone
 	if phone != "" {
 		if conversationID == "" {
@@ -1476,7 +1478,7 @@ func (c *Client) EscalateToAgent(conversationID, phone, teamID, teamName, patien
 				"team_id", teamID,
 				"error", err,
 			)
-			return c.AssignFeedItem(conversationID, teamID, "")
+			return c.AssignFeedItem(ctx, conversationID, teamID, "")
 		}
 	}
 	if len(agents) == 0 {
@@ -1484,7 +1486,7 @@ func (c *Client) EscalateToAgent(conversationID, phone, teamID, teamName, patien
 			"conversation_id", conversationID,
 			"team_id", teamID,
 		)
-		return c.AssignFeedItem(conversationID, teamID, "")
+		return c.AssignFeedItem(ctx, conversationID, teamID, "")
 	}
 
 	// 3. Pick least loaded agent in target team
@@ -1497,7 +1499,7 @@ func (c *Client) EscalateToAgent(conversationID, phone, teamID, teamName, patien
 			"team_id", teamID,
 			"workload", agent.RootItemAssignedCount,
 		)
-		return c.AssignFeedItem(conversationID, teamID, agent.ID)
+		return c.AssignFeedItem(ctx, conversationID, teamID, agent.ID)
 	}
 
 	// 4. Fallback: try fallback team (Call Center)
@@ -1512,7 +1514,7 @@ func (c *Client) EscalateToAgent(conversationID, phone, teamID, teamName, patien
 				"original_team_id", teamID,
 				"workload", agent.RootItemAssignedCount,
 			)
-			return c.AssignFeedItem(conversationID, fallbackTeamID, agent.ID)
+			return c.AssignFeedItem(ctx, conversationID, fallbackTeamID, agent.ID)
 		}
 	}
 
@@ -1521,7 +1523,7 @@ func (c *Client) EscalateToAgent(conversationID, phone, teamID, teamName, patien
 		"conversation_id", conversationID,
 		"team_id", teamID,
 	)
-	return c.AssignFeedItem(conversationID, teamID, "")
+	return c.AssignFeedItem(ctx, conversationID, teamID, "")
 }
 
 // UpdateFeedItem updates a conversation's feed item in Bird Inbox.

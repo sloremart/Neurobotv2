@@ -284,7 +284,7 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 	// 4. Assign to best available agent
 	if pending.ConversationID != "" {
 		m.birdClient.EscalateToAgent(
-			pending.ConversationID, pending.Phone,
+			ctx, pending.ConversationID, pending.Phone,
 			m.cfg.BirdTeamFallback, "Call Center",
 			patientName, m.cfg.BirdTeamFallback)
 	}

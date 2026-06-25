@@ -1,6 +1,7 @@
 package bird
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -154,7 +155,7 @@ func TestSendTemplate_PayloadCorrect(t *testing.T) {
 func TestEscalateToAgent_EmptyConversationID(t *testing.T) {
 	c := NewClientForTest("http://localhost")
 	// No conversationID and no phone → cannot lookup → error
-	err := c.EscalateToAgent("", "", "team-1", "Team", "Patient", "fallback-team")
+	err := c.EscalateToAgent(context.Background(), "", "", "team-1", "Team", "Patient", "fallback-team")
 	if err == nil {
 		t.Error("expected error for empty conversation ID")
 	}
@@ -304,7 +305,7 @@ func TestEscalateToAgent_AssignsLeastLoaded(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.EscalateToAgent("conv-123", "+573001234567", "team-a", "Grupo A", "Edgar A.", "team-fallback")
+	err := c.EscalateToAgent(context.Background(), "conv-123", "+573001234567", "team-a", "Grupo A", "Edgar A.", "team-fallback")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -345,7 +346,7 @@ func TestEscalateToAgent_FallbackTeam(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.EscalateToAgent("conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
+	err := c.EscalateToAgent(context.Background(), "conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
 	if err != nil {
 		t.Fatalf("expected no error (fallback), got %v", err)
 	}
@@ -370,7 +371,7 @@ func TestEscalateToAgent_NoActiveAgents(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.EscalateToAgent("conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
+	err := c.EscalateToAgent(context.Background(), "conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
 	if err != nil {
 		t.Errorf("expected nil error (assigns to team when no agents), got %v", err)
 	}
@@ -394,7 +395,7 @@ func TestEscalateToAgent_AgentsAPIError(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.EscalateToAgent("conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
+	err := c.EscalateToAgent(context.Background(), "conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
 	if err != nil {
 		t.Errorf("expected nil error (falls back to team-only), got %v", err)
 	}
@@ -429,7 +430,7 @@ func TestEscalateToAgent_AllBusy_AssignsToTeamOnly(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.EscalateToAgent("conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-a")
+	err := c.EscalateToAgent(context.Background(), "conv-1", "+573001234567", "team-a", "Grupo A", "Patient", "team-a")
 	if err != nil {
 		t.Fatalf("expected no error (assign to team), got %v", err)
 	}
@@ -558,7 +559,7 @@ func TestAssignFeedItem_Success(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.AssignFeedItem("conv-123", "team-a", "agent-1")
+	err := c.AssignFeedItem(context.Background(), "conv-123", "team-a", "agent-1")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -575,7 +576,7 @@ func TestAssignFeedItem_Success(t *testing.T) {
 
 func TestAssignFeedItem_EmptyConversation(t *testing.T) {
 	c := NewClientForTest("http://localhost")
-	err := c.AssignFeedItem("", "team-a", "agent-1")
+	err := c.AssignFeedItem(context.Background(), "", "team-a", "agent-1")
 	if err != nil {
 		t.Errorf("expected nil for empty conversation, got %v", err)
 	}
@@ -599,7 +600,7 @@ func TestAssignFeedItem_NoAgent(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.AssignFeedItem("conv-1", "team-a", "")
+	err := c.AssignFeedItem(context.Background(), "conv-1", "team-a", "")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -704,7 +705,7 @@ func TestEscalateToAgent_LookupByPhone(t *testing.T) {
 
 	c := NewClientForTest(srv.URL)
 	// Empty conversationID, but phone provided → lookup succeeds
-	err := c.EscalateToAgent("", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
+	err := c.EscalateToAgent(context.Background(), "", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
 	if err != nil {
 		t.Fatalf("expected no error (lookup by phone), got %v", err)
 	}

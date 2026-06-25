@@ -91,7 +91,7 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 		}
 
 		// 5. Try to escalate
-		if err := birdClient.EscalateToAgent(conversationID, msg.Phone, teamID, teamName, sess.PatientName, cfg.BirdTeamFallback); err != nil {
+		if err := birdClient.EscalateToAgent(ctx, conversationID, msg.Phone, teamID, teamName, sess.PatientName, cfg.BirdTeamFallback); err != nil {
 			slog.Error("escalation failed",
 				"error", err,
 				"phone", utils.MaskPhone(msg.Phone),
