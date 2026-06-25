@@ -432,6 +432,9 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	//     funcionario que asigna; antes quedaba en 0 sin atribución).
 	//   - formaSolicitud = 4 → catálogo FormaSolicitudCitas: 1=Telefónica, 2=Presencial,
 	//     3=Correo, 4=Chatbot. El bot es canal Chatbot.
+	//   - EntornoAtencion = '05' → entorno "Institucional" (catálogo RIPS/MinSalud). La columna NO
+	//     tiene DEFAULT y la UI la llena en el 100% de las citas (verificado contra histórico 4d,
+	//     ambas sedes = '05'). Sin esto quedaba NULL y se propagaba NULL al log_citas (que la copia).
 	var newID int64
 	err = tx.QueryRowContext(ctx, `
 	INSERT INTO citas (
@@ -441,7 +444,7 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	    primera_vez_control, formaSolicitud, tipoUsuario,
 	    es_terapia, Adicional, CodGrupo, EsCitaMultiple,
 	    lugarAtencion, fecha_usuario_desea_cita, observacion,
-	    tipo_servicio
+	    tipo_servicio, EntornoAtencion
 	) OUTPUT INSERTED.id
 	VALUES (
 	    @p1, @p2, @p3, @p4, @p5, 'P',
@@ -450,7 +453,7 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	    @p14, 4, @p11,
 	    0, 0, 0, 0,
 	    0, CAST(GETDATE() AS DATE), @p12,
-	    @p13
+	    @p13, '05'
 	)`,
 		patientIDInt, doctorCodeInt, fecha, hora, meridiano,
 		subjectType, company, contractCode,
