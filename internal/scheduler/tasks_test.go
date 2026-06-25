@@ -23,10 +23,18 @@ import (
 // mockWaitingListRepo implements WaitingListRepo.
 type mockWaitingListRepo struct {
 	ExpireOldFn              func(ctx context.Context, days int) (int64, error)
+	ExpireStaleNotifiedFn    func(ctx context.Context, hours int) (int64, error)
 	GetDistinctWaitingCupsFn func(ctx context.Context) ([]string, error)
 	GetWaitingByCupsFn       func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
 	UpdateStatusFn           func(ctx context.Context, id, status string) error
-	MarkNotifiedFn           func(ctx context.Context, id string) error
+	MarkNotifiedFn           func(ctx context.Context, id string) (bool, error)
+}
+
+func (m *mockWaitingListRepo) ExpireStaleNotified(ctx context.Context, hours int) (int64, error) {
+	if m.ExpireStaleNotifiedFn != nil {
+		return m.ExpireStaleNotifiedFn(ctx, hours)
+	}
+	return 0, nil
 }
 
 func (m *mockWaitingListRepo) ExpireOld(ctx context.Context, days int) (int64, error) {
@@ -57,11 +65,11 @@ func (m *mockWaitingListRepo) UpdateStatus(ctx context.Context, id, status strin
 	return nil
 }
 
-func (m *mockWaitingListRepo) MarkNotified(ctx context.Context, id string) error {
+func (m *mockWaitingListRepo) MarkNotified(ctx context.Context, id string) (bool, error) {
 	if m.MarkNotifiedFn != nil {
 		return m.MarkNotifiedFn(ctx, id)
 	}
-	return nil
+	return true, nil
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1019,6 +1027,7 @@ func TestCheckWaitingList_DuplicateFound_UpdateStatus(t *testing.T) {
 	birdClient := bird.NewClientForTest(srv.URL)
 	cfg := testConfig()
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo)
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,
@@ -1054,9 +1063,9 @@ func TestCheckWaitingList_SlotsAvailable_NotifyAndRegister(t *testing.T) {
 				{ID: "wl-1", PatientID: "P001", PatientName: "Juan", CupsCode: "890271", CupsName: "EMG", PhoneNumber: "+573001234567", PatientAge: 30, Espacios: 1},
 			}, nil
 		},
-		MarkNotifiedFn: func(ctx context.Context, id string) error {
+		MarkNotifiedFn: func(_ context.Context, id string) (bool, error) {
 			markNotifiedID = id
-			return nil
+			return true, nil
 		},
 	}
 
@@ -1094,6 +1103,7 @@ func TestCheckWaitingList_SlotsAvailable_NotifyAndRegister(t *testing.T) {
 	birdClient := bird.NewClientForTest(countSrv.URL)
 	cfg := testConfig()
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo)
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,
@@ -1163,6 +1173,7 @@ func TestCheckWaitingList_EmptyTemplateConfig_Skip(t *testing.T) {
 		BirdTemplateWaitingListProjectID: "", // empty → should skip
 	}
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo)
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,

@@ -222,13 +222,30 @@ func (r *WaitingListRepo) UpdateStatus(ctx context.Context, id, status string) e
 }
 
 // MarkNotified marks an entry as notified with timestamp.
-func (r *WaitingListRepo) MarkNotified(ctx context.Context, id string) error {
-	query := "UPDATE waiting_list SET status = 'notified', notified_at = NOW(), updated_at = NOW() WHERE id = ?"
-	_, err := r.db.ExecContext(ctx, query, id)
+// MarkNotified reclama la entrada para notificar: la marca 'notified' SOLO si sigue en 'waiting'
+// (claim-then-send). Devuelve true si ESTA llamada la reclamó (RowsAffected==1); false si otra
+// corrida concurrente ya la había reclamado. Evita doble notificación al mismo paciente (N-33).
+func (r *WaitingListRepo) MarkNotified(ctx context.Context, id string) (bool, error) {
+	query := "UPDATE waiting_list SET status = 'notified', notified_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'waiting'"
+	res, err := r.db.ExecContext(ctx, query, id)
 	if err != nil {
-		return fmt.Errorf("mark notified: %w", err)
+		return false, fmt.Errorf("mark notified: %w", err)
 	}
-	return nil
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ExpireStaleNotified expira entradas notificadas que no respondieron en `hours` horas: pasan a
+// 'expired' (salen de la lista activa) para no bloquear al paciente ni re-notificarle antes de que
+// responda. Devuelve cuántas expiró.
+func (r *WaitingListRepo) ExpireStaleNotified(ctx context.Context, hours int) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE waiting_list SET status = 'expired', resolved_at = NOW() WHERE status = 'notified' AND notified_at < (NOW() - INTERVAL ? HOUR)",
+		hours)
+	if err != nil {
+		return 0, fmt.Errorf("expire stale notified: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // ExpireOld expires waiting entries older than N days.

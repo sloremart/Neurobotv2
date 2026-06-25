@@ -19,10 +19,11 @@ import (
 // WaitingListRepo interface for waiting list operations in scheduler.
 type WaitingListRepo interface {
 	ExpireOld(ctx context.Context, days int) (int64, error)
+	ExpireStaleNotified(ctx context.Context, hours int) (int64, error)
 	GetDistinctWaitingCups(ctx context.Context) ([]string, error)
 	GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
 	UpdateStatus(ctx context.Context, id, status string) error
-	MarkNotified(ctx context.Context, id string) error
+	MarkNotified(ctx context.Context, id string) (bool, error)
 }
 
 // EventLogger logs events for auditing (matches tracking.EventTracker).
@@ -316,6 +317,15 @@ func (t *Tasks) cleanup(ctx context.Context) error {
 		} else if wlExpired > 0 {
 			slog.Info("waiting list entries expired by cleanup", "count", wlExpired)
 		}
+
+		// Expirar ofertas sin respuesta > 24h (notified pero no agendó): se liberan para no bloquear
+		// al paciente ni re-notificarle antes de responder; la oferta se re-evalúa para otros.
+		staleExpired, err := t.WaitingListRepo.ExpireStaleNotified(ctx, 24)
+		if err != nil {
+			slog.Error("waiting list stale-notified cleanup error", "error", err)
+		} else if staleExpired > 0 {
+			slog.Info("waiting list stale notified expired", "count", staleExpired)
+		}
 	}
 
 	// Clean up processed inbox messages older than 24h (WAL)
@@ -334,7 +344,7 @@ func (t *Tasks) cleanup(ctx context.Context) error {
 // === Task 08:00: Waiting List Check ===
 
 func (t *Tasks) checkWaitingList(ctx context.Context) error {
-	if t.WaitingListRepo == nil || t.SlotService == nil {
+	if t.WaitingListRepo == nil {
 		slog.Debug("waiting list check: dependencies not available")
 		return nil
 	}
@@ -361,155 +371,21 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 
 	totalNotified := 0
 
+	// El match oferta↔demanda (FIFO con skip + capacidad + claim-then-send) vive en
+	// NotifyManager.CheckWaitingListForCups, compartido con el flujo en tiempo real (al liberarse un
+	// cupo). La tarea diaria solo lo invoca por cada CUP en espera.
+	if t.NotifyManager == nil {
+		slog.Warn("waiting list check: NotifyManager no disponible")
+		return nil
+	}
 	for _, cupsCode := range cupsCodes {
-		// Detener envíos si el contexto fue cancelado (apagado)
 		if ctx.Err() != nil {
 			break
 		}
-		// 3. Buscar slots disponibles (usar primera entry como referencia)
-		entries, err := t.WaitingListRepo.GetWaitingByCups(ctx, cupsCode, 1)
-		if err != nil {
-			slog.Warn("wl_check: get waiting by cups failed", "cups_code", cupsCode, "error", err)
-			continue
-		}
-		if len(entries) == 0 {
-			continue
-		}
-
-		firstEntry := entries[0]
-
-		query := services.SlotQuery{
-			CupsCode:     cupsCode,
-			PatientAge:   firstEntry.PatientAge,
-			IsContrasted: firstEntry.IsContrasted,
-			IsSedated:    firstEntry.IsSedated,
-			Espacios:     firstEntry.Espacios,
-			MaxSlots:     20, // Buscar más slots para saber cuántos pacientes notificar
-		}
-
-		// MRC monthly limit filter: solo para pacientes MRC (contrato 5/6)
-		if t.AppointmentSvc != nil && services.IsMRCPatient(firstEntry.ContractCode) {
-			if _, _, found := services.IsMRCGroupCups(cupsCode); found {
-				query.MonthFilter = func(year, month int) (bool, error) {
-					// quantity=0 → se deriva del sufijo del CUP: la entrada de waiting list no persiste
-					// la cantidad del OCR (a diferencia del flujo en vivo, que sí la pasa).
-					blocked, err := t.AppointmentSvc.CheckMRCLimitForMonth(ctx, cupsCode, firstEntry.ContractCode, 0, year, month)
-					if err != nil {
-						slog.Warn("wl_check: mrc month filter error (fail-open)", "cups_code", cupsCode, "year", year, "month", month, "error", err)
-						return true, nil // fail-open
-					}
-					return !blocked, nil
-				}
-			}
-		}
-
-		slots, err := t.SlotService.GetAvailableSlots(ctx, query)
-		if err != nil || len(slots) == 0 {
-			slog.Debug("waiting list: no slots for cups", "cups_code", cupsCode)
-			continue
-		}
-
-		slog.Info("waiting list: slots found", "cups_code", cupsCode, "slots", len(slots))
-
-		// 4. Obtener primeras N entries FIFO (N = slots disponibles)
-		entriesToNotify, err := t.WaitingListRepo.GetWaitingByCups(ctx, cupsCode, len(slots))
-		if err != nil {
-			slog.Warn("wl_check: get waiting entries to notify failed", "cups_code", cupsCode, "error", err)
-			continue
-		}
-
-		for _, entry := range entriesToNotify {
-			// Detener envíos si el contexto fue cancelado (apagado)
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if !t.Cfg.IsPhoneWhitelisted(entry.PhoneNumber) {
-				continue
-			}
-
-			// 5. Verificar si ya tiene cita para este CUPS
-			hasFuture, err := t.AppointmentRepo.HasFutureForCup(ctx, entry.PatientID, cupsCode)
-			if err != nil {
-				slog.Warn("wl_check: has future for cup failed", "cups_code", cupsCode, "entry_id", entry.ID, "error", err)
-				continue
-			}
-			if hasFuture {
-				t.WaitingListRepo.UpdateStatus(ctx, entry.ID, "duplicate_found")
-				slog.Info("waiting list: duplicate found", "entry_id", entry.ID, "cups_code", cupsCode)
-				continue
-			}
-
-			// 5b. Solo para pacientes MRC (contrato 5/6): verificar cupo MRC antes de notificar
-			if t.AppointmentSvc != nil && services.IsMRCPatient(entry.ContractCode) {
-				if _, _, found := services.IsMRCGroupCups(cupsCode); found {
-					blocked, _, err := t.AppointmentSvc.CheckMRCLimit(ctx, cupsCode, entry.ContractCode, 0)
-					if err != nil {
-						slog.Warn("wl_check: mrc limit error", "cups_code", cupsCode, "entry_id", entry.ID, "error", err)
-					} else if blocked {
-						slog.Info("wl_check: mrc limit reached, skipping", "cups_code", cupsCode, "entry_id", entry.ID)
-						continue
-					}
-				}
-			}
-
-			// 6. Enviar template de disponibilidad
-			if t.Cfg.BirdTemplateWaitingListProjectID == "" {
-				continue
-			}
-
-			tmpl := bird.TemplateConfig{
-				ProjectID: t.Cfg.BirdTemplateWaitingListProjectID,
-				VersionID: t.Cfg.BirdTemplateWaitingListVersionID,
-				Locale:    t.Cfg.BirdTemplateWaitingListLocale,
-				Params: []bird.TemplateParam{
-					{Type: "string", Key: "patient_name", Value: entry.PatientName},
-					{Type: "string", Key: "procedure_name", Value: entry.CupsName},
-					{Type: "string", Key: "cups_code", Value: entry.CupsCode},
-					{Type: "string", Key: "clinic_name", Value: t.Cfg.CenterName},
-				},
-			}
-
-			msgID, err := t.BirdClient.SendTemplate(entry.PhoneNumber, tmpl)
-			if err != nil {
-				slog.Error("send waiting list notification", "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
-				continue
-			}
-
-			// 7. Marcar como notified
-			t.WaitingListRepo.MarkNotified(ctx, entry.ID)
-
-			// Try to get conversationID for Bird Inbox visibility
-			wlConvID := t.BirdClient.GetCachedConversationID(entry.PhoneNumber)
-			if wlConvID == "" {
-				wlConvID, _ = t.BirdClient.LookupConversationByPhone(entry.PhoneNumber)
-			}
-
-			// 8. Registrar pending notification con timer 6h
-			t.NotifyManager.RegisterPending(notifications.PendingNotification{
-				Type:           "waiting_list",
-				Phone:          entry.PhoneNumber,
-				WaitingListID:  entry.ID,
-				BirdMessageID:  msgID,
-				ConversationID: wlConvID,
-			})
-
-			if t.Tracker != nil {
-				t.Tracker.LogEvent(ctx, "", entry.PhoneNumber, "notification_sent",
-					map[string]interface{}{
-						"type":            "waiting_list",
-						"waiting_list_id": entry.ID,
-						"bird_msg_id":     msgID,
-						"conversation_id": wlConvID,
-					})
-			}
-
-			totalNotified++
-			slog.Info("waiting list notification sent", "phone", utils.MaskPhone(entry.PhoneNumber), "entry_id", entry.ID)
-
-			// Rate limit (respeta cancelación)
-			if err := sleepWithContext(ctx, 2*time.Second); err != nil {
-				return err
-			}
+		totalNotified += t.NotifyManager.CheckWaitingListForCups(ctx, cupsCode)
+		// Rate limit entre CUPS (respeta cancelación).
+		if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+			return err
 		}
 	}
 

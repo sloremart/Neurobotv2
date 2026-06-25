@@ -1617,7 +1617,7 @@ func (m *mockFutureApptChecker) HasFutureForCup(ctx context.Context, patientID, 
 type mockWLChecker struct {
 	mu             sync.Mutex
 	getWaitingFn   func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
-	markNotifiedFn func(ctx context.Context, id string) error
+	markNotifiedFn func(ctx context.Context, id string) (bool, error)
 	updateStatusFn func(ctx context.Context, id, status string) error
 	notifiedID     string
 	updatedID      string
@@ -1631,14 +1631,14 @@ func (m *mockWLChecker) GetWaitingByCups(ctx context.Context, cupsCode string, l
 	return nil, nil
 }
 
-func (m *mockWLChecker) MarkNotified(ctx context.Context, id string) error {
+func (m *mockWLChecker) MarkNotified(ctx context.Context, id string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.notifiedID = id
 	if m.markNotifiedFn != nil {
 		return m.markNotifiedFn(ctx, id)
 	}
-	return nil
+	return true, nil
 }
 
 func (m *mockWLChecker) UpdateStatus(ctx context.Context, id, status string) error {
@@ -1777,7 +1777,11 @@ func TestCheckWaitingListForCups_DuplicateFound(t *testing.T) {
 			return []domain.WaitingListEntry{{ID: "wl-dup", PatientID: "PAT-DUP", CupsCode: "890271"}}, nil
 		},
 	}
-	slotSearcher := &mockSlotSearcher{}
+	slotSearcher := &mockSlotSearcher{
+		getSlotsFn: func(_ context.Context, _ services.SlotQuery) ([]services.AvailableSlot, error) {
+			return []services.AvailableSlot{{}}, nil // hay capacidad → el loop corre y detecta el duplicado
+		},
+	}
 	apptChecker := &mockFutureApptChecker{
 		hasFutureFn: func(ctx context.Context, patientID, cupCode string) (bool, error) {
 			return true, nil // Already has appointment
@@ -1874,5 +1878,76 @@ func TestHandleWaitingList_Schedule_NoGFR(t *testing.T) {
 	}
 	if _, exists := kvs["preferred_doctor_doc"]; exists {
 		t.Error("expected no preferred_doctor_doc when empty")
+	}
+}
+
+// TestCheckWaitingListForCups_FIFOSkipByCapacity valida FIFO con skip: si el primero requiere mas
+// slots de los disponibles, se salta y se notifica al siguiente que si cabe; sin sobre-cupo.
+func TestCheckWaitingListForCups_FIFOSkipByCapacity(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+	cfg := &config.Config{BirdTemplateWaitingListProjectID: "proj-wl"}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+
+	var notified []string
+	wlChecker := &mockWLChecker{
+		getWaitingFn: func(_ context.Context, _ string, _ int) ([]domain.WaitingListEntry, error) {
+			return []domain.WaitingListEntry{
+				{ID: "A", PatientID: "PA", CupsCode: "890271", PhoneNumber: "+573001111111", Espacios: 2},
+				{ID: "B", PatientID: "PB", CupsCode: "890271", PhoneNumber: "+573002222222", Espacios: 1},
+			}, nil
+		},
+		markNotifiedFn: func(_ context.Context, id string) (bool, error) {
+			notified = append(notified, id)
+			return true, nil
+		},
+	}
+	// Capacidad = 1 (Espacios=1 -> 1 slot). No hay bloque de 2 (Espacios>=2 -> 0).
+	slotSearcher := &mockSlotSearcher{
+		getSlotsFn: func(_ context.Context, q services.SlotQuery) ([]services.AvailableSlot, error) {
+			if q.Espacios >= 2 {
+				return nil, nil
+			}
+			return []services.AvailableSlot{{}}, nil
+		},
+	}
+	mgr.SetWaitingListCheckDeps(slotSearcher, &mockFutureApptChecker{}, wlChecker)
+
+	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
+	if count != 1 {
+		t.Errorf("esperaba 1 notificado (B), got %d", count)
+	}
+	if len(notified) != 1 || notified[0] != "B" {
+		t.Errorf("esperaba notificar solo a B (skip de A por capacidad), got %v", notified)
+	}
+}
+
+// TestCheckWaitingListForCups_ClaimThenSend valida que si la entrada ya fue reclamada por otra
+// corrida (MarkNotified=false), NO se notifica (claim-then-send, N-33).
+func TestCheckWaitingListForCups_ClaimThenSend(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+	cfg := &config.Config{BirdTemplateWaitingListProjectID: "proj-wl"}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+
+	wlChecker := &mockWLChecker{
+		getWaitingFn: func(_ context.Context, _ string, _ int) ([]domain.WaitingListEntry, error) {
+			return []domain.WaitingListEntry{
+				{ID: "A", PatientID: "PA", CupsCode: "890271", PhoneNumber: "+573001111111", Espacios: 1},
+			}, nil
+		},
+		markNotifiedFn: func(_ context.Context, _ string) (bool, error) {
+			return false, nil // otra corrida ya la reclamo
+		},
+	}
+	slotSearcher := &mockSlotSearcher{
+		getSlotsFn: func(_ context.Context, _ services.SlotQuery) ([]services.AvailableSlot, error) {
+			return []services.AvailableSlot{{}}, nil
+		},
+	}
+	mgr.SetWaitingListCheckDeps(slotSearcher, &mockFutureApptChecker{}, wlChecker)
+
+	if count := mgr.CheckWaitingListForCups(context.Background(), "890271"); count != 0 {
+		t.Errorf("esperaba 0 notificados (ya reclamada), got %d", count)
 	}
 }

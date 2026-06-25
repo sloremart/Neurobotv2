@@ -106,7 +106,7 @@ type FutureAppointmentChecker interface {
 // WaitingListChecker reads and updates waiting list entries for real-time notification.
 type WaitingListChecker interface {
 	GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
-	MarkNotified(ctx context.Context, id string) error
+	MarkNotified(ctx context.Context, id string) (bool, error)
 	UpdateStatus(ctx context.Context, id, status string) error
 }
 
