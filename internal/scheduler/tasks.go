@@ -37,6 +37,12 @@ type InboxCleaner interface {
 	DeleteOlderThan(ctx context.Context, hours int) (int64, error)
 }
 
+// FlowMaintainer hace el rollup diario y la purga de la traza de flujos (Fase 3 observabilidad).
+type FlowMaintainer interface {
+	RollupDay(ctx context.Context, day time.Time) (int64, error)
+	PurgeOlderThan(ctx context.Context, days int) (int64, error)
+}
+
 // Tasks holds dependencies for all scheduler tasks.
 type Tasks struct {
 	AppointmentRepo repository.AppointmentRepository
@@ -50,6 +56,7 @@ type Tasks struct {
 	Tracker         EventLogger
 	InboxRepo       InboxCleaner              // WAL cleanup (optional)
 	Reconciler      *observability.Reconciler // reconciliación de invariantes (Fase 2, optional)
+	FlowMaint       FlowMaintainer            // rollup + purga de flow_events (Fase 3, optional)
 }
 
 // RegisterAll registers the 4 scheduled tasks.
@@ -369,6 +376,19 @@ func (t *Tasks) cleanup(ctx context.Context) error {
 	// sobre la ventana reciente y emite anomalías consultables (/anomalies) + alerta Telegram.
 	if t.Reconciler != nil {
 		t.Reconciler.Run(ctx)
+	}
+
+	// Rollup del día anterior + purga de crudos > 45 días (Fase 3 observabilidad): los agregados
+	// quedan en flow_daily_stats (sobreviven a la purga) y la tabla de crudos no crece.
+	if t.FlowMaint != nil {
+		if _, err := t.FlowMaint.RollupDay(ctx, time.Now().AddDate(0, 0, -1)); err != nil {
+			slog.Error("flow rollup error", "error", err)
+		}
+		if purged, err := t.FlowMaint.PurgeOlderThan(ctx, 45); err != nil {
+			slog.Error("flow purge error", "error", err)
+		} else if purged > 0 {
+			slog.Info("flow_events purged", "deleted", purged)
+		}
 	}
 
 	return nil

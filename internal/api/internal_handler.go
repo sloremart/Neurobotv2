@@ -65,6 +65,7 @@ type SessionDebugReader interface {
 type FlowTraceReader interface {
 	FindByTrace(ctx context.Context, traceID string) ([]domain.FlowEvent, error)
 	FindByFilter(ctx context.Context, flow, outcome, reason string, from, to time.Time, limit int) ([]domain.FlowEvent, error)
+	Stats(ctx context.Context, flow string, from, to time.Time) (*domain.FlowStats, error)
 }
 
 // flowEventJSON da forma a un FlowEvent para las respuestas de los endpoints de observabilidad.
@@ -265,6 +266,43 @@ func (h *InternalHandler) HandleAnomalies(w http.ResponseWriter, r *http.Request
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"count":     len(out),
 		"anomalies": out,
+	})
+}
+
+// HandleFlowStats devuelve el funnel (conteo por step), la distribución de terminales (por outcome)
+// y el conteo por reason de un flujo en una ventana.
+// GET /api/internal/flow-stats?flow=&from=YYYY-MM-DD&to=YYYY-MM-DD
+func (h *InternalHandler) HandleFlowStats(w http.ResponseWriter, r *http.Request) {
+	if h.flowReader == nil {
+		http.Error(w, "flow tracing not configured", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	to := time.Now()
+	from := to.AddDate(0, 0, -7) // default: últimos 7 días
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			from = t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			to = t.AddDate(0, 0, 1)
+		}
+	}
+	flow := q.Get("flow")
+	stats, err := h.flowReader.Stats(r.Context(), flow, from, to)
+	if err != nil {
+		slog.Error("flow-stats query failed", "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"flow":  flow,
+		"from":  from.Format("2006-01-02"),
+		"to":    to.Format("2006-01-02"),
+		"stats": stats,
 	})
 }
 

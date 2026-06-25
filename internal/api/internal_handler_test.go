@@ -860,6 +860,15 @@ func (f *fakeFlowReader) FindByFilter(_ context.Context, flow, outcome, reason s
 	return f.events, nil
 }
 
+func (f *fakeFlowReader) Stats(_ context.Context, flow string, _, _ time.Time) (*domain.FlowStats, error) {
+	f.gotFlow = flow
+	return &domain.FlowStats{
+		ByStep:    []domain.FlowStatCount{{Key: "ocr_ok", Count: 10}, {Key: "booking_success", Count: 4}},
+		ByOutcome: []domain.FlowStatCount{{Key: "ok", Count: 4}, {Key: "blocked", Count: 3}},
+		ByReason:  []domain.FlowStatCount{{Key: "gfr_low", Count: 2}},
+	}, nil
+}
+
 func TestHandleFlowEvents_PassesFilters(t *testing.T) {
 	fake := &fakeFlowReader{events: []domain.FlowEvent{{Flow: "agendar", Step: "gfr_blocked", Outcome: "blocked"}}}
 	h := &InternalHandler{}
@@ -897,6 +906,39 @@ func TestHandleFlowEvents_NotConfigured(t *testing.T) {
 	h.HandleFlowEvents(w, req)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleFlowStats(t *testing.T) {
+	fake := &fakeFlowReader{}
+	h := &InternalHandler{}
+	h.SetFlowReader(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/flow-stats?flow=agendar", nil)
+	w := httptest.NewRecorder()
+	h.HandleFlowStats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if fake.gotFlow != "agendar" {
+		t.Errorf("flow = %q, want agendar", fake.gotFlow)
+	}
+	var resp struct {
+		Flow  string `json:"flow"`
+		Stats struct {
+			ByStep    []map[string]interface{} `json:"by_step"`
+			ByOutcome []map[string]interface{} `json:"by_outcome"`
+		} `json:"stats"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Flow != "agendar" {
+		t.Errorf("resp flow = %q, want agendar", resp.Flow)
+	}
+	if len(resp.Stats.ByStep) != 2 || len(resp.Stats.ByOutcome) != 2 {
+		t.Errorf("steps=%d outcomes=%d, want 2/2", len(resp.Stats.ByStep), len(resp.Stats.ByOutcome))
 	}
 }
 

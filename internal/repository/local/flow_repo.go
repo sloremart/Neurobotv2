@@ -109,6 +109,90 @@ func (r *FlowRepo) FindByFilter(ctx context.Context, flow, outcome, reason strin
 	return scanFlowRows(rows)
 }
 
+// Stats agrega un flujo en [from, to): funnel por step, distribución por outcome y conteo por
+// reason. flow vacío = todos los flujos.
+func (r *FlowRepo) Stats(ctx context.Context, flow string, from, to time.Time) (*domain.FlowStats, error) {
+	out := &domain.FlowStats{}
+	var err error
+	if out.ByStep, err = r.groupCount(ctx, "step", flow, from, to); err != nil {
+		return nil, err
+	}
+	if out.ByOutcome, err = r.groupCount(ctx, "outcome", flow, from, to); err != nil {
+		return nil, err
+	}
+	if out.ByReason, err = r.groupCount(ctx, "reason", flow, from, to); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// groupCount agrupa por una columna FIJA (step|outcome|reason — identificador interno, no input
+// de usuario) sobre la ventana temporal.
+func (r *FlowRepo) groupCount(ctx context.Context, col, flow string, from, to time.Time) ([]domain.FlowStatCount, error) {
+	if col != "step" && col != "outcome" && col != "reason" {
+		return nil, fmt.Errorf("flow_events stats: invalid column %q", col)
+	}
+	where := "created_at >= ? AND created_at < ?"
+	args := []interface{}{from, to}
+	if flow != "" {
+		where += " AND flow = ?"
+		args = append(args, flow)
+	}
+	if col == "reason" {
+		where += " AND reason IS NOT NULL AND reason <> ''"
+	}
+	//nolint:gosec // G201: `col` es un valor interno validado arriba (no input de usuario).
+	query := fmt.Sprintf("SELECT %s, COUNT(*) FROM flow_events WHERE %s GROUP BY %s ORDER BY COUNT(*) DESC", col, where, col)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("flow_events stats %s: %w", col, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.FlowStatCount
+	for rows.Next() {
+		var c domain.FlowStatCount
+		var key sql.NullString
+		if err := rows.Scan(&key, &c.Count); err != nil {
+			return nil, fmt.Errorf("flow_events stats scan: %w", err)
+		}
+		c.Key = key.String
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// RollupDay agrega los flow_events de `day` en flow_daily_stats (idempotente). Para correr de noche
+// sobre el día anterior → los agregados sobreviven a la purga de los crudos.
+func (r *FlowRepo) RollupDay(ctx context.Context, day time.Time) (int64, error) {
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+	end := start.AddDate(0, 0, 1)
+	res, err := r.db.ExecContext(ctx, `
+		INSERT INTO flow_daily_stats (day, flow, step, outcome, reason, cnt)
+		SELECT DATE(created_at), flow, step, outcome, COALESCE(reason,''), COUNT(*)
+		FROM flow_events
+		WHERE created_at >= ? AND created_at < ?
+		GROUP BY DATE(created_at), flow, step, outcome, COALESCE(reason,'')
+		ON DUPLICATE KEY UPDATE cnt = VALUES(cnt)`, start, end)
+	if err != nil {
+		return 0, fmt.Errorf("flow rollup: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PurgeOlderThan borra flow_events con más de `days` días (retención de crudos; el rollup conserva
+// los agregados de largo plazo en flow_daily_stats).
+func (r *FlowRepo) PurgeOlderThan(ctx context.Context, days int) (int64, error) {
+	cutoff := time.Now().AddDate(0, 0, -days)
+	res, err := r.db.ExecContext(ctx, `DELETE FROM flow_events WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("flow purge: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // scanFlowRows materializa las filas (columnas en el orden de los SELECT de este repo).
 func scanFlowRows(rows *sql.Rows) ([]domain.FlowEvent, error) {
 	var out []domain.FlowEvent

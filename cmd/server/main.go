@@ -364,6 +364,7 @@ func main() {
 			reconciler.Register("consulta_valor_cero", observability.ConsultaValorCeroCheck(externalDB, 4))
 		}
 		schedulerTasks.Reconciler = reconciler
+		schedulerTasks.FlowMaint = flowRepo // rollup + purga de flow_events (Fase 3)
 
 		schedulerTasks.RegisterAll(sched)
 		sched.RunMissedTasks(ctx) // Catch-up missed tasks before starting the regular loop
@@ -423,6 +424,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/flow-trace", internalHandler.HandleFlowTrace)
 		internalMux.HandleFunc("GET /api/internal/flow-events", internalHandler.HandleFlowEvents)
 		internalMux.HandleFunc("GET /api/internal/anomalies", internalHandler.HandleAnomalies)
+		internalMux.HandleFunc("GET /api/internal/flow-stats", internalHandler.HandleFlowStats)
 		mux.Handle(
 			"/api/internal/",
 			api.RateLimiter(30, time.Minute)(
