@@ -921,7 +921,15 @@ func (r *AppointmentRepo) Cancel(ctx context.Context, id string, reason, channel
 	// motivo = 2 → vía CitasMotivoCancelaRES256 mapea a IdCancelaRES256=2 = "cancelada por el
 	// paciente" (RES256/Resolución 256). Es el valor correcto porque desde el bot SOLO el
 	// paciente puede cancelar. (Pendiente confirmar el significado exacto con SIESA — doc dudas §6.2.)
-	_, err := r.db.ExecContext(ctx, `
+	// N-42: cancelar la cita y liberar el cupo van en UNA transacción. Si la liberación del cupo
+	// falla, se hace ROLLBACK del cancelado: así nunca queda una cita 'C' con su slot todavía
+	// ocupado (slot huérfano, invisible para futuros pacientes). El caller recibe error y reintenta.
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
 	UPDATE citas
 	SET estado             = 'C',
 	    horacan            = CONVERT(VARCHAR(5), GETDATE(), 108),
@@ -929,17 +937,17 @@ func (r *AppointmentRepo) Cancel(ctx context.Context, id string, reason, channel
 	    id_usuario_cancela = @p4,
 	    motivo_cancela     = @p2,
 	    observacion        = ISNULL(observacion,'') + @p3
-	WHERE id = @p1`, id, reason, obs, siesaBotUserID)
-	if err != nil {
+	WHERE id = @p1`, id, reason, obs, siesaBotUserID); err != nil {
 		return err
 	}
-	// Liberar slot en programacion_medico_detalle (INTEG-04: loggear si falla — un slot
-	// que no se libera queda bloqueado permanentemente y oculta ese horario a los pacientes).
-	if idInt, err2 := strconv.ParseInt(id, 10, 64); err2 == nil {
-		if _, relErr := r.db.ExecContext(ctx,
+	if idInt, perr := strconv.ParseInt(id, 10, 64); perr == nil {
+		if _, relErr := tx.ExecContext(ctx,
 			`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita = @p1`, idInt); relErr != nil {
-			slog.Warn("slot_release_failed", "appointment_id", id, "error", relErr)
+			return fmt.Errorf("liberar cupo: %w", relErr)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	r.writeAuditLog(ctx, id, "CANCELAR CITA", fmt.Sprintf("CANCELACION DE CITA - Motivo: %s [conv: %s]", reason, channelID))
 	return nil
@@ -984,7 +992,14 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 	// motivo = 2 → RES256 "cancelada por el paciente" (ver Cancel y doc dudas §6.2).
 	clause, idArgs := inParams(ids, 4)
 	allArgs := append([]interface{}{reason, obs, siesaBotUserID}, idArgs...)
-	_, err := r.db.ExecContext(ctx,
+	// N-42: cancelar las citas y liberar sus cupos van en UNA transacción. Si la liberación falla,
+	// ROLLBACK del cancelado → nunca quedan citas 'C' con cupos huérfanos.
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE citas
 		SET estado             = 'C',
 		    horacan            = CONVERT(VARCHAR(5), GETDATE(), 108),
@@ -992,16 +1007,17 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 		    id_usuario_cancela = @p3,
 		    motivo_cancela     = @p1,
 		    observacion        = ISNULL(observacion,'') + @p2
-		WHERE id IN (%s)`, clause), allArgs...)
-	if err != nil {
+		WHERE id IN (%s)`, clause), allArgs...); err != nil {
 		return fmt.Errorf("siesa cancel batch: %w", err)
 	}
-	// Liberar slots (INTEG-04: loggear si falla)
 	clause2, idArgs2 := inParamsAsInt(ids, 1)
-	if _, relErr := r.db.ExecContext(ctx,
+	if _, relErr := tx.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita IN (%s)`, clause2),
 		idArgs2...); relErr != nil {
-		slog.Warn("slot_release_failed_batch", "ids", ids, "error", relErr)
+		return fmt.Errorf("siesa cancel batch liberar cupos: %w", relErr)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	r.writeAuditLogBatch(ctx, ids, "CANCELAR CITA", fmt.Sprintf("CANCELACION DE CITA - Motivo: %s [conv: %s]", reason, channelID))
 	return nil
