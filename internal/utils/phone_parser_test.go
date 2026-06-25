@@ -36,6 +36,13 @@ func TestParseColombianPhone(t *testing.T) {
 		{"1234567", ""},    // Too short
 		{"6011234567", ""}, // Not mobile (doesn't start with 3)
 		{"1234567890", ""}, // 10 digits but doesn't start with 3
+
+		// Malformados: longitud incorrecta → "" (NO rescatar a un número equivocado).
+		{"33001234567", ""},               // 11 dígitos (un dígito de más) — antes devolvía un número erróneo
+		{"30012345678", ""},               // 11 dígitos
+		{"300123456", ""},                 // 9 dígitos
+		{"5730012345678", ""},             // 13 dígitos
+		{"300 1234 567", "+573001234567"}, // espaciado raro pero 10 dígitos válidos
 	}
 
 	for _, tc := range tests {

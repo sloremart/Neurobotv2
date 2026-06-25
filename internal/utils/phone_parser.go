@@ -6,15 +6,21 @@ import (
 )
 
 var (
-	// phoneRe extracts a Colombian mobile: optional +57/57 prefix, then 3 + 9 digits
-	phoneRe  = regexp.MustCompile(`(?:\+?57)?3\d{9}`)
+	// mobileRe valida un móvil colombiano: 3 + 9 dígitos.
 	mobileRe = regexp.MustCompile(`^3\d{9}$`)
 	digitRe  = regexp.MustCompile(`\d`)
+	// splitRe separa cadenas con varios números. Incluye '-' y '.' porque también se usan como
+	// separador entre números (ej. "3107558761-3125920492"); los números individuales que llevan
+	// '-'/'.' internos (ej. "300-123-4567") ya los resuelve el paso 1 sobre la cadena completa.
+	splitRe = regexp.MustCompile(`[\s,.\-/;|]+`)
 )
 
-// ParseColombianPhone parsea y normaliza un número de teléfono colombiano.
-// Maneja múltiples números separados por espacio, coma, guion, punto, slash.
-// Retorna formato "+57XXXXXXXXXX" o "" si no es válido.
+// ParseColombianPhone parsea y normaliza un número de teléfono colombiano a "+57XXXXXXXXXX".
+// Retorna "" si no hay un móvil colombiano válido.
+//
+// Validación de longitud ESTRICTA: un número malformado (p.ej. 11 dígitos por un tecleo de más)
+// devuelve "" en vez de "rescatarse" como un número equivocado — esto evita enviar la plantilla
+// de WhatsApp o la llamada IVR (PHI) a una persona distinta.
 func ParseColombianPhone(phoneString string) string {
 	if phoneString == "" {
 		return ""
@@ -25,33 +31,37 @@ func ParseColombianPhone(phoneString string) string {
 		return ""
 	}
 
-	// 1. Try to find a valid phone pattern directly (handles multi-number strings)
-	if match := phoneRe.FindString(phoneString); match != "" {
-		digits := digitRe.FindAllString(match, -1)
-		all := strings.Join(digits, "")
-		mobile := all[len(all)-10:]
-		if mobileRe.MatchString(mobile) {
-			return "+57" + mobile
+	// 1. La cadena completa como UN solo número (maneja "+57 300 123 4567", "300-123-4567",
+	//    "300.123.4567", "573001234567").
+	if p := normalizeStrict(onlyDigits(phoneString)); p != "" {
+		return p
+	}
+
+	// 2. Varios números ("3107558761 / 3125920492"): partir por separadores y tomar el primero
+	//    que sea un móvil válido por longitud exacta.
+	for _, tok := range splitRe.Split(phoneString, -1) {
+		if p := normalizeStrict(onlyDigits(tok)); p != "" {
+			return p
 		}
 	}
 
-	// 2. Fallback: strip ALL non-digits and try as single number
-	//    Handles spaced formatting like "+57 300 123 4567" or "300-123-4567"
-	allDigits := strings.Join(digitRe.FindAllString(phoneString, -1), "")
+	return ""
+}
 
-	// 10 digits starting with 3
-	if len(allDigits) == 10 && mobileRe.MatchString(allDigits) {
-		return "+57" + allDigits
+// onlyDigits devuelve solo los dígitos de s.
+func onlyDigits(s string) string {
+	return strings.Join(digitRe.FindAllString(s, -1), "")
+}
+
+// normalizeStrict acepta SOLO longitudes exactas de móvil colombiano: 10 dígitos (3XXXXXXXXX) o
+// 12 dígitos con prefijo "57". Cualquier otra longitud → "" (no se adivina).
+func normalizeStrict(digits string) string {
+	switch {
+	case len(digits) == 10 && mobileRe.MatchString(digits):
+		return "+57" + digits
+	case len(digits) == 12 && strings.HasPrefix(digits, "57") && mobileRe.MatchString(digits[2:]):
+		return "+57" + digits[2:]
 	}
-
-	// 12 digits starting with 57
-	if len(allDigits) == 12 && strings.HasPrefix(allDigits, "57") {
-		mobile := allDigits[2:]
-		if mobileRe.MatchString(mobile) {
-			return "+57" + mobile
-		}
-	}
-
 	return ""
 }
 
