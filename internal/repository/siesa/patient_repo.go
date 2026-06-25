@@ -11,6 +11,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // affiliationTypeInt maps the TipoAfiliado catalog ID (string "1".."4") to tipo_afilia int.
@@ -176,7 +177,7 @@ func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInpu
 	if err != nil {
 		slog.Error("siesa_create_patient_failed",
 			"doc_type", input.DocumentType,
-			"doc", input.DocumentNumber,
+			"doc", utils.MaskDocument(input.DocumentNumber),
 			"entity", input.EntityCode,
 			"dep", input.DepartmentCode,
 			"muni", input.CityCode,

@@ -14,7 +14,9 @@ import (
 
 // handleWaitingList processes responses to the waiting list availability template.
 func (m *NotificationManager) handleWaitingList(phone, action string, pending *PendingNotification) {
-	ctx := context.Background()
+	// N-46: acotar el ctx para los writes a la BD local (Create/SetContextBatch/UpdateStatus).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	switch action {
 	case "schedule": // postback: "wl_schedule"
@@ -126,7 +128,9 @@ func (m *NotificationManager) handleWaitingList(phone, action string, pending *P
 // handleWaitingListTimeout handles the 6-hour no-response case for waiting list.
 // Unlike confirmation, waiting list timeout does NOT retry.
 func (m *NotificationManager) handleWaitingListTimeout(pending *PendingNotification) {
-	ctx := context.Background()
+	// N-46: acotar el ctx para el write a la BD local (UpdateStatus).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	m.waitingListRepo.UpdateStatus(ctx, pending.WaitingListID, "expired")
 	// Already removed from sync.Map by handleTimeout via LoadAndDelete
 	slog.Info("waiting list notification expired", "phone", utils.MaskPhone(pending.Phone), "entry_id", pending.WaitingListID)

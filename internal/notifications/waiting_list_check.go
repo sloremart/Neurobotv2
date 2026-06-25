@@ -73,6 +73,7 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 				// quantity=0 → fallback al sufijo del CUP (waiting list no persiste la cantidad del OCR).
 				blocked, err := m.apptSvc.CheckMRCLimitForMonth(ctx, cupsCode, entry.ContractCode, 0, year, month)
 				if err != nil {
+					slog.Warn("wl_check: mrc month filter error (fail-open)", "cups_code", cupsCode, "year", year, "month", month, "error", err)
 					return true, nil // fail-open
 				}
 				return !blocked, nil

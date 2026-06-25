@@ -20,7 +20,10 @@ import (
 // When skipCancel is true (cancellation flow), the old appointment is NOT cancelled
 // after the new one is created (it was already cancelled by the admin).
 func (m *NotificationManager) startSelfReschedule(phone string, pending *PendingNotification, skipCancel bool) {
-	ctx := context.Background()
+	// N-46: acotar el ctx para los writes a la BD local (Create/SetContextBatch/UpdateStatus)
+	// y demás llamadas — sin deadline un cuelgue de la BD bloquea la goroutine indefinidamente.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// 1. Fetch old appointment + consecutive block
 	appt, block, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)

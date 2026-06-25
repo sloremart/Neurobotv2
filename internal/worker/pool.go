@@ -592,8 +592,13 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			if convID == "" {
 				convID = sess.GetContext("notif_conv_id")
 			}
-			p.sessionManager.Complete(ctx, sess)
-			p.birdClient.UnassignFeedItem(convID, false)
+			// N-26: loguear los errores descartados de Complete/UnassignFeedItem en lugar de tragarlos.
+			if err := p.sessionManager.Complete(ctx, sess); err != nil {
+				slog.Error("notif_pending: complete session failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", convID)
+			}
+			if err := p.birdClient.UnassignFeedItem(convID, false); err != nil {
+				slog.Error("notif_pending: unassign feed item failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "conversation_id", convID)
+			}
 			p.notifyResponder.HandleNotifPendingCommand(sess.PhoneNumber, action, convID, appointmentID, notifType)
 			slog.Info("agent resolved notif_pending",
 				"phone", utils.MaskPhone(cmd.Phone),
@@ -694,7 +699,10 @@ func (p *MessageWorkerPool) handleAgentReset(ctx context.Context, sess *session.
 		ReceivedAt:  time.Now(),
 	}
 	result, err := p.machine.Process(ctx, sess, virtualMsg)
-	if err == nil && result != nil {
+	if err != nil {
+		// N-26: loguear el error descartado en lugar de tragarlo silenciosamente.
+		slog.Error("process virtual reset message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
+	} else if result != nil {
 		p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
 	}
 
@@ -817,7 +825,10 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		ReceivedAt:  time.Now(),
 	}
 	r, err := p.machine.Process(ctx, sess, virtualMsg)
-	if err == nil && r != nil {
+	if err != nil {
+		// N-26: loguear el error descartado en lugar de tragarlo silenciosamente.
+		slog.Error("process virtual orden message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
+	} else if r != nil {
 		p.sendAndSave(ctx, sess, sess.PhoneNumber, r)
 	}
 
@@ -899,7 +910,10 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		ReceivedAt:  time.Now(),
 	}
 	r, err := p.machine.Process(ctx, sess, virtualMsg)
-	if err == nil && r != nil {
+	if err != nil {
+		// N-26: loguear el error descartado en lugar de tragarlo silenciosamente.
+		slog.Error("process virtual cups message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
+	} else if r != nil {
 		p.sendAndSave(ctx, sess, sess.PhoneNumber, r)
 	}
 

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -26,7 +27,10 @@ func NewLocalDB(cfg *config.Config) (*sql.DB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetConnMaxIdleTime(3 * time.Minute)
 
-	if err := db.Ping(); err != nil {
+	// N-48: Ping con timeout acotado para no colgar el startup si la BD no responde.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("local db ping: %w", err)
 	}
 
@@ -79,7 +83,10 @@ func NewSIESADB(cfg *config.Config) (*sql.DB, error) {
 	db.SetConnMaxLifetime(2 * time.Minute)
 	db.SetConnMaxIdleTime(1 * time.Minute)
 
-	if err := db.Ping(); err != nil {
+	// N-48: Ping con timeout acotado para no colgar el startup si la BD no responde.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("siesa db ping: %w", err)
 	}
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -68,7 +69,10 @@ func (c *Client) SendMessage(ctx context.Context, text string) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram send: %w", err)
+		// El *url.Error de http.Do incluye la URL con el bot token embebido
+		// (https://api.telegram.org/bot<TOKEN>/...). Se redacta el token antes
+		// de propagar el error para que no se filtre a logs (p.ej. capacity.go).
+		return fmt.Errorf("telegram send: %s", redactToken(err.Error(), c.botToken))
 	}
 	defer resp.Body.Close()
 
@@ -76,4 +80,13 @@ func (c *Client) SendMessage(ctx context.Context, text string) error {
 		return fmt.Errorf("telegram status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// redactToken sustituye el bot token por "<redacted>" en cualquier mensaje de error
+// (la URL de la API de Telegram lleva el token en el path /bot<TOKEN>/...).
+func redactToken(msg, token string) string {
+	if token == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, token, "<redacted>")
 }

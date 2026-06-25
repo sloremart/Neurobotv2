@@ -497,12 +497,18 @@ func (r *EventRepo) GetHealthMetrics(ctx context.Context) (*HealthMetrics, error
 	metrics := &HealthMetrics{}
 
 	// Active sessions count
-	r.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM sessions WHERE status = 'active'").Scan(&metrics.ActiveSessions)
+	// N-29: capturar el error; antes se descartaba y un fallo de BD reportaba 0 sesiones en silencio.
+	if err := r.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sessions WHERE status = 'active'").Scan(&metrics.ActiveSessions); err != nil {
+		slog.Warn("health metrics: active sessions query failed", "error", err)
+	}
 
 	// DB local latency
+	// N-29: capturar el error del Ping; un fallo no debe reportarse como BD sana en silencio.
 	start := time.Now()
-	r.db.PingContext(ctx)
+	if err := r.db.PingContext(ctx); err != nil {
+		slog.Warn("health metrics: db ping failed", "error", err)
+	}
 	metrics.DBLocalLatencyMs = float64(time.Since(start).Microseconds()) / 1000.0
 
 	// Runtime metrics
