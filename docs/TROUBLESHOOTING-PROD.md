@@ -726,13 +726,14 @@ El bot soporta dos perfiles de carga, intercambiables sin cambiar codigo:
 
 Reconstruye los contenedores con `docker-compose.high-load.yml` + `.env.high-load`. Hace rolling restart (DB primero, luego bot) con health checks.
 
-> **⚠️ Requisito de CPU**: el perfil high-load fija el bot en `cpus: '4.0'`. Si el servidor tiene
-> **menos de 4 CPUs**, `scale-up.sh` falla al recrear el bot con:
+> **⚠️ Requisito de CPU**: el perfil high-load fija el bot en `cpus: '4.0'`. Si **Docker** puede
+> asignar **menos de 4 CPUs**, `scale-up.sh` falla al recrear el bot con:
 > `Error response from daemon: range of CPUs is from 0.01 to 2.00, as there are only 2 CPUs available`.
-> En ese caso el **DB sí escala** (queda en high-load) pero el bot no arranca. Solución: verificar
-> que el server tenga ≥4 CPUs, o bajar `cpus` del bot en `docker-compose.high-load.yml` al número de
-> núcleos disponibles. (Validado: en una máquina de 2 CPUs falla exactamente así; el DB aplica
-> `max_connections=200` igual.)
+> En ese caso el **DB sí escala** (queda en high-load) pero el bot no arranca. Verificar con
+> **`docker info --format '{{.NCPU}}'`** (NO `nproc`: en Docker Desktop el host puede tener más cores
+> que los asignados a la VM de Docker). Solución: asegurar ≥4 CPUs en Docker, o bajar `cpus` del bot
+> en `docker-compose.high-load.yml`. (Validado: host `nproc=6` pero Docker con `NCPU=2` → falla así;
+> el DB aplica `max_connections=200` igual.)
 
 ### Volver a Normal
 
