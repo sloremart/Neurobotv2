@@ -1927,7 +1927,7 @@ go test ./internal/services/ -run TestCheckSOAT -v
 |---------|-----------|
 | `docker-compose.yml` | Define servicios (bot + mysql), redes, volúmenes |
 | `docker/Dockerfile` | Build del binario Go |
-| `docker/mysql/init/` | Scripts SQL de inicialización de MySQL |
+| `migrations/` | Esquema + seed de la BD local (golang-migrate). El seed de `center_locations` vive en la migración 024 (antes en `docker/mysql/init/`, ya eliminado) |
 
 ### Servicios actuales
 

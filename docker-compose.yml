@@ -61,7 +61,6 @@ services:
       - "${DB_EXTERNAL_PORT:-13308}:3306"
     volumes:
       - botdbdata:/var/lib/mysql
-      - ./docker/mysql/init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD} || exit 1"]
       interval: 30s
