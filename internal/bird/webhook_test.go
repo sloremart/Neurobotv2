@@ -46,6 +46,33 @@ func TestVerifyWebhookSignature_Invalid(t *testing.T) {
 	}
 }
 
+// TestVerifyWebhookSignature_TimestampAge cubre la ventana anti-replay de 24h: los reintentos de Bird
+// (que reenvían el timestamp original viejo) deben aceptarse mientras sean < 24h, y rechazarse después.
+// Antes (15 min) se rechazaban los reintentos → 401 en bucle → mensajes de pacientes perdidos.
+func TestVerifyWebhookSignature_TimestampAge(t *testing.T) {
+	c := &Client{WebhookSecret: "my-secret"}
+	body := []byte(`{"event":"whatsapp.inbound"}`)
+	url := "https://example.com/api/webhooks/whatsapp"
+
+	// 23h de antigüedad, firma válida → DENTRO de la ventana de 24h → debe aceptarse (con 15 min fallaba).
+	old23h := strconv.FormatInt(time.Now().Add(-23*time.Hour).Unix(), 10)
+	if !c.VerifyWebhookSignature(computeBirdSignature("my-secret", old23h, url, body), old23h, url, body) {
+		t.Error("firma válida de 23h debería aceptarse (cubre los reintentos de Bird)")
+	}
+
+	// 25h de antigüedad, firma válida → FUERA de la ventana → rechazada por edad.
+	old25h := strconv.FormatInt(time.Now().Add(-25*time.Hour).Unix(), 10)
+	if c.VerifyWebhookSignature(computeBirdSignature("my-secret", old25h, url, body), old25h, url, body) {
+		t.Error("firma de 25h debería rechazarse por edad")
+	}
+
+	// Timestamp futuro >24h → también rechazado (el chequeo usa el valor absoluto).
+	future := strconv.FormatInt(time.Now().Add(25*time.Hour).Unix(), 10)
+	if c.VerifyWebhookSignature(computeBirdSignature("my-secret", future, url, body), future, url, body) {
+		t.Error("timestamp futuro >24h debería rechazarse")
+	}
+}
+
 func TestVerifyWebhookSignature_Empty(t *testing.T) {
 	c := &Client{WebhookSecret: "my-secret"}
 	body := []byte(`test`)
@@ -72,7 +99,8 @@ func TestVerifyWebhookSignature_ExpiredTimestamp(t *testing.T) {
 	c := &Client{WebhookSecret: "my-secret"}
 	body := []byte(`test`)
 	url := "https://example.com/webhook"
-	oldTimestamp := strconv.FormatInt(time.Now().Add(-20*time.Minute).Unix(), 10)
+	// Más de 24h (maxTimestampAge) → fuera de la ventana anti-replay → rechazado por edad.
+	oldTimestamp := strconv.FormatInt(time.Now().Add(-25*time.Hour).Unix(), 10)
 	sig := computeBirdSignature("my-secret", oldTimestamp, url, body)
 
 	if c.VerifyWebhookSignature(sig, oldTimestamp, url, body) {
