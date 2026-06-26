@@ -231,9 +231,13 @@ func (m *NotificationManager) SetWaitingListCheckDeps(ss SlotSearcher, ac Future
 
 // RegisterPending registers a pending notification with a type-appropriate timeout.
 // Confirmation/reschedule use configurable ConfirmFollowup1Hours; others default to 6h.
-func (m *NotificationManager) RegisterPending(notif PendingNotification) {
+// RegisterPending almacena un pending. Devuelve false si NO se pudo registrar (timeout del lock por
+// teléfono): el caller que necesite garantizar el seguimiento de la respuesta puede recuperarse
+// (p.ej. la lista de espera revierte el claim a 'waiting'). L12.
+func (m *NotificationManager) RegisterPending(notif PendingNotification) bool {
 	if !m.lockPhone(notif.Phone) {
-		return
+		slog.Warn("register pending: phone lock timeout, not stored", "phone", utils.MaskPhone(notif.Phone), "type", notif.Type)
+		return false
 	}
 	defer m.unlockPhone(notif.Phone)
 
@@ -275,6 +279,7 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) {
 	}
 
 	slog.Info("pending notification registered", "phone", utils.MaskPhone(notif.Phone), "type", notif.Type)
+	return true
 }
 
 // HandleResponse processes a patient's response to a proactive template.
@@ -756,7 +761,7 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 				"La cita queda pendiente de confirmacion. El sistema continuara el flujo de seguimiento.")
 
 		if m.callTracker != nil {
-			m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_dtmf")
+			_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_dtmf") // L11: KPI best-effort
 		}
 	}
 }
@@ -789,7 +794,7 @@ func (m *NotificationManager) HandleVoiceCallCompleted(callID string) {
 	if m.callTracker != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_answer")
+		_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_answer") // L11: KPI best-effort
 	}
 }
 
@@ -839,6 +844,7 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 	now := time.Now()
 	restored := 0
 	expired := 0
+	var expiredPhones []string // L10: se procesan después del loop, fuera del camino de arranque
 
 	for _, row := range rows {
 		notif := &PendingNotification{
@@ -860,9 +866,10 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 		}
 
 		if now.After(row.ExpiresAt) {
-			// Already expired — process timeout immediately (sync at startup)
+			// Ya vencida. L10: NO procesar inline (handleTimeout adquiere lock 30s + red si el followup
+			// está activo → serializaría el arranque). Guardar y recolectar; se procesa tras el loop.
 			m.pending.Store(row.Phone, notif)
-			m.handleTimeout(row.Phone)
+			expiredPhones = append(expiredPhones, row.Phone)
 			expired++
 			continue
 		}
@@ -879,6 +886,25 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 
 	if restored > 0 || expired > 0 {
 		slog.Info("pending notifications restored", "restored", restored, "expired", expired)
+	}
+
+	// L10: procesar las vencidas en UNA goroutine secuencial (no serializa el arranque ni dispara una
+	// estampida de locks/red). Respeta el ctx para parar en el apagado.
+	if len(expiredPhones) > 0 {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("restore pending: panic processing expired timeouts", "panic", r)
+				}
+			}()
+			for _, phone := range expiredPhones {
+				if ctx.Err() != nil {
+					return
+				}
+				//nolint:contextcheck // handleTimeout no toma ctx por diseño (callback de timer; gestiona su propio lock/timeout acotado).
+				m.handleTimeout(phone)
+			}
+		}()
 	}
 }
 
@@ -1031,16 +1057,22 @@ func normalizePostback(payload string) string {
 
 // responseStatus mapea la respuesta del paciente (payload ya normalizado por normalizePostback) al
 // estado con el que se archiva la notificación en notification_history.
+// responseStatus traduce la respuesta del paciente al estado que se archiva en notification_history.
+// L8: las acciones que solo INICIAN un flujo asíncrono (reschedule/cancel/schedule arrancan una
+// sesión en el state machine que puede no completarse) se archivan como "*_requested" — el historial
+// es evidencia de la RESPUESTA a la notificación, no del desenlace de la cita (que vive en el ciclo
+// de la cita). Antes se archivaban como 'rescheduled'/'cancelled'/'wl_scheduled', sobre-declarando el
+// resultado por el solo hecho de pulsar el botón. confirm/acknowledge/decline sí son terminales.
 func responseStatus(normalized string) string {
 	switch strings.ToLower(normalized) {
 	case "confirm":
 		return "confirmed"
 	case "cancel":
-		return "cancelled"
+		return "cancel_requested"
 	case "reschedule":
-		return "rescheduled"
+		return "reschedule_requested"
 	case "schedule":
-		return "wl_scheduled"
+		return "schedule_requested"
 	case "decline":
 		return "declined"
 	case "acknowledge":

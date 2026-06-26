@@ -723,6 +723,24 @@ func TestMarkIVRSent_NotFound(t *testing.T) {
 	}
 }
 
+// TestRegisterPending_ReturnsTrueOnSuccess (L12): RegisterPending ahora reporta si almacenó.
+func TestRegisterPending_ReturnsTrueOnSuccess(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+	mgr := NewNotificationManager(birdClient, nil, &config.Config{})
+
+	ok := mgr.RegisterPending(PendingNotification{Type: "waiting_list", Phone: "+573001234567", WaitingListID: "wl-1"})
+	if !ok {
+		t.Fatal("esperaba true al registrar con éxito")
+	}
+	if !mgr.HasPending("+573001234567") {
+		t.Error("esperaba pending almacenado")
+	}
+	if p, okp := mgr.LoadPendingForTest("+573001234567"); okp && p.Timer != nil {
+		p.Timer.Stop()
+	}
+}
+
 func TestRegisterPending_ConfirmationTimer(t *testing.T) {
 	birdClient, srv := newTestBirdClient()
 	defer srv.Close()
@@ -2000,6 +2018,7 @@ func TestCheckWaitingListForCups_ClaimThenSend(t *testing.T) {
 type mockPersister struct {
 	resolvedPhone  string
 	resolvedStatus string
+	findAllRows    []PendingRow
 }
 
 func (m *mockPersister) Upsert(_ context.Context, _, _, _, _, _, _ string, _ int, _ time.Time) error {
@@ -2018,12 +2037,56 @@ func (m *mockPersister) DeleteHistoryOlderThan(_ context.Context, _ int) (int64,
 
 func (m *mockPersister) FindExpired(_ context.Context) ([]PendingRow, error) { return nil, nil }
 
-func (m *mockPersister) FindAll(_ context.Context) ([]PendingRow, error) { return nil, nil }
+func (m *mockPersister) FindAll(_ context.Context) ([]PendingRow, error) { return m.findAllRows, nil }
+
+// TestRestorePending_ExpiredProcessedAsync (L10): las notificaciones VENCIDAS no se procesan inline
+// (no bloquean el arranque) sino en una goroutine; las vigentes se restauran con su timer.
+func TestRestorePending_ExpiredProcessedAsync(t *testing.T) {
+	mgr := NewNotificationManager(nil, nil, &config.Config{})
+	expiredPhone := "+573009998881"
+	validPhone := "+573009998882"
+	// 1ª fila vencida (ExpiresAt en el pasado), 2ª vigente.
+	mgr.SetPersister(&mockPersister{findAllRows: []PendingRow{
+		{Phone: expiredPhone, Type: "cancellation", ExpiresAt: time.Now().Add(-time.Hour)},
+		{Phone: validPhone, Type: "cancellation", ExpiresAt: time.Now().Add(2 * time.Hour)},
+	}})
+
+	// Sostener el lock del teléfono vencido: si RestorePending lo procesara INLINE, handleTimeout
+	// bloquearía hasta 30s esperando el lock → demostramos que NO bloquea el arranque.
+	if !mgr.lockPhone(expiredPhone) {
+		t.Fatal("no se pudo tomar el lock del teléfono vencido")
+	}
+
+	start := time.Now()
+	mgr.RestorePending(context.Background())
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("RestorePending bloqueó %v — las vencidas deben procesarse async", d)
+	}
+
+	// La vigente quedó restaurada con timer.
+	if !mgr.HasPending(validPhone) {
+		t.Error("la notificación vigente debió restaurarse")
+	}
+	if p, ok := mgr.LoadPendingForTest(validPhone); ok && p.Timer != nil {
+		p.Timer.Stop()
+	}
+
+	// Liberar el lock → la goroutine procesa la vencida (handleTimeout la quita de pending).
+	mgr.unlockPhone(expiredPhone)
+	deadline := time.Now().Add(3 * time.Second)
+	for mgr.HasPending(expiredPhone) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if mgr.HasPending(expiredPhone) {
+		t.Error("L10: la notificación vencida debió procesarse async (quitarse de pending)")
+	}
+}
 
 func TestResponseStatus(t *testing.T) {
 	cases := map[string]string{
-		"confirm": "confirmed", "cancel": "cancelled", "reschedule": "rescheduled",
-		"schedule": "wl_scheduled", "decline": "declined", "acknowledge": "acknowledged",
+		// L8: las acciones async se archivan como intención ("*_requested"), no como completadas.
+		"confirm": "confirmed", "cancel": "cancel_requested", "reschedule": "reschedule_requested",
+		"schedule": "schedule_requested", "decline": "declined", "acknowledge": "acknowledged",
 		"weird": "responded",
 	}
 	for in, want := range cases {

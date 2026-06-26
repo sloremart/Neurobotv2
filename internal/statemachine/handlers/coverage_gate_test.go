@@ -76,6 +76,56 @@ func TestIsCupCovered(t *testing.T) {
 	})
 }
 
+// TestAnyCupCovered (L1): el gate debe cubrir si CUALQUIER código del grupo tiene convenio.
+func TestAnyCupCovered(t *testing.T) {
+	ctx := context.Background()
+	ptr := func(v float64) *float64 { return &v }
+	ent := &testutil.MockEntityRepo{
+		FindByCodeFn: func(_ context.Context, _ string) (*domain.Entity, error) {
+			return &domain.Entity{PriceType: "11"}, nil
+		},
+	}
+	codes := []string{"EMG", "NC"} // primario + alternativo
+
+	t.Run("primario sin convenio pero alternativo cubierto -> cubierto", func(t *testing.T) {
+		p := &fakePriceRepo{fn: func(_ context.Context, cup, _ string) (*float64, error) {
+			if cup == "NC" {
+				return ptr(50000), nil
+			}
+			return ptr(0), nil // EMG primario sin convenio
+		}}
+		covered, err := anyCupCovered(ctx, p, ent, sessWithContract("4"), codes)
+		if err != nil || !covered {
+			t.Fatalf("esperaba cubierto por el alternativo; got covered=%v err=%v", covered, err)
+		}
+	})
+	t.Run("ninguno cubierto -> no cubierto", func(t *testing.T) {
+		p := &fakePriceRepo{fn: func(_ context.Context, _, _ string) (*float64, error) { return ptr(0), nil }}
+		covered, err := anyCupCovered(ctx, p, ent, sessWithContract("4"), codes)
+		if err != nil || covered {
+			t.Fatalf("esperaba NO cubierto; got covered=%v err=%v", covered, err)
+		}
+	})
+	t.Run("primario error + alternativo cubierto -> cubierto (no bloquea)", func(t *testing.T) {
+		p := &fakePriceRepo{fn: func(_ context.Context, cup, _ string) (*float64, error) {
+			if cup == "NC" {
+				return ptr(50000), nil
+			}
+			return nil, fmt.Errorf("db blip")
+		}}
+		covered, err := anyCupCovered(ctx, p, ent, sessWithContract("4"), codes)
+		if err != nil || !covered {
+			t.Fatalf("esperaba cubierto; got covered=%v err=%v", covered, err)
+		}
+	})
+	t.Run("todos error -> error (fail-open en el caller)", func(t *testing.T) {
+		p := &fakePriceRepo{fn: func(_ context.Context, _, _ string) (*float64, error) { return nil, fmt.Errorf("db caída") }}
+		if covered, err := anyCupCovered(ctx, p, ent, sessWithContract("4"), codes); err == nil || covered {
+			t.Fatalf("esperaba (false,err) para fail-open; got covered=%v err=%v", covered, err)
+		}
+	})
+}
+
 func TestCoverageNoConvenioHandler(t *testing.T) {
 	ctx := context.Background()
 	h := coverageNoConvenioHandler()

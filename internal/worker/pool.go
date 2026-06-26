@@ -31,7 +31,19 @@ const (
 	phoneLockTimeout      = 30 * time.Second
 	agentCmdQueueSize     = 50
 	maxDedupEntries       = 100000 // safety cap; fail-open if exceeded (allow potential dups)
+
+	// Re-replay del WAL (M7): recupera mensajes que quedaron 'pending' (p.ej. descartados por
+	// backpressure) sin esperar al reinicio. El umbral (> dedupTTL) evita reprocesar mensajes en
+	// vuelo y garantiza que el claim de dedup del intento previo ya expiró.
+	staleReplayMinutes  = 10
+	staleReplayInterval = 5 * time.Minute
 )
+
+// StalePendingSource entrega mensajes inbound que quedaron 'pending' hace más de `minutes` minutos.
+// La implementación real (adapter sobre el inbox repo) parsea el raw_body a InboundMessage.
+type StalePendingSource interface {
+	PendingOlderThan(ctx context.Context, minutes int) ([]bird.InboundMessage, error)
+}
 
 // SessionManagement abstracts session manager operations for testability.
 type SessionManagement interface {
@@ -217,13 +229,17 @@ func (p *MessageWorkerPool) Stop() {
 
 // Enqueue agrega un mensaje al queue. Retorna false si es duplicado o si se excede backpressure.
 func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
-	// 1. Dedup check (fail-open if map is too large — allow potential dups rather than leak memory)
+	// 1. Dedup check (fail-open if map is too large — allow potential dups rather than leak memory).
+	// Se reclama ANTES de encolar (claim-then-enqueue) para que dos entregas duplicadas concurrentes
+	// no se procesen ambas. `claimed` permite REVERTIR el claim si el mensaje se descarta (M7).
+	claimed := false
 	if p.dedupCount.Load() < maxDedupEntries {
 		if _, exists := p.recentMessages.LoadOrStore(msg.ID, time.Now()); exists {
 			slog.Debug("duplicate message ignored", "id", msg.ID, "phone", utils.MaskPhone(msg.Phone))
 			return false
 		}
 		p.dedupCount.Add(1)
+		claimed = true
 	} else {
 		slog.Warn("dedup map at capacity, skipping dedup check", "id", msg.ID, "cap", maxDedupEntries)
 	}
@@ -235,6 +251,13 @@ func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
 	default:
 		// 3. Channel lleno — overflow con límite
 		if p.activeOverflow.Load() >= int32(maxOverflowGoroutines) {
+			// M7: el mensaje se descarta SIN procesarse. Liberar el claim de dedup para que el
+			// re-replay del WAL (o un reintento) pueda re-encolarlo; si no, quedaría "visto" 5 min
+			// y el mensaje se perdería hasta el próximo reinicio.
+			if claimed {
+				p.recentMessages.Delete(msg.ID)
+				p.dedupCount.Add(-1)
+			}
 			slog.Error("backpressure: overflow limit reached, dropping message",
 				"id", msg.ID,
 				"queue_size", len(p.queue),
@@ -247,7 +270,7 @@ func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
 			defer p.wg.Done()
 			defer p.activeOverflow.Add(-1)
 			slog.Warn("processing in overflow goroutine", "id", msg.ID)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute) // L15: ligado al app-ctx → el shutdown lo cancela
 			defer cancel()
 			p.safeProcess(ctx, msg)
 		}()
@@ -757,9 +780,15 @@ func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.
 
 	// Delay close so Bird finishes processing the outbound message delivery
 	closingConvID := sess.ConversationID
+	p.wg.Add(1) // L16: wg-tracked + sleep cancelable
 	go func() {
+		defer p.wg.Done()
 		defer recoverLog("close-feed-agent")
-		time.Sleep(3 * time.Second)
+		select {
+		case <-time.After(3 * time.Second):
+		case <-p.ctx.Done():
+			return
+		}
 		if err := p.birdClient.CloseFeedItems(closingConvID); err != nil {
 			slog.Warn("close feed items on agent close failed", "conversation_id", closingConvID, "error", err)
 		}
@@ -992,8 +1021,12 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 				)
 				convID = ""
 			}
-			// E6: async retry after 10s via Channels API
-			go p.retrySend(phone, outMsg)
+			// E6: async retry after 10s via Channels API (L16: wg-tracked → el shutdown lo espera/cancela)
+			p.wg.Add(1)
+			go func(m statemachine.OutboundMessage) {
+				defer p.wg.Done()
+				p.retrySend(phone, m)
+			}(outMsg)
 			continue
 		}
 		slog.Debug("message_sent_ok", "phone", utils.MaskPhone(phone), "type", outMsg.Type(), "bird_msg_id", birdMsgID)
@@ -1072,9 +1105,15 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 	// otherwise the delivery confirmation can reopen the conversation.
 	if sess.Status == session.StatusCompleted && convID != "" {
 		closingConvID := convID
+		p.wg.Add(1) // L16: wg-tracked + sleep cancelable
 		go func() {
+			defer p.wg.Done()
 			defer recoverLog("close-feed-complete")
-			time.Sleep(3 * time.Second)
+			select {
+			case <-time.After(3 * time.Second):
+			case <-p.ctx.Done():
+				return
+			}
 			if err := p.birdClient.CloseFeedItems(closingConvID); err != nil {
 				slog.Warn("close feed items on completion failed", "phone", utils.MaskPhone(phone), "conversation_id", closingConvID, "error", err)
 			}
@@ -1127,7 +1166,12 @@ func (p *MessageWorkerPool) sendMessage(phone, conversationID string, msg statem
 // Uses Channels API directly (empty conversationID) to avoid repeating
 // a Conversations API failure. Launched as a goroutine from sendAndSave.
 func (p *MessageWorkerPool) retrySend(phone string, msg statemachine.OutboundMessage) {
-	time.Sleep(10 * time.Second)
+	// L16: sleep cancelable por el app-ctx para no re-entregar un mensaje tras el shutdown.
+	select {
+	case <-time.After(10 * time.Second):
+	case <-p.ctx.Done():
+		return
+	}
 
 	_, err := p.sendMessage(phone, "", msg)
 	if err != nil {
@@ -1212,10 +1256,48 @@ func (p *MessageWorkerPool) EnqueueVirtual(phone string) {
 		go func() {
 			defer p.wg.Done()
 			defer p.activeOverflow.Add(-1)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute) // L15: ligado al app-ctx → el shutdown lo cancela
 			defer cancel()
 			p.safeProcess(ctx, msg)
 		}()
+	}
+}
+
+// StartStaleReplay corre un ticker que cada staleReplayInterval re-encola los mensajes que quedaron
+// 'pending' hace más de staleReplayMinutes (M7): recupera los descartados por backpressure sin
+// esperar al reinicio. Idempotente: re-usa Enqueue (dedup) y processMessage marca 'done' la fila, así
+// que un mensaje ya procesado no se vuelve a recoger.
+func (p *MessageWorkerPool) StartStaleReplay(ctx context.Context, src StalePendingSource) {
+	if src == nil {
+		return
+	}
+	ticker := time.NewTicker(staleReplayInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.replayStale(ctx, src)
+		}
+	}
+}
+
+// replayStale recoge los mensajes 'pending' viejos y los re-encola. Separado para poder testearlo.
+func (p *MessageWorkerPool) replayStale(ctx context.Context, src StalePendingSource) {
+	msgs, err := src.PendingOlderThan(ctx, staleReplayMinutes)
+	if err != nil {
+		slog.Error("stale replay: query failed", "error", err)
+		return
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	slog.Warn("stale replay: re-encolando mensajes 'pending' atascados", "count", len(msgs))
+	for _, m := range msgs {
+		// Enqueue es un encolado no-bloqueante SIN context por diseño (el overflow ya deriva de p.ctx);
+		// se llama igual desde el webhook y el replay de arranque.
+		p.Enqueue(m) //nolint:contextcheck // enqueue no-bloqueante; dedup+backpressure normales, processMessage marca 'done'
 	}
 }
 

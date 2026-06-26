@@ -67,6 +67,31 @@ func (r *InboxRepo) FindPending(ctx context.Context) ([]InboxRow, error) {
 	return result, rows.Err()
 }
 
+// FindPendingOlderThan returns unprocessed messages received more than `minutes` ago.
+// El umbral evita reprocesar mensajes EN VUELO (que se completan en segundos): solo recupera los
+// que quedaron realmente atascados en 'pending' (p.ej. descartados por backpressure, M7).
+func (r *InboxRepo) FindPendingOlderThan(ctx context.Context, minutes int) ([]InboxRow, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, phone, raw_body, msg_type, received_at
+		 FROM message_inbox
+		 WHERE status = 'pending' AND received_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
+		 ORDER BY received_at ASC`, minutes)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []InboxRow
+	for rows.Next() {
+		var row InboxRow
+		if err := rows.Scan(&row.ID, &row.Phone, &row.RawBody, &row.MsgType, &row.ReceivedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
 // DeleteOlderThan removes processed messages older than the given number of hours.
 func (r *InboxRepo) DeleteOlderThan(ctx context.Context, hours int) (int64, error) {
 	res, err := r.db.ExecContext(ctx,

@@ -162,6 +162,22 @@ func (r *SessionRepo) CompleteActiveByPhone(ctx context.Context, phone string) e
 	return nil
 }
 
+// UpdateConversationIDByPhone actualiza SOLO la columna conversation_id de la sesión activa/escalada
+// del teléfono. Es un UPDATE de una columna (no reescribe la fila), así que es seguro sin el
+// phone-lock y NO puede pisar current_state ni la PII del paciente — cierra el lost-update que tenía
+// el webhook outbound al hacer FindActiveByPhone + Save de la fila completa (H2).
+func (r *SessionRepo) UpdateConversationIDByPhone(ctx context.Context, phone, conversationID string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET conversation_id = ?, updated_at = NOW()
+		 WHERE phone_number = ? AND status IN ('active','escalated') AND expires_at > NOW()
+		   AND (conversation_id IS NULL OR conversation_id <> ?)`,
+		conversationID, phone, conversationID)
+	if err != nil {
+		return fmt.Errorf("update conversation_id by phone: %w", err)
+	}
+	return nil
+}
+
 // RenewExpiry renueva el expires_at
 func (r *SessionRepo) RenewExpiry(ctx context.Context, sessionID string, expiresAt time.Time) error {
 	_, err := r.db.ExecContext(ctx,

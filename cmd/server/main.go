@@ -329,6 +329,12 @@ func main() {
 		}
 	}
 
+	// M7: re-replay periódico de mensajes 'pending' atascados (p.ej. descartados por backpressure),
+	// para recuperarlos sin esperar al reinicio del proceso.
+	safeGo("stale-replay", func() {
+		workerPool.StartStaleReplay(ctx, inboxReplaySource{repo: inboxRepo})
+	})
+
 	// Fase 13: Inyectar dependencias de lista de espera al NotificationManager
 	if notifyManager != nil {
 		notifyManager.SetWaitingListDeps(waitingListRepo, sessionRepo, workerPool)
@@ -620,6 +626,31 @@ func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 		}
 		json.NewEncoder(w).Encode(health)
 	}
+}
+
+// inboxReplaySource adapta el inbox repo a worker.StalePendingSource: trae las filas 'pending'
+// viejas y parsea su raw_body a InboundMessage (M7). Las filas no parseables se marcan 'done' para
+// no reintentarlas en cada corrida (igual que el replay de arranque).
+type inboxReplaySource struct {
+	repo *localrepo.InboxRepo
+}
+
+func (s inboxReplaySource) PendingOlderThan(ctx context.Context, minutes int) ([]bird.InboundMessage, error) {
+	rows, err := s.repo.FindPendingOlderThan(ctx, minutes)
+	if err != nil {
+		return nil, err
+	}
+	msgs := make([]bird.InboundMessage, 0, len(rows))
+	for _, row := range rows {
+		var event bird.WebhookEvent
+		if err := json.Unmarshal([]byte(row.RawBody), &event); err != nil {
+			slog.Error("stale replay: parse failed", "id", row.ID, "error", err)
+			_ = s.repo.MarkDone(ctx, row.ID)
+			continue
+		}
+		msgs = append(msgs, bird.ParseInboundMessage(event))
+	}
+	return msgs, nil
 }
 
 // safeGo runs f in a new goroutine with panic recovery.

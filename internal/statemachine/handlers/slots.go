@@ -182,6 +182,24 @@ func isCupCovered(ctx context.Context, priceRepo repository.PriceRepository, ent
 	return price != nil && *price > 0, nil
 }
 
+// anyCupCovered devuelve true si CUALQUIER código del grupo tiene convenio (L1). Solo concluye
+// "no cubierto" (false, nil) cuando TODOS se chequearon sin convenio; si algún chequeo falló y
+// ninguno resultó cubierto, devuelve el error → el caller hace fail-open (no bloquear por un fallo).
+func anyCupCovered(ctx context.Context, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, sess *session.Session, cups []string) (bool, error) {
+	var lastErr error
+	for _, cup := range cups {
+		covered, err := isCupCovered(ctx, priceRepo, entityRepo, sess, cup)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if covered {
+			return true, nil
+		}
+	}
+	return false, lastErr
+}
+
 // COVERAGE_NO_CONVENIO (interactivo) — el contrato del paciente no cubre el CUP; ofrece continuar
 // como particular (que sí tiene tarifa) o escalar a un agente.
 func coverageNoConvenioHandler() sm.StateHandler {
@@ -223,12 +241,20 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 			espacios = 1
 		}
 
-		// Gate de cobertura (solo en la primera búsqueda, no en paginación "ver más"): si el
-		// contrato del paciente NO tiene convenio para el CUP (precio 0 o inexistente en
-		// sis_proc_precios), no se busca slot ni se agenda; se ofrece particular o agente.
+		// Códigos a probar: primario + alternativos (mismo grupo). La búsqueda de slots los prueba en
+		// orden, así que el gate de cobertura debe mirar TODOS, no solo el primario.
+		cupsCodesToTry := []string{cupsCode}
+		if alternativeCodes != "" {
+			cupsCodesToTry = append(cupsCodesToTry, strings.Split(alternativeCodes, ",")...)
+		}
+
+		// Gate de cobertura (solo en la primera búsqueda, no en paginación "ver más"): si NINGÚN
+		// código del grupo tiene convenio (precio 0 o inexistente en sis_proc_precios), no se busca
+		// slot ni se agenda; se ofrece particular o agente. L1: antes solo evaluaba el CUP primario,
+		// que en grupos multi-CUP (EMG/NC) suele tener Precio=0 aunque el alternativo SÍ esté cubierto.
 		// Fail-OPEN: si el chequeo falla por un error técnico, se continúa normal (no bloquear).
 		if sess.GetContext("slots_after_date") == "" {
-			if covered, checkErr := isCupCovered(ctx, priceRepo, entityRepo, sess, cupsCode); checkErr == nil && !covered {
+			if covered, checkErr := anyCupCovered(ctx, priceRepo, entityRepo, sess, cupsCodesToTry); checkErr == nil && !covered {
 				cupsName := sess.GetContext("cups_name")
 				if cupsName == "" {
 					cupsName = cupsCode
@@ -243,12 +269,6 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 			} else if checkErr != nil {
 				slog.Warn("coverage_check_failed_fail_open", "cup", cupsCode, "error", checkErr)
 			}
-		}
-
-		// Try to find slots with the primary CUPS code first, then alternatives
-		cupsCodesToTry := []string{cupsCode}
-		if alternativeCodes != "" {
-			cupsCodesToTry = append(cupsCodesToTry, strings.Split(alternativeCodes, ",")...)
 		}
 
 		var slots []services.AvailableSlot
@@ -552,7 +572,7 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 		summary += "\n\n¿Confirmas esta cita?"
 
 		return sm.NewResult(sm.StateConfirmBooking).
-			WithContext("selected_slot_id", selected.TimeSlot).
+			WithContext("selected_slot_id", slotKey(&selected)).
 			WithButtons(
 				summary,
 				sm.Button{Text: "Confirmar cita", Payload: "booking_confirm"},
@@ -1274,11 +1294,30 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			"time_slot", slot.TimeSlot,
 		)
 
-		// Cancel old appointment if this is a self-service reschedule (block pre-fetched above)
+		// Cancel old appointment if this is a self-service reschedule (block pre-fetched above).
+		// M2: la cita NUEVA ya se creó; si la cancelación de la VIEJA falla, el paciente quedaría con
+		// dos citas (la vieja huérfana ocupando un bloque de cupos que se le niega a otros). Antes solo
+		// se logueaba y se seguía a éxito. Ahora: reintento único (un error transitorio de la BD
+		// compartida con SIESA suele pasar al reintentar) y, si persiste, alerta estructurada para que
+		// ops cancele la vieja por el endpoint admin (no se disrumpe al paciente: su cita nueva es válida).
 		if rescheduleApptID != "" && sess.GetContext("reschedule_skip_cancel") != "1" {
 			if len(oldBlockToCancel) > 0 {
-				if cancelErr := apptSvc.CancelBlock(ctx, oldBlockToCancel, "reprogramada por paciente via bot", "whatsapp_bot", ""); cancelErr != nil {
-					slog.Error("reschedule: cancel old block", "error", cancelErr, "phone", utils.MaskPhone(msg.Phone), "old_appt_id", rescheduleApptID)
+				cancelErr := apptSvc.CancelBlock(ctx, oldBlockToCancel, "reprogramada por paciente via bot", "whatsapp_bot", "")
+				if cancelErr != nil {
+					slog.Warn("reschedule: cancel old block failed, retrying", "old_appt_id", rescheduleApptID, "error", cancelErr)
+					cancelErr = apptSvc.CancelBlock(ctx, oldBlockToCancel, "reprogramada por paciente via bot", "whatsapp_bot", "")
+				}
+				if cancelErr != nil {
+					slog.Error("reschedule: old appointment NOT cancelled — orphan duplicate needs manual cancel",
+						"error", cancelErr, "phone", utils.MaskPhone(msg.Phone),
+						"old_appt_id", rescheduleApptID, "new_appt_id", apptID)
+					observability.Emit(observability.TraceSession(sess.ID), "agendar", "reschedule_orphan",
+						observability.EmitOpts{
+							Phone:   sess.PhoneNumber,
+							Reason:  "cancel_old_failed",
+							RefType: "cita",
+							RefID:   rescheduleApptID, // la cita VIEJA que quedó sin cancelar
+						})
 				} else {
 					slog.Info("reschedule: old appointment cancelled",
 						"old_appt_id", rescheduleApptID,
@@ -1422,15 +1461,22 @@ func bookingFailedHandler() sm.StateHandler {
 
 // --- Helpers ---
 
+// slotKey identifica un slot de forma ÚNICA. La sola hora (TimeSlot) NO basta: dos médicos del
+// mismo asunto pueden tener libre la misma fecha+hora, y emparejar solo por hora agendaría con el
+// médico/agenda equivocado (H1). La agenda (id_programacion) + médico + hora sí son únicos.
+func slotKey(s *services.AvailableSlot) string {
+	return fmt.Sprintf("%d|%s|%s", s.AgendaID, s.DoctorSiesaCode, s.TimeSlot)
+}
+
 // findSelectedSlot retrieves the selected slot from session context.
 func findSelectedSlot(sess *session.Session) *services.AvailableSlot {
 	selectedSlotID := sess.GetContext("selected_slot_id")
 	var slots []services.AvailableSlot
 	json.Unmarshal([]byte(sess.GetContext("available_slots_json")), &slots)
 
-	for _, s := range slots {
-		if s.TimeSlot == selectedSlotID {
-			return &s
+	for i := range slots {
+		if slotKey(&slots[i]) == selectedSlotID {
+			return &slots[i]
 		}
 	}
 	return nil

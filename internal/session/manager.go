@@ -19,6 +19,7 @@ type SessionRepo interface {
 	Create(ctx context.Context, session *Session) error
 	Save(ctx context.Context, session *Session) error
 	UpdateStatus(ctx context.Context, sessionID, status string) error
+	UpdateConversationIDByPhone(ctx context.Context, phone, conversationID string) error
 	RenewExpiry(ctx context.Context, sessionID string, expiresAt time.Time) error
 	MarkEscalated(ctx context.Context, sessionID, teamID string) error
 	ResumeSession(ctx context.Context, sessionID, newState string, timeoutMinutes int) error
@@ -223,26 +224,20 @@ func (m *SessionManager) ResumeFromEscalation(ctx context.Context, s *Session, t
 	return m.repo.ResumeSession(ctx, s.ID, targetState, int(m.timeout.Minutes()))
 }
 
-// UpdateConversationID finds the active session for a phone and persists the conversationID.
-// No-op if no active session exists or if the ID is already set to the same value.
+// UpdateConversationID persiste el conversationID en la sesión activa/escalada del teléfono.
+// H2: hace un UPDATE DIRIGIDO de solo esa columna (no FindActiveByPhone + Save de la fila completa).
+// El viejo enfoque corría desde el webhook outbound FUERA del phone-lock y, al reescribir toda la
+// fila desde un snapshot viejo, podía revertir current_state y la PII del paciente a mitad de un
+// agendamiento (lost update). Un UPDATE de una columna no puede pisar el resto de la fila.
 func (m *SessionManager) UpdateConversationID(ctx context.Context, phone, conversationID string) error {
 	if phone == "" || conversationID == "" {
 		return nil
 	}
-	s, err := m.repo.FindActiveByPhone(ctx, phone)
-	if err != nil || s == nil {
-		return err
-	}
-	if s.ConversationID == conversationID {
-		return nil
-	}
-	s.ConversationID = conversationID
-	if err := m.repo.Save(ctx, s); err != nil {
+	if err := m.repo.UpdateConversationIDByPhone(ctx, phone, conversationID); err != nil {
 		slog.Error(
 			"update_conversation_id_failed",
 			"phone", utils.MaskPhone(phone),
 			"conversation_id", conversationID,
-			"session_id", s.ID,
 			"error", err,
 		)
 		return err
@@ -414,6 +409,9 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 
 // formatMinutes convierte minutos a texto legible: "1 hora", "2 horas", "1 hora 30 minutos", etc.
 func formatMinutes(m int) string {
+	if m < 0 {
+		m = 0 // L17: un override con CLOSE_MIN <= REMINDER_MIN daría closeIn negativo → "-5 minutos"
+	}
 	if m < 60 {
 		return fmt.Sprintf("%d minutos", m)
 	}

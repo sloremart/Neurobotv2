@@ -17,7 +17,10 @@ func (m *NotificationManager) handleReschedule(phone, action string, pending *Pe
 // handleCancellation processes responses to the agenda cancellation template.
 // NOTE: Caller (HandleResponse) already removed pending from sync.Map via LoadAndDelete.
 func (m *NotificationManager) handleCancellation(phone, action string, pending *PendingNotification) {
-	ctx := context.Background()
+	// L13: ctx acotado a 30s (patrón N-46). Sin deadline, un LogEvent colgado bloquearía la goroutine
+	// indefinidamente mientras sostiene el phoneLock del paciente.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	switch action {
 	case "acknowledge": // postback: "understood"

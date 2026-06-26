@@ -1353,3 +1353,40 @@ func TestBuildReminderProcedures(t *testing.T) {
 		t.Errorf("empty: got %q", got)
 	}
 }
+
+// TestCatchupAllowed (L14): política de recuperación por modo y hora.
+func TestCatchupAllowed(t *testing.T) {
+	cases := []struct {
+		mode CatchupMode
+		hour int
+		want bool
+	}{
+		{CatchupNever, 13, false}, {CatchupNever, 8, false}, // IVR: nunca
+		{CatchupDaytime, 6, false}, {CatchupDaytime, 20, false}, {CatchupDaytime, 23, false}, // fuera de ventana
+		{CatchupDaytime, 7, true}, {CatchupDaytime, 14, true}, {CatchupDaytime, 19, true}, // dentro
+		{CatchupAlways, 2, true}, {CatchupAlways, 23, true}, // interno: siempre
+	}
+	for _, c := range cases {
+		if got := catchupAllowed(c.mode, c.hour); got != c.want {
+			t.Errorf("catchupAllowed(mode=%d, hour=%d) = %v, want %v", c.mode, c.hour, got, c.want)
+		}
+	}
+}
+
+// TestRegisterAll_CatchupModes (L14): cada tarea queda con su política de catch-up correcta.
+func TestRegisterAll_CatchupModes(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	(&Tasks{}).RegisterAll(s)
+
+	want := map[string]CatchupMode{
+		"data_cleanup":          CatchupAlways,  // interno
+		"whatsapp_reminders":    CatchupDaytime, // WA
+		"waiting_list_check_06": CatchupDaytime, // WA
+		"voice_reminders":       CatchupNever,   // IVR
+	}
+	for _, task := range s.tasks {
+		if w, ok := want[task.Name]; ok && task.Catchup != w {
+			t.Errorf("%s: Catchup = %d, want %d", task.Name, task.Catchup, w)
+		}
+	}
+}

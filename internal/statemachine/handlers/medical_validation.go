@@ -66,8 +66,11 @@ func askContrastedHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsCode := sess.GetContext("cups_code")
 
-		// CUPS no contrastable → saltar (auto-chain continues)
-		if !isContrastable(cupsCode) {
+		// CUPS no contrastable → saltar SOLO si el OCR tampoco marcó contraste (M5).
+		// Antes se salía solo por el prefijo del cups_code, descartando ocr_is_contrasted=1: si el
+		// código representativo del grupo no era contrastable (p.ej. sedación 998702) en una orden de
+		// resonancia CONTRASTADA, se saltaban los gates de seguridad (función renal/TFG y embarazo).
+		if !isContrastable(cupsCode) && sess.GetContext("ocr_is_contrasted") != "1" {
 			return sm.NewResult(sm.StateAskSedation).
 				WithContext("is_contrasted", "0").
 				WithClearCtx("ocr_is_contrasted").
@@ -654,9 +657,14 @@ func askGestationalWeeksHandler() sm.StateHandler {
 				WithButtons(questionText, buttons...), nil
 		}
 
-		// Selección numérica de semanas por agente: /bot resume ASK_GESTATIONAL_WEEKS 19
-		// Convierte el número de semanas directamente a weeks_yes/weeks_no según el rango del CUPS.
-		if weeks, err := strconv.ParseFloat(strings.Replace(strings.TrimSpace(msg.Text), ",", ".", 1), 64); err == nil && weeks > 0 {
+		// Selección numérica de semanas — SOLO para el resume del agente (/bot resume ... 19).
+		// M4: gatear por el prefijo de ID `agent-` (convención de los mensajes inyectados por el agente,
+		// igual que en el worker pool). Sin esto, un PACIENTE que responde el Sí/No tecleando "1"/"2"
+		// (en vez de tocar el chip) caía aquí: "1"→weeksInt=10 < gr.min → "fuera de rango" → auto-cierre,
+		// rechazando por error a una paciente que SÍ está en el rango. Ahora el texto del paciente va
+		// directo a ValidateButtonResponse (que ya mapea 1→Sí, 2→No).
+		isAgentInput := strings.HasPrefix(msg.ID, "agent-")
+		if weeks, err := strconv.ParseFloat(strings.Replace(strings.TrimSpace(msg.Text), ",", ".", 1), 64); isAgentInput && err == nil && weeks > 0 {
 			weeksInt := int(weeks * 10) // e.g. 19 → 190, 13.6 → 136
 			if weeksInt >= gr.min && weeksInt <= gr.max {
 				sess.RetryCount = 0

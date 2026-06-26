@@ -130,3 +130,47 @@ func findEsc(list []session.EscalatedSession, id string) *session.EscalatedSessi
 	}
 	return nil
 }
+
+// TestSessionRepo_UpdateConversationIDByPhone (H2): el UPDATE dirigido cambia SOLO conversation_id
+// y NO pisa current_state ni la PII del paciente (eso era el lost-update del webhook outbound).
+func TestSessionRepo_UpdateConversationIDByPhone(t *testing.T) {
+	db := openLocalTestDB(t)
+	defer db.Close()
+	repo := NewSessionRepo(db)
+	ctx := context.Background()
+
+	id := fmt.Sprintf("itest-conv-%d", time.Now().UnixNano())
+	phone := "+57397" + fmt.Sprintf("%07d", time.Now().UnixNano()%10000000)
+	t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", id) })
+
+	s := &session.Session{
+		ID: id, PhoneNumber: phone, CurrentState: "ASK_CLIENT_TYPE",
+		Status: session.StatusActive, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := repo.Create(ctx, s); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Simular avance del flujo + PII por el worker (fila con estado y datos).
+	loaded, _ := repo.FindByID(ctx, id)
+	loaded.CurrentState = "SHOW_SLOTS"
+	loaded.PatientName = "Juan Perez"
+	if err := repo.Save(ctx, loaded); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// El webhook outbound actualiza solo conversation_id.
+	if err := repo.UpdateConversationIDByPhone(ctx, phone, "conv-xyz"); err != nil {
+		t.Fatalf("update conv id: %v", err)
+	}
+
+	got, _ := repo.FindByID(ctx, id)
+	if got.ConversationID != "conv-xyz" {
+		t.Errorf("expected conversation_id updated, got %q", got.ConversationID)
+	}
+	if got.CurrentState != "SHOW_SLOTS" {
+		t.Errorf("H2: current_state fue pisado, esperaba SHOW_SLOTS, got %q", got.CurrentState)
+	}
+	if got.PatientName != "Juan Perez" {
+		t.Errorf("H2: PII fue pisada, esperaba Juan Perez, got %q", got.PatientName)
+	}
+}

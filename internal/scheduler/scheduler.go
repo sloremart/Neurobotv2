@@ -22,12 +22,41 @@ type RunRepo interface {
 }
 
 // ScheduledTask represents a task that runs at a specific time.
+// CatchupMode define si una tarea perdida puede recuperarse al arrancar y bajo qué condición (L14).
+type CatchupMode int
+
+// Modos de catch-up de una tarea perdida al arrancar (L14).
+const (
+	CatchupAlways  CatchupMode = iota // default: recupera a cualquier hora (tareas internas)
+	CatchupDaytime                    // recupera solo en ventana diurna (notificaciones WhatsApp)
+	CatchupNever                      // nunca recupera (IVR: solo a su hora, tras el WA matutino)
+)
+
+// Ventana diurna permitida para el catch-up de notificaciones al paciente [start, end) (L14).
+const (
+	catchupDaytimeStartHour = 7
+	catchupDaytimeEndHour   = 20
+)
+
 type ScheduledTask struct {
 	Name     string
 	Hour     int
 	Minute   int
 	Weekdays []time.Weekday // nil = every day
 	Fn       func(ctx context.Context) error
+	Catchup  CatchupMode // política de recuperación al arranque (L14); zero-value = CatchupAlways
+}
+
+// catchupAllowed decide si una tarea perdida puede recuperarse a la hora dada (L14).
+func catchupAllowed(mode CatchupMode, hour int) bool {
+	switch mode {
+	case CatchupNever:
+		return false
+	case CatchupDaytime:
+		return hour >= catchupDaytimeStartHour && hour < catchupDaytimeEndHour
+	default: // CatchupAlways
+		return true
+	}
 }
 
 // Scheduler executes tasks at configured times using a 1-minute ticker.
@@ -200,6 +229,16 @@ func (s *Scheduler) RunMissedTasks(ctx context.Context) {
 		// If last run was before today, the task was missed
 		if !lastRun.Before(today) {
 			continue // already ran today
+		}
+
+		// L14: política de catch-up. El IVR (CatchupNever) solo corre a su hora (13:00, como
+		// seguimiento del WA matutino); recuperarlo tarde llamaría a pacientes fuera de hora y, si el
+		// WA acaba de recuperarse en el mismo arranque, justo después del WhatsApp (sin ventana de
+		// respuesta). Las notificaciones WA (CatchupDaytime) solo se recuperan en horario diurno.
+		if !catchupAllowed(task.Catchup, now.Hour()) {
+			slog.Warn("scheduler catch-up: skipped by policy",
+				"task", task.Name, "mode", task.Catchup, "hour", now.Hour())
+			continue
 		}
 
 		slog.Warn("scheduler catch-up: missed task detected",

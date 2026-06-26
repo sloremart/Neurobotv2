@@ -507,6 +507,11 @@ func (m *MockSessionRepo) FindEscalatedSessions(_ context.Context) ([]session.Es
 	return nil, nil
 }
 
+// UpdateConversationIDByPhone is a no-op mock.
+func (m *MockSessionRepo) UpdateConversationIDByPhone(_ context.Context, _, _ string) error {
+	return nil
+}
+
 // TouchPatientActivity is a no-op mock.
 func (m *MockSessionRepo) TouchPatientActivity(_ context.Context, _ string, _ time.Time) error {
 	return nil

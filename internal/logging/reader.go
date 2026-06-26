@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // LogFilter defines filtering criteria for log queries.
@@ -97,7 +99,9 @@ func extractDate(path, prefix string) time.Time {
 	base := filepath.Base(path)
 	base = strings.TrimPrefix(base, prefix+"-")
 	base = strings.TrimSuffix(base, ".log")
-	t, err := time.Parse("2006-01-02", base)
+	// L19: parsear la fecha del nombre en la MISMA zona que from/to (que vienen en time.Local).
+	// Con time.Parse (UTC) y offset negativo (Colombia UTC-5), el archivo del propio día se excluía.
+	t, err := time.ParseInLocation("2006-01-02", base, time.Local)
 	if err != nil {
 		return time.Time{}
 	}
@@ -117,6 +121,12 @@ func readAndFilter(path, levelUpper string, from, to time.Time, search, phone st
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024) // handle long lines
 
 	searchLower := strings.ToLower(search)
+	// L18: los teléfonos se escriben ENMASCARADOS en disco (+573***3616) por la política PII, así que
+	// el número completo nunca aparece. Matchear ambas formas (completa por si LOG_MASK_PHONES=false).
+	phoneMasked := ""
+	if phone != "" {
+		phoneMasked = utils.MaskPhone(phone)
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -125,7 +135,7 @@ func readAndFilter(path, levelUpper string, from, to time.Time, search, phone st
 		}
 
 		// Quick phone filter: check if the phone number appears anywhere in the line.
-		if phone != "" && !strings.Contains(line, phone) {
+		if phone != "" && !strings.Contains(line, phone) && !strings.Contains(line, phoneMasked) {
 			continue
 		}
 
