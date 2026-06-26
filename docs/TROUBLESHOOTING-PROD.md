@@ -4,14 +4,38 @@ Guia para diagnosticar y resolver problemas al desplegar el bot en un servidor d
 
 ---
 
-## Despliegue / Reconstrucción en Producción (desde cero)
+## Despliegue y Actualización en Producción
 
-Pasos para levantar o reconstruir el proyecto en el servidor. **Las migraciones de la BD local se
-aplican AUTOMÁTICAMENTE** al arrancar el bot (golang-migrate corre `./migrations` desde `main.go`):
-no hay comando manual de migración, basta con `up`.
+**Las migraciones de la BD local se aplican AUTOMÁTICAMENTE** al arrancar el bot (golang-migrate corre
+`./migrations` desde `main.go`): no hay comando manual de migración, basta con `up`.
+
+### A) Actualizar a una versión nueva — CASO NORMAL (el server ya tiene el proyecto)
+
+El servidor **ya tiene el proyecto clonado y una imagen construida** corriendo. NO se clona ni se
+construye desde cero: solo se trae el código nuevo y se reconstruye la imagen.
 
 ```bash
-# 1. Clonar el repo (o `git pull` si ya está clonado)
+cd /ruta/al/proyecto            # carpeta donde ya está el repo
+
+git pull origin main            # 1. traer la versión nueva
+
+# 2. (si la versión nueva trae variables nuevas, agregarlas al .env ANTES de levantar)
+#    p.ej.: SIESA_ASSIGN_USER_CEDULA / SIESA_ASSIGN_USER_ID,
+#           WHATSAPP_NOTIFICATIONS_ENABLED / IVR_NOTIFICATIONS_ENABLED
+nano .env
+
+docker compose up -d --build    # 3. reconstruye la imagen del bot con el código nuevo y recrea
+                                #    SOLO los contenedores que cambiaron. NO borra datos.
+```
+
+> **`--build` es CLAVE**: sin él, Docker reusa la imagen vieja y el bot seguiría con el código
+> anterior. El volumen `botdbdata` (datos locales) **se conserva** (no se usa `down -v`); las
+> migraciones nuevas se aplican solas al arrancar el bot. La BD clínica SIESA no se toca (es externa).
+
+### B) Primera vez — server NUEVO (desde cero)
+
+```bash
+# 1. Clonar el repo
 git clone https://github.com/sloremart/Neurobotv2.git
 cd Neurobotv2
 
@@ -32,7 +56,7 @@ Al arrancar, el bot en orden:
    de `center_locations`** (migración 024). Si la BD ya tenía migraciones, solo aplica las nuevas.
 3. Conecta a **SIESA** (SQL Server) y arranca los workers.
 
-### Verificar el despliegue
+### Verificar el despliegue (cualquiera de los dos casos)
 
 ```bash
 docker compose ps                                       # todos healthy
@@ -41,16 +65,9 @@ make migrate-status                                     # o: SELECT * FROM schem
 curl -s http://localhost:8085/health                    # {"external_db":"ok","local_db":"ok","status":"ok"}
 ```
 
-### Reconstruir desde cero (¡cuidado con los datos!)
-
-```bash
-docker compose down            # detiene; CONSERVA el volumen botdbdata (datos intactos)
-docker compose up -d --build   # reconstruye la imagen y vuelve a levantar
-```
-
-> ⚠️ `docker compose down -v` **BORRA el volumen** `botdbdata` (sesiones, WAL, scheduler, etc.). Tras un
-> `-v`, las migraciones recrean el esquema vacío + el seed, pero **se pierden todos los datos locales**.
-> Hacer **backup antes** (ver sección Backup). La BD clínica (SIESA) NO se toca: es externa.
+> ⚠️ NUNCA `docker compose down -v` en prod salvo que quieras **BORRAR el volumen** `botdbdata`
+> (sesiones, WAL, scheduler, etc.). Tras un `-v`, las migraciones recrean el esquema vacío + el seed,
+> pero **se pierden todos los datos locales**. Hacer **backup antes** (ver sección Backup).
 
 ---
 
