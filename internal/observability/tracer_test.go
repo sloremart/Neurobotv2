@@ -143,7 +143,7 @@ func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
 		"agendar": {
 			"ocr_ok", "ocr_failed", "cups_none", "gfr_blocked", "pregnancy_blocked",
 			"special_escalated", "already_has_appt", "coverage_particular", "coverage_escalated",
-			"slots_found", "no_slots", "booking_success", "booking_failed",
+			"slots_found", "no_slots", "booking_success", "booking_failed", "reschedule_orphan",
 		},
 		"notif_recordatorio": {
 			"reminder_sent", "ivr_placed", "confirmed", "cancelled", "escalated", "error",

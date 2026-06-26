@@ -84,6 +84,7 @@ var catalog = map[string]stepSpec{
 	"agendar/no_slots":            {LvOutcome, "blocked", ""},
 	"agendar/booking_success":     {LvOutcome, "ok", "cita"},
 	"agendar/booking_failed":      {LvError, "error", ""},
+	"agendar/reschedule_orphan":   {LvError, "error", "cita"}, // M2: vieja sin cancelar tras reagendar
 
 	// Recordatorio / IVR (§3.3 / §3A) — trace notif:<apptID>
 	"notif_recordatorio/reminder_sent": {LvMilestone, "ok", "bird_msg"},

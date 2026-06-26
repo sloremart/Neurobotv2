@@ -1274,11 +1274,30 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			"time_slot", slot.TimeSlot,
 		)
 
-		// Cancel old appointment if this is a self-service reschedule (block pre-fetched above)
+		// Cancel old appointment if this is a self-service reschedule (block pre-fetched above).
+		// M2: la cita NUEVA ya se creó; si la cancelación de la VIEJA falla, el paciente quedaría con
+		// dos citas (la vieja huérfana ocupando un bloque de cupos que se le niega a otros). Antes solo
+		// se logueaba y se seguía a éxito. Ahora: reintento único (un error transitorio de la BD
+		// compartida con SIESA suele pasar al reintentar) y, si persiste, alerta estructurada para que
+		// ops cancele la vieja por el endpoint admin (no se disrumpe al paciente: su cita nueva es válida).
 		if rescheduleApptID != "" && sess.GetContext("reschedule_skip_cancel") != "1" {
 			if len(oldBlockToCancel) > 0 {
-				if cancelErr := apptSvc.CancelBlock(ctx, oldBlockToCancel, "reprogramada por paciente via bot", "whatsapp_bot", ""); cancelErr != nil {
-					slog.Error("reschedule: cancel old block", "error", cancelErr, "phone", utils.MaskPhone(msg.Phone), "old_appt_id", rescheduleApptID)
+				cancelErr := apptSvc.CancelBlock(ctx, oldBlockToCancel, "reprogramada por paciente via bot", "whatsapp_bot", "")
+				if cancelErr != nil {
+					slog.Warn("reschedule: cancel old block failed, retrying", "old_appt_id", rescheduleApptID, "error", cancelErr)
+					cancelErr = apptSvc.CancelBlock(ctx, oldBlockToCancel, "reprogramada por paciente via bot", "whatsapp_bot", "")
+				}
+				if cancelErr != nil {
+					slog.Error("reschedule: old appointment NOT cancelled — orphan duplicate needs manual cancel",
+						"error", cancelErr, "phone", utils.MaskPhone(msg.Phone),
+						"old_appt_id", rescheduleApptID, "new_appt_id", apptID)
+					observability.Emit(observability.TraceSession(sess.ID), "agendar", "reschedule_orphan",
+						observability.EmitOpts{
+							Phone:   sess.PhoneNumber,
+							Reason:  "cancel_old_failed",
+							RefType: "cita",
+							RefID:   rescheduleApptID, // la cita VIEJA que quedó sin cancelar
+						})
 				} else {
 					slog.Info("reschedule: old appointment cancelled",
 						"old_appt_id", rescheduleApptID,

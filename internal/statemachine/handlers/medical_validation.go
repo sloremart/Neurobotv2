@@ -66,8 +66,11 @@ func askContrastedHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsCode := sess.GetContext("cups_code")
 
-		// CUPS no contrastable → saltar (auto-chain continues)
-		if !isContrastable(cupsCode) {
+		// CUPS no contrastable → saltar SOLO si el OCR tampoco marcó contraste (M5).
+		// Antes se salía solo por el prefijo del cups_code, descartando ocr_is_contrasted=1: si el
+		// código representativo del grupo no era contrastable (p.ej. sedación 998702) en una orden de
+		// resonancia CONTRASTADA, se saltaban los gates de seguridad (función renal/TFG y embarazo).
+		if !isContrastable(cupsCode) && sess.GetContext("ocr_is_contrasted") != "1" {
 			return sm.NewResult(sm.StateAskSedation).
 				WithContext("is_contrasted", "0").
 				WithClearCtx("ocr_is_contrasted").

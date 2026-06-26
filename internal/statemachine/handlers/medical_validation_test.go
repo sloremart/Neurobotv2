@@ -112,6 +112,51 @@ func TestAskContrasted_NotContrastable_Skip(t *testing.T) {
 	}
 }
 
+// TestAskContrasted_OCRForcesContrastPath (M5): si el cups_code representativo NO es contrastable
+// (p.ej. sedación 998702) pero el OCR marcó la orden como contrastada, NO se debe saltar el gate:
+// debe entrar a la vía de contraste (función renal/embarazo), no auto-completar sin chequeos.
+func TestAskContrasted_OCRForcesContrastPath(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskContrasted, askContrastedHandler())
+
+	sess := testSess(sm.StateAskContrasted)
+	sess.Context["cups_code"] = "998702" // sedación: NO contrastable por prefijo
+	sess.Context["ocr_is_contrasted"] = "1"
+	sess.Context["patient_gender"] = "M"
+	sess.Context["patient_age"] = "40"
+
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UpdateCtx["is_contrasted"] != "1" {
+		t.Errorf("esperaba is_contrasted=1 (OCR), got %v", result.UpdateCtx)
+	}
+	if result.NextState != sm.StateGfrCreatinine {
+		t.Errorf("M5: esperaba pasar al gate renal (GFR_CREATININE), got %s", result.NextState)
+	}
+}
+
+// TestAskContrasted_NonContrastableNoOCR_Skips: sin señal de OCR, un CUPS no contrastable sí salta.
+func TestAskContrasted_NonContrastableNoOCR_Skips(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskContrasted, askContrastedHandler())
+
+	sess := testSess(sm.StateAskContrasted)
+	sess.Context["cups_code"] = "998702" // no contrastable y sin ocr_is_contrasted
+
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateAskSedation {
+		t.Errorf("esperaba saltar a ASK_SEDATION, got %s", result.NextState)
+	}
+	if result.UpdateCtx["is_contrasted"] != "0" {
+		t.Errorf("esperaba is_contrasted=0, got %v", result.UpdateCtx)
+	}
+}
+
 func TestAskContrasted_Yes(t *testing.T) {
 	// Only register the single handler to avoid auto-chain
 	m := sm.NewMachine()
