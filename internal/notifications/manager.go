@@ -844,6 +844,7 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 	now := time.Now()
 	restored := 0
 	expired := 0
+	var expiredPhones []string // L10: se procesan después del loop, fuera del camino de arranque
 
 	for _, row := range rows {
 		notif := &PendingNotification{
@@ -865,9 +866,10 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 		}
 
 		if now.After(row.ExpiresAt) {
-			// Already expired — process timeout immediately (sync at startup)
+			// Ya vencida. L10: NO procesar inline (handleTimeout adquiere lock 30s + red si el followup
+			// está activo → serializaría el arranque). Guardar y recolectar; se procesa tras el loop.
 			m.pending.Store(row.Phone, notif)
-			m.handleTimeout(row.Phone)
+			expiredPhones = append(expiredPhones, row.Phone)
 			expired++
 			continue
 		}
@@ -884,6 +886,25 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 
 	if restored > 0 || expired > 0 {
 		slog.Info("pending notifications restored", "restored", restored, "expired", expired)
+	}
+
+	// L10: procesar las vencidas en UNA goroutine secuencial (no serializa el arranque ni dispara una
+	// estampida de locks/red). Respeta el ctx para parar en el apagado.
+	if len(expiredPhones) > 0 {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("restore pending: panic processing expired timeouts", "panic", r)
+				}
+			}()
+			for _, phone := range expiredPhones {
+				if ctx.Err() != nil {
+					return
+				}
+				//nolint:contextcheck // handleTimeout no toma ctx por diseño (callback de timer; gestiona su propio lock/timeout acotado).
+				m.handleTimeout(phone)
+			}
+		}()
 	}
 }
 
