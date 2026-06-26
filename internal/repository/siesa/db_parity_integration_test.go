@@ -285,7 +285,7 @@ func TestProcServicioMatchesHistory(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	ctx := context.Background()
-	repo := NewAppointmentRepo(db)
+	repo := NewAppointmentRepo(db, "", 0)
 
 	var cutoff string
 	if err := db.QueryRowContext(ctx, `

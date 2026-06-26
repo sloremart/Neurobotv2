@@ -2,6 +2,42 @@ package siesa
 
 import "testing"
 
+// TestNewAppointmentRepo_BotIdentity verifica la identidad del bot en SIESA: el usuario PRINCIPAL
+// se toma de los argumentos (cédula → cod_user_asigna_cita, id → usuario_evento/id_usuario_cancela),
+// y si llegan vacío/cero caen al usuario de automatización "Procesos Automáticos" como FALLBACK
+// (cédula '000000', id 10006). Es la lógica que pidió el cambio: SHERNANDEZ principal, automatización
+// fallback.
+func TestNewAppointmentRepo_BotIdentity(t *testing.T) {
+	cases := []struct {
+		name       string
+		inCedula   string
+		inID       int
+		wantCedula string
+		wantID     int
+	}{
+		{"principal SHERNANDEZ", "1029987853", 10093, "1029987853", 10093},
+		{"fallback cedula vacia", "", 10093, defaultSiesaBotCedula, 10093},
+		{"fallback id cero", "1029987853", 0, "1029987853", defaultSiesaBotUserID},
+		{"fallback ambos (automatizacion)", "", 0, defaultSiesaBotCedula, defaultSiesaBotUserID},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := NewAppointmentRepo(nil, c.inCedula, c.inID)
+			if r.assignCedula != c.wantCedula {
+				t.Errorf("assignCedula = %q, want %q", r.assignCedula, c.wantCedula)
+			}
+			if r.botUserID != c.wantID {
+				t.Errorf("botUserID = %d, want %d", r.botUserID, c.wantID)
+			}
+		})
+	}
+	// El fallback debe ser exactamente el usuario de automatización documentado.
+	if defaultSiesaBotCedula != "000000" || defaultSiesaBotUserID != 10006 {
+		t.Errorf("fallback inesperado: cedula=%q id=%d (esperado 000000/10006)",
+			defaultSiesaBotCedula, defaultSiesaBotUserID)
+	}
+}
+
 // TestSlotToDateTimeComponents_Meridiem verifica el fix N-4: el meridiano se deriva del valor
 // 24h del slot (el slot SIEMPRE viene en 24h desde SlotService). La heurística previa "1-6 → pm"
 // marcaba como PM los slots reales de 5–6 AM (polisomnografía/EEG matutino).
