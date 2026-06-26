@@ -4,6 +4,56 @@ Guia para diagnosticar y resolver problemas al desplegar el bot en un servidor d
 
 ---
 
+## Despliegue / Reconstrucción en Producción (desde cero)
+
+Pasos para levantar o reconstruir el proyecto en el servidor. **Las migraciones de la BD local se
+aplican AUTOMÁTICAMENTE** al arrancar el bot (golang-migrate corre `./migrations` desde `main.go`):
+no hay comando manual de migración, basta con `up`.
+
+```bash
+# 1. Clonar el repo (o `git pull` si ya está clonado)
+git clone https://github.com/sloremart/Neurobotv2.git
+cd Neurobotv2
+
+# 2. Crear el .env. Usar docs/env-production.env como base y completar TODOS los secretos.
+cp docs/env-production.env .env
+nano .env                       # revisar EXTERNAL_DB_*, BIRD_*, OPENAI_*, PORT=8085, etc.
+
+# 3. (recomendado) Validar antes de construir
+./scripts/pre-deploy-check.sh   # corregir los [FAIL]
+
+# 4. Construir y levantar TODO (bot + MySQL local + ngrok + watcher)
+docker compose up -d --build
+```
+
+Al arrancar, el bot en orden:
+1. Crea/conecta la **BD local MySQL** (servicio `db`; se crea sola con las vars `MYSQL_*`).
+2. **Aplica todas las migraciones** `001..NNN` sobre `neuro_bot` → crea todas las tablas **+ el seed
+   de `center_locations`** (migración 024). Si la BD ya tenía migraciones, solo aplica las nuevas.
+3. Conecta a **SIESA** (SQL Server) y arranca los workers.
+
+### Verificar el despliegue
+
+```bash
+docker compose ps                                       # todos healthy
+docker compose logs bot | grep "migrations applied"     # version = última migración, dirty:false
+make migrate-status                                     # o: SELECT * FROM schema_migrations;
+curl -s http://localhost:8085/health                    # {"external_db":"ok","local_db":"ok","status":"ok"}
+```
+
+### Reconstruir desde cero (¡cuidado con los datos!)
+
+```bash
+docker compose down            # detiene; CONSERVA el volumen botdbdata (datos intactos)
+docker compose up -d --build   # reconstruye la imagen y vuelve a levantar
+```
+
+> ⚠️ `docker compose down -v` **BORRA el volumen** `botdbdata` (sesiones, WAL, scheduler, etc.). Tras un
+> `-v`, las migraciones recrean el esquema vacío + el seed, pero **se pierden todos los datos locales**.
+> Hacer **backup antes** (ver sección Backup). La BD clínica (SIESA) NO se toca: es externa.
+
+---
+
 ## Escenarios de Fallo y Solucion
 
 ### 1. Puertos Ocupados
@@ -559,9 +609,23 @@ variables en el `.env` del servidor.
 
 ## Backup de la BD Interna
 
+> Esto es **solo la BD local del bot** (`neuro_bot`: sesiones, eventos, lista de espera, catálogo
+> CUPS, WAL). La **BD clínica SIESA es externa** y la respalda el área de sistemas de la IPS, no el bot.
+
+**Resumen — responde "¿cada cuánto y dónde?":**
+
+| Pregunta | Respuesta |
+|----------|-----------|
+| ¿Cada cuánto se hace? | **NO es automático.** Hay que configurar un **cron** (recomendado: diario a las **03:00**). Sin cron, solo corre cuando lo ejecutas a mano. El bot NO hace backup solo (su tarea de 02:00 es *limpieza* de datos, no dump). |
+| ¿Cada cuánto se "actualiza"? | Cada corrida genera un **dump nuevo y completo** (snapshot). Con el cron diario → un backup fresco por día. |
+| Retención | Se borran solos los dumps de **más de 30 días** (`find -mtime +30 -delete` dentro del script). |
+| ¿Dónde se almacena en prod? | En **`<carpeta_del_proyecto>/backups/`** (ej. `/ruta/a/Neurobotv2/backups/`), en el **disco local del servidor**. Está en `.gitignore` (no se sube a git). |
+| ⚠️ Riesgo | Los backups quedan en el **mismo disco/servidor** que la BD. Si el disco/servidor muere, se pierden BD **y** backups. **Recomendado: copiarlos off-site** (otro disco, NAS, S3, `rsync`/`scp` a otra máquina). |
+
 ### Script de Backup
 
-Ya existe en `scripts/backup-db.sh`. Genera dumps comprimidos en `backups/`.
+Ya existe en `scripts/backup-db.sh`. Genera dumps comprimidos en `backups/` (usa `--no-tablespaces`
+para funcionar con el usuario restringido en MySQL 8.0).
 
 ```bash
 # Ejecutar manualmente
