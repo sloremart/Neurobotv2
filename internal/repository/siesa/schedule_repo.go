@@ -71,6 +71,17 @@ WHERE pmd.IdCita IS NULL
   AND pmd.SinProgramacion = 0
   AND pmd.Fecha >= DATEADD(HOUR, 3, GETDATE())
   AND pmd.Fecha <= DATEADD(DAY, 90, GETDATE())
+  -- Consistencia con PK_citas(cod_medi,fecha,hora,meridiano,estado): no ofrecer un médico+hora
+  -- que ya tiene una cita activa 'P'. Sin esto, un slot puede verse libre por su fila de detalle
+  -- (IdCita IS NULL) mientras el médico ya está ocupado a esa hora en OTRA fila/agenda → el INSERT
+  -- en citas colisionaría con la PK. El seek usa el prefijo de PK_citas (cod_medi -> fecha -> hora).
+  AND NOT EXISTS (
+      SELECT 1 FROM citas c WITH (NOLOCK)
+      WHERE c.cod_medi = pmd.Medico
+        AND c.fecha    = CAST(pmd.Fecha AS DATE)
+        AND c.hora     = CONVERT(VARCHAR(5), pmd.Fecha, 108)
+        AND c.estado   = 'P'
+  )
   -- Doble validación (agenda Y médico deben coincidir en el asunto): el médico del slot
   -- debe atender el asunto buscado según sis_asuntoMedico. Esto descarta agendas mal
   -- configuradas (asunto asignado a una agenda cuyo médico no hace ese asunto). Fail-open:

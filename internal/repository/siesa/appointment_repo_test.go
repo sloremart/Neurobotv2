@@ -1,6 +1,52 @@
 package siesa
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+
+	mssql "github.com/microsoft/go-mssqldb"
+
+	"github.com/neuro-bot/neuro-bot/internal/domain"
+)
+
+// TestIsUniqueViolation verifica el mapeo de errores de SQL Server a "horario tomado":
+// 2627 (PRIMARY KEY) y 2601 (índice único) → true; cualquier otro error → false.
+// En `citas`, una violación de PK_citas significa que el médico ya tiene una cita 'P' a esa
+// fecha/hora → Create devuelve domain.ErrSlotTaken y el handler re-busca horarios.
+func TestIsUniqueViolation(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"pk violation 2627", mssql.Error{Number: 2627}, true},
+		{"unique index 2601", mssql.Error{Number: 2601}, true},
+		{"wrapped pk 2627", fmt.Errorf("insert citas: %w", mssql.Error{Number: 2627}), true},
+		{"other mssql error", mssql.Error{Number: 547}, false}, // FK violation
+		{"non-mssql error", errors.New("connection reset"), false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isUniqueViolation(c.err); got != c.want {
+				t.Errorf("isUniqueViolation(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+// TestErrSlotTaken_Identity garantiza que el sentinel conserva el texto histórico "slot_taken"
+// (compatibilidad con logs/búsquedas) y que errors.Is lo reconoce a través de envoltura con %w.
+func TestErrSlotTaken_Identity(t *testing.T) {
+	if domain.ErrSlotTaken.Error() != "slot_taken" {
+		t.Errorf("ErrSlotTaken.Error() = %q, want \"slot_taken\"", domain.ErrSlotTaken.Error())
+	}
+	wrapped := fmt.Errorf("create: %w", domain.ErrSlotTaken)
+	if !errors.Is(wrapped, domain.ErrSlotTaken) {
+		t.Error("errors.Is no reconoce ErrSlotTaken envuelto con %w")
+	}
+}
 
 // TestNewAppointmentRepo_BotIdentity verifica la identidad del bot en SIESA: el usuario PRINCIPAL
 // se toma de los argumentos (cédula → cod_user_asigna_cita, id → usuario_evento/id_usuario_cancela),
