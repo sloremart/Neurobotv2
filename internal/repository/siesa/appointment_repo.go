@@ -3,15 +3,29 @@ package siesa
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
+	mssql "github.com/microsoft/go-mssqldb"
+
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 )
+
+// isUniqueViolation reporta si err es una violación de PK/índice único de SQL Server
+// (2627 = PRIMARY KEY, 2601 = índice único). En `citas` esto significa que el médico ya
+// tiene una cita activa a esa fecha/hora → el horario ya no está disponible.
+func isUniqueViolation(err error) bool {
+	var me mssql.Error
+	if errors.As(err, &me) {
+		return me.Number == 2627 || me.Number == 2601
+	}
+	return false
+}
 
 var _ repository.AppointmentRepository = (*AppointmentRepo)(nil)
 
@@ -481,6 +495,13 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		primeraVezControl, r.assignCedula,
 	).Scan(&newID)
 	if err != nil {
+		// PK_citas(cod_medi,fecha,hora,meridiano,estado): el médico ya tiene una cita 'P' a esa
+		// hora (otra reserva o un grupo previo del mismo paciente). La disponibilidad se valida por
+		// fila de programacion_medico_detalle, pero la unicidad la impone la BD por médico+hora →
+		// se trata como horario ya tomado (avisar + re-buscar), no como error genérico.
+		if isUniqueViolation(err) {
+			return nil, domain.ErrSlotTaken
+		}
 		return nil, fmt.Errorf("insert citas: %w", err)
 	}
 
@@ -500,7 +521,7 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		return nil, fmt.Errorf("update pmd: %w", err)
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return nil, fmt.Errorf("slot_taken")
+		return nil, domain.ErrSlotTaken
 	}
 
 	// Multi-slot (procedimiento que ocupa N slots por duración): vincular los espacios-1 slots

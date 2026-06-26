@@ -1254,10 +1254,11 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 		apptID, err := apptSvc.CreateWithConsecutive(ctx, input, espacios)
 		if err != nil {
 			errMsg := err.Error()
-			// Detect slot taken: explicit check OR MySQL duplicate/constraint violation.
-			// "slots_consecutivos_insuficientes" (multi-slot: no caben N slots contiguos libres)
-			// también es un fallo de disponibilidad → el paciente debe re-buscar, no auto-cerrar.
-			if strings.Contains(errMsg, "slot_taken") || strings.Contains(errMsg, "Duplicate entry") ||
+			// Detect slot taken: error tipado del repo (domain.ErrSlotTaken cubre la colisión
+			// PK_citas en el INSERT y el slot reclamado por otro en el UPDATE) O un fallo de
+			// disponibilidad multi-slot ("slots_consecutivos_insuficientes": no caben N slots
+			// contiguos libres). En todos, el paciente debe re-buscar horarios, no auto-cerrar.
+			if errors.Is(err, domain.ErrSlotTaken) ||
 				strings.Contains(errMsg, "slots_consecutivos_insuficientes") {
 				slog.Warn(
 					"create_appointment_slot_taken",
@@ -1440,7 +1441,7 @@ func bookingFailedHandler() sm.StateHandler {
 		switch reason {
 		case "slot_taken":
 			return sm.NewResult(sm.StateSearchSlots).
-				WithText("El horario que seleccionaste ya fue tomado por otro paciente. Buscando nuevos horarios...").
+				WithText("Ese horario ya no está disponible. Te muestro los horarios actualizados...").
 				WithClearCtx("selected_slot_id", "available_slots_json").
 				WithEvent("slot_taken", nil), nil
 

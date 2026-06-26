@@ -99,3 +99,61 @@ recuperación más rápida y cota superior al backlog histórico.
 - No cambiar la semántica de `Enqueue` (sigue siendo no-bloqueante para el webhook en caliente).
 - Mantener oldest-first para no postergar indefinidamente los más viejos.
 - El dedup map (`recentMessages`) ya libera el claim al dropear (fix M7), así que el re-encolado funciona.
+
+---
+
+## BUG-002 — Colisión `PK_citas` al agendar: se ofrece un médico+hora ya ocupado
+
+- **Estado:** ✅ Resuelto — implementado (Capas 1-3). Antes: 🔴 recurrente (2 casos en <1h el 2026-06-26).
+- **Severidad:** Alta — el paciente **no obtiene la cita** (parcial en multi-grupo, o ninguna) y recibía
+  un error genérico de **callejón sin salida**.
+- **Detectado:** 2026-06-26 por el auditor; confirmado en 4 fuentes (código, BD del bot, Bird, schema SIESA).
+- **Componentes:** `internal/repository/siesa/schedule_repo.go` (`FindAvailableSlots`),
+  `internal/repository/siesa/appointment_repo.go` (`Create`), `internal/statemachine/handlers/slots.go`
+  (booking + `bookingFailedHandler`), `internal/domain/errors.go` (`ErrSlotTaken`).
+
+### Síntoma observable
+```
+ERROR create_appointment_create_failed: Violation of PRIMARY KEY 'PK_citas' duplicate (60,2026-07-03,13:00,pm,P,...)
+```
+y al paciente: *"Ocurrió un error al crear la cita. Por favor intenta más tarde."* + auto-cierre.
+
+### Causa raíz
+`PK_citas` es única por **(cod_medi, fecha, hora, meridiano, estado, horacan, CodGrupo)**; para una cita
+activa `estado='P'`, `horacan='--:--'` y `CodGrupo=0` son constantes → la PK se reduce de hecho a
+**(cod_medi, fecha, hora, meridiano)**. Pero la búsqueda de slots (`FindAvailableSlots`) solo validaba
+`pmd.IdCita IS NULL` — **por fila** de `programacion_medico_detalle`. Cuando un médico tiene la misma
+hora libre en más de una fila de detalle (agendas/consultorios solapados, o el mismo paciente eligiendo
+el mismo médico+hora para dos grupos), el slot se ve libre pero el `INSERT` en `citas` colisiona con la PK.
+
+Dos disparadores, mismo mecanismo:
+- **Caso 1 (multi-grupo, misma sesión):** se agenda el grupo 1 (médico 60 @ 03/07 13:00); al buscar el
+  grupo 2 se vuelve a ofrecer el MISMO médico+hora → 2º INSERT choca. (Bird conv `cf402578`, sess `c39bd23a`.)
+- **Caso 2 (cita ajena):** el médico 16 ya tenía una 'P' a las 09/07 14:40 en otra fila/agenda; el slot
+  se ofreció libre y el INSERT chocó. (Bird conv `e821ddd8`, sess `717f3634`.)
+
+Además, el orden en `Create` es **INSERT citas → luego UPDATE pmd**: la colisión aflora como violación de
+PK en el INSERT (no como `slot_taken` del UPDATE), y el handler no la reconocía → caía al error genérico.
+
+### Fix implementado (3 capas)
+1. **PREVENIR — `FindAvailableSlots`:** `AND NOT EXISTS (SELECT 1 FROM citas c WHERE c.cod_medi=pmd.Medico
+   AND c.fecha=CAST(pmd.Fecha AS DATE) AND c.hora=CONVERT(VARCHAR(5),pmd.Fecha,108) AND c.estado='P')`.
+   Alinea la disponibilidad con la PK. *Seek* por el prefijo de `PK_citas` (cod_medi→fecha→hora) — sin
+   índice nuevo. Validado contra la BD local (excluye el slot en cuanto el médico tiene la 'P').
+2. **DETECTAR — `Create`:** la violación de PK (mssql 2627/2601, `isUniqueViolation`) y el `UPDATE pmd`
+   con `RowsAffected==0` devuelven ambos `domain.ErrSlotTaken` (sentinel tipado, en vez de strings frágiles).
+3. **RECUPERAR — handler:** `errors.Is(err, domain.ErrSlotTaken)` → `booking_failure_reason="slot_taken"`
+   → `bookingFailedHandler` **avisa al paciente y re-busca horarios frescos** (`StateSearchSlots`, ahora
+   con el filtro de la Capa 1) → *"Ese horario ya no está disponible. Te muestro los horarios actualizados..."*.
+
+### Por qué es correcto
+La Capa 1 elimina la causa raíz (no se ofrecen slots imposibles). Las Capas 2-3 cubren la **carrera
+residual** (otro paciente reserva entre que se muestra la lista y se confirma) con la UX correcta: aviso
++ lista actualizada, sin callejón. Reusa estados existentes (`StateSearchSlots`, `bookingFailedHandler`);
+sin estados ni índices nuevos. `Create` ya corre en transacción con `defer tx.Rollback()`, así que al
+devolver `ErrSlotTaken` antes del commit no queda cita ni slot a medias.
+
+### Tests
+- `TestIsUniqueViolation` (2627/2601 → true; envuelto con %w; otros/nil → false) y `TestErrSlotTaken_Identity`.
+- `TestCreateAppointment_SlotTakenError`: el handler enruta `ErrSlotTaken` → `slot_taken` → re-búsqueda.
+- Validación SQL del filtro contra la BD SIESA local (demostración ANTES/DESPUÉS con `ROLLBACK`).

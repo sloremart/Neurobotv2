@@ -379,7 +379,7 @@ func TestCreateAppointment_SlotTakenError(t *testing.T) {
 	slots := sampleSlots()
 	repo := &testutil.MockAppointmentRepo{
 		CreateFn: func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
-			return nil, fmt.Errorf("slot_taken: already booked")
+			return nil, fmt.Errorf("%w: already booked", domain.ErrSlotTaken)
 		},
 	}
 	apptSvc := services.NewAppointmentService(repo, nil)
