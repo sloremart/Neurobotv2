@@ -30,11 +30,17 @@ El bot deja rastro en **tres capas distintas**. No compiten: cada una responde u
 Todos los endpoints `/api/internal/*` exigen la cabecera **`X-API-Key`** (valor de `INTERNAL_API_KEY`) y pasan por rate-limit por IP. `GET /health` es público; `GET /health/debug` requiere la key.
 
 ```bash
-# Plantilla. En testing local: BASE=http://localhost:8090 ; en prod usar su host/ngrok.
-BASE="http://localhost:8090"
-KEY="<INTERNAL_API_KEY>"
+# BASE según entorno:
+#   PRODUCCIÓN:  https://app.colibrixa.com     (host público / ngrok; es el que debes usar para auditar prod)
+#   Local/pruebas: http://localhost:8085       (o el PORT del .env; 8090 en el perfil de pruebas)
+BASE="https://app.colibrixa.com"          # ← PROD
+KEY="<INTERNAL_API_KEY>"                   # valor de INTERNAL_API_KEY del .env de prod
 curl -s -H "X-API-Key: $KEY" "$BASE/api/internal/flow-stats?flow=agendar" | jq
 ```
+
+> Para auditar **producción** apunta `BASE` a **`https://app.colibrixa.com`**. `GET /health` es público;
+> el resto exige `X-API-Key`. Si `BASE` apunta a prod pero las respuestas parecen de otra instancia
+> (uptime/SIESA distintos), revisa el túnel ngrok (§13.1).
 
 > Los teléfonos salen **enmascarados** (`+573***3616`) en logs y flow_events por PII. En `chat_events`
 > el teléfono se guarda completo (es la clave de búsqueda) — tratar esa salida como sensible.
