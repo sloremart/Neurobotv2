@@ -10,9 +10,10 @@
 
 services:
   bot:
+    # Overlay de PRODUCCIÓN: NO cargar .env.testing aquí (filtraría PORT=8090, ngrok-free y
+    # TESTING_ALWAYS_OPEN=true). El perfil de pruebas es docker-compose.testing.yml, aparte.
     env_file:
       - .env
-      - .env.testing
       - .env.high-load
     deploy:
       resources:
