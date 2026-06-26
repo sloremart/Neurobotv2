@@ -378,3 +378,37 @@ Por cada cosa rara, registra: **(1)** teléfono o `trace_id`, **(2)** timestamp,
 - `/flow-stats` con caída brusca entre dos steps consecutivos (fuga del embudo).
 - `message_sent_ok` pero el paciente dice que no llegó (conversation_id viejo, §13.3).
 - Mismo `state` repetido muchas veces para un teléfono en `/events` (se quedó pegado en un paso).
+
+---
+
+## 15. Dónde se registran los hallazgos
+
+§14 dice QUÉ anotar; aquí va DÓNDE se guarda.
+
+**Auditoría manual:** lleva el tracking donde tu equipo trabaje (ticket / doc). Para bugs reproducibles
+del bot, además documéntalos en **`docs/BUGS-CONOCIDOS.md`** (con su formato: análisis + fix propuesto).
+
+**Auditoría automatizada (agente recurrente):** persiste en la carpeta **`auditoria/`** del repo:
+
+| Archivo | Contenido |
+|---|---|
+| **`auditoria/hallazgos.jsonl`** | Un JSON por línea por hallazgo → **fuente principal**, consultable con `jq`. |
+| `auditoria/hallazgos.md` | Versión legible append-only del mismo registro (para humanos). |
+| `auditoria/snapshots/<ts>.json` | Snapshot de `/health` + `/kpis/health` por ciclo (histórico de salud/carga). |
+| `auditoria/cursor.txt`, `auditoria/seen.txt` | Estado incremental (último ts procesado + firmas ya reportadas) para no duplicar. |
+
+**Schema sugerido de cada hallazgo** (`.jsonl`):
+```json
+{"ts":"...","clase":"BUG|BLOQUEO-OK|GAP|INFRA","severidad":"alta|media|baja","flujo":"agendar",
+ "trace_id":"sess:...","phone_masked":"+573***1234","evidencia_endpoint":"/flow-events?...",
+ "sintoma":"...","ultima_linea_buena":"...","primera_linea_mala":"...","causa_probable":"...","fix_sugerido":"§13.x"}
+```
+
+**Persistencia entre corridas:** si el agente corre como **rutina programada** (entorno efímero), debe
+**commitear `auditoria/` al repo** al cerrar cada corrida → la siguiente lee `cursor`/`seen` y continúa.
+Si corre en bucle dentro de una sesión abierta, basta el disco local.
+
+**Alertas activas:** los hallazgos **🚨 críticos** (bot caído, `external_db != ok` sostenido, drops masivos
+por backpressure, "no entra ningún webhook", whitelist filtrando a todos) se envían además a un **chat de
+Telegram APARTE** (no el de errores del bot, para no mezclar) vía
+`https://api.telegram.org/bot<TOKEN>/sendMessage`.
