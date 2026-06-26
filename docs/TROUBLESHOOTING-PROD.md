@@ -34,9 +34,11 @@ sudo ss -tlnp | grep -E '8080|13308|14041'
 
 **Solucionar**: Cambiar puertos en `.env` sin tocar docker-compose.yml:
 ```env
-PORT=8090            # Cambia bot de 8080 a 8090
-DB_PORT=13309        # Cambia MySQL de 13308 a 13309
+PORT=8090              # Cambia el puerto host del bot (mapeo ${PORT}:${PORT})
+DB_EXTERNAL_PORT=13309 # Cambia el puerto host del MySQL (mapeo ${DB_EXTERNAL_PORT}:3306)
 ```
+> OJO: NO confundir con `DB_PORT` (=3306), que es el puerto INTERNO con el que el bot se conecta al
+> servicio `db`. El que se expone al host es **`DB_EXTERNAL_PORT`**.
 
 Para ngrok (no tiene variable), editar `docker-compose.yml`:
 ```yaml
@@ -45,7 +47,9 @@ ngrok:
     - "14042:4040"   # Cambiar 14041 por otro
 ```
 
-> **Nota**: El puerto interno de MySQL (3306) y el del bot (8080 dentro del container) NO cambian. Solo cambia el mapeo al host.
+> **Nota**: El puerto interno de MySQL **sí es fijo en 3306** (el mapeo es `${DB_EXTERNAL_PORT}:3306`).
+> El del **bot NO es fijo**: el mapeo es `${PORT}:${PORT}` y el binario bindea a `PORT`, así que al
+> cambiar `PORT` cambian **ambos lados** (host y container). En prod el bot escucha en 8085.
 
 ---
 
@@ -173,8 +177,9 @@ docker inspect neuro_bot_db --format='{{.State.Health.Status}}'
 # Verificar espacio en disco
 df -h
 
-# Verificar permisos del volume
-docker volume inspect botdbdata
+# Verificar permisos del volume (el nombre lleva el prefijo del proyecto)
+docker volume ls | grep botdbdata          # descubrir el nombre real (ej. neurobotv2_botdbdata)
+docker volume inspect neurobotv2_botdbdata
 ```
 
 **Soluciones**:
@@ -198,17 +203,17 @@ du -sh /var/lib/docker/containers/*/
 
 # 2. Si no arranca, borrar volume y recrear
 docker compose down
-docker volume rm neuro-bot_botdbdata  # CUIDADO: esto borra TODOS los datos
+VOL=$(docker volume ls --format '{{.Name}}' | grep botdbdata | head -1)  # nombre real con prefijo
+docker volume rm "$VOL"               # CUIDADO: esto borra TODOS los datos
 docker compose up -d
 # 3. Restaurar backup
 gunzip -c backups/neuro_bot_YYYY-MM-DD_HHMMSS.sql.gz | docker exec -i neuro_bot_db mysql -ubotuser -pbotpass neuro_bot
 ```
 
-**c) Otro MySQL en el host ocupa el puerto**:
+**c) Otro proceso ocupa el puerto host 13308**:
 ```bash
-# Si el host ya tiene MySQL en 3306, el mapeo 13308:3306 no deberia conflictar
-# Pero si algo usa 13308:
-DB_PORT=13309  # en .env
+# El mapeo es ${DB_EXTERNAL_PORT}:3306. Si 13308 está ocupado, cambiar el puerto HOST:
+DB_EXTERNAL_PORT=13309  # en .env (NO DB_PORT, que es el interno 3306)
 ```
 
 ---
@@ -256,7 +261,7 @@ deploy:
 **Monitorear**: El capacity monitor envia alertas Telegram automaticamente cuando la carga se acerca a los limites. Tambien se puede revisar manualmente:
 ```bash
 docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" --no-stream
-curl -s http://localhost:8080/health | jq .
+curl -s http://localhost:8085/health | jq .   # 8085 = PORT de prod (sin jq si no está instalado)
 ```
 
 ---
@@ -636,7 +641,7 @@ docker compose ps
 docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"
 
 # Health check del bot (verifica ambas BDs)
-curl -s http://localhost:8080/health | jq .
+curl -s http://localhost:8085/health | jq .   # 8085 = PORT de prod (sin jq si no está instalado)
 
 # Logs de los ultimos 30 minutos (solo errores)
 docker compose logs --since 30m 2>&1 | grep -i error
