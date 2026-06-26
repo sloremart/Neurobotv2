@@ -30,6 +30,10 @@ type SessionRepo interface {
 	ClearAllContext(ctx context.Context, sessionID string) error
 	FindInactiveSessions(ctx context.Context, idleMinutes int) ([]InactiveSession, error)
 	FindExpiredEscalatedSessions(ctx context.Context) ([]ExpiredEscalatedSession, error)
+	FindEscalatedSessions(ctx context.Context) ([]EscalatedSession, error)
+	TouchPatientActivity(ctx context.Context, sessionID string, expiresAt time.Time) error
+	TouchAgentActivity(ctx context.Context, phone string) error
+	IncrementAgentReminders(ctx context.Context, sessionID string) error
 	MarkAbandoned(ctx context.Context, sessionID string) error
 	CompleteActiveByPhone(ctx context.Context, phone string) error
 }
@@ -37,6 +41,7 @@ type SessionRepo interface {
 // InactivityBirdClient defines the Bird client methods needed by the inactivity checker.
 type InactivityBirdClient interface {
 	SendText(to, conversationID, text string) (string, error)
+	SendInternalText(conversationID, text string) (string, error)
 	UnassignFeedItem(conversationID string, closed bool) error
 	CloseFeedItems(conversationID string) error
 }
@@ -50,8 +55,13 @@ type EventLogger interface {
 type InactivityDeps struct {
 	BirdClient  InactivityBirdClient
 	Tracker     EventLogger
-	ReminderMin int // Minutes before sending the single reminder
-	CloseMin    int // Minutes before silent close (must be > ReminderMin)
+	ReminderMin int // Minutes before sending the single reminder (active sessions)
+	CloseMin    int // Minutes before silent close of an active session (must be > ReminderMin)
+
+	// Escalated chats (agente humano)
+	EscalationCloseMin int // Cierre por silencio del PACIENTE (no del agente)
+	AgentReminderMin   int // Minutos sin respuesta del agente antes de recordarle
+	AgentReminderMax   int // Máximo de recordatorios por ventana de espera
 }
 
 type SessionManager struct {
@@ -103,10 +113,26 @@ func (m *SessionManager) FindOrCreate(ctx context.Context, phone string) (*Sessi
 	return newSession, true, nil
 }
 
-// RenewTimeout renueva el expires_at con cada mensaje
+// RenewTimeout renueva el expires_at con cada mensaje (TTL de liveness de la sesión).
+// Lo usa tanto el flujo del paciente como el del agente, así que NO toca los relojes de
+// actividad del paciente — para eso está TouchPatientActivity.
 func (m *SessionManager) RenewTimeout(ctx context.Context, s *Session) error {
 	s.ExpiresAt = time.Now().Add(m.timeout)
 	return m.repo.RenewExpiry(ctx, s.ID, s.ExpiresAt)
+}
+
+// TouchPatientActivity registra un mensaje inbound del paciente: renueva el TTL y sella el reloj de
+// actividad del paciente (last_patient_msg_at), reiniciando la ventana de recordatorios al agente.
+// Debe llamarse SOLO desde el flujo del paciente (no desde comandos del agente).
+func (m *SessionManager) TouchPatientActivity(ctx context.Context, s *Session) error {
+	s.ExpiresAt = time.Now().Add(m.timeout)
+	return m.repo.TouchPatientActivity(ctx, s.ID, s.ExpiresAt)
+}
+
+// TouchAgentActivity sella last_agent_msg_at para la sesión escalada del teléfono (si existe).
+// La invoca el webhook outbound cuando el agente responde; frena el recordatorio al agente.
+func (m *SessionManager) TouchAgentActivity(ctx context.Context, phone string) error {
+	return m.repo.TouchAgentActivity(ctx, phone)
 }
 
 // SaveState persiste el estado y contexto de la sesión después de procesar un handler
@@ -248,7 +274,7 @@ func (m *SessionManager) StartInactivityChecker(ctx context.Context, deps Inacti
 				continue
 			}
 			m.checkInactiveSessions(ctx, deps)
-			m.checkExpiredEscalations(ctx, deps)
+			m.checkEscalatedSessions(ctx, deps)
 			checking.Store(false)
 		}
 	}
@@ -302,30 +328,87 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 	}
 }
 
-// checkExpiredEscalations marks expired escalated sessions as abandoned and closes their Bird feed items.
-func (m *SessionManager) checkExpiredEscalations(ctx context.Context, deps InactivityDeps) {
-	sessions, err := m.repo.FindExpiredEscalatedSessions(ctx)
+// checkEscalatedSessions, por cada chat escalado, decide UNA de dos cosas:
+//  1. Cerrar (marcar abandonado + cerrar feed) si el PACIENTE lleva EscalationCloseMin en silencio.
+//     El silencio del agente NUNCA cierra el chat (last_patient_msg_at solo lo mueve el paciente).
+//  2. Si el paciente sigue esperando y el agente no ha respondido, recordarle al agente vía Inbox
+//     cada AgentReminderMin (hasta AgentReminderMax) sin molestar al paciente.
+func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps InactivityDeps) {
+	sessions, err := m.repo.FindEscalatedSessions(ctx)
 	if err != nil {
-		slog.Error("expired escalation check error", "error", err)
+		slog.Error("escalated sessions check error", "error", err)
 		return
 	}
 
+	now := time.Now()
 	for _, s := range sessions {
-		if err := m.repo.MarkAbandoned(ctx, s.ID); err != nil {
-			slog.Error("mark escalated abandoned failed", "session_id", s.ID, "error", err)
+		patientSilent := now.Sub(s.LastPatientMsg)
+
+		// (1) Cierre por silencio del paciente.
+		if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute {
+			if err := m.repo.MarkAbandoned(ctx, s.ID); err != nil {
+				slog.Error("mark escalated abandoned failed", "session_id", s.ID, "error", err)
+				continue
+			}
+			if s.ConversationID != "" {
+				if err := deps.BirdClient.CloseFeedItems(s.ConversationID); err != nil {
+					slog.Warn("close feed on escalated close failed", "session_id", s.ID, "error", err)
+				}
+			}
+			if deps.Tracker != nil {
+				deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_expired", map[string]interface{}{
+					"patient_silent_min": int(patientSilent.Minutes()),
+				})
+			}
+			observability.Emit(observability.TraceSession(s.ID), "escalacion", "escalation_expired",
+				observability.EmitOpts{
+					Phone: s.PhoneNumber,
+					Attrs: map[string]interface{}{"duration_ms": patientSilent.Milliseconds()},
+				})
+			slog.Info("escalated session closed by patient silence",
+				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
+				"patient_silent_min", int(patientSilent.Minutes()))
 			continue
 		}
-		if s.ConversationID != "" {
-			deps.BirdClient.CloseFeedItems(s.ConversationID)
+
+		// (2) Recordatorio al agente: el paciente espera y el agente no ha respondido a su último mensaje.
+		if deps.AgentReminderMin <= 0 || s.ConversationID == "" {
+			continue
+		}
+		agentReplied := s.LastAgentMsg != nil && !s.LastAgentMsg.Before(s.LastPatientMsg)
+		if agentReplied || s.RemindersSent >= deps.AgentReminderMax {
+			continue
+		}
+		// Próximo recordatorio en AgentReminderMin * (enviados + 1) tras el último mensaje del paciente.
+		dueAfter := time.Duration(deps.AgentReminderMin*(s.RemindersSent+1)) * time.Minute
+		if patientSilent < dueAfter {
+			continue
+		}
+		reminder := fmt.Sprintf(
+			"Recordatorio interno: el paciente lleva %s esperando respuesta en este chat escalado. "+
+				"Por favor atiéndelo. (aviso %d de %d)",
+			formatMinutes(int(patientSilent.Minutes())), s.RemindersSent+1, deps.AgentReminderMax)
+		if _, err := deps.BirdClient.SendInternalText(s.ConversationID, reminder); err != nil {
+			slog.Error("agent reminder send failed", "session_id", s.ID, "conversation_id", s.ConversationID, "error", err)
+			continue
+		}
+		if err := m.repo.IncrementAgentReminders(ctx, s.ID); err != nil {
+			slog.Error("increment agent reminders failed", "session_id", s.ID, "error", err)
 		}
 		if deps.Tracker != nil {
-			deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_expired", nil)
+			deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "agent_reminder_sent", map[string]interface{}{
+				"reminder_n":         s.RemindersSent + 1,
+				"patient_silent_min": int(patientSilent.Minutes()),
+			})
 		}
-		observability.Emit(observability.TraceSession(s.ID), "escalacion", "escalation_expired",
-			observability.EmitOpts{Phone: s.PhoneNumber})
-		slog.Info("escalated session expired",
+		observability.Emit(observability.TraceSession(s.ID), "escalacion", "agent_reminder_sent",
+			observability.EmitOpts{
+				Phone: s.PhoneNumber,
+				Attrs: map[string]interface{}{"n": s.RemindersSent + 1, "duration_ms": patientSilent.Milliseconds()},
+			})
+		slog.Info("agent reminder sent",
 			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
-			"conversation_id", fmt.Sprintf("%.8s", s.ConversationID))
+			"reminder_n", s.RemindersSent+1, "patient_silent_min", int(patientSilent.Minutes()))
 	}
 }
 

@@ -160,7 +160,7 @@ func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
 			"appointments_listed", "appt_confirmed", "appt_cancelled", "reschedule_started", "no_appointments",
 		},
 		"escalacion": {
-			"escalated", "agent_resumed", "agent_closed", "escalation_expired",
+			"escalated", "agent_resumed", "agent_closed", "agent_reminder_sent", "escalation_expired",
 		},
 		"scheduler": {"task_completed", "task_failed"},
 		"admin_agenda": {

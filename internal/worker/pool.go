@@ -38,6 +38,8 @@ type SessionManagement interface {
 	PhoneMutex() *session.PhoneMutex
 	FindOrCreate(ctx context.Context, phone string) (*session.Session, bool, error)
 	RenewTimeout(ctx context.Context, sess *session.Session) error
+	TouchPatientActivity(ctx context.Context, sess *session.Session) error
+	TouchAgentActivity(ctx context.Context, phone string) error
 	SaveState(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error
 	ClearAllContext(ctx context.Context, sess *session.Session) error
 	Escalate(ctx context.Context, sess *session.Session, teamID string) error
@@ -466,6 +468,11 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 			"phone", utils.MaskPhone(msg.Phone),
 			"text", msg.Text,
 		)
+		// Sellar actividad del paciente: mantiene viva la sesión escalada mientras el paciente
+		// escribe y reinicia la ventana de recordatorios al agente (el paciente sí está respondiendo).
+		if err := p.sessionManager.TouchPatientActivity(parentCtx, sess); err != nil {
+			slog.Error("touch patient activity (escalated) error", "phone", utils.MaskPhone(msg.Phone), "session_id", sess.ID, "error", err)
+		}
 		if p.tracker != nil {
 			p.tracker.LogEvent(parentCtx, sess.ID, msg.Phone, "msg_during_escalation", map[string]interface{}{
 				"text": msg.Text,
@@ -475,9 +482,9 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		return
 	}
 
-	// 5b. Renew timeout for active sessions
-	if err := p.sessionManager.RenewTimeout(parentCtx, sess); err != nil {
-		slog.Error("renew timeout error", "phone", utils.MaskPhone(msg.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID, "error", err)
+	// 5b. Renew timeout + seal patient activity for active sessions
+	if err := p.sessionManager.TouchPatientActivity(parentCtx, sess); err != nil {
+		slog.Error("touch patient activity error", "phone", utils.MaskPhone(msg.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID, "error", err)
 	}
 
 	// 5c. Reset inactivity reminders when patient sends a message
@@ -1150,6 +1157,38 @@ func (p *MessageWorkerPool) UpdateConversationID(phone, conversationID string) {
 			"error", err,
 		)
 	}
+}
+
+// TouchAgentActivity records a human-agent reply for the escalated session of a phone (if any),
+// which stops the agent-reminder clock. Called from the outbound webhook. No-op on error (best-effort).
+func (p *MessageWorkerPool) TouchAgentActivity(phone string) {
+	if err := p.sessionManager.TouchAgentActivity(p.ctx, phone); err != nil {
+		slog.Warn("touch agent activity failed", "phone", utils.MaskPhone(phone), "error", err)
+	}
+}
+
+// botInterstitialPrefixes son los textos que el PROPIO bot envía al paciente alrededor de la
+// escalación (transferir / retomar / cerrar). Se excluyen de la detección de "respuesta del agente"
+// para que no frenen el recordatorio falsamente.
+// NOTE: si cambias estos textos en escalation.go / pool.go, actualízalos aquí también.
+var botInterstitialPrefixes = []string{
+	"Te voy a conectar con un agente",
+	"Hemos retomado tu atención",
+	"Tu consulta ha sido resuelta",
+	"Tu mensaje anterior está siendo procesado",
+	"Lo sentimos,",
+	"Tardó demasiado procesar",
+}
+
+// IsBotInterstitialMessage reporta si un texto saliente fue emitido por el bot (no por el agente).
+func IsBotInterstitialMessage(text string) bool {
+	t := strings.TrimSpace(text)
+	for _, p := range botInterstitialPrefixes {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // EnqueueVirtual enqueues a virtual trigger message for the waiting list flow.

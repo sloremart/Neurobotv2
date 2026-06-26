@@ -22,6 +22,11 @@ type mockRepo struct {
 	clearAllContextFn   func(ctx context.Context, sessionID string) error
 	markEscalatedFn     func(ctx context.Context, sessionID, teamID string) error
 	resumeSessionFn     func(ctx context.Context, sessionID, newState string, timeoutMinutes int) error
+	findEscalatedFn     func(ctx context.Context) ([]EscalatedSession, error)
+	touchPatientFn      func(ctx context.Context, sessionID string, expiresAt time.Time) error
+	touchAgentFn        func(ctx context.Context, phone string) error
+	incrementRemFn      func(ctx context.Context, sessionID string) error
+	markAbandonedFn     func(ctx context.Context, sessionID string) error
 }
 
 func (r *mockRepo) FindActiveByPhone(ctx context.Context, phone string) (*Session, error) {
@@ -68,6 +73,37 @@ func (r *mockRepo) FindExpiredEscalatedSessions(ctx context.Context) ([]ExpiredE
 }
 
 func (r *mockRepo) MarkAbandoned(ctx context.Context, sessionID string) error {
+	if r.markAbandonedFn != nil {
+		return r.markAbandonedFn(ctx, sessionID)
+	}
+	return nil
+}
+
+func (r *mockRepo) FindEscalatedSessions(ctx context.Context) ([]EscalatedSession, error) {
+	if r.findEscalatedFn != nil {
+		return r.findEscalatedFn(ctx)
+	}
+	return nil, nil
+}
+
+func (r *mockRepo) TouchPatientActivity(ctx context.Context, sessionID string, expiresAt time.Time) error {
+	if r.touchPatientFn != nil {
+		return r.touchPatientFn(ctx, sessionID, expiresAt)
+	}
+	return nil
+}
+
+func (r *mockRepo) TouchAgentActivity(ctx context.Context, phone string) error {
+	if r.touchAgentFn != nil {
+		return r.touchAgentFn(ctx, phone)
+	}
+	return nil
+}
+
+func (r *mockRepo) IncrementAgentReminders(ctx context.Context, sessionID string) error {
+	if r.incrementRemFn != nil {
+		return r.incrementRemFn(ctx, sessionID)
+	}
 	return nil
 }
 
@@ -650,6 +686,141 @@ func TestPhoneMutex_Returns(t *testing.T) {
 	pm := mgr.PhoneMutex()
 	if pm == nil {
 		t.Fatal("expected non-nil PhoneMutex")
+	}
+}
+
+// mockInactivityBird records calls for the escalated-session checker tests.
+type mockInactivityBird struct {
+	internalTexts []string
+	closedFeeds   int
+}
+
+func (m *mockInactivityBird) SendText(_, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *mockInactivityBird) SendInternalText(_, text string) (string, error) {
+	m.internalTexts = append(m.internalTexts, text)
+	return "msg-id", nil
+}
+
+func (m *mockInactivityBird) UnassignFeedItem(_ string, _ bool) error { return nil }
+
+func (m *mockInactivityBird) CloseFeedItems(_ string) error {
+	m.closedFeeds++
+	return nil
+}
+
+func escalationDeps(bird *mockInactivityBird) InactivityDeps {
+	return InactivityDeps{
+		BirdClient:         bird,
+		EscalationCloseMin: 120,
+		AgentReminderMin:   15,
+		AgentReminderMax:   3,
+	}
+}
+
+// TestCheckEscalatedSessions_CloseOnPatientSilence: el paciente lleva > CloseMin en silencio → cerrar.
+func TestCheckEscalatedSessions_CloseOnPatientSilence(t *testing.T) {
+	abandoned := ""
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-130 * time.Minute), // > 120
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, sessionID string) error { abandoned = sessionID; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	bird := &mockInactivityBird{}
+
+	mgr.checkEscalatedSessions(context.Background(), escalationDeps(bird))
+
+	if abandoned != "s1" {
+		t.Errorf("expected session s1 abandoned, got %q", abandoned)
+	}
+	if bird.closedFeeds != 1 {
+		t.Errorf("expected 1 feed closed, got %d", bird.closedFeeds)
+	}
+	if len(bird.internalTexts) != 0 {
+		t.Errorf("expected no agent reminder when closing, got %d", len(bird.internalTexts))
+	}
+}
+
+// TestCheckEscalatedSessions_RemindWhenAgentSilent: paciente espera, agente no respondió → recordatorio.
+func TestCheckEscalatedSessions_RemindWhenAgentSilent(t *testing.T) {
+	incremented := ""
+	abandoned := false
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-16 * time.Minute), // > 15, < 120
+				LastAgentMsg:   nil,
+				RemindersSent:  0,
+			}}, nil
+		},
+		incrementRemFn:  func(_ context.Context, sessionID string) error { incremented = sessionID; return nil },
+		markAbandonedFn: func(_ context.Context, _ string) error { abandoned = true; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	bird := &mockInactivityBird{}
+
+	mgr.checkEscalatedSessions(context.Background(), escalationDeps(bird))
+
+	if abandoned {
+		t.Error("session must not be closed while patient is recent")
+	}
+	if len(bird.internalTexts) != 1 {
+		t.Fatalf("expected 1 agent reminder, got %d", len(bird.internalTexts))
+	}
+	if incremented != "s1" {
+		t.Errorf("expected reminder counter incremented for s1, got %q", incremented)
+	}
+}
+
+// TestCheckEscalatedSessions_NoRemindWhenAgentReplied: el agente respondió tras el último msg del paciente.
+func TestCheckEscalatedSessions_NoRemindWhenAgentReplied(t *testing.T) {
+	now := time.Now()
+	agentReply := now.Add(-1 * time.Minute)
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: now.Add(-16 * time.Minute),
+				LastAgentMsg:   &agentReply, // posterior al paciente → atendido
+			}}, nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	bird := &mockInactivityBird{}
+
+	mgr.checkEscalatedSessions(context.Background(), escalationDeps(bird))
+
+	if len(bird.internalTexts) != 0 {
+		t.Errorf("expected no reminder when agent already replied, got %d", len(bird.internalTexts))
+	}
+}
+
+// TestCheckEscalatedSessions_StopsAtMax: no recordar más allá de AgentReminderMax.
+func TestCheckEscalatedSessions_StopsAtMax(t *testing.T) {
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-90 * time.Minute),
+				RemindersSent:  3, // == max
+			}}, nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	bird := &mockInactivityBird{}
+
+	mgr.checkEscalatedSessions(context.Background(), escalationDeps(bird))
+
+	if len(bird.internalTexts) != 0 {
+		t.Errorf("expected no reminder past max, got %d", len(bird.internalTexts))
 	}
 }
 

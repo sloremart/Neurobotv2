@@ -502,6 +502,26 @@ func (m *MockSessionRepo) FindExpiredEscalatedSessions(ctx context.Context) ([]s
 	return nil, nil
 }
 
+// FindEscalatedSessions is a no-op mock.
+func (m *MockSessionRepo) FindEscalatedSessions(_ context.Context) ([]session.EscalatedSession, error) {
+	return nil, nil
+}
+
+// TouchPatientActivity is a no-op mock.
+func (m *MockSessionRepo) TouchPatientActivity(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
+// TouchAgentActivity is a no-op mock.
+func (m *MockSessionRepo) TouchAgentActivity(_ context.Context, _ string) error {
+	return nil
+}
+
+// IncrementAgentReminders is a no-op mock.
+func (m *MockSessionRepo) IncrementAgentReminders(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *MockSessionRepo) MarkAbandoned(ctx context.Context, sessionID string) error {
 	return nil
 }

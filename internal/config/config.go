@@ -90,6 +90,11 @@ type Config struct {
 	InactivityReminderMin int // Single reminder
 	InactivityCloseMin    int // Silent close (no message)
 
+	// Escalation (chat con agente humano)
+	EscalationPatientCloseMin  int // Cierre escalada por silencio del PACIENTE (no del agente)
+	EscalationAgentReminderMin int // Minutos sin respuesta del agente antes de recordarle
+	EscalationAgentReminderMax int // Máximo de recordatorios por ventana de espera
+
 	// Center
 	CenterKey       string
 	CenterName      string
@@ -224,6 +229,11 @@ func Load() *Config {
 		// Inactivity
 		InactivityReminderMin: getEnvInt("INACTIVITY_REMINDER_MIN", 20),
 		InactivityCloseMin:    getEnvInt("INACTIVITY_CLOSE_MIN", 120),
+
+		// Escalation
+		EscalationPatientCloseMin:  getEnvInt("ESCALATION_PATIENT_CLOSE_MIN", 120),
+		EscalationAgentReminderMin: getEnvInt("ESCALATION_AGENT_REMINDER_MIN", 15),
+		EscalationAgentReminderMax: getEnvInt("ESCALATION_AGENT_REMINDER_MAX", 3),
 
 		// Center
 		CenterKey:       getEnv("CENTER_KEY", "datosipsndx"),

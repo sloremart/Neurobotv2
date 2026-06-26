@@ -254,10 +254,13 @@ func main() {
 	// Fase 20: Inactivity checker (single reminder + silent close for active, expire for escalated)
 	safeGo("inactivity-checker", func() {
 		sessionManager.StartInactivityChecker(ctx, session.InactivityDeps{
-			BirdClient:  birdClient,
-			Tracker:     tracker,
-			ReminderMin: cfg.InactivityReminderMin,
-			CloseMin:    cfg.InactivityCloseMin,
+			BirdClient:         birdClient,
+			Tracker:            tracker,
+			ReminderMin:        cfg.InactivityReminderMin,
+			CloseMin:           cfg.InactivityCloseMin,
+			EscalationCloseMin: cfg.EscalationPatientCloseMin,
+			AgentReminderMin:   cfg.EscalationAgentReminderMin,
+			AgentReminderMax:   cfg.EscalationAgentReminderMax,
 		})
 	})
 

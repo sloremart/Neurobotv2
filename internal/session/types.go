@@ -65,3 +65,14 @@ type ExpiredEscalatedSession struct {
 	PhoneNumber    string
 	ConversationID string
 }
+
+// EscalatedSession holds the activity timestamps needed to decide, per escalated chat,
+// whether to close it (patient went silent) or remind the agent (agent hasn't replied).
+type EscalatedSession struct {
+	ID             string
+	PhoneNumber    string
+	ConversationID string
+	LastPatientMsg time.Time  // last inbound from the patient
+	LastAgentMsg   *time.Time // last reply from the agent (nil = agent never replied)
+	RemindersSent  int        // agent reminders already sent in this waiting window
+}

@@ -194,6 +194,74 @@ func (r *SessionRepo) FindExpiredEscalatedSessions(ctx context.Context) ([]sessi
 	return result, rows.Err()
 }
 
+// TouchPatientActivity registra un mensaje inbound del PACIENTE: renueva el TTL de la sesión y,
+// crucialmente, sella last_patient_msg_at (reloj de cierre por silencio del paciente) y reinicia
+// el contador de recordatorios (cada mensaje del paciente abre una nueva ventana de espera).
+// NO la llama el flujo del agente — así el silencio del agente nunca reinicia el reloj de cierre.
+func (r *SessionRepo) TouchPatientActivity(ctx context.Context, sessionID string, expiresAt time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET last_patient_msg_at = NOW(), last_activity_at = NOW(),
+		 expires_at = ?, agent_reminders_sent = 0, updated_at = NOW() WHERE id = ?`,
+		expiresAt, sessionID)
+	if err != nil {
+		return fmt.Errorf("touch patient activity: %w", err)
+	}
+	return nil
+}
+
+// TouchAgentActivity sella last_agent_msg_at para la sesión escalada del teléfono dado.
+// Se invoca cuando un saliente humano del agente llega por webhook; frena el recordatorio.
+// No-op si no hay sesión escalada para ese teléfono.
+func (r *SessionRepo) TouchAgentActivity(ctx context.Context, phone string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET last_agent_msg_at = NOW(), updated_at = NOW()
+		 WHERE phone_number = ? AND status = 'escalated' AND expires_at > NOW()`,
+		phone)
+	if err != nil {
+		return fmt.Errorf("touch agent activity: %w", err)
+	}
+	return nil
+}
+
+// FindEscalatedSessions returns all escalated sessions with the activity timestamps needed
+// to decide close (patient silence) vs agent reminder.
+func (r *SessionRepo) FindEscalatedSessions(ctx context.Context) ([]session.EscalatedSession, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, phone_number, COALESCE(conversation_id, ''),
+		 COALESCE(last_patient_msg_at, last_activity_at), last_agent_msg_at, agent_reminders_sent
+		 FROM sessions WHERE status = 'escalated'`)
+	if err != nil {
+		return nil, fmt.Errorf("find escalated sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []session.EscalatedSession
+	for rows.Next() {
+		var s session.EscalatedSession
+		var lastAgent sql.NullTime
+		if err := rows.Scan(&s.ID, &s.PhoneNumber, &s.ConversationID,
+			&s.LastPatientMsg, &lastAgent, &s.RemindersSent); err != nil {
+			return nil, fmt.Errorf("scan escalated session: %w", err)
+		}
+		if lastAgent.Valid {
+			s.LastAgentMsg = &lastAgent.Time
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
+// IncrementAgentReminders bumps the agent reminder counter for the current waiting window.
+func (r *SessionRepo) IncrementAgentReminders(ctx context.Context, sessionID string) error {
+	_, err := r.db.ExecContext(ctx,
+		"UPDATE sessions SET agent_reminders_sent = agent_reminders_sent + 1, updated_at = NOW() WHERE id = ?",
+		sessionID)
+	if err != nil {
+		return fmt.Errorf("increment agent reminders: %w", err)
+	}
+	return nil
+}
+
 // MarkAbandoned sets a session status to abandoned.
 func (r *SessionRepo) MarkAbandoned(ctx context.Context, sessionID string) error {
 	_, err := r.db.ExecContext(ctx,

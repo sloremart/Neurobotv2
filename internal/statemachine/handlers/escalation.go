@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -135,8 +136,13 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 		commands := buildAgentCommands(sess, cupsCode)
 		birdClient.SendInternalText(conversationID, commands)
 
-		// 8. Mark session as escalated (in-memory, persisted by worker pool)
+		// 8. Mark session as escalated (in-memory, persisted by worker pool).
+		// Sellar escalated_at / escalated_team aquí: el flujo real persiste vía Save() y, sin esto,
+		// esas columnas quedaban NULL (el método manager.Escalate solo se usaba en tests).
+		now := time.Now()
 		sess.Status = session.StatusEscalated
+		sess.EscalatedAt = &now
+		sess.EscalatedTeam = teamID
 		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalated",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
 

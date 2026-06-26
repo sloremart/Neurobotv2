@@ -287,6 +287,12 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 	}
 	text = strings.TrimSpace(text)
 
+	// Respuesta del agente: cualquier saliente humano hacia el paciente (no /bot, no mensaje-puente
+	// del propio bot) frena el recordatorio de la sesión escalada de este teléfono.
+	if phone != "" && !strings.HasPrefix(text, "/bot") && !worker.IsBotInterstitialMessage(text) {
+		h.workerPool.TouchAgentActivity(phone)
+	}
+
 	if !strings.HasPrefix(text, "/bot") {
 		return // Not an agent command — ignore
 	}

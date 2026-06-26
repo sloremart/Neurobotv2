@@ -120,10 +120,11 @@ var catalog = map[string]stepSpec{
 	"mis_citas/no_appointments":     {LvOutcome, "info", ""},
 
 	// Escalación a agente (§3A) — trace sess:<id>
-	"escalacion/escalated":          {LvOutcome, "escalated", ""},
-	"escalacion/agent_resumed":      {LvMilestone, "ok", ""},
-	"escalacion/agent_closed":       {LvOutcome, "ok", ""},
-	"escalacion/escalation_expired": {LvOutcome, "info", ""},
+	"escalacion/escalated":           {LvOutcome, "escalated", ""},
+	"escalacion/agent_resumed":       {LvMilestone, "ok", ""},
+	"escalacion/agent_closed":        {LvOutcome, "ok", ""},
+	"escalacion/agent_reminder_sent": {LvMilestone, "retry", ""},
+	"escalacion/escalation_expired":  {LvOutcome, "info", ""},
 
 	// Tareas del scheduler (§3A) — trace task:<name>:<date>
 	"scheduler/task_completed": {LvOutcome, "ok", ""},

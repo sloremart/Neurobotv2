@@ -23,6 +23,8 @@ type mockSessionMgmt struct {
 	mutex          *session.PhoneMutex
 	findOrCreateFn func(ctx context.Context, phone string) (*session.Session, bool, error)
 	renewFn        func(ctx context.Context, sess *session.Session) error
+	touchPatientFn func(ctx context.Context, sess *session.Session) error
+	touchAgentFn   func(ctx context.Context, phone string) error
 	saveFn         func(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error
 	clearAllFn     func(ctx context.Context, sess *session.Session) error
 	escalateFn     func(ctx context.Context, sess *session.Session, teamID string) error
@@ -45,6 +47,20 @@ func (m *mockSessionMgmt) FindOrCreate(ctx context.Context, phone string) (*sess
 func (m *mockSessionMgmt) RenewTimeout(ctx context.Context, sess *session.Session) error {
 	if m.renewFn != nil {
 		return m.renewFn(ctx, sess)
+	}
+	return nil
+}
+
+func (m *mockSessionMgmt) TouchPatientActivity(ctx context.Context, sess *session.Session) error {
+	if m.touchPatientFn != nil {
+		return m.touchPatientFn(ctx, sess)
+	}
+	return nil
+}
+
+func (m *mockSessionMgmt) TouchAgentActivity(ctx context.Context, phone string) error {
+	if m.touchAgentFn != nil {
+		return m.touchAgentFn(ctx, phone)
 	}
 	return nil
 }
@@ -766,7 +782,7 @@ func TestProcessMessage_TrackerNoEvents(t *testing.T) {
 
 func TestProcessMessage_RenewTimeoutError(t *testing.T) {
 	sm := newMockSessionMgmt()
-	sm.renewFn = func(ctx context.Context, sess *session.Session) error {
+	sm.touchPatientFn = func(_ context.Context, _ *session.Session) error {
 		return errors.New("redis timeout")
 	}
 	sender := &mockMessageSender{}
