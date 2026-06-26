@@ -635,23 +635,22 @@ cd /ruta/a/neuro-bot
 # Output: backups/neuro_bot_2026-03-07_153000.sql.gz
 ```
 
-### Configurar Cron en el Servidor
+### Configurar o confirmar el Cron (un solo comando)
+
+Ejecutar **desde la carpeta del proyecto**. Es idempotente: agrega la línea del backup diario 03:00
+solo si no existe, y luego muestra el crontab para confirmar:
 
 ```bash
-# Editar crontab del usuario que corre Docker
-crontab -e
+# CONFIGURAR (idempotente) + CONFIRMAR
+( crontab -l 2>/dev/null | grep -v 'backup-db.sh'; \
+  echo "0 3 * * * cd $(pwd) && ./scripts/backup-db.sh >> $(pwd)/backups/cron.log 2>&1" ) | crontab - \
+  && crontab -l | grep backup-db.sh && echo "✓ cron de backup configurado"
 ```
 
-Agregar estas lineas:
-```cron
-# Backup diario de BD interna del bot a las 03:00 AM
-0 3 * * * cd /ruta/a/neuro-bot && ./scripts/backup-db.sh >> /var/log/neuro-bot-backup.log 2>&1
-
-# Limpiar log de backup mensualmente
-0 0 1 * * truncate -s 0 /var/log/neuro-bot-backup.log
+Para **solo confirmar** que ya está (sin tocar nada):
+```bash
+crontab -l | grep backup-db.sh || echo "✗ NO configurado"
 ```
-
-> Reemplazar `/ruta/a/neuro-bot` con la ruta real del proyecto en el servidor.
 
 ### Verificar que el Cron Funciona
 
