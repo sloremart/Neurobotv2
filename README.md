@@ -73,7 +73,7 @@ WhatsApp (usuario)
                          ▼                     ▼
                     Services/              Bird Client
                     Repository             (enviar msgs)
-                    (BD MySQL)
+                    (SIESA + BD local)
 ```
 
 ### Componentes clave
@@ -86,7 +86,7 @@ WhatsApp (usuario)
 | **Handlers** | Funciones de lógica de negocio para cada estado de la conversación |
 | **Scheduler** | Tareas en background que se ejecutan en horarios fijos (recordatorios, limpieza) |
 | **Notification Manager** | Maneja respuestas a mensajes proactivos (recordatorios de citas, lista de espera) |
-| **Repository** | Capa de acceso a datos MySQL (DatosIPSNDX + base interna) |
+| **Repository** | Capa de acceso a datos: sistema clínico **SIESA** (SQL Server) + base interna del bot (MySQL) |
 
 ---
 
@@ -99,7 +99,7 @@ neuro-bot/
 │   ├── api/             # Handlers HTTP (webhook, API interna, middleware)
 │   ├── bird/            # Cliente para la API de Bird (enviar msgs, templates, llamadas)
 │   ├── config/          # Carga de variables de entorno
-│   ├── database/        # Conexión MySQL y migraciones
+│   ├── database/        # Conexiones a las BDs (MySQL local + SQL Server SIESA) y migraciones
 │   ├── domain/          # Definición de entidades del negocio
 │   │   ├── appointment.go   (cita médica y procedimientos)
 │   │   ├── doctor.go        (médico/agenda)
@@ -230,7 +230,7 @@ Usuario envía mensaje
   └── "Confirmar"
           │
           ▼
-🤖 CREATE_PATIENT (crea en BD externa DatosIPSNDX)
+🤖 CREATE_PATIENT (crea en BD externa SIESA — tabla sis_paci)
         │
         ▼
 👤 ASK_MEDICAL_ORDER (continúa al Flujo 4)
@@ -371,7 +371,7 @@ Usuario envía mensaje
   └── "Confirmar cita"
            │
            ▼
-🤖 CREATE_APPOINTMENT → crea en BD externa (DatosIPSNDX)
+🤖 CREATE_APPOINTMENT → crea en BD externa (SIESA — tabla citas + procedimientos)
   ├── Error "slot tomado" ──► 🤖 BOOKING_FAILED ──► 🤖 SEARCH_SLOTS (busca nuevos)
   ├── Error general ──► 🤖 BOOKING_FAILED ──► 👤 POST_ACTION_MENU
   └── Éxito
@@ -513,12 +513,14 @@ Si el paciente **no responde en 6 horas**:
 
 ## 🗄 Base de Datos
 
-El bot usa **dos bases de datos MySQL**:
+El bot usa **dos bases de datos de motores distintos**:
 
-### 1. DatosIPSNDX (base clínica externa — lectura/escritura selectiva)
-Contiene los datos del sistema clínico existente: pacientes, citas, médicos, agendas, CUPS.
+### 1. SIESA — `ZeusSalud_Neuro` (SQL Server, base clínica externa — lectura/escritura selectiva)
+Es el sistema clínico **activo** (reemplazó al antiguo Antares/`datosipsndx`). Driver Go: `github.com/microsoft/go-mssqldb`.
 
-Tablas principales: `pacientes`, `citas`, `detalle_citas`, `agendas`, `cups_procedimientos`, `entidades`, `municipios`
+Tablas principales: `citas`, `citas_procedimientos`, `citas_procedimientos_asuntos`, `sis_paci` (pacientes), `programacion_medico` / `programacion_medico_detalle` (agendas y slots), `sis_asunto`, `AsuntoPctos`, `sis_proc_precios` (tarifas), `contratos`, `consultorios`.
+
+> El catálogo CUPS → {médico, asunto, consultorio, tipo} vive en la BD local del bot (tabla `cups_procedimientos`, migración 019), NO en SIESA.
 
 ### 2. Base de datos local del bot (neuro-bot)
 
@@ -537,43 +539,53 @@ Tablas principales: `pacientes`, `citas`, `detalle_citas`, `agendas`, `cups_proc
 
 ## 🔧 Variables de Entorno
 
-Copia `.env.example` a `.env` y completa los valores. Las más importantes:
+Copia `.env.example` a `.env` y completa los valores. **`.env.example` (y `docs/env-production.env` / `docs/env-testing.env`) son la fuente de verdad** con TODAS las variables comentadas; abajo solo las más importantes:
 
 ```env
 # === Servidor ===
-PORT=8080
-ENVIRONMENT=development        # o "production"
+PORT=8080                              # puerto HTTP del bot
 
-# === Base de datos clínica (lectura) ===
-DB_DATASIPSNDX_DSN=usuario:contraseña@tcp(host:puerto)/nombre_bd
+# === Base de datos clínica SIESA (SQL Server) ===
+EXTERNAL_DB_HOST=192.168.1.207
+EXTERNAL_DB_PORT=1433
+EXTERNAL_DB_DATABASE=ZeusSalud_Neuro
+EXTERNAL_DB_USER=sa
+EXTERNAL_DB_PASSWORD=...
+EXTERNAL_DB_DRIVER=siesa               # único driver soportado
+EXTERNAL_DB_ENCRYPT=disable            # disable | true | false (TLS del canal TDS)
 
-# === Base de datos local del bot ===
-DB_LOCAL_DSN=usuario:contraseña@tcp(host:puerto)/nombre_bd
+# === Base de datos local del bot (MySQL) ===
+DB_HOST=db
+DB_PORT=3306
+DB_DATABASE=neuro_bot
+DB_USER=botuser
+DB_PASSWORD=...
 
-# === API de Bird (WhatsApp) ===
-BIRD_API_KEY=sk-...
+# === API de Bird (WhatsApp + Voz/IVR) ===
+BIRD_API_KEY_WA=...
 BIRD_WORKSPACE_ID=...
 BIRD_CHANNEL_ID=...
+BIRD_API_KEY_VOICE=...                 # canal de voz (IVR)
+BIRD_VOICE_FLOW_ID=...
 
-# === Plantillas de WhatsApp ===
-BIRD_TEMPLATE_CONFIRM_PROJECT_ID=...   # Template de recordatorio de cita
-BIRD_TEMPLATE_CONFIRM_VERSION_ID=...
-BIRD_TEMPLATE_CONFIRM_LOCALE=es
+# === Plantillas de WhatsApp (projectId / versionId / locale es-CO) ===
+BIRD_TEMPLATE_CONFIRM_PROJECT_ID=...
+BIRD_TEMPLATE_WAITING_LIST_PROJECT_ID=...
 
-BIRD_TEMPLATE_WL_PROJECT_ID=...        # Template de disponibilidad lista de espera
-BIRD_TEMPLATE_WL_VERSION_ID=...
-
-# === Bot ===
-BOT_NAME=NeuroBot                     # Nombre del asistente virtual
-CENTER_NAME=Neuroelectrodx            # Nombre del centro médico
+# === Bot / Centro ===
+BOT_NAME=Samuel
+CENTER_NAME=Neuro Electrodiagnóstico del Llano
 RESULTS_URL=https://neuroelectrodx.com/
 
-# === OCR ===
-OCR_API_URL=...                        # URL del servicio OCR para leer órdenes médicas
-OCR_API_KEY=...
+# === OCR de órdenes médicas (OpenAI) ===
+OPENAI_API_KEY=sk-proj-...
+OPENAI_MODEL=gpt-4o-mini
 
-# === Tests ===
-TESTING_ALWAYS_OPEN=false              # true para omitir validación de horario en desarrollo
+# === Kill switches ===
+BOT_ENABLED=true                       # false = todo escala directo a agente
+WHATSAPP_NOTIFICATIONS_ENABLED=true
+IVR_NOTIFICATIONS_ENABLED=true
+TESTING_ALWAYS_OPEN=false              # true = omite validación de horario (solo dev)
 ```
 
 ---
@@ -587,24 +599,26 @@ TESTING_ALWAYS_OPEN=false              # true para omitir validación de horario
 cp .env.example .env
 # Editar .env con los valores reales
 
-# Levantar todo (bot + MySQL)
+# Levantar todo (bot + MySQL local + ngrok)
 docker compose up -d
 ```
+
+> Las migraciones (`./migrations`, golang-migrate) se aplican **automáticamente** al arrancar el bot. No hay subcomando `migrate`; para inspeccionar el estado: `make migrate-status`.
 
 ### Desarrollo local
 
 ```bash
-# Ejecutar migraciones
-make migrate-up
-
-# Correr el servidor
+# Correr el servidor (build + up)
 make run
 
 # Correr tests
-make test
+make test            # o: make docker-test (sin Go local, usa Docker)
 
-# Compilar
+# Compilar la imagen del bot
 make build
+
+# Ver estado de migraciones aplicadas
+make migrate-status
 ```
 
 ---
@@ -621,7 +635,7 @@ make build
 | **TFG / GFR** | Tasa de Filtración Glomerular — cálculo requerido para pacientes con enfermedad renal antes de autorizar ciertos procedimientos |
 | **Bird** | Plataforma de mensajería (ex-MessageBird) usada como canal de WhatsApp Business API |
 | **IVR** | Respuesta de Voz Interactiva — llamadas automáticas de recordatorio |
-| **DatosIPSNDX** | Nombre del sistema de información clínica existente al que el bot se conecta |
+| **SIESA** | Sistema de información clínica **activo** al que el bot se conecta (BD `ZeusSalud_Neuro`, SQL Server). Reemplazó al antiguo Antares/`datosipsndx` |
 | **Lista de espera** | Cola de pacientes que quieren agendar un procedimiento sin horarios disponibles actualmente |
 | **Sesión** | Registro en base de datos del estado actual de la conversación de un usuario. Expira tras 30 minutos de inactividad |
 
