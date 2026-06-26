@@ -31,8 +31,9 @@ func citaViolations(check string, ids []string) []Violation {
 
 // OrphanSlotCheck (SIESA): cupos que siguen apuntando a una cita CANCELADA creada por el bot
 // (cupo bloqueado e invisible para futuros pacientes — riesgo de N-42). Solo citas del bot
-// (cod_user_asigna_cita='000000'), ventana últimos `days`. Verificado vs BD: 0 en baseline.
-func OrphanSlotCheck(siesa *sql.DB, days int) Check {
+// (cod_user_asigna_cita = principal configurado o '000000' fallback), ventana últimos `days`.
+// Verificado vs BD: 0 en baseline.
+func OrphanSlotCheck(siesa *sql.DB, days int, botCedula string) Check {
 	return func(ctx context.Context) ([]Violation, error) {
 		if siesa == nil {
 			return nil, nil
@@ -42,8 +43,8 @@ func OrphanSlotCheck(siesa *sql.DB, days int) Check {
 			SELECT DISTINCT CAST(c.id AS VARCHAR(20))
 			FROM programacion_medico_detalle pmd WITH(NOLOCK)
 			INNER JOIN citas c WITH(NOLOCK) ON c.id = pmd.IdCita
-			WHERE c.estado = 'C' AND c.cod_user_asigna_cita = '000000'
-			  AND pmd.Fecha >= @p1`, cutoff)
+			WHERE c.estado = 'C' AND c.cod_user_asigna_cita IN (@p2, '000000')
+			  AND pmd.Fecha >= @p1`, cutoff, botCedula)
 		if err != nil {
 			return nil, err
 		}
@@ -58,7 +59,7 @@ func OrphanSlotCheck(siesa *sql.DB, days int) Check {
 // ConsultaValorCeroCheck (SIESA): consultas del bot con Valor<=0 en CPA (TARIFA PENDIENTE
 // silenciosa — la consulta debe tener precio al agendar). Solo citas del bot, ventana últimos
 // `days`. Verificado vs BD: 0 en baseline con filtro bot.
-func ConsultaValorCeroCheck(siesa *sql.DB, days int) Check {
+func ConsultaValorCeroCheck(siesa *sql.DB, days int, botCedula string) Check {
 	return func(ctx context.Context) ([]Violation, error) {
 		if siesa == nil {
 			return nil, nil
@@ -69,7 +70,7 @@ func ConsultaValorCeroCheck(siesa *sql.DB, days int) Check {
 			FROM citas_procedimientos_asuntos cpa WITH(NOLOCK)
 			INNER JOIN citas c WITH(NOLOCK) ON c.id = cpa.IdCita
 			WHERE (cpa.Valor IS NULL OR cpa.Valor <= 0) AND c.estado <> 'C'
-			  AND c.cod_user_asigna_cita = '000000' AND c.fecha >= @p1`, cutoff)
+			  AND c.cod_user_asigna_cita IN (@p2, '000000') AND c.fecha >= @p1`, cutoff, botCedula)
 		if err != nil {
 			return nil, err
 		}

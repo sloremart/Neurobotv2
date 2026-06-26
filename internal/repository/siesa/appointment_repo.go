@@ -32,10 +32,24 @@ var _ repository.AppointmentRepository = (*AppointmentRepo)(nil)
 //	Appointment.Confirmed      ← citas.AsistenciaConfirmada = 1 OR estado IN ('CC','A')
 type AppointmentRepo struct {
 	db *sql.DB
+	// assignCedula → citas.cod_user_asigna_cita (la columna guarda la CÉDULA del funcionario).
+	// botUserID    → usuario.id para usuario_evento / id_usuario_cancela / IdUsuarioConfirmaAsistencia.
+	// Ambos identifican al bot para trazabilidad en SIESA; configurables, con fallback al usuario
+	// de automatización (ver defaultSiesaBotCedula / defaultSiesaBotUserID).
+	assignCedula string
+	botUserID    int
 }
 
-func NewAppointmentRepo(db *sql.DB) *AppointmentRepo {
-	return &AppointmentRepo{db: db}
+// NewAppointmentRepo construye el repo. assignCedula y botUserID definen la identidad del bot en
+// SIESA (usuario PRINCIPAL). Si llegan vacío/cero, caen al usuario de automatización como FALLBACK.
+func NewAppointmentRepo(db *sql.DB, assignCedula string, botUserID int) *AppointmentRepo {
+	if assignCedula == "" {
+		assignCedula = defaultSiesaBotCedula
+	}
+	if botUserID == 0 {
+		botUserID = defaultSiesaBotUserID
+	}
+	return &AppointmentRepo{db: db, assignCedula: assignCedula, botUserID: botUserID}
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -431,9 +445,9 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	// company = company code (e.g. "EPS005"), contractCode = numeric contract (e.g. "4")
 	//
 	// Valores fijos en el INSERT (verificados contra la BD SIESA, 2026-06-23):
-	//   - cod_user_asigna_cita = '000000' → usuario "Procesos Automaticos" (usuario.id=10006,
-	//     cedula='000000'). Identidad del bot para trazabilidad (la columna guarda la cédula del
-	//     funcionario que asigna; antes quedaba en 0 sin atribución).
+	//   - cod_user_asigna_cita = r.assignCedula (cédula del usuario autor configurado; principal
+	//     SHERNANDEZ en prod, fallback '000000' = "Procesos Automaticos"). La columna guarda la
+	//     cédula del funcionario que asigna; antes quedaba en 0 sin atribución.
 	//   - formaSolicitud = 4 → catálogo FormaSolicitudCitas: 1=Telefónica, 2=Presencial,
 	//     3=Correo, 4=Chatbot. El bot es canal Chatbot.
 	//   - EntornoAtencion = '05' → entorno "Institucional" (catálogo RIPS/MinSalud). La columna NO
@@ -454,7 +468,7 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	VALUES (
 	    @p1, @p2, @p3, @p4, @p5, 'P',
 	    @p6, @p7, @p8, GETDATE(),
-	    @p9, @p10, '000000',
+	    @p9, @p10, @p15,
 	    @p14, 4, @p11,
 	    0, 0, 0, 0,
 	    0, CAST(GETDATE() AS DATE), @p12,
@@ -464,7 +478,7 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		subjectType, company, contractCode,
 		input.AgendaID, locationID, userType,
 		input.Observations, serviceType,
-		primeraVezControl,
+		primeraVezControl, r.assignCedula,
 	).Scan(&newID)
 	if err != nil {
 		return nil, fmt.Errorf("insert citas: %w", err)
@@ -693,11 +707,14 @@ func (r *AppointmentRepo) CreateAppointmentProcedureBatch(ctx context.Context, i
 // Confirm / Cancel / Batch
 // ────────────────────────────────────────────────────────────────────────────
 
-// siesaBotUserID es el usuario.id de "Procesos Automaticos" (cedula '000000'), identidad del
-// bot para las columnas que referencian usuario.id: citas.id_usuario_cancela,
-// citas.IdUsuarioConfirmaAsistencia y log_citas.usuario_evento.
-// OJO: es distinto de citas.cod_user_asigna_cita, que usa la CÉDULA ('000000'), no el id.
-const siesaBotUserID = 10006
+// Identidad FALLBACK del bot en SIESA: usuario "Procesos Automaticos" (usuario.id=10006,
+// cedula='000000'). Se usa cuando no se configura un usuario principal (SIESA_ASSIGN_USER_*).
+// OJO: son dos columnas distintas — cod_user_asigna_cita usa la CÉDULA, las columnas
+// id_usuario_cancela / IdUsuarioConfirmaAsistencia / usuario_evento usan el usuario.id.
+const (
+	defaultSiesaBotUserID = 10006
+	defaultSiesaBotCedula = "000000"
+)
 
 // writeAuditLog inserta una fila en log_citas replicando lo que hace la UI de SIESA al
 // crear/cancelar/modificar una cita. No hay trigger sobre citas/log_citas: la auditoría la
@@ -765,7 +782,7 @@ func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs str
 		}()
 		cctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
 		defer cancel()
-		if _, err := r.db.ExecContext(cctx, query, id, obs, evento, siesaBotUserID); err != nil {
+		if _, err := r.db.ExecContext(cctx, query, id, obs, evento, r.botUserID); err != nil {
 			slog.Warn("audit_log_write_failed", "appointment_id", id, "evento", evento, "error", err)
 		}
 	}()
@@ -826,7 +843,7 @@ func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID,
 		}()
 		cctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
 		defer cancel()
-		if _, err := r.db.ExecContext(cctx, creationAuditQuery, appointmentID, observations, siesaBotUserID); err != nil {
+		if _, err := r.db.ExecContext(cctx, creationAuditQuery, appointmentID, observations, r.botUserID); err != nil {
 			slog.Warn("creation_audit_write_failed", "appointment_id", appointmentID, "error", err)
 		}
 	}()
@@ -842,7 +859,7 @@ func (r *AppointmentRepo) writeAuditLogBatch(ctx context.Context, ids []string, 
 	}
 	// @p1=obs, @p2=evento, @p3=usuario del bot; los ids empiezan en @p4.
 	clause, idArgs := inParams(ids, 4)
-	allArgs := append([]interface{}{obs, evento, siesaBotUserID}, idArgs...)
+	allArgs := append([]interface{}{obs, evento, r.botUserID}, idArgs...)
 
 	var query string
 	if evento == "CITA MODIFICADA" {
@@ -907,7 +924,7 @@ func (r *AppointmentRepo) Confirm(ctx context.Context, id string, channel, chann
 	    IdTipoConfirmacionAsistencia   = 1,
 	    IdUsuarioConfirmaAsistencia    = @p3,
 	    ObservacionConfirmaAsistencia  = @p2
-	WHERE id = @p1`, id, obs, siesaBotUserID)
+	WHERE id = @p1`, id, obs, r.botUserID)
 	if err != nil {
 		return err
 	}
@@ -945,7 +962,7 @@ func (r *AppointmentRepo) Cancel(ctx context.Context, id string, reason, channel
 	    id_usuario_cancela = @p4,
 	    motivo_cancela     = @p2,
 	    observacion        = ISNULL(observacion,'') + @p3
-	WHERE id = @p1`, id, reason, obs, siesaBotUserID); err != nil {
+	WHERE id = @p1`, id, reason, obs, r.botUserID); err != nil {
 		return err
 	}
 	if idInt, perr := strconv.ParseInt(id, 10, 64); perr == nil {
@@ -968,7 +985,7 @@ func (r *AppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, channe
 	obs := fmt.Sprintf("Confirmado via WhatsApp [%s]", channelID)
 	// @p1 = obs, @p2 = usuario del bot; IDs empiezan en @p3
 	clause, idArgs := inParams(ids, 3)
-	allArgs := append([]interface{}{obs, siesaBotUserID}, idArgs...)
+	allArgs := append([]interface{}{obs, r.botUserID}, idArgs...)
 	_, err := r.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE citas
 		SET AsistenciaConfirmada          = 1,
@@ -999,7 +1016,7 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 	// @p1 = reason, @p2 = obs, @p3 = usuario del bot; IDs empiezan en @p4
 	// motivo = 2 → RES256 "cancelada por el paciente" (ver Cancel y doc dudas §6.2).
 	clause, idArgs := inParams(ids, 4)
-	allArgs := append([]interface{}{reason, obs, siesaBotUserID}, idArgs...)
+	allArgs := append([]interface{}{reason, obs, r.botUserID}, idArgs...)
 	// N-42: cancelar las citas y liberar sus cupos van en UNA transacción. Si la liberación falla,
 	// ROLLBACK del cancelado → nunca quedan citas 'C' con cupos huérfanos.
 	tx, err := r.db.BeginTx(ctx, nil)

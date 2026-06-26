@@ -14,7 +14,7 @@ import (
 // del bloque consecutivo Antares (que se eliminó). Requiere SIESA_DSN (ver openTestDB).
 func TestPatientDayGrouping_AgainstDB(t *testing.T) {
 	db := openTestDB(t)
-	repo := NewAppointmentRepo(db)
+	repo := NewAppointmentRepo(db, "", 0)
 	ctx := context.Background()
 
 	// Buscar un paciente con >=2 citas activas el MISMO día futuro (cualquier agenda).

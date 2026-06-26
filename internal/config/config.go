@@ -34,6 +34,14 @@ type Config struct {
 	// External DB Driver — R-ARQ-01
 	ExternalDBDriver string // "siesa" (only supported driver; legacy "datosipsndx" removed)
 
+	// SIESA — identidad del usuario que SIESA registra como autor de las citas que crea/cancela/
+	// modifica el bot. Son DOS columnas distintas: cod_user_asigna_cita guarda la CÉDULA y
+	// usuario_evento/id_usuario_cancela/IdUsuarioConfirmaAsistencia guardan el usuario.id.
+	// Usuario PRINCIPAL configurable; si las variables no se definen, cae al usuario de
+	// automatización "Procesos Automáticos" (cédula 000000, usuario.id 10006) como FALLBACK.
+	SIESAAssignUserCedula string // → cod_user_asigna_cita (cédula). Fallback: "000000"
+	SIESAAssignUserID     int    // → usuario_evento / id_usuario_cancela. Fallback: 10006
+
 	// Observabilidad de flujos (docs/OBSERVABILIDAD.md): off|error|outcome|milestone|full.
 	FlowTraceLevel string
 
@@ -176,6 +184,10 @@ func Load() *Config {
 		// Default "disable" preserva el comportamiento actual (no rompe el server de pruebas);
 		// en producción setear EXTERNAL_DB_ENCRYPT=true para cifrar el canal TDS (PII de salud).
 		ExtDBEncrypt: getEnv("EXTERNAL_DB_ENCRYPT", "disable"),
+
+		// SIESA — usuario autor de las citas (principal SHERNANDEZ en prod; fallback automatización).
+		SIESAAssignUserCedula: getEnv("SIESA_ASSIGN_USER_CEDULA", "000000"),
+		SIESAAssignUserID:     getEnvInt("SIESA_ASSIGN_USER_ID", 10006),
 
 		// External DB Driver
 		ExternalDBDriver: getEnv("EXTERNAL_DB_DRIVER", "siesa"),

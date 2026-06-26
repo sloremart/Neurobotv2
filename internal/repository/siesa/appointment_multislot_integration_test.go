@@ -22,7 +22,7 @@ import (
 func TestCreateMultiSlot(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	repo := NewAppointmentRepo(db)
+	repo := NewAppointmentRepo(db, "", 0)
 	ctx := context.Background()
 
 	const agenda = 315 // TAC (médico 4, asunto 3) — validado

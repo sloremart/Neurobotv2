@@ -115,7 +115,7 @@ func main() {
 	// Repositorios — selección por EXTERNAL_DB_DRIVER (R-ARQ-01)
 	var repos *repository.Repositories
 	if externalDB != nil {
-		repos = initRepositories(cfg.ExternalDBDriver, externalDB, localDB)
+		repos = initRepositories(cfg, externalDB, localDB)
 	}
 
 	// Session manager (BD local + phone mutex)
@@ -369,8 +369,8 @@ func main() {
 		reconciler.Register("wl_stuck", observability.StuckWaitingListCheck(localDB, 25))
 		reconciler.Register("zombie_escalated", observability.ZombieEscalatedCheck(localDB, 1))
 		if externalDB != nil {
-			reconciler.Register("orphan_slot", observability.OrphanSlotCheck(externalDB, 4))
-			reconciler.Register("consulta_valor_cero", observability.ConsultaValorCeroCheck(externalDB, 4))
+			reconciler.Register("orphan_slot", observability.OrphanSlotCheck(externalDB, 4, cfg.SIESAAssignUserCedula))
+			reconciler.Register("consulta_valor_cero", observability.ConsultaValorCeroCheck(externalDB, 4, cfg.SIESAAssignUserCedula))
 		}
 		schedulerTasks.Reconciler = reconciler
 		schedulerTasks.FlowMaint = flowRepo // rollup + purga de flow_events (Fase 3)
@@ -542,8 +542,8 @@ func initLogger(level, logDir string) {
 // externalDB = SIESA (SQL Server). localDB = MySQL local del bot
 // (catálogo cups_procedimientos, migración 019).
 // "siesa" es el único driver soportado; el legacy datosipsndx (Antares/MySQL) fue eliminado.
-func initRepositories(driver string, externalDB, localDB *sql.DB) *repository.Repositories {
-	switch driver {
+func initRepositories(cfg *config.Config, externalDB, localDB *sql.DB) *repository.Repositories {
+	switch cfg.ExternalDBDriver {
 	case "siesa":
 		// Datos clínicos → SIESA SQL Server (externalDB).
 		// Catálogo CUPS (nombre, asunto_id, servicio_id, preparación) → BD local (migración 019).
@@ -551,7 +551,7 @@ func initRepositories(driver string, externalDB, localDB *sql.DB) *repository.Re
 		// so there is no separate doctor repository.
 		return &repository.Repositories{
 			Patient:      siesa.NewPatientRepo(externalDB),
-			Appointment:  siesa.NewAppointmentRepo(externalDB),
+			Appointment:  siesa.NewAppointmentRepo(externalDB, cfg.SIESAAssignUserCedula, cfg.SIESAAssignUserID),
 			Schedule:     siesa.NewScheduleRepo(externalDB),
 			Procedure:    repository.NewCachedProcedureRepo(localrepo.NewProcedureRepo(localDB), 60*time.Minute),
 			Entity:       repository.NewCachedEntityRepo(siesa.NewEntityRepo(externalDB), 30*time.Minute),
@@ -559,7 +559,7 @@ func initRepositories(driver string, externalDB, localDB *sql.DB) *repository.Re
 			Municipality: siesa.NewMunicipalityRepo(externalDB),
 		}
 	default:
-		log.Fatalf("unknown EXTERNAL_DB_DRIVER: %s", driver)
+		log.Fatalf("unknown EXTERNAL_DB_DRIVER: %s", cfg.ExternalDBDriver)
 		return nil
 	}
 }
