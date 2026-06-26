@@ -77,7 +77,8 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 			time.Sunday, time.Monday, time.Tuesday, time.Wednesday,
 			time.Thursday, time.Friday, time.Saturday,
 		},
-		Fn: t.sendWhatsAppReminders,
+		Fn:      t.sendWhatsAppReminders,
+		Catchup: CatchupDaytime, // L14: WA solo se recupera en horario diurno
 	})
 
 	// 06:00 — Waiting list check
@@ -89,7 +90,8 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 			time.Monday, time.Tuesday, time.Wednesday,
 			time.Thursday, time.Friday,
 		},
-		Fn: t.checkWaitingList,
+		Fn:      t.checkWaitingList,
+		Catchup: CatchupDaytime, // L14: WA solo se recupera en horario diurno
 	})
 
 	// 13:00 — IVR calls for non-responders
@@ -101,7 +103,8 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 			time.Sunday, time.Monday, time.Tuesday, time.Wednesday,
 			time.Thursday, time.Friday, time.Saturday,
 		},
-		Fn: t.sendVoiceReminders,
+		Fn:      t.sendVoiceReminders,
+		Catchup: CatchupNever, // L14: el IVR NO se recupera — solo corre a su hora tras el WA matutino
 	})
 }
 
