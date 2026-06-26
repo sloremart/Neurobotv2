@@ -83,6 +83,12 @@ type Config struct {
 	// Bot kill switch: false = escala inmediatamente sin tocar SIESA/Antares
 	BotEnabled bool
 
+	// Kill switches de notificaciones proactivas (independientes del bot conversacional):
+	// false = no se envían recordatorios/avisos por ese canal (recordatorios diarios, lista de
+	// espera, cancelación/reagendamiento admin, cadena de followup).
+	WhatsAppNotificationsEnabled bool // WHATSAPP_NOTIFICATIONS_ENABLED — gatea SendTemplate (WA)
+	IVRNotificationsEnabled      bool // IVR_NOTIFICATIONS_ENABLED — gatea PlaceCall (llamadas IVR)
+
 	// Session
 	SessionTimeoutMinutes int
 
@@ -221,7 +227,9 @@ func Load() *Config {
 		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
 
 		// Bot kill switch
-		BotEnabled: getEnvBool("BOT_ENABLED", true),
+		BotEnabled:                   getEnvBool("BOT_ENABLED", true),
+		WhatsAppNotificationsEnabled: getEnvBool("WHATSAPP_NOTIFICATIONS_ENABLED", true),
+		IVRNotificationsEnabled:      getEnvBool("IVR_NOTIFICATIONS_ENABLED", true),
 
 		// Session
 		SessionTimeoutMinutes: getEnvInt("SESSION_TIMEOUT_MINUTES", 120),

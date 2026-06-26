@@ -22,6 +22,14 @@ import (
 // request because the conversation is closed/inactive (HTTP 422).
 var ErrConversationNotActive = errors.New("conversation not active")
 
+// ErrWhatsAppNotificationsDisabled / ErrIVRNotificationsDisabled se devuelven cuando el canal
+// está apagado por config (WHATSAPP_NOTIFICATIONS_ENABLED / IVR_NOTIFICATIONS_ENABLED = false).
+// Los callers ya tratan el error saltando el envío, así no se registra pending ni se coloca llamada.
+var (
+	ErrWhatsAppNotificationsDisabled = errors.New("whatsapp notifications disabled")
+	ErrIVRNotificationsDisabled      = errors.New("ivr notifications disabled")
+)
+
 type Client struct {
 	httpClient  *http.Client
 	apiURL      string
@@ -44,6 +52,9 @@ type Client struct {
 	voiceWebhookURL string // notification URL for voice events (e.g. https://server/webhooks/voice)
 	// All configured team IDs for agent availability checks.
 	teamIDs []string
+	// Kill switches de notificaciones (en negativo: zero-value = habilitado, no rompe el cliente de test).
+	notifWADisabled  bool // true → SendTemplate no envía (WhatsApp)
+	notifIVRDisabled bool // true → PlaceCall no llama (IVR)
 	// ConversationID cache: phone → conversationID (from conversation.created webhook).
 	// Self-replacing: new conversation.created overwrites the old entry automatically.
 	mu          sync.RWMutex
@@ -73,6 +84,8 @@ func NewClient(cfg *config.Config) *Client {
 		voiceFlowID:           cfg.BirdVoiceFlowID,
 		voiceWebhookURL:       voiceNotificationURL(cfg),
 		teamIDs:               collectTeamIDs(cfg),
+		notifWADisabled:       !cfg.WhatsAppNotificationsEnabled,
+		notifIVRDisabled:      !cfg.IVRNotificationsEnabled,
 		convCache:             make(map[string]string),
 		convCacheTS:           make(map[string]time.Time),
 	}
@@ -541,6 +554,13 @@ func (c *Client) SendInternalText(conversationID, text string) (string, error) {
 
 // SendTemplate envía un template de WhatsApp aprobado (HSM)
 func (c *Client) SendTemplate(to string, tmpl TemplateConfig) (string, error) {
+	// Kill switch de notificaciones WhatsApp: chokepoint único para TODOS los templates proactivos
+	// (recordatorios, lista de espera, cancelación/reagendamiento admin, followup).
+	if c.notifWADisabled {
+		slog.Info("whatsapp notifications disabled — skipping template", "to", utils.MaskPhone(to))
+		return "", ErrWhatsAppNotificationsDisabled
+	}
+
 	params := make([]map[string]string, len(tmpl.Params))
 	for i, p := range tmpl.Params {
 		params[i] = map[string]string{
@@ -595,6 +615,11 @@ func voiceNotificationURL(cfg *config.Config) string {
 // Params esperados: patient_name, appointment_date, appointment_time, clinic_name, clinic_address.
 // Retorna el callId de Bird para correlacionar con el webhook DTMF posterior.
 func (c *Client) PlaceCall(to string, params map[string]string) (string, error) {
+	// Kill switch de notificaciones IVR: chokepoint único para TODAS las llamadas salientes.
+	if c.notifIVRDisabled {
+		slog.Info("ivr notifications disabled — skipping call", "to", utils.MaskPhone(to))
+		return "", ErrIVRNotificationsDisabled
+	}
 	if c.voiceChannelID == "" {
 		return "", fmt.Errorf("voice channel not configured (BIRD_VOICE_CHANNEL_ID missing)")
 	}

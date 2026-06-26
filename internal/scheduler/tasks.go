@@ -113,6 +113,11 @@ func (t *Tasks) SendWhatsAppReminders(ctx context.Context) error {
 }
 
 func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
+	if t.Cfg != nil && !t.Cfg.WhatsAppNotificationsEnabled {
+		slog.Info("whatsapp reminders skipped — notifications disabled (WHATSAPP_NOTIFICATIONS_ENABLED=false)")
+		return nil
+	}
+
 	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
 
 	appointments, err := t.AppointmentRepo.FindPendingByDate(ctx, tomorrow)
@@ -236,6 +241,11 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 // then sets post-IVR timer for final agent escalation.
 
 func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
+	if t.Cfg != nil && !t.Cfg.IVRNotificationsEnabled {
+		slog.Info("voice reminders skipped — IVR notifications disabled (IVR_NOTIFICATIONS_ENABLED=false)")
+		return nil
+	}
+
 	// Get patients ready for IVR: RetryCount==0 (followup disabled) or RetryCount==2 (followup enabled)
 	targets := t.NotifyManager.GetPendingForIVR()
 	if len(targets) == 0 {

@@ -99,6 +99,8 @@ func testConfig() *config.Config {
 		BirdTemplateConfirmLocale:        "es-CO",
 		BirdTemplateWaitingListProjectID: "proj-wl",
 		BirdTemplateWaitingListLocale:    "es-CO",
+		WhatsAppNotificationsEnabled:     true, // operación normal: canales habilitados
+		IVRNotificationsEnabled:          true,
 	}
 }
 
@@ -312,6 +314,46 @@ func TestSendWhatsAppReminders_Success_TwoPatients(t *testing.T) {
 	}
 	if sendCount.Load() != 2 {
 		t.Errorf("expected 2 sends (one per patient), got %d", sendCount.Load())
+	}
+}
+
+// TestSendWhatsAppReminders_Disabled_SkipsTask: con WHATSAPP_NOTIFICATIONS_ENABLED=false la tarea
+// corta de entrada — ni siquiera consulta las citas ni envía.
+func TestSendWhatsAppReminders_Disabled_SkipsTask(t *testing.T) {
+	var sendCount atomic.Int32
+	countSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			sendCount.Add(1)
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"x"}`))
+	}))
+	defer countSrv.Close()
+
+	cfg := testConfig()
+	cfg.WhatsAppNotificationsEnabled = false
+
+	repoCalled := false
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			repoCalled = true
+			return sampleAppointments(), nil
+		},
+	}
+	tasks := &Tasks{
+		AppointmentRepo: mockRepo,
+		BirdClient:      bird.NewClientForTest(countSrv.URL),
+		Cfg:             cfg,
+	}
+
+	if err := tasks.sendWhatsAppReminders(context.Background()); err != nil {
+		t.Fatalf("expected nil error when disabled, got %v", err)
+	}
+	if repoCalled {
+		t.Error("expected the task to short-circuit before querying appointments")
+	}
+	if sendCount.Load() != 0 {
+		t.Errorf("expected 0 sends when disabled, got %d", sendCount.Load())
 	}
 }
 
