@@ -28,9 +28,15 @@ docker compose up -d --build    # 3. reconstruye la imagen del bot con el códig
                                 #    SOLO los contenedores que cambiaron. NO borra datos.
 ```
 
-> **`--build` es CLAVE**: sin él, Docker reusa la imagen vieja y el bot seguiría con el código
-> anterior. El volumen `botdbdata` (datos locales) **se conserva** (no se usa `down -v`); las
-> migraciones nuevas se aplican solas al arrancar el bot. La BD clínica SIESA no se toca (es externa).
+> **`--build` es CLAVE — y es lo que actualiza la estructura de la BD.** Las migraciones se
+> **empaquetan dentro de la imagen** (`Dockerfile`: `COPY /app/migrations ./migrations`), NO se montan
+> como volumen. Entonces:
+> - Sin `--build`, Docker reusa la imagen vieja → la BD **NO** recibe la estructura nueva.
+> - Con `--build`, la imagen nueva trae las migraciones nuevas y, al arrancar, el bot aplica
+>   **solo las que faltan** (golang-migrate compara contra `schema_migrations`).
+>
+> La actualización de la BD es **aditiva y segura**: NO borra datos (el volumen `botdbdata` se
+> conserva; no se usa `down -v`). La BD clínica SIESA no se toca (es externa).
 
 ### B) Primera vez — server NUEVO (desde cero)
 
