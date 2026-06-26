@@ -211,3 +211,17 @@ func TestCatalog_Classification(t *testing.T) {
 		}
 	}
 }
+
+// TestTruncateReason (M6): reason se acota a 60 chars y sin saltos de línea (no rompe el VARCHAR(60)).
+func TestTruncateReason(t *testing.T) {
+	if got := truncateReason("ok"); got != "ok" {
+		t.Errorf("corto sin cambios, got %q", got)
+	}
+	long := "mssql: Violation of PRIMARY KEY constraint en una tabla con un nombre larguísimo y detalle"
+	if got := truncateReason(long); len([]rune(got)) != maxReasonLen {
+		t.Errorf("esperaba %d runas, got %d (%q)", maxReasonLen, len([]rune(got)), got)
+	}
+	if got := truncateReason("línea1\nlínea2"); got != "línea1 línea2" {
+		t.Errorf("debe quitar saltos de línea, got %q", got)
+	}
+}

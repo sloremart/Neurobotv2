@@ -203,6 +203,21 @@ func New(sink FlowSink, maxLvl Level) *Tracer {
 }
 
 // emit aplica el gate de nivel, construye el evento (con PII enmascarada) y lo encola sin bloquear.
+// maxReasonLen es el ancho de la columna flow_events.reason (VARCHAR(60)).
+const maxReasonLen = 60
+
+// truncateReason acota reason al ancho de columna y le quita saltos de línea (M6): un err.Error()
+// crudo del driver podía exceder 60 chars y, con STRICT_TRANS_TABLES, tumbar el INSERT del lote
+// completo; además recorta el detalle del driver que podría arrastrar PII.
+func truncateReason(s string) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", " ")
+	r := []rune(s) // por-runa: no parte un carácter multibyte (acentos) y respeta el VARCHAR(60)
+	if len(r) > maxReasonLen {
+		return string(r[:maxReasonLen])
+	}
+	return s
+}
+
 func (t *Tracer) emit(traceID, flow, step string, opts EmitOpts) {
 	if t.maxLvl == LvOff {
 		return
@@ -229,7 +244,7 @@ func (t *Tracer) emit(traceID, flow, step string, opts EmitOpts) {
 	}
 	ev := domain.FlowEvent{
 		TraceID: traceID, Flow: flow, Step: step, Level: int(spec.level),
-		Outcome: outcome, Reason: opts.Reason, Phone: phone,
+		Outcome: outcome, Reason: truncateReason(opts.Reason), Phone: phone,
 		RefType: refType, RefID: opts.RefID, Attrs: sanitizeAttrs(opts.Attrs),
 		CreatedAt: time.Now(),
 	}
@@ -258,6 +273,11 @@ func (t *Tracer) Start(ctx context.Context) {
 		}
 		cancel()
 		buf = buf[:0]
+		// L3: surfacear los eventos descartados por buffer lleno (drop-on-full intencional, pero
+		// invisible hasta ahora). Se reporta y se resetea para no spamear.
+		if n := t.dropped.Swap(0); n > 0 {
+			slog.Warn("flow_events dropped (buffer full)", "count", n)
+		}
 	}
 
 	for {

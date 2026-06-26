@@ -756,7 +756,7 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 				"La cita queda pendiente de confirmacion. El sistema continuara el flujo de seguimiento.")
 
 		if m.callTracker != nil {
-			m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_dtmf")
+			_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_dtmf") // L11: KPI best-effort
 		}
 	}
 }
@@ -789,7 +789,7 @@ func (m *NotificationManager) HandleVoiceCallCompleted(callID string) {
 	if m.callTracker != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_answer")
+		_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_answer") // L11: KPI best-effort
 	}
 }
 

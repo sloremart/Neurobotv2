@@ -155,6 +155,17 @@ func (h *InternalHandler) SetFlowReader(r FlowTraceReader) {
 
 // HandleFlowTrace returns the ordered timeline of a flow run by trace_id.
 // GET /api/internal/flow-trace?trace_id=wl:123
+// isoWeekMonday devuelve el lunes (00:00, hora local) de la semana ISO indicada.
+// M9: el offset del lunes se calcula con (weekday+6)%7 (días desde el lunes). El cálculo anterior
+// usaba int(weekday-time.Monday), que da -1 cuando el 4 de enero cae en domingo (como 2026) →
+// el lunes computado quedaba una semana tarde y la agregación de 7 días sumaba la semana equivocada.
+func isoWeekMonday(year, weekNum int) time.Time {
+	jan4 := time.Date(year, 1, 4, 0, 0, 0, 0, time.Local)
+	_, jan4Week := jan4.ISOWeek()
+	daysSinceMonday := (int(jan4.Weekday()) + 6) % 7 // Domingo(0)→6, Lunes(1)→0, … Sábado(6)→5
+	return jan4.AddDate(0, 0, (weekNum-jan4Week)*7-daysSinceMonday)
+}
+
 func (h *InternalHandler) HandleFlowTrace(w http.ResponseWriter, r *http.Request) {
 	if h.flowReader == nil {
 		http.Error(w, "flow tracing not configured", http.StatusServiceUnavailable)
@@ -582,8 +593,12 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 	cancelled := len(ids)
 	if len(ids) > 0 {
 		if err := h.appointmentRepo.CancelBatch(ctx, ids, req.Reason, "admin_cancel_agenda", ""); err != nil {
-			slog.Error("cancel batch in agenda", "error", err)
-			cancelled = 0
+			// M1: si la cancelación en SIESA falló, NO continuar a notificar — antes se enviaba
+			// "tu cita fue cancelada" a pacientes con citas aún activas y la respuesta devolvía
+			// status:ok, enmascarando el fallo. Retornar 500 (como handleRescheduleSameAgenda).
+			slog.Error("cancel batch in agenda", "agenda_id", req.AgendaID, "date", req.Date, "error", err)
+			http.Error(w, "error cancelling appointments — none cancelled, no notifications sent", http.StatusInternalServerError)
+			return
 		}
 	}
 
@@ -1165,9 +1180,7 @@ func (h *InternalHandler) HandleWeeklyKPIs(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Find Monday of the ISO week
-	jan4 := time.Date(year, 1, 4, 0, 0, 0, 0, time.Local)
-	_, jan4Week := jan4.ISOWeek()
-	monday := jan4.AddDate(0, 0, (weekNum-jan4Week)*7-int(jan4.Weekday()-time.Monday))
+	monday := isoWeekMonday(year, weekNum)
 
 	ctx := r.Context()
 

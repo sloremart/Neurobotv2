@@ -221,8 +221,24 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 			continue
 		}
 
-		respBody, _ = io.ReadAll(resp.Body)
+		var readErr error
+		respBody, readErr = io.ReadAll(resp.Body)
 		resp.Body.Close()
+		// L5: un body truncado (reset a mitad) con status 200 dejaba respBody parcial → fallo confuso
+		// de Unmarshal. Tratarlo como error de transporte y reintentar, igual que el error de red.
+		if readErr != nil {
+			if attempt == maxRetries {
+				return nil, fmt.Errorf("openai read body after %d attempts: %w", attempt+1, readErr)
+			}
+			delay := time.Duration((attempt+1)*(attempt+1)) * time.Second
+			slog.Warn("openai_retry_read_body", "attempt", attempt+1, "delay", delay, "error", readErr)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("openai retry cancelled: %w", ctx.Err())
+			}
+			continue
+		}
 
 		if resp.StatusCode == http.StatusOK {
 			break
@@ -363,9 +379,16 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 		return nil, fmt.Errorf("download document status %d", resp.StatusCode)
 	}
 
-	fileData, err := io.ReadAll(resp.Body)
+	// L6: acotar la lectura de la media (cap 20 MB). Sin límite, un archivo enorme infla memoria
+	// (~1.33x al base64-ear) × sesiones concurrentes. La URL viene del CDN de Bird/WhatsApp, pero el
+	// cap evita el peor caso. +1 byte para detectar el desborde.
+	const maxMediaBytes = 20 << 20 // 20 MB
+	fileData, err := io.ReadAll(io.LimitReader(resp.Body, maxMediaBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read document body: %w", err)
+	}
+	if len(fileData) > maxMediaBytes {
+		return nil, fmt.Errorf("document too large (> %d MB)", maxMediaBytes>>20)
 	}
 
 	// 2. Detect MIME type from magic bytes

@@ -289,11 +289,16 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 
 	// 4. Assign to best available agent
 	if pending.ConversationID != "" {
-		m.birdClient.EscalateToAgent(
+		// L9: capturar el error de la escalación (antes se descartaba). EscalateToAgent ya loguea
+		// internamente en rutas degradadas, pero sin esto la traza propia no distinguía éxito/fallo.
+		if err := m.birdClient.EscalateToAgent(
 			ctx, pending.ConversationID, pending.Phone,
 			m.cfg.BirdTeamFallback, "Call Center",
 			patientName, m.cfg.BirdTeamFallback,
-		)
+		); err != nil {
+			slog.Error("notif escalate to agent failed", "phone", utils.MaskPhone(pending.Phone),
+				"conversation_id", pending.ConversationID, "error", err)
+		}
 	}
 
 	// 5. Log event

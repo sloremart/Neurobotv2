@@ -409,6 +409,9 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 
 // formatMinutes convierte minutos a texto legible: "1 hora", "2 horas", "1 hora 30 minutos", etc.
 func formatMinutes(m int) string {
+	if m < 0 {
+		m = 0 // L17: un override con CLOSE_MIN <= REMINDER_MIN daría closeIn negativo → "-5 minutos"
+	}
 	if m < 60 {
 		return fmt.Sprintf("%d minutos", m)
 	}

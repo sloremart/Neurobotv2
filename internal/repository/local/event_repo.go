@@ -419,17 +419,20 @@ func (r *EventRepo) GetFunnel(ctx context.Context, from, to time.Time) (*FunnelD
 		ToDate:   to.Format("2006-01-02"),
 	}
 
+	// L2: rango half-open [from, to+1día) — consistente con el resto del repo (N-44). El BETWEEN
+	// inclusivo con created_at TIMESTAMP excluía todos los eventos del último día (00:00:01–23:59:59).
+	toExclusive := to.AddDate(0, 0, 1)
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT event_type, COUNT(DISTINCT session_id) as sessions
 		 FROM chat_events
-		 WHERE created_at BETWEEN ? AND ?
+		 WHERE created_at >= ? AND created_at < ?
 		 AND event_type IN (
 			 'session_started', 'patient_identified', 'menu_selected',
 			 'document_entered', 'patient_found', 'order_method_selected',
 			 'ocr_validated', 'validations_complete', 'slots_found',
 			 'booking_confirmed', 'appointment_created'
 		 )
-		 GROUP BY event_type`, from, to)
+		 GROUP BY event_type`, from, toExclusive)
 	if err != nil {
 		return nil, fmt.Errorf("get funnel: %w", err)
 	}

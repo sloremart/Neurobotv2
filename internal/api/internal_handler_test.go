@@ -968,3 +968,24 @@ func TestHandleAnomalies_FiltersInvariante(t *testing.T) {
 		t.Errorf("count=%d anomalies=%d, want 1/1", resp.Count, len(resp.Anomalies))
 	}
 }
+
+// TestIsoWeekMonday (M9): el lunes ISO se calcula bien incluso cuando el 4 de enero cae en domingo.
+func TestIsoWeekMonday(t *testing.T) {
+	cases := []struct {
+		year, week int
+		want       string // YYYY-MM-DD del lunes esperado
+	}{
+		{2026, 1, "2025-12-29"}, // 4-ene-2026 = domingo (el caso del bug); lunes de la W01 = 29-dic-2025
+		{2024, 1, "2024-01-01"}, // 4-ene-2024 = jueves; lunes de la W01 = 1-ene-2024
+		{2026, 10, "2026-03-02"},
+	}
+	for _, c := range cases {
+		got := isoWeekMonday(c.year, c.week)
+		if got.Weekday() != time.Monday {
+			t.Errorf("isoWeekMonday(%d,%d) no es lunes: %s (%s)", c.year, c.week, got.Format("2006-01-02"), got.Weekday())
+		}
+		if got.Format("2006-01-02") != c.want {
+			t.Errorf("isoWeekMonday(%d,%d) = %s, want %s", c.year, c.week, got.Format("2006-01-02"), c.want)
+		}
+	}
+}

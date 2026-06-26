@@ -247,7 +247,7 @@ func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
 			defer p.wg.Done()
 			defer p.activeOverflow.Add(-1)
 			slog.Warn("processing in overflow goroutine", "id", msg.ID)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute) // L15: ligado al app-ctx → el shutdown lo cancela
 			defer cancel()
 			p.safeProcess(ctx, msg)
 		}()
@@ -757,9 +757,15 @@ func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.
 
 	// Delay close so Bird finishes processing the outbound message delivery
 	closingConvID := sess.ConversationID
+	p.wg.Add(1) // L16: wg-tracked + sleep cancelable
 	go func() {
+		defer p.wg.Done()
 		defer recoverLog("close-feed-agent")
-		time.Sleep(3 * time.Second)
+		select {
+		case <-time.After(3 * time.Second):
+		case <-p.ctx.Done():
+			return
+		}
 		if err := p.birdClient.CloseFeedItems(closingConvID); err != nil {
 			slog.Warn("close feed items on agent close failed", "conversation_id", closingConvID, "error", err)
 		}
@@ -992,8 +998,12 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 				)
 				convID = ""
 			}
-			// E6: async retry after 10s via Channels API
-			go p.retrySend(phone, outMsg)
+			// E6: async retry after 10s via Channels API (L16: wg-tracked → el shutdown lo espera/cancela)
+			p.wg.Add(1)
+			go func(m statemachine.OutboundMessage) {
+				defer p.wg.Done()
+				p.retrySend(phone, m)
+			}(outMsg)
 			continue
 		}
 		slog.Debug("message_sent_ok", "phone", utils.MaskPhone(phone), "type", outMsg.Type(), "bird_msg_id", birdMsgID)
@@ -1072,9 +1082,15 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 	// otherwise the delivery confirmation can reopen the conversation.
 	if sess.Status == session.StatusCompleted && convID != "" {
 		closingConvID := convID
+		p.wg.Add(1) // L16: wg-tracked + sleep cancelable
 		go func() {
+			defer p.wg.Done()
 			defer recoverLog("close-feed-complete")
-			time.Sleep(3 * time.Second)
+			select {
+			case <-time.After(3 * time.Second):
+			case <-p.ctx.Done():
+				return
+			}
 			if err := p.birdClient.CloseFeedItems(closingConvID); err != nil {
 				slog.Warn("close feed items on completion failed", "phone", utils.MaskPhone(phone), "conversation_id", closingConvID, "error", err)
 			}
@@ -1127,7 +1143,12 @@ func (p *MessageWorkerPool) sendMessage(phone, conversationID string, msg statem
 // Uses Channels API directly (empty conversationID) to avoid repeating
 // a Conversations API failure. Launched as a goroutine from sendAndSave.
 func (p *MessageWorkerPool) retrySend(phone string, msg statemachine.OutboundMessage) {
-	time.Sleep(10 * time.Second)
+	// L16: sleep cancelable por el app-ctx para no re-entregar un mensaje tras el shutdown.
+	select {
+	case <-time.After(10 * time.Second):
+	case <-p.ctx.Done():
+		return
+	}
 
 	_, err := p.sendMessage(phone, "", msg)
 	if err != nil {
@@ -1212,7 +1233,7 @@ func (p *MessageWorkerPool) EnqueueVirtual(phone string) {
 		go func() {
 			defer p.wg.Done()
 			defer p.activeOverflow.Add(-1)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute) // L15: ligado al app-ctx → el shutdown lo cancela
 			defer cancel()
 			p.safeProcess(ctx, msg)
 		}()
