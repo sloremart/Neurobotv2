@@ -660,6 +660,38 @@ func TestLookupConversationByPhone_NotFound(t *testing.T) {
 	}
 }
 
+// TestLookupConversationByPhone_Pagination verifica que el lookup sigue el nextPageToken de la RAÍZ
+// de la respuesta de Bird (no un objeto "pagination"). La conversación buscada solo aparece en la
+// página 2 → si la paginación está rota, el lookup falla (era la causa de "empty conversation ID").
+func TestLookupConversationByPhone_Pagination(t *testing.T) {
+	var pagesServed int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		if r.URL.Query().Get("pageToken") == "" {
+			// Página 1: otra conversación + nextPageToken en la RAÍZ
+			pagesServed++
+			_, _ = w.Write([]byte(`{"results":[{"id":"conv-other","featuredParticipants":[{"contact":{"identifierValue":"+573009999999"}}]}],"nextPageToken":"PAGE2"}`))
+			return
+		}
+		// Página 2: la conversación del paciente, sin más token
+		pagesServed++
+		_, _ = w.Write([]byte(`{"results":[{"id":"conv-on-page-2","featuredParticipants":[{"contact":{"identifierValue":"+573001234567"}}]}]}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	convID, err := c.LookupConversationByPhone("+573001234567")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if convID != "conv-on-page-2" {
+		t.Errorf("expected conv-on-page-2 (via pagination), got %q", convID)
+	}
+	if pagesServed != 2 {
+		t.Errorf("expected 2 pages fetched, got %d", pagesServed)
+	}
+}
+
 func TestLookupConversationByPhone_EmptyPhone(t *testing.T) {
 	c := NewClientForTest("http://localhost")
 	convID, err := c.LookupConversationByPhone("")
