@@ -24,7 +24,7 @@ echo "Backing up ${DB_NAME} from ${CONTAINER}..."
 
 docker exec "$CONTAINER" \
   mysqldump -u"$DB_USER" -p"$DB_PASS" \
-  --single-transaction --routines --triggers \
+  --single-transaction --routines --triggers --no-tablespaces \
   "$DB_NAME" | gzip > "${BACKUP_DIR}/${FILENAME}"
 
 SIZE=$(du -h "${BACKUP_DIR}/${FILENAME}" | cut -f1)
