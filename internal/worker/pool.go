@@ -31,7 +31,19 @@ const (
 	phoneLockTimeout      = 30 * time.Second
 	agentCmdQueueSize     = 50
 	maxDedupEntries       = 100000 // safety cap; fail-open if exceeded (allow potential dups)
+
+	// Re-replay del WAL (M7): recupera mensajes que quedaron 'pending' (p.ej. descartados por
+	// backpressure) sin esperar al reinicio. El umbral (> dedupTTL) evita reprocesar mensajes en
+	// vuelo y garantiza que el claim de dedup del intento previo ya expiró.
+	staleReplayMinutes  = 10
+	staleReplayInterval = 5 * time.Minute
 )
+
+// StalePendingSource entrega mensajes inbound que quedaron 'pending' hace más de `minutes` minutos.
+// La implementación real (adapter sobre el inbox repo) parsea el raw_body a InboundMessage.
+type StalePendingSource interface {
+	PendingOlderThan(ctx context.Context, minutes int) ([]bird.InboundMessage, error)
+}
 
 // SessionManagement abstracts session manager operations for testability.
 type SessionManagement interface {
@@ -217,13 +229,17 @@ func (p *MessageWorkerPool) Stop() {
 
 // Enqueue agrega un mensaje al queue. Retorna false si es duplicado o si se excede backpressure.
 func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
-	// 1. Dedup check (fail-open if map is too large — allow potential dups rather than leak memory)
+	// 1. Dedup check (fail-open if map is too large — allow potential dups rather than leak memory).
+	// Se reclama ANTES de encolar (claim-then-enqueue) para que dos entregas duplicadas concurrentes
+	// no se procesen ambas. `claimed` permite REVERTIR el claim si el mensaje se descarta (M7).
+	claimed := false
 	if p.dedupCount.Load() < maxDedupEntries {
 		if _, exists := p.recentMessages.LoadOrStore(msg.ID, time.Now()); exists {
 			slog.Debug("duplicate message ignored", "id", msg.ID, "phone", utils.MaskPhone(msg.Phone))
 			return false
 		}
 		p.dedupCount.Add(1)
+		claimed = true
 	} else {
 		slog.Warn("dedup map at capacity, skipping dedup check", "id", msg.ID, "cap", maxDedupEntries)
 	}
@@ -235,6 +251,13 @@ func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
 	default:
 		// 3. Channel lleno — overflow con límite
 		if p.activeOverflow.Load() >= int32(maxOverflowGoroutines) {
+			// M7: el mensaje se descarta SIN procesarse. Liberar el claim de dedup para que el
+			// re-replay del WAL (o un reintento) pueda re-encolarlo; si no, quedaría "visto" 5 min
+			// y el mensaje se perdería hasta el próximo reinicio.
+			if claimed {
+				p.recentMessages.Delete(msg.ID)
+				p.dedupCount.Add(-1)
+			}
 			slog.Error("backpressure: overflow limit reached, dropping message",
 				"id", msg.ID,
 				"queue_size", len(p.queue),
@@ -1237,6 +1260,44 @@ func (p *MessageWorkerPool) EnqueueVirtual(phone string) {
 			defer cancel()
 			p.safeProcess(ctx, msg)
 		}()
+	}
+}
+
+// StartStaleReplay corre un ticker que cada staleReplayInterval re-encola los mensajes que quedaron
+// 'pending' hace más de staleReplayMinutes (M7): recupera los descartados por backpressure sin
+// esperar al reinicio. Idempotente: re-usa Enqueue (dedup) y processMessage marca 'done' la fila, así
+// que un mensaje ya procesado no se vuelve a recoger.
+func (p *MessageWorkerPool) StartStaleReplay(ctx context.Context, src StalePendingSource) {
+	if src == nil {
+		return
+	}
+	ticker := time.NewTicker(staleReplayInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.replayStale(ctx, src)
+		}
+	}
+}
+
+// replayStale recoge los mensajes 'pending' viejos y los re-encola. Separado para poder testearlo.
+func (p *MessageWorkerPool) replayStale(ctx context.Context, src StalePendingSource) {
+	msgs, err := src.PendingOlderThan(ctx, staleReplayMinutes)
+	if err != nil {
+		slog.Error("stale replay: query failed", "error", err)
+		return
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	slog.Warn("stale replay: re-encolando mensajes 'pending' atascados", "count", len(msgs))
+	for _, m := range msgs {
+		// Enqueue es un encolado no-bloqueante SIN context por diseño (el overflow ya deriva de p.ctx);
+		// se llama igual desde el webhook y el replay de arranque.
+		p.Enqueue(m) //nolint:contextcheck // enqueue no-bloqueante; dedup+backpressure normales, processMessage marca 'done'
 	}
 }
 
