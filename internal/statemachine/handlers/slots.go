@@ -552,7 +552,7 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 		summary += "\n\n¿Confirmas esta cita?"
 
 		return sm.NewResult(sm.StateConfirmBooking).
-			WithContext("selected_slot_id", selected.TimeSlot).
+			WithContext("selected_slot_id", slotKey(&selected)).
 			WithButtons(
 				summary,
 				sm.Button{Text: "Confirmar cita", Payload: "booking_confirm"},
@@ -1422,15 +1422,22 @@ func bookingFailedHandler() sm.StateHandler {
 
 // --- Helpers ---
 
+// slotKey identifica un slot de forma ÚNICA. La sola hora (TimeSlot) NO basta: dos médicos del
+// mismo asunto pueden tener libre la misma fecha+hora, y emparejar solo por hora agendaría con el
+// médico/agenda equivocado (H1). La agenda (id_programacion) + médico + hora sí son únicos.
+func slotKey(s *services.AvailableSlot) string {
+	return fmt.Sprintf("%d|%s|%s", s.AgendaID, s.DoctorSiesaCode, s.TimeSlot)
+}
+
 // findSelectedSlot retrieves the selected slot from session context.
 func findSelectedSlot(sess *session.Session) *services.AvailableSlot {
 	selectedSlotID := sess.GetContext("selected_slot_id")
 	var slots []services.AvailableSlot
 	json.Unmarshal([]byte(sess.GetContext("available_slots_json")), &slots)
 
-	for _, s := range slots {
-		if s.TimeSlot == selectedSlotID {
-			return &s
+	for i := range slots {
+		if slotKey(&slots[i]) == selectedSlotID {
+			return &slots[i]
 		}
 	}
 	return nil

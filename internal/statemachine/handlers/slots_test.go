@@ -199,7 +199,7 @@ func TestConfirmBooking_Confirm(t *testing.T) {
 
 	sess := testSess(sm.StateConfirmBooking)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 	sess.Context["cups_name"] = "EMG"
 
 	result, err := m.Process(context.Background(), sess, postbackM("booking_confirm"))
@@ -220,7 +220,7 @@ func TestConfirmBooking_Change(t *testing.T) {
 
 	sess := testSess(sm.StateConfirmBooking)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 
 	result, err := m.Process(context.Background(), sess, postbackM("booking_change"))
 	if err != nil {
@@ -328,7 +328,7 @@ func TestCreateAppointment_Success(t *testing.T) {
 
 	sess := testSess(sm.StateCreateAppointment)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 	sess.Context["patient_id"] = "PAT001"
 	sess.Context["patient_entity"] = "EPS005"
 	sess.Context["cups_code"] = "890271"
@@ -399,7 +399,7 @@ func TestCreateAppointment_SlotTakenError(t *testing.T) {
 
 	sess := testSess(sm.StateCreateAppointment)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 	sess.Context["patient_id"] = "PAT001"
 	sess.Context["patient_entity"] = "EPS005"
 	sess.Context["cups_code"] = "890271"
@@ -446,7 +446,7 @@ func TestCreateAppointment_GenericError(t *testing.T) {
 
 	sess := testSess(sm.StateCreateAppointment)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 	sess.Context["patient_id"] = "PAT001"
 	sess.Context["patient_entity"] = "EPS005"
 	sess.Context["cups_code"] = "890271"
@@ -479,7 +479,7 @@ func TestBookingSuccess_SingleProcedure(t *testing.T) {
 
 	sess := testSess(sm.StateBookingSuccess)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 	sess.Context["cups_name"] = "Electromiografia"
 	sess.Context["created_appointment_id"] = "apt-100"
 	sess.Context["total_procedures"] = "1"
@@ -516,7 +516,7 @@ func TestBookingSuccess_MultiProcedure(t *testing.T) {
 
 	sess := testSess(sm.StateBookingSuccess)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 	sess.Context["cups_name"] = "Electromiografia"
 	sess.Context["cups_code"] = "890271"
 	sess.Context["created_appointment_id"] = "apt-100"
@@ -778,7 +778,7 @@ func TestReconfirmBooking_No(t *testing.T) {
 
 	sess := testSess(sm.StateReconfirmBooking)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
-	sess.Context["selected_slot_id"] = slots[0].TimeSlot
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
 	sess.Context["cups_name"] = "Electromiografia"
 
 	result, err := m.Process(context.Background(), sess, postbackM("reconfirm_no"))
@@ -787,5 +787,36 @@ func TestReconfirmBooking_No(t *testing.T) {
 	}
 	if result.NextState != sm.StateConfirmBooking {
 		t.Errorf("expected CONFIRM_BOOKING, got %s", result.NextState)
+	}
+}
+
+// TestFindSelectedSlot_DisambiguatesSameTime (H1): si dos médicos del mismo asunto tienen libre la
+// MISMA fecha+hora, findSelectedSlot debe devolver EXACTAMENTE el slot elegido (por su clave única),
+// no el primero con esa hora. Antes mapeaba solo por TimeSlot → agendaba con el médico equivocado.
+func TestFindSelectedSlot_DisambiguatesSameTime(t *testing.T) {
+	slots := []services.AvailableSlot{
+		{TimeSlot: "202603201000", AgendaID: 10, DoctorSiesaCode: "DOCA", DoctorName: "Garcia"},
+		{TimeSlot: "202603201000", AgendaID: 20, DoctorSiesaCode: "DOCB", DoctorName: "Lopez"}, // misma hora, otro médico/agenda
+	}
+	sess := &session.Session{Context: map[string]string{
+		"available_slots_json": slotsJSON(slots),
+		"selected_slot_id":     slotKey(&slots[1]), // el paciente eligió el SEGUNDO (Dr. Lopez)
+	}}
+
+	got := findSelectedSlot(sess)
+	if got == nil {
+		t.Fatal("expected to find the selected slot")
+	}
+	if got.AgendaID != 20 || got.DoctorName != "Lopez" {
+		t.Errorf("regresión H1: esperaba el slot elegido (Lopez, agenda 20), obtuvo %s agenda %d",
+			got.DoctorName, got.AgendaID)
+	}
+}
+
+func TestSlotKey_UniquePerDoctorSameTime(t *testing.T) {
+	a := services.AvailableSlot{TimeSlot: "202603201000", AgendaID: 10, DoctorSiesaCode: "DOCA"}
+	b := services.AvailableSlot{TimeSlot: "202603201000", AgendaID: 20, DoctorSiesaCode: "DOCB"}
+	if slotKey(&a) == slotKey(&b) {
+		t.Error("dos médicos a la misma hora deben tener claves de slot distintas")
 	}
 }

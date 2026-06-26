@@ -27,6 +27,7 @@ type mockRepo struct {
 	touchAgentFn        func(ctx context.Context, phone string) error
 	incrementRemFn      func(ctx context.Context, sessionID string) error
 	markAbandonedFn     func(ctx context.Context, sessionID string) error
+	updateConvIDFn      func(ctx context.Context, phone, conversationID string) error
 }
 
 func (r *mockRepo) FindActiveByPhone(ctx context.Context, phone string) (*Session, error) {
@@ -60,6 +61,13 @@ func (r *mockRepo) UpdateStatus(ctx context.Context, sessionID, status string) e
 func (r *mockRepo) RenewExpiry(ctx context.Context, sessionID string, expiresAt time.Time) error {
 	if r.renewExpiryFn != nil {
 		return r.renewExpiryFn(ctx, sessionID, expiresAt)
+	}
+	return nil
+}
+
+func (r *mockRepo) UpdateConversationIDByPhone(ctx context.Context, phone, conversationID string) error {
+	if r.updateConvIDFn != nil {
+		return r.updateConvIDFn(ctx, phone, conversationID)
 	}
 	return nil
 }
@@ -677,6 +685,45 @@ func TestEscalate_RepoError(t *testing.T) {
 	if sess.Status != StatusEscalated {
 		t.Errorf("expected status set in memory even on error, got %s", sess.Status)
 	}
+}
+
+// TestUpdateConversationID_TargetedUpdate (H2): UpdateConversationID debe hacer un UPDATE dirigido
+// de la columna y NUNCA FindActiveByPhone + Save (que reescribe la fila completa → lost update).
+func TestUpdateConversationID_TargetedUpdate(t *testing.T) {
+	got := ""
+	repo := &mockRepo{
+		updateConvIDFn: func(_ context.Context, phone, convID string) error {
+			got = phone + "|" + convID
+			return nil
+		},
+		findActiveByPhoneFn: func(_ context.Context, _ string) (*Session, error) {
+			t.Error("UpdateConversationID must NOT call FindActiveByPhone (lost-update path)")
+			return nil, nil
+		},
+		saveFn: func(_ context.Context, _ *Session) error {
+			t.Error("UpdateConversationID must NOT call Save (full-row write = lost update)")
+			return nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	if err := mgr.UpdateConversationID(context.Background(), "+573001234567", "conv-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "+573001234567|conv-1" {
+		t.Errorf("expected targeted update with phone+conv, got %q", got)
+	}
+}
+
+func TestUpdateConversationID_NoopOnEmpty(t *testing.T) {
+	repo := &mockRepo{
+		updateConvIDFn: func(_ context.Context, _, _ string) error {
+			t.Error("must not update on empty phone/conversationID")
+			return nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	_ = mgr.UpdateConversationID(context.Background(), "", "conv")
+	_ = mgr.UpdateConversationID(context.Background(), "+573001234567", "")
 }
 
 func TestPhoneMutex_Returns(t *testing.T) {
