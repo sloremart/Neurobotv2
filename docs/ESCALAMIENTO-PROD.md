@@ -9,21 +9,27 @@ Runbook paso a paso para cambiar la capacidad de los contenedores Docker del bot
 
 ## ⚠️ Requisito previo (LEER ANTES)
 
-El perfil high-load fija el **bot en `cpus: 4.0`**. **El servidor debe tener ≥ 4 CPUs.**
-Si tiene menos, `scale-up.sh` falla al recrear el bot con:
+El perfil high-load fija el **bot en `cpus: 4.0`**. **Docker debe poder asignar ≥ 4 CPUs.**
+Si no, `scale-up.sh` falla al recrear el bot con:
 
 ```
 Error response from daemon: range of CPUs is from 0.01 to 2.00, as there are only 2 CPUs available
 ```
 
 En ese caso el **DB sí escala** pero el **bot no arranca**. Solución: bajar `cpus` del bot en
-`docker-compose.high-load.yml` al número real de núcleos (ej. `cpus: '2.0'`) antes de escalar.
+`docker-compose.high-load.yml` al número disponible (ej. `cpus: '2.0'`) antes de escalar.
 
-Verificar CPUs del servidor:
+Verificar las CPUs que **Docker** puede asignar (este es el número que importa, NO `nproc`):
 ```bash
-nproc                 # número de núcleos
-docker info --format '{{.NCPU}}'
+docker info --format '{{.NCPU}}'   # ← AUTORITATIVO: CPUs disponibles para Docker
+nproc                              # cores del HOST (puede ser MAYOR que el de arriba)
 ```
+
+> ⚠️ En **Docker Desktop** (Windows/Mac) Docker corre en una VM con un nº de CPUs configurable
+> (Settings → Resources → CPUs); ese límite (`docker info NCPU`) puede ser **menor** que `nproc` del
+> host. Ejemplo real: host con `nproc=6` pero Docker Desktop con `NCPU=2` → `cpus: 4.0` falla aunque
+> "haya 6 cores". En un **servidor Linux** (Docker nativo, sin VM) ambos coinciden. El `cpus: 4.0`
+> del high-load se compara siempre contra `docker info NCPU`.
 
 ---
 
