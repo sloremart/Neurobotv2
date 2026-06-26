@@ -1,6 +1,6 @@
 # Setup de calidad y seguridad — neuro-bot
 
-Plantillas calibradas para este proyecto (Go 1.23, sin Go local → Docker, Windows/Git Bash, datos de salud).
+Plantillas calibradas para este proyecto (Go 1.25, sin Go local → Docker, Windows/Git Bash, datos de salud).
 
 ## Archivos implementados
 

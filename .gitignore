@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!.env.high-load
 neuro-bot
 /server
 *.exe

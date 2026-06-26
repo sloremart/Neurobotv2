@@ -13,9 +13,10 @@ Lee órdenes médicas (imagen/PDF), identifica CUPS, busca agenda disponible y r
 | **Base de datos** | `datosipsndx` (MySQL) | **`zeussalud_neuro`** (SQL Server) |
 | **Estado** | Deprecado — ya no se usa | ✅ Activo desde migración |
 
-> **El código Go actual en `internal/repository/datosipsndx/` fue construido sobre Antares.**
-> Todo ese paquete debe ser reemplazado por una nueva implementación que conecte a SIESA (SQL Server).
-> Las interfaces en `internal/repository/interfaces.go` quedan igual — solo cambia la implementación.
+> **✅ MIGRACIÓN COMPLETADA.** El paquete `internal/repository/datosipsndx/` (Antares/MySQL) fue
+> **eliminado** y reemplazado por `internal/repository/siesa/` (SQL Server). Las interfaces en
+> `internal/repository/interfaces.go` no cambiaron; solo la implementación. El driver MySQL
+> (`go-sql-driver/mysql`) sigue en uso, pero solo para la **BD local del bot** (`neuro_bot`).
 
 ---
 
@@ -24,9 +25,11 @@ Lee órdenes médicas (imagen/PDF), identifica CUPS, busca agenda disponible y r
 - **Servidor local (desarrollo):** `LorenaM` (SQL Server, Windows Auth)
 - **Base desarrollo:** `ZeusSalud_Neuro`
 - **Base de pruebas:** `ZeusSalud_Prueba` (192.168.1.207, Sa/111)
-- **Servidor producción:** `TODO — pendiente confirmar IP/credenciales`
+- **Servidor producción:** `192.168.1.207` (SQL Server), base `ZeusSalud_Neuro`, usuario `sa`.
+  Credenciales reales en el `.env` de prod (NO aquí — este archivo se commitea).
 - **Conexión sqlcmd:** `sqlcmd -S LorenaM -d ZeusSalud_Neuro -E -No`
-- **Driver Go:** `github.com/microsoft/go-mssqldb` (reemplaza `go-sql-driver/mysql`)
+- **Drivers Go:** `github.com/microsoft/go-mssqldb` (SIESA/SQL Server) + `go-sql-driver/mysql`
+  (BD local `neuro_bot`). El bot usa AMBOS.
 
 ---
 
@@ -320,11 +323,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 
 ---
 
-## PENDIENTES DE MIGRACIÓN (Go)
+## MIGRACIÓN A SIESA — COMPLETADA ✅
 
-- [ ] Agregar driver SQL Server: `github.com/microsoft/go-mssqldb`
-- [ ] Crear `internal/repository/siesa/` con implementaciones de las interfaces existentes
-- [ ] Reemplazar `internal/repository/datosipsndx/` (Antares/MySQL) por el nuevo paquete SIESA
-- [ ] Confirmar IP/credenciales del servidor SIESA en producción
-- [ ] Mapear campos de pacientes: equivalente de `NumeroPaciente` en SIESA → `autoid`
-- [ ] Mapear campo de entidad/contrato: equivalente de `Entidad` en SIESA → `empresa` + `contrato`
+- [x] Driver SQL Server `github.com/microsoft/go-mssqldb` agregado.
+- [x] `internal/repository/siesa/` implementa todas las interfaces.
+- [x] `internal/repository/datosipsndx/` (Antares/MySQL) eliminado.
+- [x] Servidor SIESA de producción confirmado (`192.168.1.207` / `ZeusSalud_Neuro`).
+- [x] Mapeo de paciente (`autoid`) y de entidad/contrato (`empresa` + `contrato`) implementado.

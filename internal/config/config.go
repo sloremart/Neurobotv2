@@ -256,7 +256,7 @@ func Load() *Config {
 		EscalationAgentReminderMax: getEnvInt("ESCALATION_AGENT_REMINDER_MAX", 3),
 
 		// Center
-		CenterKey:       getEnv("CENTER_KEY", "datosipsndx"),
+		CenterKey:       getEnv("CENTER_KEY", "siesa"),
 		CenterName:      getEnv("CENTER_NAME", "Neuro Electrodiagnóstico del Llano"),
 		BotName:         getEnv("BOT_NAME", "Samuel"),
 		ResultsURL:      getEnv("RESULTS_URL", ""),

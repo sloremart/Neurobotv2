@@ -1,6 +1,6 @@
 # neuro-bot — WhatsApp Chatbot de Agendamiento Médico
 
-> Bot conversacional para **[Neuroelectrodx](https://neuroelectrodx.com/)**, construido en **Go 1.23**, que permite a los pacientes agendar, consultar y confirmar citas médicas a través de **WhatsApp** (usando la API de **Bird**).
+> Bot conversacional para **[Neuroelectrodx](https://neuroelectrodx.com/)**, construido en **Go 1.25**, que permite a los pacientes agendar, consultar y confirmar citas médicas a través de **WhatsApp** (usando la API de **Bird**).
 
 ---
 
