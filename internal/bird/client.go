@@ -1353,14 +1353,17 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 		return "", nil
 	}
 
-	// Paginate through active conversations to find the one matching this phone.
-	// Bird may have many active conversations; limit=50 per page with nextPageToken.
+	// Paginate through conversations to find the one matching this phone. La lista viene ordenada
+	// por createdAt DESC y mezcla activas y cerradas (Bird ignora el filtro status=active), así que
+	// ~la mitad de cada página son cerradas irrelevantes. Con la conversación activa actual entre las
+	// más recientes, 10 páginas (500 conversaciones) cubren picos de tráfico sin latencia excesiva
+	// (cada página = 1 llamada; la escalación no es sensible a latencia y se cachea al primer acierto).
 	baseURL := fmt.Sprintf("%s/workspaces/%s/conversations?channelId=%s&status=active&limit=50",
 		c.conversationsBase(), c.workspaceID, c.channelID)
 
 	reqURL := baseURL
 	pages := 0
-	maxPages := 5 // safety limit: 250 conversations max
+	maxPages := 10 // safety limit: 500 conversations max
 
 	for pages < maxPages {
 		pages++
@@ -1392,9 +1395,12 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 					} `json:"contact"` // nested (legacy/alternative)
 				} `json:"featuredParticipants"`
 			} `json:"results"`
-			Pagination struct {
-				NextPageToken string `json:"nextPageToken"`
-			} `json:"pagination"`
+			// Bird devuelve nextPageToken en la RAÍZ de la respuesta, NO dentro de un objeto
+			// "pagination". Leerlo del lugar equivocado dejaba el token siempre vacío → el loop
+			// cortaba tras la página 1 (solo 50 conversaciones, las más recientes por createdAt) →
+			// un paciente recurrente o en un pico de tráfico quedaba fuera → conversation_lookup_not_found
+			// → escalación "empty conversation ID".
+			NextPageToken string `json:"nextPageToken"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return "", fmt.Errorf("parse conversation lookup: %w", err)
@@ -1417,10 +1423,10 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 		}
 
 		// No more pages
-		if result.Pagination.NextPageToken == "" || len(result.Results) == 0 {
+		if result.NextPageToken == "" || len(result.Results) == 0 {
 			break
 		}
-		reqURL = baseURL + "&pageToken=" + result.Pagination.NextPageToken
+		reqURL = baseURL + "&pageToken=" + result.NextPageToken
 	}
 
 	slog.Warn("conversation_lookup_not_found",

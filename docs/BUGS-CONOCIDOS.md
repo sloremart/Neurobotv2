@@ -157,3 +157,50 @@ devolver `ErrSlotTaken` antes del commit no queda cita ni slot a medias.
 - `TestIsUniqueViolation` (2627/2601 → true; envuelto con %w; otros/nil → false) y `TestErrSlotTaken_Identity`.
 - `TestCreateAppointment_SlotTakenError`: el handler enruta `ErrSlotTaken` → `slot_taken` → re-búsqueda.
 - Validación SQL del filtro contra la BD SIESA local (demostración ANTES/DESPUÉS con `ROLLBACK`).
+
+---
+
+## BUG-003 — Escalación "empty conversation ID": el lookup por teléfono solo busca 50 conversaciones
+
+- **Estado:** ✅ Resuelto — implementado. Antes: 🔴 sistémico (handoff a agente roto al ~93%).
+- **Severidad:** Alta — la transferencia a agente humano **falla**; el paciente que pide hablar con una
+  persona no es atendido.
+- **Detectado:** 2026-06-26 por el auditor; causa raíz confirmada vía API de Bird.
+- **Componentes:** `internal/bird/client.go` (`LookupConversationByPhone`), cadena de resolución de
+  `conversation_id` en `internal/statemachine/handlers/escalation.go`.
+
+### Síntoma observable
+```
+ERROR escalation failed error='empty conversation ID' conversation_id=''
+```
+y en prod: `conversation_lookup_not_found` = 368 vs `conversation_lookup_success` = 28 (~93% de fallos).
+
+### Causa raíz (confirmada con la API de Bird)
+`LookupConversationByPhone` pagina `/workspaces/{wid}/conversations?channelId=...&limit=50` y empareja por
+teléfono. Leía el cursor de paginación de un objeto **anidado** `pagination.nextPageToken`, pero Bird lo
+devuelve **en la RAÍZ** de la respuesta (`top keys: ['nextPageToken','results']`). Como el campo anidado
+siempre venía vacío, el loop cortaba tras la **página 1** → solo se buscaba en las **50 conversaciones más
+recientes** (ordenadas por `createdAt` DESC, ~50% de ellas cerradas e irrelevantes). Un paciente
+recurrente, o cualquiera en un pico de tráfico, queda fuera de esas 50 → no se encuentra su conversación.
+
+Agravante: el cache de `conversation_id` es **in-memory con TTL 4h** → un reinicio del bot lo vacía, y a
+partir de ahí toda escalación depende del lookup (roto).
+
+### Descartado (vía API de Bird, para no perder tiempo a futuro)
+- `/conversations` **no** acepta filtro por teléfono (`identifier=`/`phonenumber=`/`participant=` se ignoran).
+- Los mensajes del canal (`/channels/{cid}/messages?phonenumber=`) **no** traen `conversationId` (ni en
+  `context`, `reference` ni `meta`). → La única vía es paginar `/conversations` correctamente.
+
+### Fix implementado
+- Leer `nextPageToken` de la **raíz** de la respuesta (no de `pagination`) → la paginación funciona.
+- Ampliar el límite de páginas de 5 a **10** (500 conversaciones) para cubrir picos; cada página es 1
+  llamada y la escalación no es sensible a latencia. Al primer acierto se cachea (`CacheConversationID`),
+  así que repeticiones del mismo teléfono no vuelven a paginar.
+
+### Tests
+- `TestLookupConversationByPhone_Pagination`: la conversación buscada solo está en la página 2 y solo se
+  alcanza siguiendo el `nextPageToken` de la raíz → verifica que se piden 2 páginas y se encuentra.
+
+### Mejora futura (opcional, no bloqueante)
+- Persistir el `conversation_id` (p. ej. en la sesión/BD local) para sobrevivir reinicios y evitar el
+  lookup por completo; o cachearlo en cada inbound si Bird llega a incluirlo en el webhook.
