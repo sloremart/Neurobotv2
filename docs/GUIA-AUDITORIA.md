@@ -6,7 +6,7 @@
 
 ---
 
-## 0. TL;DR — las tres capas y cuándo usar cada una
+## 0. TL;DR — las tres tambien en algun doc gaurda el bug de cuando se reiicia el bot con esas conversaciones encoaldas recuerdas que lo planteaste hace un rato en el chat? para prfundizarluego en el y plantear el fixcapas y cuándo usar cada una
 
 El bot deja rastro en **tres capas distintas**. No compiten: cada una responde una pregunta diferente.
 
@@ -242,5 +242,133 @@ curl -s "${H[@]}" "$BASE/api/internal/health/debug" | jq   # nota: ruta real es 
 2. **¿Es un paciente puntual?** → `/events?phone=` + `/sessions` (P2).
 3. **¿Es un flujo/comportamiento agregado?** → `/flow-stats` → `/flow-events` (P3, P4).
 4. **¿Sospecha de bug silencioso?** → `/anomalies` (P5).
-5. **¿Es técnico/infra?** → `/logs` + `/health` (P6).
+5. **¿Es técnico/infra?** → `/logs` + `/health` (P6) y el **catálogo §13**.
 6. Sube `FLOW_TRACE_LEVEL=full` temporalmente si necesitas el máximo detalle de un flujo.
+
+---
+
+## 11. Niveles de log: qué se ve en `info` vs `debug` (LEER ANTES de rastrear un mensaje)
+
+`LOG_LEVEL` decide qué líneas aparecen. **Varias líneas clave para seguir un mensaje entrante son `DEBUG` y NO se ven con `info` (el default de prod).** Esto confunde mucho: parece que "no pasa nada" cuando en realidad el motivo está oculto.
+
+| Con `LOG_LEVEL=info` (prod normal) ves | Con `LOG_LEVEL=debug` ADEMÁS ves |
+|---|---|
+| `request` (cada POST/GET), `processing message`, `event` (greeting_sent…), `conversation_cached`, `conversation_lookup_success`, todos los `WARN`/`ERROR` | `webhook_parsed` (dirección + texto del inbound), `phone not whitelisted, ignoring`, `session_state`, `sending_message`, `send_list_payload`, `conversations_api_response`, `message_sent_ok`, `outbound_event_received` |
+
+**Implicación crítica:** si en `info` ves `request POST /api/webhooks/whatsapp` pero **no** ves `processing message` después, el mensaje **se descartó en silencio** (whitelist, dirección outbound, o dedup) y **el motivo solo es visible en `debug`**. Para diagnosticar "no responde", sube a `debug` temporalmente (`LOG_LEVEL=debug` en `.env` → `docker compose up -d --force-recreate bot`), reproduce, y vuelve a `info` al terminar (debug llena disco y loguea más PII).
+
+> Base URL: en prod los endpoints van contra `https://app.colibrixa.com` (el host/ngrok público), no `localhost`.
+
+---
+
+## 12. El ciclo de vida de UN mensaje (la secuencia EXACTA en logs)
+
+Cuando un paciente escribe, el bot deja esta huella, en orden. Sirve para saber **exactamente dónde muere** un mensaje. Filtra con `GET /logs?phone=+57...` o `?search=<msg>`.
+
+```
+1.  request  POST /api/webhooks/whatsapp            ← Bird entregó un evento al bot
+2.  webhook_parsed  direction:"incoming" body_type:"text" text_text:"hola"   [DEBUG]
+        ↳ direction:"outgoing" → es un ECO de un saliente; se descarta (normal, 0ms)
+3.  phone not whitelisted, ignoring                 [DEBUG]  ← STOP si la whitelist filtra (§13.2)
+4.  (si pasa) → se inserta en el WAL (message_inbox) y se encola al worker
+5.  processing message  state:"..." type:"text|postback" text:"hola"  [INFO]  ← LLEGÓ al motor
+6.  conversation_lookup_success / conversation_id_refreshed   ← consiguió a quién responder
+7.  event  type:"greeting_sent" (o invalid_input, out_of_hours, escalated_to_agent…)  [INFO]
+8.  sending_message  type:"interactive_list" conversation_id:"..."   [DEBUG]  ← el bot ENVÍA
+9.  conversations_api_response  status:201          [DEBUG]  ← Bird aceptó la respuesta (201 = ok)
+10. message_sent_ok  bird_msg_id:"..."              [DEBUG]  ← entregado
+```
+
+**Cómo leer las AUSENCIAS (dónde murió):**
+| Última línea "buena" que ves | Qué significa |
+|---|---|
+| Ni siquiera `request POST /api/webhooks/whatsapp` | El mensaje **no llegó al bot** → problema de ENTREGA (Bird no entrega, o el túnel apunta a OTRA instancia — §13.1). |
+| `request` con POST a `0ms` y nada más | Retorno temprano: dirección `outgoing` (eco), **whitelist** (§13.2), o dedup. Sube a `debug` para ver el motivo. |
+| `webhook_parsed` (incoming) → `phone not whitelisted` | La whitelist NO está vacía (§13.2). |
+| `webhook_parsed` (incoming) pero NO `processing message` | Descartado tras parsear (whitelist, dedup, o `inbox persist failed`). |
+| `processing message` pero NO `sending_message`/`event` | El handler no respondió, o `BOT_ENABLED=false` (`bot_disabled_escalating`), o panic (busca `ERROR`). |
+| `sending_message` con `conversations_api_response status>=400` | Bird rechazó el envío (conversación cerrada / payload inválido). |
+| `message_sent_ok` pero el paciente no lo ve | Respondió a un **conversation_id viejo/equivocado** (§13.3). |
+
+---
+
+## 13. Catálogo de modos de fallo conocidos ("no responde" / "responde mal")
+
+Casos reales y cómo confirmarlos. **Primero siempre:** `GET /health` (¿`external_db`/`local_db` ok?) y mira si hay `request POST /api/webhooks/whatsapp` recientes.
+
+### 13.1 — Dos ngrok peleando el mismo dominio (el inbound va a la instancia equivocada)
+- **Síntoma:** prod "no recibe nada" aunque está sano; los webhooks llegan a OTRA instancia (p.ej. un PC de desarrollo) que corre ngrok con el MISMO `NGROK_HOSTNAME` reservado.
+- **Por qué:** un dominio reservado de ngrok solo lo sirve UN agente; el último que conecta gana el túnel.
+- **Confirmar:** `GET /health/debug` → `uptime` y `external_db` (la instancia con SIESA conectado y el uptime esperado = la real). En el server: `docker logs neuro_bot_ngrok | grep "started tunnel"`.
+- **Fix:** **un solo agente por dominio.** Pruebas/local debe usar OTRO `NGROK_HOSTNAME`. Apagar el local o cambiarle el ngrok.
+
+### 13.2 — Whitelist que NO está realmente vacía (trampa del comentario inline)
+- **Síntoma:** `phone not whitelisted, ignoring` para CADA teléfono, **incluido tu número de prueba**; cero `processing message`.
+- **Confirmar la config EFECTIVA (no el `.env` a ojo):**
+  ```bash
+  docker exec neuro_bot printenv TESTING_WHITELIST_PHONES   # si imprime algo → NO está vacía
+  ```
+- **Causa real:** comentario inline en una línea de valor vacío. `docker-compose` NO quita el comentario si el valor es vacío → el texto del comentario se vuelve el VALOR:
+  ```
+  TESTING_WHITELIST_PHONES=        # comentario   →  valor = "# comentario"  (¡no vacío!)
+  ```
+  `parsePhoneList` lo parte por comas → lista basura → filtra a TODOS.
+- **Fix:** comentario en su propia línea; la variable sin nada después del `=`:
+  ```
+  # Lista blanca (coma). Vacío = todos.
+  TESTING_WHITELIST_PHONES=
+  ```
+  Luego `docker compose up -d --force-recreate bot`.
+- **Regla general:** en `env_file` de compose, **nunca** comentario inline en una variable cuyo valor vacío sea significativo.
+
+### 13.3 — Responde a un conversation_id viejo (el paciente no ve la respuesta)
+- **Síntoma:** el bot procesa y `message_sent_ok` (201), pero el paciente no recibe nada o le llega en otro hilo.
+- **Por qué:** el inbound llega con `conversation_id:""`; el bot busca/cachea una conversación para el teléfono (`conversation_lookup_success`). Si ese teléfono tiene varios hilos (típico de un número de pruebas), agarra uno viejo.
+- **Confirmar:** `/sessions?phone=` → mira `conversation_id`; compáralo con el `conversation_cached` reciente. Si difieren, responde al viejo.
+- **Fix:** probar con un teléfono limpio (un solo hilo); o borrar la sesión de ese teléfono. En prod normal no pasa (cada paciente usa su número).
+
+### 13.4 — `BOT_ENABLED=false` (escala todo, no auto-responde)
+- **Síntoma:** `bot_disabled_escalating` por cada mensaje; el paciente queda con un agente, sin respuesta automática.
+- **Confirmar:** `docker exec neuro_bot printenv BOT_ENABLED`.
+- **Fix:** `BOT_ENABLED=true` + recrear (si se quiere autogestión).
+
+### 13.5 — Modo degradado (SIESA inalcanzable)
+- **Síntoma:** `external db not available, bot will start in degraded mode`; `/health` → `external_db != "ok"`. El bot saluda pero **no agenda** (no lee SIESA).
+- **Confirmar:** `GET /health` + `docker compose logs bot | grep -i degraded`; `nc -zv <EXTERNAL_DB_HOST> 1433`.
+- **Fix:** red/firewall a SIESA, `EXTERNAL_DB_*`, `EXTERNAL_DB_ENCRYPT`.
+
+### 13.6 — Backpressure / avalancha del WAL (mensajes descartados)
+- **Síntoma:** `backpressure: overflow limit reached, dropping message`; a veces precedido de `stale replay: re-encolando mensajes 'pending' atascados count:N` con N grande.
+- **Por qué:** la cola (def 100) se llenó por carga alta o por un backlog del WAL re-encolado de golpe.
+- **Confirmar:** `/health/debug` (`worker_queue_size` vs `worker_queue_cap`) + `/logs?search=backpressure`.
+- **Fix:** escalar a high-load (`scale-up.sh`) si es carga sostenida; si es backlog viejo atascado, vaciar `message_inbox` (status='pending') o drenarlo con más workers.
+
+### 13.7 — Fuera de horario de atención (NO es bug)
+- **Síntoma:** responde un **menú corto** (no el flujo completo); `event type:"out_of_hours"`, estado `OUT_OF_HOURS`.
+- **Horario (hardcodeado en `greeting.go`):** Lun–Vie 7:00–18:00, Sáb 7:00–12:00, Dom cerrado (zona `America/Bogota`). `TESTING_ALWAYS_OPEN=true` lo bypasea.
+- Para probar el flujo completo: en horario, o con `TESTING_ALWAYS_OPEN=true`.
+
+### 13.8 — Firma de webhook inválida
+- **Síntoma:** `invalid webhook signature` (WARN) con `has_signature`/`url`/`body_preview`; el webhook se rechaza (401).
+- **Por qué:** `BIRD_WEBHOOK_SECRET*` no coincide con Bird, o la URL reconstruida (host/proto) no es la que Bird firmó.
+- **Confirmar:** `/logs?search=invalid webhook signature`.
+- **Fix:** alinear el signing key en Bird, o revisar `X-Forwarded-Host/Proto` del proxy/ngrok.
+
+---
+
+## 14. Cómo ANOTAR hallazgos (para un agente sin contexto)
+
+Por cada cosa rara, registra: **(1)** teléfono o `trace_id`, **(2)** timestamp, **(3)** última línea de log "buena" y la primera "mala" (usa §12), **(4)** el endpoint que lo evidencia, **(5)** el síntoma observable para el paciente. Y clasifícalo:
+
+- **Bug** (el bot hizo algo incorrecto) → adjunta `trace_id` + `/flow-trace`.
+- **Bloqueo legítimo** (regla de negocio: embarazo, GFR, sin convenio) → `outcome=blocked` + `reason`. **NO es bug.**
+- **Inconsistencia / gap** (algo no cubierto o que se comporta raro) → describe el paso, el comportamiento esperado vs el real.
+- **Infra / config** (no responde, degradado, túnel, whitelist) → usa §13.
+
+**Señales de que algo está MAL aunque no haya `ERROR`:**
+- `processing message` sin un `sending_message`/`event` posterior (se procesó pero no respondió).
+- `conversations_api_response status>=400` repetido.
+- `/anomalies` con filas nuevas (`orphan_slot`, `consulta_valor_cero`, `wl_stuck`, `zombie_escalated`).
+- `/flow-stats` con caída brusca entre dos steps consecutivos (fuga del embudo).
+- `message_sent_ok` pero el paciente dice que no llegó (conversation_id viejo, §13.3).
+- Mismo `state` repetido muchas veces para un teléfono en `/events` (se quedó pegado en un paso).
