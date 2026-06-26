@@ -14,7 +14,12 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
-const maxTimestampAge = 15 * 60 // 15 minutes in seconds
+// maxTimestampAge: ventana anti-replay. 24h en segundos. Cubre la ventana de REINTENTOS de Bird
+// (~24h): un valor menor (antes 15 min) rechazaba los reintentos de webhooks que fallaron durante una
+// caída/incidente, respondiéndoles 401 → Bird reintentaba el mismo payload viejo en bucle → mensajes de
+// pacientes perdidos. Subirlo es seguro: el WAL deduplica por ID de mensaje (message_inbox, retenido
+// 24h) → un replay con el mismo ID se descarta sin reprocesar; la firma sigue siendo obligatoria.
+const maxTimestampAge = 24 * 60 * 60 // 24h en segundos
 
 // VerifyWebhookSignature verifica la firma HMAC-SHA256 del webhook de Bird.
 //
@@ -40,7 +45,8 @@ func VerifySignatureWithKey(secret, signature, timestamp, requestURL string, bod
 		return false
 	}
 
-	// Replay attack prevention: reject timestamps older than 15 minutes
+	// Replay attack prevention: reject timestamps older than maxTimestampAge (24h). El dedup por ID
+	// del WAL evita reprocesar un replay; Bird reintenta ~24h, así que esta ventana los acepta.
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return false
