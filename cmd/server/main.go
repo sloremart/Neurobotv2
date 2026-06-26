@@ -399,6 +399,11 @@ func main() {
 		}
 		internalHandler.SetSessionReader(sessionRepo)
 		internalHandler.SetFlowReader(flowRepo)
+		// Catálogos de referencia de SIESA (médicos, asuntos) para el módulo de catálogo del
+		// dashboard. Solo lectura, cacheados 30 min (casi estáticos) → no golpean SIESA por carga.
+		if externalDB != nil {
+			internalHandler.SetSiesaRefReader(siesa.NewReferenceRepo(externalDB, 30*time.Minute))
+		}
 	}
 
 	// HTTP Server
@@ -434,6 +439,9 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/flow-events", internalHandler.HandleFlowEvents)
 		internalMux.HandleFunc("GET /api/internal/anomalies", internalHandler.HandleAnomalies)
 		internalMux.HandleFunc("GET /api/internal/flow-stats", internalHandler.HandleFlowStats)
+		// Catálogos de referencia de SIESA (read-only) para el módulo de catálogo del dashboard.
+		internalMux.HandleFunc("GET /api/internal/siesa/medicos", internalHandler.HandleSiesaMedicos)
+		internalMux.HandleFunc("GET /api/internal/siesa/asuntos", internalHandler.HandleSiesaAsuntos)
 		mux.Handle(
 			"/api/internal/",
 			api.RateLimiter(30, time.Minute)(

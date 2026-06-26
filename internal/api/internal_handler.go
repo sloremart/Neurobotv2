@@ -91,6 +91,13 @@ type InternalEventLogger interface {
 	LogEvent(ctx context.Context, sessionID, phone, eventType string, data map[string]interface{})
 }
 
+// SiesaRefReader expone catálogos de referencia de SIESA (médicos, asuntos) — solo lectura,
+// cacheados — para poblar los selectores del módulo de catálogo del dashboard.
+type SiesaRefReader interface {
+	Medicos(ctx context.Context) ([]domain.MedicoRef, error)
+	Asuntos(ctx context.Context) ([]domain.AsuntoRef, error)
+}
+
 // InternalHandler handles admin/internal API endpoints.
 type InternalHandler struct {
 	appointmentRepo repository.AppointmentRepository
@@ -107,6 +114,7 @@ type InternalHandler struct {
 	reminderRunner  ReminderRunner     // optional: manual trigger for WA reminders
 	sessionReader   SessionDebugReader // optional: session debug queries
 	flowReader      FlowTraceReader    // optional: flow-events trace queries
+	siesaRef        SiesaRefReader     // optional: SIESA reference catalogs (médicos, asuntos)
 }
 
 // NewInternalHandler creates a new internal handler.
@@ -151,6 +159,45 @@ func (h *InternalHandler) SetSessionReader(r SessionDebugReader) {
 // SetFlowReader injects the flow-events reader for the observability endpoints.
 func (h *InternalHandler) SetFlowReader(r FlowTraceReader) {
 	h.flowReader = r
+}
+
+// SetSiesaRefReader injects the SIESA reference catalog reader (médicos, asuntos).
+func (h *InternalHandler) SetSiesaRefReader(r SiesaRefReader) {
+	h.siesaRef = r
+}
+
+// HandleSiesaMedicos devuelve la lista de médicos de SIESA (sis_medi) para el selector del
+// dashboard. Solo lectura, cacheada. GET /api/internal/siesa/medicos
+func (h *InternalHandler) HandleSiesaMedicos(w http.ResponseWriter, r *http.Request) {
+	if h.siesaRef == nil {
+		http.Error(w, "siesa reference not available", http.StatusServiceUnavailable)
+		return
+	}
+	meds, err := h.siesaRef.Medicos(r.Context())
+	if err != nil {
+		slog.Error("siesa medicos failed", "error", err)
+		http.Error(w, "failed to read médicos", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"medicos": meds, "count": len(meds)})
+}
+
+// HandleSiesaAsuntos devuelve la lista de asuntos de SIESA (sis_asunto) para el selector del
+// dashboard. Solo lectura, cacheada. GET /api/internal/siesa/asuntos
+func (h *InternalHandler) HandleSiesaAsuntos(w http.ResponseWriter, r *http.Request) {
+	if h.siesaRef == nil {
+		http.Error(w, "siesa reference not available", http.StatusServiceUnavailable)
+		return
+	}
+	asuntos, err := h.siesaRef.Asuntos(r.Context())
+	if err != nil {
+		slog.Error("siesa asuntos failed", "error", err)
+		http.Error(w, "failed to read asuntos", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"asuntos": asuntos, "count": len(asuntos)})
 }
 
 // HandleFlowTrace returns the ordered timeline of a flow run by trace_id.
