@@ -231,9 +231,13 @@ func (m *NotificationManager) SetWaitingListCheckDeps(ss SlotSearcher, ac Future
 
 // RegisterPending registers a pending notification with a type-appropriate timeout.
 // Confirmation/reschedule use configurable ConfirmFollowup1Hours; others default to 6h.
-func (m *NotificationManager) RegisterPending(notif PendingNotification) {
+// RegisterPending almacena un pending. Devuelve false si NO se pudo registrar (timeout del lock por
+// teléfono): el caller que necesite garantizar el seguimiento de la respuesta puede recuperarse
+// (p.ej. la lista de espera revierte el claim a 'waiting'). L12.
+func (m *NotificationManager) RegisterPending(notif PendingNotification) bool {
 	if !m.lockPhone(notif.Phone) {
-		return
+		slog.Warn("register pending: phone lock timeout, not stored", "phone", utils.MaskPhone(notif.Phone), "type", notif.Type)
+		return false
 	}
 	defer m.unlockPhone(notif.Phone)
 
@@ -275,6 +279,7 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) {
 	}
 
 	slog.Info("pending notification registered", "phone", utils.MaskPhone(notif.Phone), "type", notif.Type)
+	return true
 }
 
 // HandleResponse processes a patient's response to a proactive template.
@@ -1031,16 +1036,22 @@ func normalizePostback(payload string) string {
 
 // responseStatus mapea la respuesta del paciente (payload ya normalizado por normalizePostback) al
 // estado con el que se archiva la notificación en notification_history.
+// responseStatus traduce la respuesta del paciente al estado que se archiva en notification_history.
+// L8: las acciones que solo INICIAN un flujo asíncrono (reschedule/cancel/schedule arrancan una
+// sesión en el state machine que puede no completarse) se archivan como "*_requested" — el historial
+// es evidencia de la RESPUESTA a la notificación, no del desenlace de la cita (que vive en el ciclo
+// de la cita). Antes se archivaban como 'rescheduled'/'cancelled'/'wl_scheduled', sobre-declarando el
+// resultado por el solo hecho de pulsar el botón. confirm/acknowledge/decline sí son terminales.
 func responseStatus(normalized string) string {
 	switch strings.ToLower(normalized) {
 	case "confirm":
 		return "confirmed"
 	case "cancel":
-		return "cancelled"
+		return "cancel_requested"
 	case "reschedule":
-		return "rescheduled"
+		return "reschedule_requested"
 	case "schedule":
-		return "wl_scheduled"
+		return "schedule_requested"
 	case "decline":
 		return "declined"
 	case "acknowledge":

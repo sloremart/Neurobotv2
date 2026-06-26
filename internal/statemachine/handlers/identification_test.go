@@ -600,3 +600,48 @@ func TestUpdateContactInfo_DBError_ContinuesFlow(t *testing.T) {
 		t.Errorf("expected ASK_MEDICAL_ORDER (continue on error), got %s", result.NextState)
 	}
 }
+
+// TestConfirmIdentity_InvalidInput_RerendersButtons (L7): un input inválido re-muestra los botones
+// Sí/No, no solo un texto.
+func TestConfirmIdentity_InvalidInput_RerendersButtons(t *testing.T) {
+	h := confirmIdentityHandler()
+	sess := testSess(sm.StateConfirmIdentity)
+	sess.Context["patient_name"] = "Juan Perez"
+	sess.Context["patient_doc"] = "123"
+
+	res, err := h(context.Background(), sess, textM("no entiendo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateConfirmIdentity {
+		t.Errorf("esperaba retry en CONFIRM_IDENTITY, got %s", res.NextState)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("esperaba un mensaje con botones")
+	}
+	if btn, ok := res.Messages[0].(*sm.ButtonMessage); !ok || len(btn.Buttons) != 2 {
+		t.Errorf("esperaba ButtonMessage con 2 botones, got %T", res.Messages[0])
+	}
+}
+
+// TestConfirmContactInfo_InvalidInput_RerendersButtons (L7).
+func TestConfirmContactInfo_InvalidInput_RerendersButtons(t *testing.T) {
+	h := confirmContactInfoHandler(nil)
+	sess := testSess(sm.StateConfirmContactInfo)
+	sess.Context["patient_phone"] = "+573001234567"
+	sess.Context["patient_email"] = "x@y.com"
+
+	res, err := h(context.Background(), sess, textM("???"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateConfirmContactInfo {
+		t.Errorf("esperaba retry en CONFIRM_CONTACT_INFO, got %s", res.NextState)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("esperaba un mensaje con botones")
+	}
+	if btn, ok := res.Messages[0].(*sm.ButtonMessage); !ok || len(btn.Buttons) != 2 {
+		t.Errorf("esperaba ButtonMessage con 2 botones, got %T", res.Messages[0])
+	}
+}

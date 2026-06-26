@@ -162,6 +162,19 @@ func confirmIdentityHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "identity_yes", "identity_no")
 		if result != nil {
+			// L7: en el reintento por input inválido, re-renderizar los botones Sí/No (de lo contrario
+			// el paciente solo recibe un texto sin botones). En la escalación por max-reintentos
+			// (NextState != estado actual) se deja intacto el resultado.
+			if result.NextState == sess.CurrentState {
+				result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
+					Text: fmt.Sprintf("Encontré este paciente:\n\n*%s*\nDocumento: %s\n\n¿Eres tú?",
+						sess.GetContext("patient_name"), sess.GetContext("patient_doc")),
+					Buttons: []sm.Button{
+						{Text: "Sí, soy yo", Payload: "identity_yes"},
+						{Text: "No, no soy yo", Payload: "identity_no"},
+					},
+				}}
+			}
 			return result, nil
 		}
 
@@ -350,6 +363,18 @@ func confirmContactInfoHandler(patientSvc *services.PatientService) sm.StateHand
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "contact_ok", "contact_update")
 		if result != nil {
+			// L7: re-renderizar los botones en el reintento por input inválido (no en la escalación).
+			if result.NextState == sess.CurrentState {
+				phoneDisplay := utils.FormatPhoneDisplay(sess.GetContext("patient_phone"))
+				result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
+					Text: fmt.Sprintf("Tus datos de contacto registrados son:\n\nCelular: *%s*\nEmail: *%s*\n\n¿Son correctos?",
+						phoneDisplay, sess.GetContext("patient_email")),
+					Buttons: []sm.Button{
+						{Text: "Sí, son correctos", Payload: "contact_ok"},
+						{Text: "No, actualizar", Payload: "contact_update"},
+					},
+				}}
+			}
 			return result, nil
 		}
 

@@ -178,13 +178,21 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		convID, _ = m.birdClient.LookupConversationByPhone(entry.PhoneNumber)
 	}
 
-	m.RegisterPending(PendingNotification{
+	// L12: si el pending NO se almacena (timeout del lock), la respuesta del paciente se perdería
+	// (HandleResponse no encontraría pending). Devolver false → el caller revierte el claim a
+	// 'waiting' para re-ofrecer la entrada con un pending rastreable.
+	//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado para el Upsert; se llama igual desde webhooks/scheduler).
+	if !m.RegisterPending(PendingNotification{
 		Type:           "waiting_list",
 		Phone:          entry.PhoneNumber,
 		WaitingListID:  entry.ID,
 		BirdMessageID:  msgID,
 		ConversationID: convID,
-	})
+	}) {
+		observability.Emit(trace, "lista_espera", "notify_failed",
+			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "register_pending_failed"})
+		return false
+	}
 
 	if m.tracker != nil {
 		m.tracker.LogEvent(ctx, "", entry.PhoneNumber, "notification_sent",

@@ -723,6 +723,24 @@ func TestMarkIVRSent_NotFound(t *testing.T) {
 	}
 }
 
+// TestRegisterPending_ReturnsTrueOnSuccess (L12): RegisterPending ahora reporta si almacenó.
+func TestRegisterPending_ReturnsTrueOnSuccess(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+	mgr := NewNotificationManager(birdClient, nil, &config.Config{})
+
+	ok := mgr.RegisterPending(PendingNotification{Type: "waiting_list", Phone: "+573001234567", WaitingListID: "wl-1"})
+	if !ok {
+		t.Fatal("esperaba true al registrar con éxito")
+	}
+	if !mgr.HasPending("+573001234567") {
+		t.Error("esperaba pending almacenado")
+	}
+	if p, okp := mgr.LoadPendingForTest("+573001234567"); okp && p.Timer != nil {
+		p.Timer.Stop()
+	}
+}
+
 func TestRegisterPending_ConfirmationTimer(t *testing.T) {
 	birdClient, srv := newTestBirdClient()
 	defer srv.Close()
@@ -2022,8 +2040,9 @@ func (m *mockPersister) FindAll(_ context.Context) ([]PendingRow, error) { retur
 
 func TestResponseStatus(t *testing.T) {
 	cases := map[string]string{
-		"confirm": "confirmed", "cancel": "cancelled", "reschedule": "rescheduled",
-		"schedule": "wl_scheduled", "decline": "declined", "acknowledge": "acknowledged",
+		// L8: las acciones async se archivan como intención ("*_requested"), no como completadas.
+		"confirm": "confirmed", "cancel": "cancel_requested", "reschedule": "reschedule_requested",
+		"schedule": "schedule_requested", "decline": "declined", "acknowledge": "acknowledged",
 		"weird": "responded",
 	}
 	for in, want := range cases {

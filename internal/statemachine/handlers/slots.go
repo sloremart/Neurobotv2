@@ -182,6 +182,24 @@ func isCupCovered(ctx context.Context, priceRepo repository.PriceRepository, ent
 	return price != nil && *price > 0, nil
 }
 
+// anyCupCovered devuelve true si CUALQUIER código del grupo tiene convenio (L1). Solo concluye
+// "no cubierto" (false, nil) cuando TODOS se chequearon sin convenio; si algún chequeo falló y
+// ninguno resultó cubierto, devuelve el error → el caller hace fail-open (no bloquear por un fallo).
+func anyCupCovered(ctx context.Context, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, sess *session.Session, cups []string) (bool, error) {
+	var lastErr error
+	for _, cup := range cups {
+		covered, err := isCupCovered(ctx, priceRepo, entityRepo, sess, cup)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if covered {
+			return true, nil
+		}
+	}
+	return false, lastErr
+}
+
 // COVERAGE_NO_CONVENIO (interactivo) — el contrato del paciente no cubre el CUP; ofrece continuar
 // como particular (que sí tiene tarifa) o escalar a un agente.
 func coverageNoConvenioHandler() sm.StateHandler {
@@ -223,12 +241,20 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 			espacios = 1
 		}
 
-		// Gate de cobertura (solo en la primera búsqueda, no en paginación "ver más"): si el
-		// contrato del paciente NO tiene convenio para el CUP (precio 0 o inexistente en
-		// sis_proc_precios), no se busca slot ni se agenda; se ofrece particular o agente.
+		// Códigos a probar: primario + alternativos (mismo grupo). La búsqueda de slots los prueba en
+		// orden, así que el gate de cobertura debe mirar TODOS, no solo el primario.
+		cupsCodesToTry := []string{cupsCode}
+		if alternativeCodes != "" {
+			cupsCodesToTry = append(cupsCodesToTry, strings.Split(alternativeCodes, ",")...)
+		}
+
+		// Gate de cobertura (solo en la primera búsqueda, no en paginación "ver más"): si NINGÚN
+		// código del grupo tiene convenio (precio 0 o inexistente en sis_proc_precios), no se busca
+		// slot ni se agenda; se ofrece particular o agente. L1: antes solo evaluaba el CUP primario,
+		// que en grupos multi-CUP (EMG/NC) suele tener Precio=0 aunque el alternativo SÍ esté cubierto.
 		// Fail-OPEN: si el chequeo falla por un error técnico, se continúa normal (no bloquear).
 		if sess.GetContext("slots_after_date") == "" {
-			if covered, checkErr := isCupCovered(ctx, priceRepo, entityRepo, sess, cupsCode); checkErr == nil && !covered {
+			if covered, checkErr := anyCupCovered(ctx, priceRepo, entityRepo, sess, cupsCodesToTry); checkErr == nil && !covered {
 				cupsName := sess.GetContext("cups_name")
 				if cupsName == "" {
 					cupsName = cupsCode
@@ -243,12 +269,6 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 			} else if checkErr != nil {
 				slog.Warn("coverage_check_failed_fail_open", "cup", cupsCode, "error", checkErr)
 			}
-		}
-
-		// Try to find slots with the primary CUPS code first, then alternatives
-		cupsCodesToTry := []string{cupsCode}
-		if alternativeCodes != "" {
-			cupsCodesToTry = append(cupsCodesToTry, strings.Split(alternativeCodes, ",")...)
 		}
 
 		var slots []services.AvailableSlot
