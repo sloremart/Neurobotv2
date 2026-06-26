@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -1028,5 +1030,45 @@ func TestIsSedatable(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("isSedatable(%q) = %v, want %v", tt.cups, got, tt.want)
 		}
+	}
+}
+
+// TestAskGestationalWeeks_PatientDigitIsButton (M4): el paciente que responde el Sí/No tecleando "1"
+// (en vez de tocar el chip) debe tratarse como Sí y continuar — no caer en la rama numérica de agente.
+func TestAskGestationalWeeks_PatientDigitIsButton(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
+
+	sess := testSess(sm.StateAskGestationalWeeks)
+	// cups 881436: rango 110-136 (×10); _prompted_weeks=1 → la pregunta ya se mostró.
+	sess.Context["cups_code"] = "881436"
+	sess.Context["_prompted_weeks"] = "1"
+
+	// textM usa ID "msg-1" (NO agent-) → es input de paciente.
+	result, err := m.Process(context.Background(), sess, textM("1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateAskContrasted {
+		t.Errorf("M4: '1' del paciente debe tratarse como Sí (→ASK_CONTRASTED), got %s", result.NextState)
+	}
+}
+
+// TestAskGestationalWeeks_AgentNumberInRange: el número de semanas del AGENTE (ID agent-) sí se parsea.
+func TestAskGestationalWeeks_AgentNumberInRange(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
+
+	sess := testSess(sm.StateAskGestationalWeeks)
+	sess.Context["cups_code"] = "881436"
+	sess.Context["_prompted_weeks"] = "1"
+
+	agentMsg := bird.InboundMessage{ID: "agent-cmd-x", Phone: "+573001234567", MessageType: "text", Text: "12", ReceivedAt: time.Now()}
+	result, err := m.Process(context.Background(), sess, agentMsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateAskContrasted {
+		t.Errorf("agente '12' (en rango 110-136) debe continuar a ASK_CONTRASTED, got %s", result.NextState)
 	}
 }
