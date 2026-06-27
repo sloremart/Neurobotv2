@@ -81,7 +81,8 @@
       "Bash(cp \"/c/laragon/www/CHATBOT/files/.golangci.yml\" .golangci.yml)",
       "Bash(MSYS_NO_PATHCONV=1 timeout 420 docker run --rm -v \"/c/laragon/www/CHATBOT/Neurobotv2\":/app -w /app golangci/golangci-lint:v2.11.0 sh -c 'golangci-lint version; echo \"--- config verify ---\"; golangci-lint config verify; echo \"--- run utils \\(rapido\\) ---\"; golangci-lint run ./internal/utils/... 2>&1 | tail -25')",
       "Bash(MSYS_NO_PATHCONV=1 timeout 480 docker run --rm -v \"/c/laragon/www/CHATBOT/Neurobotv2\":/app -w /app golangci/golangci-lint:v2.11.0 sh -c 'golangci-lint version; echo \"--- config verify ---\"; golangci-lint config verify 2>&1; echo \"--- run utils ---\"; golangci-lint run ./internal/utils/... 2>&1 | tail -20')",
-      "Bash(chmod +x scripts/claude-format.sh)"
+      "Bash(chmod +x scripts/claude-format.sh)",
+      "Bash(bash auditoria/cycle.sh md-only)"
     ]
   }
 }

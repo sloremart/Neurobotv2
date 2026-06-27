@@ -98,6 +98,20 @@ type SiesaRefReader interface {
 	Asuntos(ctx context.Context) ([]domain.AsuntoRef, error)
 }
 
+// SiesaAnalyticsReader expone KPIs agregados de SIESA (ocupación, citas por estado, citas del bot
+// para conciliación) — solo lectura, cacheados, NOLOCK — para las vistas del dashboard.
+type SiesaAnalyticsReader interface {
+	Occupancy(ctx context.Context, windowDays int) ([]domain.OccupancyRow, error)
+	AppointmentsByState(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error)
+	BotAppointmentsWithCups(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
+}
+
+// CupsMedicoReader devuelve los médicos habilitados para un CUPS (cups_medico, catálogo local).
+// Se usa para cruzar las citas del bot y detectar médico mal asignado (conciliación).
+type CupsMedicoReader interface {
+	FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error)
+}
+
 // InternalHandler handles admin/internal API endpoints.
 type InternalHandler struct {
 	appointmentRepo repository.AppointmentRepository
@@ -111,10 +125,12 @@ type InternalHandler struct {
 	tracker         InternalEventLogger
 	cfg             *config.Config
 	startTime       time.Time
-	reminderRunner  ReminderRunner     // optional: manual trigger for WA reminders
-	sessionReader   SessionDebugReader // optional: session debug queries
-	flowReader      FlowTraceReader    // optional: flow-events trace queries
-	siesaRef        SiesaRefReader     // optional: SIESA reference catalogs (médicos, asuntos)
+	reminderRunner  ReminderRunner       // optional: manual trigger for WA reminders
+	sessionReader   SessionDebugReader   // optional: session debug queries
+	flowReader      FlowTraceReader      // optional: flow-events trace queries
+	siesaRef        SiesaRefReader       // optional: SIESA reference catalogs (médicos, asuntos)
+	siesaAnalytics  SiesaAnalyticsReader // optional: SIESA aggregated KPIs (ocupación, citas, conciliación)
+	cupsMedico      CupsMedicoReader     // optional: cups_medico reader for the conciliación cross
 }
 
 // NewInternalHandler creates a new internal handler.
@@ -164,6 +180,125 @@ func (h *InternalHandler) SetFlowReader(r FlowTraceReader) {
 // SetSiesaRefReader injects the SIESA reference catalog reader (médicos, asuntos).
 func (h *InternalHandler) SetSiesaRefReader(r SiesaRefReader) {
 	h.siesaRef = r
+}
+
+// SetSiesaAnalyticsReader injects the SIESA aggregated KPI reader and the cups_medico reader
+// (para el cruce de conciliación). Ambos son opcionales (solo si SIESA está disponible).
+func (h *InternalHandler) SetSiesaAnalyticsReader(a SiesaAnalyticsReader, cm CupsMedicoReader) {
+	h.siesaAnalytics = a
+	h.cupsMedico = cm
+}
+
+// queryIntDefault lee un parámetro entero de la query string, con valor por defecto si falta o es inválido.
+func queryIntDefault(r *http.Request, name string, def int) int {
+	if v := r.URL.Query().Get(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// HandleSiesaOcupacion devuelve la ocupación de agenda (slots ocupados vs libres) por médico/día.
+// Agregado y cacheado. GET /api/internal/siesa/ocupacion?dias=14
+func (h *InternalHandler) HandleSiesaOcupacion(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	dias := queryIntDefault(r, "dias", 14)
+	rows, err := h.siesaAnalytics.Occupancy(r.Context(), dias)
+	if err != nil {
+		slog.Error("siesa ocupacion failed", "error", err)
+		http.Error(w, "failed to read ocupación", http.StatusInternalServerError)
+		return
+	}
+	var ocup, libre int
+	for _, o := range rows {
+		ocup += o.Ocupados
+		libre += o.Libres
+	}
+	pct := 0.0
+	if ocup+libre > 0 {
+		pct = float64(ocup) / float64(ocup+libre) * 100
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"rows": rows, "ocupados": ocup, "libres": libre, "ocupacion_pct": pct, "dias": dias,
+	})
+}
+
+// HandleSiesaCitasEstado devuelve el conteo de citas por día y estado (verdad de SIESA).
+// Agregado y cacheado. GET /api/internal/siesa/citas-estado?from=YYYY-MM-DD&to=YYYY-MM-DD
+func (h *InternalHandler) HandleSiesaCitasEstado(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	rows, err := h.siesaAnalytics.AppointmentsByState(r.Context(), from, to)
+	if err != nil {
+		slog.Error("siesa citas-estado failed", "error", err)
+		http.Error(w, "failed to read citas por estado", http.StatusInternalServerError)
+		return
+	}
+	totals := map[string]int{}
+	for _, s := range rows {
+		totals[s.Estado] += s.Total
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"rows": rows, "totales": totals})
+}
+
+// HandleSiesaConciliacion cruza las citas creadas por el bot (SIESA) con cups_medico (local) y
+// reporta las que tienen un médico que NO realiza el CUPS (mide si el bug de mal-asignación reaparece).
+// GET /api/internal/siesa/conciliacion?dias=4
+func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil || h.cupsMedico == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	dias := queryIntDefault(r, "dias", 4)
+	botCedula := ""
+	if h.cfg != nil {
+		botCedula = h.cfg.SIESAAssignUserCedula
+	}
+	citas, err := h.siesaAnalytics.BotAppointmentsWithCups(r.Context(), botCedula, dias)
+	if err != nil {
+		slog.Error("siesa conciliacion failed", "error", err)
+		http.Error(w, "failed to read conciliación", http.StatusInternalServerError)
+		return
+	}
+	type misassigned struct {
+		CitaID  int    `json:"cita_id"`
+		CodMedi int    `json:"cod_medi"`
+		Cups    string `json:"cups"`
+		Fecha   string `json:"fecha"`
+	}
+	bad := make([]misassigned, 0)
+	checked := 0
+	for _, c := range citas {
+		allowed, err := h.cupsMedico.FindMedicosForCups(r.Context(), c.Cups)
+		if err != nil || len(allowed) == 0 {
+			continue // fail-open: CUPS sin médicos configurados no se evalúa
+		}
+		checked++
+		ok := false
+		for _, m := range allowed {
+			if m == c.CodMedi {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			bad = append(bad, misassigned{c.CitaID, c.CodMedi, c.Cups, c.Fecha})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"mal_asignadas": bad, "total_mal": len(bad), "evaluadas": checked, "bot_citas": len(citas), "dias": dias,
+	})
 }
 
 // HandleSiesaMedicos devuelve la lista de médicos de SIESA (sis_medi) para el selector del

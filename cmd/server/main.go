@@ -403,6 +403,11 @@ func main() {
 		// dashboard. Solo lectura, cacheados 30 min (casi estáticos) → no golpean SIESA por carga.
 		if externalDB != nil {
 			internalHandler.SetSiesaRefReader(siesa.NewReferenceRepo(externalDB, 30*time.Minute))
+			// KPIs agregados de SIESA (ocupación, citas por estado, conciliación) para el dashboard.
+			// Cache 10 min; la conciliación cruza con cups_medico (repos.Procedure, BD local).
+			if repos != nil && repos.Procedure != nil {
+				internalHandler.SetSiesaAnalyticsReader(siesa.NewAnalyticsRepo(externalDB, 10*time.Minute), repos.Procedure)
+			}
 		}
 	}
 
@@ -442,6 +447,10 @@ func main() {
 		// Catálogos de referencia de SIESA (read-only) para el módulo de catálogo del dashboard.
 		internalMux.HandleFunc("GET /api/internal/siesa/medicos", internalHandler.HandleSiesaMedicos)
 		internalMux.HandleFunc("GET /api/internal/siesa/asuntos", internalHandler.HandleSiesaAsuntos)
+		// KPIs agregados de SIESA (solo lectura, cacheados) para las vistas del dashboard.
+		internalMux.HandleFunc("GET /api/internal/siesa/ocupacion", internalHandler.HandleSiesaOcupacion)
+		internalMux.HandleFunc("GET /api/internal/siesa/citas-estado", internalHandler.HandleSiesaCitasEstado)
+		internalMux.HandleFunc("GET /api/internal/siesa/conciliacion", internalHandler.HandleSiesaConciliacion)
 		mux.Handle(
 			"/api/internal/",
 			api.RateLimiter(30, time.Minute)(
