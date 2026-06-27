@@ -15,26 +15,24 @@ Inventario: el dashboard calcula sus KPIs leyendo `chat_events` (≈150 `event_t
 admin_agenda, …), `sessions`, `waiting_list`, `notification_pending` y, para SIESA, los endpoints
 del bot (ocupación, citas por situación, conciliación).
 
-**Observaciones (a corregir, fuera del alcance de este trabajo):**
+**Observaciones (CORREGIDAS 2026-06-27, salvo donde se indique):**
 
-1. **KPIs "de hoy" volátiles.** Overview, Sesiones, Agendamiento, Notificaciones, OCR y Pacientes
-   usan una fecha única (hoy por defecto). En un día lento o a primera hora, las tarjetas se ven
-   casi vacías aunque las tendencias (7–30 días) tengan datos. → Recomendación: selector de rango
-   o default de "últimos 7 días" para las tarjetas de cabecera.
+1. ✅ **KPIs "de hoy" volátiles — CORREGIDO.** Overview, Sesiones, Agendamiento, Notificaciones, OCR y
+   Pacientes ahora traen un **selector de fecha con default = ayer** (componente `DateField` en el
+   slot `actions` del `PageHeader`; helper `yesterday()`). Frontend-only: los endpoints ya aceptaban
+   `?date=`. Evita el "hoy a primera hora vacío" sin trabajo de backend.
 
-2. **Dos embudos solapados.** Existen `/api/funnel` (sobre `chat_events`, 11 pasos:
-   session_started→…→appointment_created) y `/api/flow-stats?flow=agendar` (sobre `flow_events`:
-   ocr_ok→slots_found→booking_success + fugas). La vista Conversión usa el segundo; el endpoint
-   `/api/funnel` (más detallado) **no lo consume ninguna página**. → Surface el detallado o eliminar
-   el endpoint muerto para evitar divergencias.
+2. ✅ **Dos embudos solapados — CORREGIDO (surface).** La vista Conversión ahora muestra el **embudo
+   detallado de 11 pasos** (`/api/funnel`, sesiones distintas sobre `chat_events`) en vez del de 3
+   pasos; las "fugas" siguen viniendo de `/api/flow-stats`. El endpoint `/api/funnel` dejó de estar
+   muerto. (Se descartó eliminarlo.)
 
-3. **"Citas según el bot" vs verdad de SIESA.** `appointment_created/confirmed/cancelled`
-   (`chat_events`) reflejan lo que el bot **creyó** hacer; la verdad son las `citas` de SIESA (lo
-   mide la nueva vista de Conciliación). Pueden divergir si una creación falló tras loguear el
-   evento. → Etiquetar la vista Agendamiento como "según el bot" y apoyarse en Conciliación para la
-   verdad.
+3. ✅ **"Citas según el bot" vs verdad de SIESA — CORREGIDO (etiquetado).** La vista Agendamiento se
+   tituló **"Agendamiento (según el bot)"** con una nota que aclara que son eventos del bot
+   (`appointment_created/confirmed/cancelled`), no la verdad de SIESA, y remite a **Operación SIESA**
+   (no-show, conciliación) para los resultados reales.
 
-4. **Confirmación/cancelación: definición correcta es la de SIESA.** Ya migramos la vista "Citas por
+4. ✅ **Confirmación/cancelación: definición correcta es la de SIESA.** Ya migramos la vista "Citas por
    situación" a la definición real (confirmada = `AsistenciaConfirmada=1` o estado CC/A; cancelada =
    estado 'C'). Los eventos del bot (`appointment_confirmed`) son una señal paralela, no la verdad.
 
