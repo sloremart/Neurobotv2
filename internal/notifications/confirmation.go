@@ -82,6 +82,7 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 		if m.procRepo != nil {
 			var prepText string
 			address := ""
+			mapsURL := ""
 			seenCup := make(map[string]bool)
 
 			for _, a := range allAppts {
@@ -96,6 +97,7 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 					}
 					if address == "" && p.Address != "" {
 						address = p.Address
+						mapsURL = p.MapsURL
 					}
 					if p.Preparation != "" {
 						prepText += fmt.Sprintf("\n- Para *%s*: %s", proc.CupName, p.Preparation)
@@ -111,7 +113,7 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 
 			if address != "" {
 				if m.addrMapper != nil {
-					msg += "\n" + m.addrMapper.FormatAddress(address)
+					msg += "\n" + m.addrMapper.FormatAddress(address, mapsURL)
 				} else {
 					msg += fmt.Sprintf("\n*Dirección:* %s", address)
 				}

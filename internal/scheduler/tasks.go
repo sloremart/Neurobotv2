@@ -287,7 +287,7 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 			continue // No matching appointment — may have been confirmed/cancelled meanwhile
 		}
 
-		// Resolve address from first procedure in the appointment (cups_procedimientos.direccion)
+		// Resolve address from first procedure in the appointment (via center_location_id → center_locations)
 		clinicAddress := ""
 		if t.ProcedureRepo != nil {
 			for _, proc := range appt.Procedures {

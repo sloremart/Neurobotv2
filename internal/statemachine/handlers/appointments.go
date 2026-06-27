@@ -786,6 +786,7 @@ func buildNotifConfirmDetail(allAppts []domain.Appointment, appt *domain.Appoint
 	if procRepo != nil {
 		var prepText string
 		address := ""
+		mapsURL := ""
 		seenCup := make(map[string]bool)
 		for _, a := range allAppts {
 			for _, proc := range a.Procedures {
@@ -799,6 +800,7 @@ func buildNotifConfirmDetail(allAppts []domain.Appointment, appt *domain.Appoint
 				}
 				if address == "" && p.Address != "" {
 					address = p.Address
+					mapsURL = p.MapsURL
 				}
 				if p.Preparation != "" {
 					prepText += fmt.Sprintf("\n- Para *%s*: %s", proc.CupName, p.Preparation)
@@ -813,7 +815,7 @@ func buildNotifConfirmDetail(allAppts []domain.Appointment, appt *domain.Appoint
 		}
 		if address != "" {
 			if addrMapper != nil {
-				msg += "\n" + addrMapper.FormatAddress(address)
+				msg += "\n" + addrMapper.FormatAddress(address, mapsURL)
 			} else {
 				msg += fmt.Sprintf("\n*Dirección:* %s", address)
 			}
@@ -873,6 +875,7 @@ func executeConfirmAppointment(ctx context.Context, sess *session.Session, apptS
 	if procRepo != nil {
 		var prepText string
 		address := ""
+		mapsURL := ""
 		for _, a := range block {
 			for _, proc := range a.Procedures {
 				if proc.CupCode == "" {
@@ -884,6 +887,7 @@ func executeConfirmAppointment(ctx context.Context, sess *session.Session, apptS
 				}
 				if address == "" && p.Address != "" {
 					address = p.Address
+					mapsURL = p.MapsURL
 				}
 				if p.Preparation != "" {
 					prepText += fmt.Sprintf("\n• Para *%s*: %s", proc.CupName, p.Preparation)
@@ -898,7 +902,7 @@ func executeConfirmAppointment(ctx context.Context, sess *session.Session, apptS
 		}
 		if address != "" {
 			if addrMapper != nil {
-				msg += "\n" + addrMapper.FormatAddress(address)
+				msg += "\n" + addrMapper.FormatAddress(address, mapsURL)
 			} else {
 				msg += fmt.Sprintf("\n*Dirección:* %s", address)
 			}
@@ -1011,7 +1015,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 	}
 
 	var prepText string
-	var address string
+	var address, mapsURL string
 	seen := make(map[string]bool)
 	for _, appt := range block {
 		for _, proc := range appt.Procedures {
@@ -1034,6 +1038,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 			}
 			if p.Address != "" && address == "" {
 				address = p.Address
+				mapsURL = p.MapsURL
 			}
 		}
 	}
@@ -1045,7 +1050,7 @@ func showAppointmentPreparation(ctx context.Context, sess *session.Session, appt
 		msg = "📋 *Preparación para tu cita:*" + prepText
 		if address != "" {
 			if addrMapper != nil {
-				msg += "\n\n" + addrMapper.FormatAddress(address)
+				msg += "\n\n" + addrMapper.FormatAddress(address, mapsURL)
 			} else {
 				msg += fmt.Sprintf("\n\n📍 *Dirección:* %s", address)
 			}

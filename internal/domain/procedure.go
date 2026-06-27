@@ -10,6 +10,7 @@ type Procedure struct {
 	ServiceName    string // nombre de servicio clínico DERIVADO del asunto (no de Antares)
 	Preparation    string
 	Address        string
+	MapsURL        string // URL de Google Maps de la sede, resuelta por center_location_id (FK)
 	VideoURL       string
 	AudioURL       string
 	Type           string

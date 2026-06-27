@@ -27,8 +27,14 @@ func NewProcedureRepo(db *sql.DB) *ProcedureRepo {
 // Las columnas Antares `servicio_id`/`servicio` (y antes `tipo`, `especialidad_id`,
 // `horario_especifico_id`) ya NO se leen: la clasificación del CUPS sale del `asunto_id` de
 // SIESA (ver serviceNameForSubjectType), no del catálogo Antares.
+// La dirección y la URL de Google Maps se resuelven desde center_location_id (FK a center_locations)
+// → dirección + mapa canónicos para el mensaje de WhatsApp. La columna `direccion` (texto legado) se
+// eliminó en la migración 027: la ubicación vive solo en center_locations, no duplicada por CUPS.
+// COLLATE para conciliar las collations distintas de las dos tablas.
 const procedureColumns = `id, codigo_cups, nombre, COALESCE(descripcion, ''),
-	COALESCE(preparacion, ''), COALESCE(direccion, ''),
+	COALESCE(preparacion, ''),
+	COALESCE((SELECT cl.address FROM center_locations cl WHERE cl.id = cups_procedimientos.center_location_id) COLLATE utf8mb4_unicode_ci, ''),
+	COALESCE((SELECT cl.google_maps_url FROM center_locations cl WHERE cl.id = cups_procedimientos.center_location_id) COLLATE utf8mb4_unicode_ci, ''),
 	COALESCE(video_url, ''), COALESCE(audio_url, ''),
 	asunto_id, COALESCE(activo, 1)`
 
@@ -37,7 +43,7 @@ func (r *ProcedureRepo) scanOne(row *sql.Row) (*domain.Procedure, error) {
 	var subjectTypeID, active int
 	err := row.Scan(
 		&p.ID, &p.Code, &p.Name, &p.Description,
-		&p.Preparation, &p.Address,
+		&p.Preparation, &p.Address, &p.MapsURL,
 		&p.VideoURL, &p.AudioURL,
 		&subjectTypeID, &active,
 	)

@@ -283,6 +283,7 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				proc, _ := procRepo.FindByCode(ctx, code)
 				if proc != nil {
 					address = proc.Address
+					sess.SetContext("cups_maps_url", proc.MapsURL)
 					if proc.Preparation != "" {
 						sess.SetContext("cups_preparation", proc.Preparation)
 					}
@@ -564,7 +565,7 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 
 		if selected.ClinicAddress != "" {
 			if addrMapper != nil {
-				summary += "\n" + addrMapper.FormatAddress(selected.ClinicAddress)
+				summary += "\n" + addrMapper.FormatAddress(selected.ClinicAddress, sess.GetContext("cups_maps_url"))
 			} else {
 				summary += fmt.Sprintf("\nDirección: %s", selected.ClinicAddress)
 			}
@@ -1394,7 +1395,7 @@ func bookingSuccessHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 
 		if address != "" {
 			if addrMapper != nil {
-				successMsg += "\n" + addrMapper.FormatAddress(address)
+				successMsg += "\n" + addrMapper.FormatAddress(address, sess.GetContext("cups_maps_url"))
 			} else {
 				successMsg += fmt.Sprintf("\nDirección: %s", address)
 			}
@@ -1502,7 +1503,7 @@ func buildBookingSummary(sess *session.Session, slot *services.AvailableSlot, ad
 
 	if slot.ClinicAddress != "" {
 		if addrMapper != nil {
-			summary += "\n" + addrMapper.FormatAddress(slot.ClinicAddress)
+			summary += "\n" + addrMapper.FormatAddress(slot.ClinicAddress, sess.GetContext("cups_maps_url"))
 		} else {
 			summary += fmt.Sprintf("\nDirección: %s", slot.ClinicAddress)
 		}
