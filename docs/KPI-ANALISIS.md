@@ -60,15 +60,35 @@ Priorizados por valor/esfuerzo:
    - Dashboard: proxy `GET /api/siesa/conversion` → sección "Conversión real bot→SIESA" en
      `Conversion.tsx` (sesiones, citas reales, % real vs % bot, discrepancia, citas reales por día).
      El embudo existente quedó etiquetado "según el bot".
-3. **Efectividad de la lista de espera.** `scheduled/joined` + tiempo medio hasta agendar. Los datos
-   ya están en `waiting_list` + eventos `waiting_list_*`.
-4. **Reagendamientos consolidados.** self-service + confirmadas por notificación + admin
-   (`reschedule_self_service`, `reschedule_confirmed`, `admin_agendas_rescheduled` ya se calculan en
-   el backend pero no se muestran agrupados).
-5. **SLA de escalación.** Tiempo hasta la primera respuesta del agente y % de escaladas resueltas vs
-   expiradas (parcialmente disponible en el flow `escalacion`).
-6. **Efectividad por canal.** Tasa de confirmación WhatsApp vs IVR (datos ya presentes en los
-   eventos `notification_*` e IVR).
+3. ✅ **Efectividad de la lista de espera — IMPLEMENTADO (2026-06-27).** Conversión (agendados/inscritos),
+   declinación, expiración y tiempo medio hasta agendar (`resolved_at - created_at`), más efectividad
+   por CUPS. Solo dashboard (lee `waiting_list` en MySQL directo, sin tocar el bot).
+   - `kpi.Repository.GetWaitingListEffectiveness` + `GET /api/waiting-list/effectiveness?days=30`.
+   - Vista: sección "Efectividad · últimos 30 días" en `WaitingList.tsx` (% conversión/declinación/
+     expiración, horas a agendar, donut por estado, barras de % conversión por CUPS).
+4. ✅ **Reagendamientos consolidados — IMPLEMENTADO (2026-06-27).** Total por origen: autogestión del
+   paciente (`notification_reschedule_self_service`), confirmados por notificación
+   (`notification_reschedule_confirmed`) y admin (`admin_reschedule_agenda`), + tendencia diaria. Solo
+   dashboard (agrega `chat_events` en MySQL directo).
+   - `kpi.Repository.GetRescheduleSummary` + `GET /api/reschedules?days=30`.
+   - Vista: sección "Reagendamientos consolidados · últimos 30 días" en `Notifications.tsx` (4 tarjetas
+     por origen + donut por origen + tendencia diaria).
+5. ✅ **SLA de escalación — IMPLEMENTADO (2026-06-27).** % atendidas por el agente, % resueltas vs
+   expiradas (sobre las cerradas), tiempo de respuesta del agente y su distribución por buckets
+   (<5 / 5–15 / 15–60 / >60 min). Solo dashboard (lee `sessions` en MySQL directo).
+   - `kpi.Repository.GetEscalationSLA` + `GET /api/escalation/sla?days=30`.
+   - Vista: sección "SLA de escalación · últimos 30 días" en `Escalation.tsx`.
+   - Tiempo = `escalated_at → last_agent_msg_at`. CAVEAT: `last_agent_msg_at` es la actividad del
+     agente (se sella en cada saliente humano); = primera respuesta en escalaciones de un intercambio,
+     cota superior en conversaciones largas. Si se necesita la primera respuesta exacta, habría que
+     agregar una columna `first_agent_msg_at` en el bot (no hecho).
+6. ✅ **Efectividad por canal — IMPLEMENTADO (2026-06-27).** Tasa de confirmación y de respuesta
+   WhatsApp vs IVR. WhatsApp cuenta solo envíos de tipo confirmación (`notification_sent` type=
+   confirmation → `notification_confirmed`/`notification_cancel_confirmed`/`notification_timeout`);
+   IVR usa `notification_ivr_sent`/`notification_confirmed_ivr`/`notification_cancelled_ivr` y deriva
+   "sin respuesta". Solo dashboard (agrega `chat_events` en MySQL directo).
+   - `kpi.Repository.GetChannelEffectiveness` + `GET /api/channels?days=30`.
+   - Vista: sección "Efectividad por canal · WhatsApp vs IVR" en `Notifications.tsx`.
 
 ---
 
