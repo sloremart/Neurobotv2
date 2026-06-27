@@ -52,9 +52,10 @@ type AppointmentRepository interface {
 type ScheduleRepository interface {
 	// FindAvailableSlots returns every free SIESA slot for agendas serving the given subject
 	// (asunto_id), within the 3h..90-day window, optionally after the given date (YYYY-MM-DD,
-	// for pagination). Each returned row is one bookable slot. Replaces the old
+	// for pagination). allowedDoctors restringe a los médicos (sis_medi.codigo) que realizan el
+	// CUPS (cups_medico); vacío = sin restricción. Cada fila es un slot agendable. Replaces the old
 	// FindFutureWorkingDays + FindScheduleConfig + FindBookedSlots + in-memory slot generation.
-	FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error)
+	FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error)
 	FindByScheduleID(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error)
 	FindWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
 	UpdateWorkingDayExceptionDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
@@ -79,6 +80,9 @@ type ProcedureRepository interface {
 	// FindSubjectTypeForCups returns the SIESA subject id (asunto_id) for a CUPS code,
 	// or 0 if not found. Deterministic replacement for ScheduleRepo.FindAsuntoForCups.
 	FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error)
+	// FindMedicosForCups returns the sis_medi codes (cod_medi) authorized to perform a CUPS,
+	// from the cups_medico relation. Empty slice = no restriction configured (callers fail-open).
+	FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error)
 }
 
 // EntityRepository — entidades/EPS activas.

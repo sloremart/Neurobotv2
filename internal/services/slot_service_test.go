@@ -13,6 +13,7 @@ import (
 
 type mockProcedureRepo struct {
 	findSubjectTypeForCupsFn func(ctx context.Context, cupsCode string) (int, error)
+	findMedicosForCupsFn     func(ctx context.Context, cupsCode string) ([]int, error)
 }
 
 func (m *mockProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {
@@ -39,13 +40,20 @@ func (m *mockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode
 	return 8, nil
 }
 
-type mockScheduleRepo struct {
-	findAvailableSlotsFn func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error)
+func (m *mockProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error) {
+	if m.findMedicosForCupsFn != nil {
+		return m.findMedicosForCupsFn(ctx, cupsCode)
+	}
+	return nil, nil
 }
 
-func (m *mockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+type mockScheduleRepo struct {
+	findAvailableSlotsFn func(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error)
+}
+
+func (m *mockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
 	if m.findAvailableSlotsFn != nil {
-		return m.findAvailableSlotsFn(ctx, asuntoID, afterDate)
+		return m.findAvailableSlotsFn(ctx, asuntoID, afterDate, allowedDoctors)
 	}
 	return nil, nil
 }
@@ -93,7 +101,7 @@ func dayRows(doc, name, date string, agendaID, durationMin, startMin, endMin int
 func TestGetAvailableSlots_BasicFlow(t *testing.T) {
 	// 08:00–10:00, 30-min slots = 4 slots.
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return dayRows("12345", "Dr. Garcia", "2026-03-16", 1, 30, 8*60, 10*60), nil
 		},
 	}
@@ -116,6 +124,41 @@ func TestGetAvailableSlots_BasicFlow(t *testing.T) {
 			t.Errorf("expected first time slot '202603160800', got %q", slots[0].TimeSlot)
 		}
 	}
+}
+
+func TestGetAvailableSlots_CupsMedicoFilter(t *testing.T) {
+	proc := &mockProcedureRepo{
+		findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 15, nil },
+		findMedicosForCupsFn:     func(_ context.Context, _ string) ([]int, error) { return []int{19, 22}, nil },
+	}
+
+	t.Run("el filtro cups_medico se pasa a la query", func(t *testing.T) {
+		var got []int
+		sched := &mockScheduleRepo{
+			findAvailableSlotsFn: func(_ context.Context, _ int, _ string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
+				got = allowedDoctors
+				return nil, nil
+			},
+		}
+		_, _ = NewSlotService(proc, sched).GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "930860"})
+		if len(got) != 2 || got[0] != 19 || got[1] != 22 {
+			t.Errorf("esperaba allowedDoctors [19 22], got %v", got)
+		}
+	})
+
+	t.Run("con sedacion NO se restringe por cups_medico", func(t *testing.T) {
+		got := []int{-1} // sentinela: debe quedar en nil
+		sched := &mockScheduleRepo{
+			findAvailableSlotsFn: func(_ context.Context, _ int, _ string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
+				got = allowedDoctors
+				return nil, nil
+			},
+		}
+		_, _ = NewSlotService(proc, sched).GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "930860", IsSedated: true})
+		if got != nil {
+			t.Errorf("con sedación esperaba allowedDoctors nil, got %v", got)
+		}
+	})
 }
 
 func TestGetAvailableSlots_NoSubject(t *testing.T) {
@@ -148,7 +191,7 @@ func TestGetAvailableSlots_AgeRestrictionFilters(t *testing.T) {
 	// "7178922" has a minimum-age restriction; "99999" has none. A 10-year-old patient
 	// must only get slots from the unrestricted doctor.
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			var rows []domain.AvailableSlotRow
 			rows = append(rows, dayRows("7178922", "Dr. Restricted", "2026-03-16", 1, 60, 8*60, 10*60)...)
 			rows = append(rows, dayRows("99999", "Dr. NoRestriction", "2026-03-16", 2, 60, 8*60, 10*60)...)
@@ -172,7 +215,7 @@ func TestGetAvailableSlots_AgeRestrictionFilters(t *testing.T) {
 
 func TestGetAvailableSlots_PreferredDoctor(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			var rows []domain.AvailableSlotRow
 			rows = append(rows, dayRows("docA", "Dr. Alpha", "2026-03-16", 1, 60, 8*60, 10*60)...)
 			rows = append(rows, dayRows("docB", "Dr. Beta", "2026-03-16", 2, 60, 8*60, 10*60)...)
@@ -199,7 +242,7 @@ func TestGetAvailableSlots_PaginationAfterDate(t *testing.T) {
 	// and returns whatever the repo gives back.
 	var gotAfter string
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, afterDate string, _ []int) ([]domain.AvailableSlotRow, error) {
 			gotAfter = afterDate
 			return dayRows("doc1", "Dr. Test", "2026-03-18", 1, 60, 8*60, 10*60), nil
 		},
@@ -224,7 +267,7 @@ func TestGetAvailableSlots_PaginationAfterDate(t *testing.T) {
 
 func TestGetAvailableSlots_MaxSlotsLimit(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return dayRows("doc1", "Dr. Test", "2026-03-16", 1, 30, 8*60, 12*60), nil // 8 slots
 		},
 	}
@@ -240,7 +283,7 @@ func TestGetAvailableSlots_MaxSlotsLimit(t *testing.T) {
 
 func TestGetAvailableSlots_ContrastedSkipsSaturday(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			var rows []domain.AvailableSlotRow
 			rows = append(rows, dayRows("doc1", "Dr. Test", "2026-03-20", 1, 60, 8*60, 10*60)...) // Friday
 			rows = append(rows, dayRows("doc1", "Dr. Test", "2026-03-21", 1, 60, 8*60, 10*60)...) // Saturday
@@ -265,7 +308,7 @@ func TestGetAvailableSlots_ContrastedSkipsSaturday(t *testing.T) {
 func TestGetAvailableSlots_ContrastedTimeWindow(t *testing.T) {
 	// Contrasted: only 7AM–5PM. Provide slots at 06:00 and 18:00 (excluded) plus 09:00 (kept).
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return []domain.AvailableSlotRow{
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-20", "06:00", 1, 60),
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-20", "09:00", 1, 60),
@@ -287,7 +330,7 @@ func TestGetAvailableSlots_ConsecutiveSpaces(t *testing.T) {
 	// 08:00–10:00, 30-min slots, but 09:00 missing (booked). Need 2 consecutive:
 	// valid starts: 08:00 (08:00+08:30). 08:30 fails (needs 09:00). 09:30 fails (needs 10:00).
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return []domain.AvailableSlotRow{
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:00", 1, 30),
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:30", 1, 30),
@@ -313,7 +356,7 @@ func TestGetAvailableSlots_ConsecutiveSpaces(t *testing.T) {
 //   - inicio 17:00 → el slot inicial ya cae fuera de ventana → INVÁLIDO
 func TestGetAvailableSlots_ContrastWindowConsecutive(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return []domain.AvailableSlotRow{
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "16:00", 1, 30),
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "16:30", 1, 30),
@@ -342,7 +385,7 @@ func TestGetAvailableSlots_ContrastWindowConsecutive(t *testing.T) {
 //   - inicio 15:00 → slot inicial fuera de ventana → INVÁLIDO
 func TestGetAvailableSlots_CupWindowConsecutive(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return []domain.AvailableSlotRow{
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "14:00", 1, 30),
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "14:30", 1, 30),
@@ -369,7 +412,7 @@ func TestGetAvailableSlots_CupWindowConsecutive(t *testing.T) {
 // dejaría 0 slots); deben devolverse los slots de los demás médicos elegibles.
 func TestGetAvailableSlots_PreferredDoctorAgeRestricted(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			var rows []domain.AvailableSlotRow
 			rows = append(rows, dayRows("7178922", "Dr. Restringido", "2026-03-16", 1, 60, 8*60, 10*60)...) // min 18 años
 			rows = append(rows, dayRows("99999", "Dr. Libre", "2026-03-16", 2, 60, 8*60, 10*60)...)
@@ -400,7 +443,7 @@ func TestGetAvailableSlots_PreferredDoctorAgeRestricted(t *testing.T) {
 // Espacios=2: 08:00 (necesita 08:20) y 08:20 (necesita 08:40) son válidos; 08:40 no (no hay 09:00).
 func TestGetAvailableSlots_ConsecutiveRealInterval(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return []domain.AvailableSlotRow{
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:00", 1, 30), // DurationMin=30 (falso)
 				slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:20", 1, 30),
@@ -432,7 +475,7 @@ func TestGetAvailableSlots_ConsecutiveRealInterval(t *testing.T) {
 // ofrecerse ningún inicio (el claim de repo.Create reclama filas contiguas y los rechazaría).
 // Con el viejo min-gap=20 se habría ofrecido 08:00 (08:20 libre) → oferta falsa.
 func TestGetAvailableSlots_GridIntervalGCD(t *testing.T) {
-	rows := func(_ context.Context, _ int, _ string) ([]domain.AvailableSlotRow, error) {
+	rows := func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 		return []domain.AvailableSlotRow{
 			slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:00", 1, 30),
 			slotRow("doc1", "Dr. Test", "S-doc1", "2026-03-16", "08:20", 1, 30),
@@ -476,7 +519,7 @@ func TestGCD(t *testing.T) {
 
 func TestGetAvailableSlots_FindSlotsError(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
-		findAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return nil, fmt.Errorf("database connection failed")
 		},
 	}

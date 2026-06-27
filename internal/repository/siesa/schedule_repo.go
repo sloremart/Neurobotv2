@@ -40,7 +40,7 @@ func NewScheduleRepo(db *sql.DB) *ScheduleRepo {
 //
 // The 3h floor and 90-day ceiling are range predicates on pmd.Fecha (no CAST on the
 // column) so the datetime index is preserved. afterDate (YYYY-MM-DD) paginates forward.
-func (r *ScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+func (r *ScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
 	var sb strings.Builder
 	args := []interface{}{asuntoID}
 
@@ -93,9 +93,25 @@ WHERE pmd.IdCita IS NULL
               WHERE sam2.Medico = pmd.Medico)
   )`)
 
+	// Restricción por médicos que realizan ESTE CUPS (cups_medico). El médico del slot
+	// (pmd.Medico = sis_medi.codigo) debe estar en la lista. Cierra el hueco de granularidad de
+	// sis_asuntoMedico (asunto compartido por varios médicos que hacen procedimientos distintos).
+	// Lista vacía = fail-open (no restringir): lo decide el llamador antes de invocar.
+	if len(allowedDoctors) > 0 {
+		sb.WriteString(` AND pmd.Medico IN (`)
+		for i, doc := range allowedDoctors {
+			if i > 0 {
+				sb.WriteString(`, `)
+			}
+			args = append(args, doc)
+			fmt.Fprintf(&sb, `@p%d`, len(args))
+		}
+		sb.WriteString(`)`)
+	}
+
 	if afterDate != "" {
-		sb.WriteString(` AND pmd.Fecha >= DATEADD(DAY, 1, CAST(@p2 AS DATE))`)
 		args = append(args, afterDate)
+		fmt.Fprintf(&sb, ` AND pmd.Fecha >= DATEADD(DAY, 1, CAST(@p%d AS DATE))`, len(args))
 	}
 	sb.WriteString(` ORDER BY pmd.Fecha`)
 

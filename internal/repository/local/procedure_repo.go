@@ -169,3 +169,41 @@ func (r *ProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode str
 	}
 	return asuntoID, nil
 }
+
+// FindMedicosForCups devuelve los códigos sis_medi (cod_medi) habilitados para realizar un CUPS,
+// según la relación cups_medico. medico_id ya es sis_medi.codigo (= programacion_medico_detalle.Medico),
+// así que el resultado se puede usar directo para filtrar la agenda en SIESA. Slice vacío = el CUPS no
+// tiene médicos configurados → el llamador debe operar fail-open (no restringir). Los CUPS con sufijo
+// (ej "891901-72") caen al código base.
+func (r *ProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error) {
+	const q = `SELECT cm.medico_id
+	           FROM cups_medico cm
+	           JOIN cups_procedimientos cp ON cp.id = cm.cup_id
+	           WHERE cp.codigo_cups = ? AND cm.activo = 1`
+	ids, err := r.queryMedicoIDs(ctx, q, cupsCode)
+	if err != nil || len(ids) > 0 {
+		return ids, err
+	}
+	base := utils.BaseCupCode(cupsCode)
+	if base == cupsCode {
+		return ids, nil
+	}
+	return r.queryMedicoIDs(ctx, q, base)
+}
+
+func (r *ProcedureRepo) queryMedicoIDs(ctx context.Context, query, code string) ([]int, error) {
+	rows, err := r.db.QueryContext(ctx, query, code)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]int, 0, 8)
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

@@ -61,6 +61,10 @@ func (m *mockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode
 	return 0, nil
 }
 
+func (m *mockProcedureRepo) FindMedicosForCups(_ context.Context, _ string) ([]int, error) {
+	return nil, nil
+}
+
 // wrapOpenAIResponse wraps a content string into a full OpenAI API response JSON.
 func wrapOpenAIResponse(content string) string {
 	resp := map[string]interface{}{

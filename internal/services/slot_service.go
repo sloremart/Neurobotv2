@@ -80,9 +80,28 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		return nil, nil
 	}
 
+	// Médicos habilitados para ESTE CUPS (cups_medico). Restringe la agenda a quienes realmente
+	// realizan el procedimiento; cierra el hueco de sis_asuntoMedico (que es a nivel asunto, no CUPS,
+	// y por eso ofrecía a todos los médicos de un asunto compartido). Fail-open: si el CUPS no tiene
+	// médicos configurados, no se restringe. No aplica con sedación: la agenda es de SOPORTE SEDACION
+	// (asunto 17), atendida por otros médicos.
+	var allowedDoctors []int
+	if !query.IsSedated {
+		allowedDoctors, err = s.procedureRepo.FindMedicosForCups(ctx, query.CupsCode)
+		switch {
+		case err != nil:
+			slog.Warn("cups_medico_lookup_failed_fail_open", "cups_code", query.CupsCode, "error", err)
+			allowedDoctors = nil
+		case len(allowedDoctors) == 0:
+			slog.Debug("cups_medico_empty_fail_open", "cups_code", query.CupsCode)
+		default:
+			slog.Debug("cups_medico_filter_applied", "cups_code", query.CupsCode, "doctors", allowedDoctors)
+		}
+	}
+
 	// 2. Fetch all free slots for this subject (SQL already applies the time window,
 	//    agenda eligibility, the booked/blocked filter, and pagination).
-	rows, err := s.scheduleRepo.FindAvailableSlots(ctx, subjectType, query.AfterDate)
+	rows, err := s.scheduleRepo.FindAvailableSlots(ctx, subjectType, query.AfterDate, allowedDoctors)
 	if err != nil {
 		return nil, fmt.Errorf("find available slots: %w", err)
 	}

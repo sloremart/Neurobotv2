@@ -43,7 +43,7 @@ func TestSearchSlots_Found(t *testing.T) {
 			},
 		},
 		&testutil.MockScheduleRepo{
-			FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+			FindAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 				ts, _ := time.Parse("2006-01-02 15:04", "2026-03-20 10:00")
 				return []domain.AvailableSlotRow{{
 					SlotTime:        ts,

@@ -229,16 +229,17 @@ func (m *MockAppointmentRepo) WriteCreationAudit(ctx context.Context, appointmen
 
 // MockScheduleRepo implements repository.ScheduleRepository.
 type MockScheduleRepo struct {
-	FindAvailableSlotsFn            func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error)
+	FindAvailableSlotsFn            func(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error)
 	FindByScheduleIDFn              func(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error)
 	FindWorkingDayExceptionFn       func(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
 	UpdateWorkingDayExceptionDateFn func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
 	DeleteWorkingDayExceptionFn     func(ctx context.Context, agendaID int, doctorDoc, date string) (bool, error)
 }
 
-func (m *MockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+// FindAvailableSlots implements repository.ScheduleRepository.
+func (m *MockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
 	if m.FindAvailableSlotsFn != nil {
-		return m.FindAvailableSlotsFn(ctx, asuntoID, afterDate)
+		return m.FindAvailableSlotsFn(ctx, asuntoID, afterDate, allowedDoctors)
 	}
 	return nil, nil
 }
@@ -278,6 +279,7 @@ type MockProcedureRepo struct {
 	SearchByNameFn           func(ctx context.Context, name string) ([]domain.Procedure, error)
 	FindAllActiveFn          func(ctx context.Context) ([]domain.Procedure, error)
 	FindSubjectTypeForCupsFn func(ctx context.Context, cupsCode string) (int, error)
+	FindMedicosForCupsFn     func(ctx context.Context, cupsCode string) ([]int, error)
 }
 
 func (m *MockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
@@ -285,6 +287,14 @@ func (m *MockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode
 		return m.FindSubjectTypeForCupsFn(ctx, cupsCode)
 	}
 	return 0, nil
+}
+
+// FindMedicosForCups implements repository.ProcedureRepository.
+func (m *MockProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error) {
+	if m.FindMedicosForCupsFn != nil {
+		return m.FindMedicosForCupsFn(ctx, cupsCode)
+	}
+	return nil, nil
 }
 
 func (m *MockProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {

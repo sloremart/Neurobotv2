@@ -61,3 +61,8 @@ func (c *CachedProcedureRepo) SearchByName(ctx context.Context, name string) ([]
 func (c *CachedProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
 	return c.inner.FindSubjectTypeForCups(ctx, cupsCode)
 }
+
+// FindMedicosForCups delega en el repo interno (sin caché; lookup individual).
+func (c *CachedProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error) {
+	return c.inner.FindMedicosForCups(ctx, cupsCode)
+}

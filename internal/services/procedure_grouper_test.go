@@ -38,6 +38,10 @@ func (m *mockProcRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode stri
 	return 0, nil
 }
 
+func (m *mockProcRepo) FindMedicosForCups(_ context.Context, _ string) ([]int, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

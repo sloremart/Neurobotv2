@@ -1047,7 +1047,7 @@ func TestCheckWaitingList_DuplicateFound_UpdateStatus(t *testing.T) {
 		},
 	}
 	scheduleRepo := &testutil.MockScheduleRepo{
-		FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		FindAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			ts := time.Now().AddDate(0, 0, 3)
 			return []domain.AvailableSlotRow{{
 				SlotTime: ts, DoctorDocument: "DOC001", DoctorName: "Dr. Test",
@@ -1117,7 +1117,7 @@ func TestCheckWaitingList_SlotsAvailable_NotifyAndRegister(t *testing.T) {
 		},
 	}
 	scheduleRepo := &testutil.MockScheduleRepo{
-		FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		FindAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			ts := time.Now().AddDate(0, 0, 3)
 			return []domain.AvailableSlotRow{{
 				SlotTime: ts, DoctorDocument: "DOC001", DoctorName: "Dr. Test",
@@ -1189,7 +1189,7 @@ func TestCheckWaitingList_EmptyTemplateConfig_Skip(t *testing.T) {
 		},
 	}
 	scheduleRepo := &testutil.MockScheduleRepo{
-		FindAvailableSlotsFn: func(ctx context.Context, asuntoID int, afterDate string) ([]domain.AvailableSlotRow, error) {
+		FindAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			ts := time.Now().AddDate(0, 0, 3)
 			return []domain.AvailableSlotRow{{
 				SlotTime: ts, DoctorDocument: "DOC001", DoctorName: "Dr. Test",
