@@ -103,6 +103,8 @@ type SiesaRefReader interface {
 type SiesaAnalyticsReader interface {
 	Occupancy(ctx context.Context, windowDays int) ([]domain.OccupancyRow, error)
 	AppointmentsByState(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error)
+	NoShowByDay(ctx context.Context, from, to string) ([]domain.NoShowRow, error)
+	BotCreatedByDay(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
 	BotAppointmentsWithCups(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
 }
 
@@ -251,6 +253,39 @@ func (h *InternalHandler) HandleSiesaCitasEstado(w http.ResponseWriter, r *http.
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"rows": rows, "totales": totals})
 }
 
+// HandleSiesaNoShow devuelve la inasistencia (no-show) real por día (verdad de SIESA): de las citas
+// pasadas no canceladas, cuántas se atendieron vs cuántas quedaron sin finalizar. Agregado y cacheado.
+// GET /api/internal/siesa/no-show?from=YYYY-MM-DD&to=YYYY-MM-DD
+func (h *InternalHandler) HandleSiesaNoShow(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	rows, err := h.siesaAnalytics.NoShowByDay(r.Context(), from, to)
+	if err != nil {
+		slog.Error("siesa no-show failed", "error", err)
+		http.Error(w, "failed to read no-show", http.StatusInternalServerError)
+		return
+	}
+	var esperadas, atendidas, noShow int
+	for _, n := range rows {
+		esperadas += n.Esperadas
+		atendidas += n.Atendidas
+		noShow += n.NoShow
+	}
+	pct := 0.0
+	if esperadas > 0 {
+		pct = float64(noShow) / float64(esperadas) * 100
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"rows": rows, "esperadas": esperadas, "atendidas": atendidas,
+		"no_show": noShow, "no_show_pct": pct,
+	})
+}
+
 // HandleSiesaConciliacion cruza las citas creadas por el bot (SIESA) con cups_medico (local) y
 // reporta las que tienen un médico que NO realiza el CUPS (mide si el bug de mal-asignación reaparece).
 // GET /api/internal/siesa/conciliacion?dias=4
@@ -298,6 +333,74 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"mal_asignadas": bad, "total_mal": len(bad), "evaluadas": checked, "bot_citas": len(citas), "dias": dias,
+	})
+}
+
+// HandleSiesaConversion mide la conversión REAL bot→SIESA: sesiones del bot (chat_events) vs citas
+// REALES creadas por el bot en SIESA (cod_user_asigna_cita = cédula del bot), no el evento
+// appointment_created (que es solo lo que el bot CREYÓ hacer). Expone ambas tasas y la discrepancia
+// (citas registradas por el bot que no aterrizaron en SIESA). GET /api/internal/siesa/conversion?from&to
+func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil || h.eventRepo == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+	if fromStr == "" || toStr == "" {
+		now := time.Now()
+		fromStr = now.AddDate(0, 0, -30).Format("2006-01-02")
+		toStr = now.Format("2006-01-02")
+	}
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		http.Error(w, "invalid 'from' date", http.StatusBadRequest)
+		return
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		http.Error(w, "invalid 'to' date", http.StatusBadRequest)
+		return
+	}
+
+	// Funnel local: sesiones (denominador) y appointment_created (lo que el bot creyó).
+	funnel, err := h.eventRepo.GetFunnel(r.Context(), from, to)
+	if err != nil {
+		slog.Error("siesa conversion funnel failed", "error", err)
+		http.Error(w, "failed to read funnel", http.StatusInternalServerError)
+		return
+	}
+
+	// SIESA: citas reales del bot en la MISMA ventana (to exclusivo = to+1 día, como GetFunnel).
+	botCedula := ""
+	if h.cfg != nil {
+		botCedula = h.cfg.SIESAAssignUserCedula
+	}
+	toExclusive := to.AddDate(0, 0, 1).Format("2006-01-02")
+	rows, err := h.siesaAnalytics.BotCreatedByDay(r.Context(), botCedula, fromStr, toExclusive)
+	if err != nil {
+		slog.Error("siesa conversion created failed", "error", err)
+		http.Error(w, "failed to read citas reales", http.StatusInternalServerError)
+		return
+	}
+	siesaReal := 0
+	for _, d := range rows {
+		siesaReal += d.Total
+	}
+
+	sessions := funnel.TotalSessions
+	botCreated := funnel.AppointmentCreated
+	convReal, convBot := 0.0, 0.0
+	if sessions > 0 {
+		convReal = float64(siesaReal) / float64(sessions) * 100
+		convBot = float64(botCreated) / float64(sessions) * 100
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"from": fromStr, "to": toStr,
+		"sessions": sessions, "bot_created": botCreated, "siesa_real": siesaReal,
+		"conversion_real_pct": convReal, "conversion_bot_pct": convBot,
+		"discrepancy": botCreated - siesaReal, "rows": rows,
 	})
 }
 

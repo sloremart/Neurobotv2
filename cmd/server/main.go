@@ -450,6 +450,8 @@ func main() {
 		// KPIs agregados de SIESA (solo lectura, cacheados) para las vistas del dashboard.
 		internalMux.HandleFunc("GET /api/internal/siesa/ocupacion", internalHandler.HandleSiesaOcupacion)
 		internalMux.HandleFunc("GET /api/internal/siesa/citas-estado", internalHandler.HandleSiesaCitasEstado)
+		internalMux.HandleFunc("GET /api/internal/siesa/no-show", internalHandler.HandleSiesaNoShow)
+		internalMux.HandleFunc("GET /api/internal/siesa/conversion", internalHandler.HandleSiesaConversion)
 		internalMux.HandleFunc("GET /api/internal/siesa/conciliacion", internalHandler.HandleSiesaConciliacion)
 		mux.Handle(
 			"/api/internal/",

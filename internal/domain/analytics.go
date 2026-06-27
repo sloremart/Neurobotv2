@@ -24,6 +24,26 @@ type AppointmentStateRow struct {
 	Total     int    `json:"total"`
 }
 
+// NoShowRow es el KPI de inasistencia (no-show) REAL por día, calculado solo sobre las citas
+// PASADAS (fecha < hoy). De las citas que debían atenderse (esperadas = no canceladas), cuántas se
+// atendieron (estado 'A') y cuántas quedaron sin finalizar (no-show: ni canceladas ni atendidas).
+// Las citas pendientes/confirmadas FUTURAS no cuentan: aún no han ocurrido, no son inasistencia.
+type NoShowRow struct {
+	Fecha     string `json:"fecha"`     // YYYY-MM-DD
+	Esperadas int    `json:"esperadas"` // citas pasadas no canceladas (= atendidas + no_show)
+	Atendidas int    `json:"atendidas"` // estado 'A'
+	NoShow    int    `json:"no_show"`   // no canceladas, no atendidas, fecha ya pasada
+}
+
+// BotCreatedRow es el conteo de citas REALES creadas por el bot en SIESA por día (por
+// cod_user_asigna_cita = cédula del bot, sobre fecha_solicitud). Es la verdad de negocio que se cruza
+// con las sesiones del bot para medir la conversión real (no el evento appointment_created, que es
+// solo lo que el bot creyó hacer).
+type BotCreatedRow struct {
+	Fecha string `json:"fecha"` // YYYY-MM-DD (fecha_solicitud)
+	Total int    `json:"total"`
+}
+
 // BotAppointmentCup es una cita creada por el bot con su CUPS y médico. Se cruza con cups_medico
 // (catálogo local) para detectar médico mal asignado (conciliación bot↔SIESA).
 type BotAppointmentCup struct {

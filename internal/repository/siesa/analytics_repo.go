@@ -153,6 +153,98 @@ func (r *AnalyticsRepo) AppointmentsByState(ctx context.Context, from, to string
 	return out, nil
 }
 
+// NoShowByDay devuelve la inasistencia (no-show) REAL por día en [from, to) (YYYY-MM-DD), calculada
+// SOLO sobre citas pasadas (fecha < hoy): de las no canceladas, cuántas se atendieron (estado 'A') y
+// cuántas quedaron sin finalizar (no-show). El predicado fecha < CAST(GETDATE() AS DATE) excluye las
+// citas futuras (pendientes que aún no ocurren), que no son inasistencia. estado NULL cuenta como
+// no-show (no atendida, no cancelada). Si from/to vienen vacías, usa los últimos 30 días.
+func (r *AnalyticsRepo) NoShowByDay(ctx context.Context, from, to string) ([]domain.NoShowRow, error) {
+	if from == "" || to == "" {
+		now := time.Now()
+		from = now.AddDate(0, 0, -30).Format("2006-01-02")
+		to = now.AddDate(0, 0, 1).Format("2006-01-02")
+	}
+	key := "noshow:" + from + "|" + to
+	if v, ok := r.cached(key); ok {
+		return v.([]domain.NoShowRow), nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT CONVERT(VARCHAR(10), fecha, 23) AS dia,
+		       SUM(CASE WHEN ISNULL(estado,'') = 'A' THEN 1 ELSE 0 END) AS atendidas,
+		       SUM(CASE WHEN ISNULL(estado,'') NOT IN ('C','A') THEN 1 ELSE 0 END) AS no_show
+		FROM citas WITH (NOLOCK)
+		WHERE fecha >= @p1 AND fecha < @p2 AND fecha < CAST(GETDATE() AS DATE)
+		GROUP BY CONVERT(VARCHAR(10), fecha, 23)
+		ORDER BY dia
+		OPTION (MAXDOP 1)`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("siesa no-show: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]domain.NoShowRow, 0, 64)
+	for rows.Next() {
+		var n domain.NoShowRow
+		if err := rows.Scan(&n.Fecha, &n.Atendidas, &n.NoShow); err != nil {
+			return nil, fmt.Errorf("scan no-show: %w", err)
+		}
+		n.Esperadas = n.Atendidas + n.NoShow
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	r.store(key, out)
+	return out, nil
+}
+
+// BotCreatedByDay cuenta las citas REALES creadas por el bot en SIESA por día (cod_user_asigna_cita
+// = botCedula, sobre fecha_solicitud) en [from, to) (YYYY-MM-DD, to exclusivo). Es la verdad de
+// negocio para la conversión real bot→SIESA. Filtrado por usuario del bot + ventana acotada → pocas
+// filas (días×1). Sin usuario del bot configurado devuelve nil (no hay nada que medir).
+func (r *AnalyticsRepo) BotCreatedByDay(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error) {
+	if strings.TrimSpace(botCedula) == "" {
+		return nil, nil
+	}
+	if from == "" || to == "" {
+		now := time.Now()
+		from = now.AddDate(0, 0, -30).Format("2006-01-02")
+		to = now.AddDate(0, 0, 1).Format("2006-01-02")
+	}
+	key := fmt.Sprintf("created:%s:%s|%s", botCedula, from, to)
+	if v, ok := r.cached(key); ok {
+		return v.([]domain.BotCreatedRow), nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT CONVERT(VARCHAR(10), fecha_solicitud, 23) AS dia, COUNT(*) AS total
+		FROM citas WITH (NOLOCK)
+		WHERE cod_user_asigna_cita = @p1
+		  AND fecha_solicitud >= @p2 AND fecha_solicitud < @p3
+		GROUP BY CONVERT(VARCHAR(10), fecha_solicitud, 23)
+		ORDER BY dia
+		OPTION (MAXDOP 1)`, botCedula, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("siesa bot-created: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]domain.BotCreatedRow, 0, 64)
+	for rows.Next() {
+		var b domain.BotCreatedRow
+		if err := rows.Scan(&b.Fecha, &b.Total); err != nil {
+			return nil, fmt.Errorf("scan bot-created: %w", err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	r.store(key, out)
+	return out, nil
+}
+
 // BotAppointmentsWithCups devuelve las citas-procedimiento creadas por el bot (cod_user_asigna_cita
 // = botCedula) en los últimos `days` días, con su CUPS y médico. El cruce con cups_medico (catálogo
 // local) lo hace el llamador para detectar médico mal asignado. Filtrado por usuario del bot +
