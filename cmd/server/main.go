@@ -452,6 +452,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/siesa/citas-estado", internalHandler.HandleSiesaCitasEstado)
 		internalMux.HandleFunc("GET /api/internal/siesa/no-show", internalHandler.HandleSiesaNoShow)
 		internalMux.HandleFunc("GET /api/internal/siesa/conversion", internalHandler.HandleSiesaConversion)
+		internalMux.HandleFunc("GET /api/internal/siesa/bot-share", internalHandler.HandleSiesaBotShare)
 		internalMux.HandleFunc("GET /api/internal/siesa/conciliacion", internalHandler.HandleSiesaConciliacion)
 		mux.Handle(
 			"/api/internal/",

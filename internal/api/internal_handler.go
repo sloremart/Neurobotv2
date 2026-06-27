@@ -105,6 +105,7 @@ type SiesaAnalyticsReader interface {
 	AppointmentsByState(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error)
 	NoShowByDay(ctx context.Context, from, to string) ([]domain.NoShowRow, error)
 	BotCreatedByDay(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
+	CreatedByDay(ctx context.Context, from, to string) ([]domain.BotCreatedRow, error)
 	BotAppointmentsWithCups(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
 }
 
@@ -333,6 +334,82 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"mal_asignadas": bad, "total_mal": len(bad), "evaluadas": checked, "bot_citas": len(citas), "dias": dias,
+	})
+}
+
+// HandleSiesaBotShare compara las citas creadas por el bot vs las del resto de usuarios en SIESA
+// (por día y total) para medir la participación del bot en el agendamiento.
+// GET /api/internal/siesa/bot-share?from&to
+func (h *InternalHandler) HandleSiesaBotShare(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+	if fromStr == "" || toStr == "" {
+		now := time.Now()
+		fromStr = now.AddDate(0, 0, -30).Format("2006-01-02")
+		toStr = now.Format("2006-01-02")
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		http.Error(w, "invalid 'to' date", http.StatusBadRequest)
+		return
+	}
+	if _, err := time.Parse("2006-01-02", fromStr); err != nil {
+		http.Error(w, "invalid 'from' date", http.StatusBadRequest)
+		return
+	}
+	toExclusive := to.AddDate(0, 0, 1).Format("2006-01-02")
+
+	botCedula := ""
+	if h.cfg != nil {
+		botCedula = h.cfg.SIESAAssignUserCedula
+	}
+	botRows, err := h.siesaAnalytics.BotCreatedByDay(r.Context(), botCedula, fromStr, toExclusive)
+	if err != nil {
+		slog.Error("siesa bot-share bot failed", "error", err)
+		http.Error(w, "failed to read bot citas", http.StatusInternalServerError)
+		return
+	}
+	totalRows, err := h.siesaAnalytics.CreatedByDay(r.Context(), fromStr, toExclusive)
+	if err != nil {
+		slog.Error("siesa bot-share total failed", "error", err)
+		http.Error(w, "failed to read total citas", http.StatusInternalServerError)
+		return
+	}
+
+	botByDay := make(map[string]int, len(botRows))
+	for _, b := range botRows {
+		botByDay[b.Fecha] = b.Total
+	}
+	type shareRow struct {
+		Fecha string `json:"fecha"`
+		Total int    `json:"total"`
+		Bot   int    `json:"bot"`
+		Otros int    `json:"otros"`
+	}
+	rows := make([]shareRow, 0, len(totalRows))
+	totalSum, botSum := 0, 0
+	for _, t := range totalRows {
+		bot := botByDay[t.Fecha]
+		if bot > t.Total {
+			bot = t.Total // salvaguarda
+		}
+		rows = append(rows, shareRow{Fecha: t.Fecha, Total: t.Total, Bot: bot, Otros: t.Total - bot})
+		totalSum += t.Total
+		botSum += bot
+	}
+	botPct := 0.0
+	if totalSum > 0 {
+		botPct = float64(botSum) / float64(totalSum) * 100
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"from": fromStr, "to": toStr,
+		"total": totalSum, "bot": botSum, "otros": totalSum - botSum, "bot_pct": botPct,
+		"rows": rows,
 	})
 }
 

@@ -245,6 +245,47 @@ func (r *AnalyticsRepo) BotCreatedByDay(ctx context.Context, botCedula, from, to
 	return out, nil
 }
 
+// CreatedByDay cuenta TODAS las citas creadas por día (cualquier usuario, sobre fecha_solicitud) en
+// [from, to) (YYYY-MM-DD, to exclusivo). Se compara con BotCreatedByDay para medir la participación
+// del bot frente a los demás usuarios. Agregado en el servidor → días×1 filas.
+func (r *AnalyticsRepo) CreatedByDay(ctx context.Context, from, to string) ([]domain.BotCreatedRow, error) {
+	if from == "" || to == "" {
+		now := time.Now()
+		from = now.AddDate(0, 0, -30).Format("2006-01-02")
+		to = now.AddDate(0, 0, 1).Format("2006-01-02")
+	}
+	key := fmt.Sprintf("createdall:%s|%s", from, to)
+	if v, ok := r.cached(key); ok {
+		return v.([]domain.BotCreatedRow), nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT CONVERT(VARCHAR(10), fecha_solicitud, 23) AS dia, COUNT(*) AS total
+		FROM citas WITH (NOLOCK)
+		WHERE fecha_solicitud >= @p1 AND fecha_solicitud < @p2
+		GROUP BY CONVERT(VARCHAR(10), fecha_solicitud, 23)
+		ORDER BY dia
+		OPTION (MAXDOP 1)`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("siesa created-all: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]domain.BotCreatedRow, 0, 64)
+	for rows.Next() {
+		var b domain.BotCreatedRow
+		if err := rows.Scan(&b.Fecha, &b.Total); err != nil {
+			return nil, fmt.Errorf("scan created-all: %w", err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	r.store(key, out)
+	return out, nil
+}
+
 // BotAppointmentsWithCups devuelve las citas-procedimiento creadas por el bot (cod_user_asigna_cita
 // = botCedula) en los últimos `days` días, con su CUPS y médico. El cruce con cups_medico (catálogo
 // local) lo hace el llamador para detectar médico mal asignado. Filtrado por usuario del bot +
