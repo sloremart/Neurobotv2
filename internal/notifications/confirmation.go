@@ -293,7 +293,7 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 	if pending.ConversationID != "" {
 		// L9: capturar el error de la escalación (antes se descartaba). EscalateToAgent ya loguea
 		// internamente en rutas degradadas, pero sin esto la traza propia no distinguía éxito/fallo.
-		if err := m.birdClient.EscalateToAgent(
+		if _, _, err := m.birdClient.EscalateToAgent(
 			ctx, pending.ConversationID, pending.Phone,
 			m.cfg.BirdTeamFallback, "Call Center",
 			patientName, m.cfg.BirdTeamFallback,

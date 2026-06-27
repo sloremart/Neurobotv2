@@ -1178,7 +1178,7 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	m.birdClient.SendInternalText(convID, note)
 	m.birdClient.SendInternalText(convID, commands)
 
-	if err := m.birdClient.EscalateToAgent(ctx, convID, p.Phone,
+	if _, _, err := m.birdClient.EscalateToAgent(ctx, convID, p.Phone,
 		m.cfg.BirdTeamFallback, "Call Center",
 		patientName, m.cfg.BirdTeamFallback); err != nil {
 		slog.Error(

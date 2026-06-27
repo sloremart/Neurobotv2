@@ -25,6 +25,8 @@ type Session struct {
 	ConversationID string
 	EscalatedAt    *time.Time // When escalated to agent
 	EscalatedTeam  string     // Bird team ID assigned
+	AgentID        string     // Bird agent asignado al escalar (SLA por agente)
+	AgentName      string     // Nombre del agente asignado (displayName de Bird)
 	ResumedAt      *time.Time // When agent returned to bot
 	LastActivity   time.Time
 	ExpiresAt      time.Time

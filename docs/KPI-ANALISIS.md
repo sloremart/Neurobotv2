@@ -123,3 +123,29 @@ especialidad (Neurología 39, Proc. Fisiatría 31, Resonancia 24…); notificaci
 lista de espera por status; embudo agendar con fugas; escalaciones; IVR; entidades top. Nota: el
 dashboard cachea los KPIs en memoria — tras re-sembrar hay que reiniciar el contenedor del
 dashboard para refrescar.
+
+---
+
+## 4. Extensiones posteriores (2026-06-27) — valor del bot y eficiencia de agentes
+
+Tres análisis adicionales pedidos para resaltar la ayuda del bot y medir a los agentes:
+
+1. **Participación del bot en SIESA (bot vs otros usuarios).** Citas creadas por el bot
+   (`cod_user_asigna_cita` = cédula del bot) vs el total de SIESA, por día y en %.
+   - Bot: `siesa.AnalyticsRepo.CreatedByDay` + `GET /api/internal/siesa/bot-share` (cruza con
+     `BotCreatedByDay`). Dashboard: proxy `/api/siesa/bot-share` → sección en `Conversion.tsx`.
+
+2. **Destino de las sesiones.** De las sesiones, cuántas terminaron en cita, en lista de espera
+   (sin cita) o sin nada; y cuántas toparon con falta de cupo/disponibilidad.
+   - `kpi.Repository.GetSessionOutcomes` + `GET /api/session-outcomes` → sección en `Conversion.tsx`.
+
+3. **Eficiencia de agentes de escalación (3 escenarios + por agente).** La escalación es solo para
+   **desbloquear** al usuario; el agente debe atender y **devolver** el control con un comando `/bot`.
+   - 3 escenarios: (a) sin atender (no contestó), (b) atendió sin devolver, (c) ideal (atendió y
+     devolvió). Tiempos: respuesta al cliente (`escalated_at→last_agent_msg_at`) y devolución al bot
+     (`escalated_at→resumed_at`). "Devolvió" = `resumed_at` no NULL o `status='completed'`.
+   - `GetEscalationSLA` (agregado) + `GetEscalationSLAByAgent` (por agente asignado) +
+     `GET /api/escalation/sla` y `/api/escalation/sla-by-agent` → secciones en `Escalation.tsx`.
+   - **Requiere migración 029** (`agent_id`, `agent_name` en `sessions`) + el bot guarda el agente
+     que asigna al escalar (`EscalateToAgent` ahora retorna el agente). Mide al **agente asignado**;
+     no al que responde si en Bird reasignan la conversación (Bird no expone el remitente real hoy).

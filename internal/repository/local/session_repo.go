@@ -23,7 +23,7 @@ func NewSessionRepo(db *sql.DB) *SessionRepo {
 func (r *SessionRepo) FindActiveByPhone(ctx context.Context, phone string) (*session.Session, error) {
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
-	          retry_count, conversation_id, escalated_at, escalated_team, resumed_at,
+	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
 	          last_activity_at, expires_at, created_at
 	          FROM sessions
 	          WHERE phone_number = ? AND status IN ('active','escalated') AND expires_at > NOW()
@@ -36,14 +36,14 @@ func (r *SessionRepo) FindActiveByPhone(ctx context.Context, phone string) (*ses
 func (r *SessionRepo) scanSession(ctx context.Context, query string, args ...interface{}) (*session.Session, error) {
 	var s session.Session
 	var menuOption, patientID, patientDoc, patientName, patientGender, patientEntity, conversationID sql.NullString
-	var escalatedTeam sql.NullString
+	var escalatedTeam, agentID, agentName sql.NullString
 	var escalatedAt, resumedAt sql.NullTime
 	var patientAge sql.NullInt32
 
 	err := r.db.QueryRowContext(ctx, query, args...).Scan(
 		&s.ID, &s.PhoneNumber, &s.CurrentState, &s.Status, &menuOption,
 		&patientID, &patientDoc, &patientName, &patientAge, &patientGender, &patientEntity,
-		&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &resumedAt,
+		&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &agentID, &agentName, &resumedAt,
 		&s.LastActivity, &s.ExpiresAt, &s.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -64,6 +64,8 @@ func (r *SessionRepo) scanSession(ctx context.Context, query string, args ...int
 	s.PatientEntity = patientEntity.String
 	s.ConversationID = conversationID.String
 	s.EscalatedTeam = escalatedTeam.String
+	s.AgentID = agentID.String
+	s.AgentName = agentName.String
 	if escalatedAt.Valid {
 		s.EscalatedAt = &escalatedAt.Time
 	}
@@ -121,7 +123,7 @@ func (r *SessionRepo) Save(ctx context.Context, s *session.Session) error {
 	          patient_id = ?, patient_doc = ?, patient_name = ?,
 	          patient_age = ?, patient_gender = ?, patient_entity = ?,
 	          retry_count = ?, conversation_id = ?,
-	          escalated_at = ?, escalated_team = ?, resumed_at = ?,
+	          escalated_at = ?, escalated_team = ?, agent_id = ?, agent_name = ?, resumed_at = ?,
 	          last_activity_at = NOW(), updated_at = NOW()
 	          WHERE id = ?`
 
@@ -130,7 +132,7 @@ func (r *SessionRepo) Save(ctx context.Context, s *session.Session) error {
 		nullString(s.PatientID), nullString(s.PatientDoc), nullString(s.PatientName),
 		nullInt(s.PatientAge), nullString(s.PatientGender), nullString(s.PatientEntity),
 		s.RetryCount, nullString(s.ConversationID),
-		s.EscalatedAt, nullString(s.EscalatedTeam), s.ResumedAt,
+		s.EscalatedAt, nullString(s.EscalatedTeam), nullString(s.AgentID), nullString(s.AgentName), s.ResumedAt,
 		s.ID,
 	)
 	if err != nil {
@@ -431,7 +433,7 @@ func (r *SessionRepo) ClearAllContext(ctx context.Context, sessionID string) err
 func (r *SessionRepo) FindByID(ctx context.Context, sessionID string) (*session.Session, error) {
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
-	          retry_count, conversation_id, escalated_at, escalated_team, resumed_at,
+	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
 	          last_activity_at, expires_at, created_at
 	          FROM sessions WHERE id = ?`
 	return r.scanSession(ctx, query, sessionID)
@@ -445,7 +447,7 @@ func (r *SessionRepo) FindRecentByPhone(ctx context.Context, phone string, limit
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, phone_number, current_state, status, menu_option,
 		 patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
-		 retry_count, conversation_id, escalated_at, escalated_team, resumed_at,
+		 retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
 		 last_activity_at, expires_at, created_at
 		 FROM sessions WHERE phone_number = ? ORDER BY created_at DESC LIMIT ?`, phone, limit)
 	if err != nil {
@@ -457,14 +459,14 @@ func (r *SessionRepo) FindRecentByPhone(ctx context.Context, phone string, limit
 	for rows.Next() {
 		var s session.Session
 		var menuOption, patientID, patientDoc, patientName, patientGender, patientEntity, conversationID sql.NullString
-		var escalatedTeam sql.NullString
+		var escalatedTeam, agentID, agentName sql.NullString
 		var escalatedAt, resumedAt sql.NullTime
 		var patientAge sql.NullInt32
 
 		if err := rows.Scan(
 			&s.ID, &s.PhoneNumber, &s.CurrentState, &s.Status, &menuOption,
 			&patientID, &patientDoc, &patientName, &patientAge, &patientGender, &patientEntity,
-			&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &resumedAt,
+			&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &agentID, &agentName, &resumedAt,
 			&s.LastActivity, &s.ExpiresAt, &s.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
@@ -481,6 +483,8 @@ func (r *SessionRepo) FindRecentByPhone(ctx context.Context, phone string, limit
 		s.PatientEntity = patientEntity.String
 		s.ConversationID = conversationID.String
 		s.EscalatedTeam = escalatedTeam.String
+		s.AgentID = agentID.String
+		s.AgentName = agentName.String
 		if escalatedAt.Valid {
 			s.EscalatedAt = &escalatedAt.Time
 		}

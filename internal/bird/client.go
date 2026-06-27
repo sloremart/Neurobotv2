@@ -1440,7 +1440,9 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 // Flow: resolve conversationID (API lookup if needed) → mark conversation →
 // list active agents → pick least loaded in teamID →
 // fallback to fallbackTeamID → assign to team without agent if nobody available.
-func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, teamID, teamName, patientName, fallbackTeamID string) error {
+// Devuelve el agente asignado (id, displayName) cuando se asigna a uno concreto; vacío si se asigna
+// solo al equipo. Se usa para registrar el agente en la sesión (SLA por agente).
+func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, teamID, teamName, patientName, fallbackTeamID string) (agentID, agentName string, err error) {
 	// If no conversationID or it might be stale, try API lookup by phone
 	if phone != "" {
 		if conversationID == "" {
@@ -1480,7 +1482,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 	}
 
 	if conversationID == "" {
-		return fmt.Errorf("empty conversation ID")
+		return "", "", fmt.Errorf("empty conversation ID")
 	}
 
 	slog.Debug("escalate_to_agent_start",
@@ -1509,7 +1511,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 				"team_id", teamID,
 				"error", err,
 			)
-			return c.AssignFeedItem(ctx, conversationID, teamID, "")
+			return "", "", c.AssignFeedItem(ctx, conversationID, teamID, "")
 		}
 	}
 	if len(agents) == 0 {
@@ -1517,7 +1519,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 			"conversation_id", conversationID,
 			"team_id", teamID,
 		)
-		return c.AssignFeedItem(ctx, conversationID, teamID, "")
+		return "", "", c.AssignFeedItem(ctx, conversationID, teamID, "")
 	}
 
 	// 3. Pick least loaded agent in target team
@@ -1530,7 +1532,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 			"team_id", teamID,
 			"workload", agent.RootItemAssignedCount,
 		)
-		return c.AssignFeedItem(ctx, conversationID, teamID, agent.ID)
+		return agent.ID, agent.DisplayName, c.AssignFeedItem(ctx, conversationID, teamID, agent.ID)
 	}
 
 	// 4. Fallback: try fallback team (Call Center)
@@ -1545,7 +1547,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 				"original_team_id", teamID,
 				"workload", agent.RootItemAssignedCount,
 			)
-			return c.AssignFeedItem(ctx, conversationID, fallbackTeamID, agent.ID)
+			return agent.ID, agent.DisplayName, c.AssignFeedItem(ctx, conversationID, fallbackTeamID, agent.ID)
 		}
 	}
 
@@ -1554,7 +1556,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 		"conversation_id", conversationID,
 		"team_id", teamID,
 	)
-	return c.AssignFeedItem(ctx, conversationID, teamID, "")
+	return "", "", c.AssignFeedItem(ctx, conversationID, teamID, "")
 }
 
 // UpdateFeedItem updates a conversation's feed item in Bird Inbox.

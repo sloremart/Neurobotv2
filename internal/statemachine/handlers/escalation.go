@@ -96,7 +96,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 		}
 
 		// 5. Try to escalate
-		if err := birdClient.EscalateToAgent(ctx, conversationID, msg.Phone, teamID, teamName, sess.PatientName, cfg.BirdTeamFallback); err != nil {
+		assignedAgentID, assignedAgentName, err := birdClient.EscalateToAgent(ctx, conversationID, msg.Phone, teamID, teamName, sess.PatientName, cfg.BirdTeamFallback)
+		if err != nil {
 			slog.Error(
 				"escalation failed",
 				"error", err,
@@ -143,6 +144,8 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 		sess.Status = session.StatusEscalated
 		sess.EscalatedAt = &now
 		sess.EscalatedTeam = teamID
+		sess.AgentID = assignedAgentID
+		sess.AgentName = assignedAgentName
 		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalated",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
 
