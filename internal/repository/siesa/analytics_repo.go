@@ -104,8 +104,10 @@ func (r *AnalyticsRepo) Occupancy(ctx context.Context, windowDays int) ([]domain
 	return out, nil
 }
 
-// AppointmentsByState devuelve el conteo de citas por día y estado en [from, to) (fechas YYYY-MM-DD).
-// Si from/to vienen vacías, usa los últimos 30 días. Agregado: devuelve ~días×estados filas.
+// AppointmentsByState devuelve el conteo de citas por día y SITUACIÓN en [from, to) (YYYY-MM-DD).
+// La situación usa la definición de SIESA que dedujimos (no el estado crudo): cancelada = estado 'C';
+// atendida = estado 'A'; confirmada = AsistenciaConfirmada=1 o estado 'CC'; pendiente = el resto.
+// Si from/to vienen vacías, usa los últimos 30 días. Agregado: devuelve ~días×4 filas.
 func (r *AnalyticsRepo) AppointmentsByState(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error) {
 	if from == "" || to == "" {
 		now := time.Now()
@@ -117,11 +119,17 @@ func (r *AnalyticsRepo) AppointmentsByState(ctx context.Context, from, to string
 		return v.([]domain.AppointmentStateRow), nil
 	}
 
+	// El CASE se repite en SELECT y GROUP BY (SQL Server no permite agrupar por alias).
+	const situacionExpr = `CASE
+		WHEN estado = 'C' THEN 'cancelada'
+		WHEN estado = 'A' THEN 'atendida'
+		WHEN ISNULL(AsistenciaConfirmada,0) = 1 OR estado = 'CC' THEN 'confirmada'
+		ELSE 'pendiente' END`
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT CONVERT(VARCHAR(10), fecha, 23) AS dia, RTRIM(ISNULL(estado,'')) AS estado, COUNT(*) AS total
+		SELECT CONVERT(VARCHAR(10), fecha, 23) AS dia, `+situacionExpr+` AS situacion, COUNT(*) AS total
 		FROM citas WITH (NOLOCK)
 		WHERE fecha >= @p1 AND fecha < @p2
-		GROUP BY CONVERT(VARCHAR(10), fecha, 23), RTRIM(ISNULL(estado,''))
+		GROUP BY CONVERT(VARCHAR(10), fecha, 23), `+situacionExpr+`
 		ORDER BY dia
 		OPTION (MAXDOP 1)`, from, to)
 	if err != nil {
@@ -132,10 +140,10 @@ func (r *AnalyticsRepo) AppointmentsByState(ctx context.Context, from, to string
 	out := make([]domain.AppointmentStateRow, 0, 128)
 	for rows.Next() {
 		var s domain.AppointmentStateRow
-		if err := rows.Scan(&s.Fecha, &s.Estado, &s.Total); err != nil {
+		if err := rows.Scan(&s.Fecha, &s.Situacion, &s.Total); err != nil {
 			return nil, fmt.Errorf("scan citas-estado: %w", err)
 		}
-		s.Estado = strings.TrimSpace(s.Estado)
+		s.Situacion = strings.TrimSpace(s.Situacion)
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {

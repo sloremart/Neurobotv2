@@ -245,7 +245,7 @@ func (h *InternalHandler) HandleSiesaCitasEstado(w http.ResponseWriter, r *http.
 	}
 	totals := map[string]int{}
 	for _, s := range rows {
-		totals[s.Estado] += s.Total
+		totals[s.Situacion] += s.Total
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"rows": rows, "totales": totals})

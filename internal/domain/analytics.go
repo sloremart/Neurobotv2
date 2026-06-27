@@ -14,12 +14,14 @@ type OccupancyRow struct {
 	Libres   int    `json:"libres"`
 }
 
-// AppointmentStateRow es el conteo de citas por día y estado (P=pendiente, A=atendida,
-// C=cancelada, CC=…). Verdad de SIESA para volumen y tasa de cancelación.
+// AppointmentStateRow es el conteo de citas por día y SITUACIÓN, usando la definición de SIESA que
+// dedujimos (ver siesa.AppointmentRepo): cancelada = estado 'C'; confirmada = AsistenciaConfirmada=1
+// o estado 'CC'; atendida = estado 'A'; pendiente = el resto. NO es el estado crudo (CC no es
+// cancelada; la confirmación vive en AsistenciaConfirmada, no solo en el estado).
 type AppointmentStateRow struct {
-	Fecha  string `json:"fecha"` // YYYY-MM-DD
-	Estado string `json:"estado"`
-	Total  int    `json:"total"`
+	Fecha     string `json:"fecha"`     // YYYY-MM-DD
+	Situacion string `json:"situacion"` // pendiente | confirmada | atendida | cancelada
+	Total     int    `json:"total"`
 }
 
 // BotAppointmentCup es una cita creada por el bot con su CUPS y médico. Se cruza con cups_medico
