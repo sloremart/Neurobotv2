@@ -150,7 +150,7 @@ type AgentListResponse struct {
 
 type AgentInfo struct {
 	ID                    string            `json:"id"`
-	DisplayName           string            `json:"displayName"`
+	DisplayName           string            `json:"name"` // Bird expone el nombre del agente en "name" (no "displayName")
 	Teams                 []AgentTeam       `json:"teams"`
 	Availability          AgentAvailability `json:"availability"`
 	RootItemAssignedCount int               `json:"rootItemAssignedCount"` // Current workload

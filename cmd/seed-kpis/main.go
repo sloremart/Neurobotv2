@@ -21,6 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/config"
+
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	_ "github.com/microsoft/go-mssqldb"
@@ -52,8 +55,18 @@ func main() {
 	ahead := flag.Int("ahead", 30, "ventana futura (solo informativo; SIESA ya tiene las próximas)")
 	leakRatio := flag.Float64("leak-ratio", 0.6, "sesiones sin cita / sesiones con cita")
 	yes := flag.Bool("yes", false, "confirmación obligatoria para truncar y sembrar")
+	listAgents := flag.Bool("list-agents", false, "solo lista los agentes reales de Bird y sale (no toca la BD)")
 	flag.Parse()
 	_ = *ahead
+
+	if *listAgents {
+		ags := loadBirdAgents()
+		fmt.Printf("== %d agentes ==\n", len(ags))
+		for _, a := range ags {
+			fmt.Printf("  %-40s %s\n", a.id, a.name)
+		}
+		return
+	}
 
 	if !*yes {
 		log.Fatal("abortado: pasa --yes para confirmar (esto trunca las tablas de analítica)")
@@ -192,7 +205,7 @@ func newEmitters(db *sql.DB, s *summary) *emitters {
 	return &emitters{
 		ev:   newBatch(db, "chat_events", "session_id", "phone_number", "event_type", "event_data", "created_at"),
 		fe:   newBatch(db, "flow_events", "trace_id", "flow", "step", "level", "outcome", "reason", "phone", "ref_type", "ref_id", "created_at"),
-		sess: newBatch(db, "sessions", "id", "phone_number", "current_state", "status", "patient_id", "patient_doc", "patient_name", "patient_age", "patient_gender", "patient_entity", "conversation_id", "last_activity_at", "escalated_at", "expires_at", "created_at", "updated_at"),
+		sess: newBatch(db, "sessions", "id", "phone_number", "current_state", "status", "patient_id", "patient_doc", "patient_name", "patient_age", "patient_gender", "patient_entity", "conversation_id", "last_activity_at", "escalated_at", "expires_at", "created_at", "updated_at", "agent_id", "agent_name", "last_agent_msg_at", "resumed_at"),
 		wl:   newBatch(db, "waiting_list", "id", "phone_number", "patient_id", "patient_doc", "patient_name", "patient_age", "patient_gender", "patient_entity", "patient_contract", "cups_code", "cups_name", "is_contrasted", "is_sedated", "espacios", "procedures_json", "procedure_type", "status", "created_at", "updated_at", "expires_at"),
 		np:   newBatch(db, "notification_pending", "phone", "type", "appointment_id", "retry_count", "expires_at", "created_at"),
 		nh:   newBatch(db, "notification_history", "phone", "type", "appointment_id", "status", "created_at", "resolved_at"),
@@ -295,7 +308,8 @@ ORDER BY c.id`
 		// sesión
 		e.sess.add(sid, phone, "MAIN_MENU", status, nz(doc.String), nz(doc.String), nz(name),
 			nullInt(age), nz(gender), nz(entity), nz("conv-"+apptID),
-			ts(base.Add(8*time.Minute)), nil, ts(base.Add(72*time.Hour)), ts(base), ts(base.Add(8*time.Minute)))
+			ts(base.Add(8*time.Minute)), nil, ts(base.Add(72*time.Hour)), ts(base), ts(base.Add(8*time.Minute)),
+			nil, nil, nil, nil)
 
 		// secuencia coherente de chat_events
 		seq := []struct {
@@ -400,7 +414,8 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		phone := fakePhone(i)
 		ent := entities[rand.Intn(len(entities))]
 		e.sess.add(sid, phone, "MAIN_MENU", "abandoned", nil, nil, nil, nil, nil, nz(ent), nil,
-			ts(t.Add(4*time.Minute)), nil, ts(t.Add(72*time.Hour)), ts(t), ts(t.Add(4*time.Minute)))
+			ts(t.Add(4*time.Minute)), nil, ts(t.Add(72*time.Hour)), ts(t), ts(t.Add(4*time.Minute)),
+			nil, nil, nil, nil)
 		e.event(sid, phone, "session_started", nil, t)
 		e.event(sid, phone, "menu_selected", map[string]any{"option": "agendar"}, t.Add(time.Minute))
 		lk := leaks[i%len(leaks)]
@@ -437,16 +452,35 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		}
 	}
 
-	// escalaciones
+	// escalaciones (con agente real de Bird + 3 escenarios: sin atender / atendió sin devolver / ideal)
+	agents := loadBirdAgents()
 	for i := 0; i < nLeak/2+30; i++ {
 		t := randTS(days)
 		sid := uuid.NewString()
 		phone := fakePhone(20000 + i)
 		from := escalationStates[rand.Intn(len(escalationStates))]
-		e.sess.add(sid, phone, from, "escalated", nil, nil, nil, nil, nil, nil, nil,
-			ts(t), ts(t.Add(2*time.Minute)), ts(t.Add(72*time.Hour)), ts(t), ts(t.Add(2*time.Minute)))
-		e.event(sid, phone, "escalated_to_agent", map[string]any{"from_state": from}, t.Add(2*time.Minute))
-		e.flow("sess:"+sid, "escalacion", "escalated", 2, "escalated", "", phone, "", "", t.Add(2*time.Minute))
+		ag := agents[i%len(agents)]
+		escAt := t.Add(2 * time.Minute)
+
+		// Reparto: ~20% sin atender, ~30% atendió sin devolver, ~50% ideal (atendió y devolvió).
+		var lastAgent, resumed any
+		status := "abandoned"
+		switch sc := i % 10; {
+		case sc < 2: // sin atender: el agente nunca contestó
+		case sc < 5: // atendió sin devolver: contestó al paciente pero no usó /bot
+			lastAgent = ts(escAt.Add(time.Duration(1+rand.Intn(40)) * time.Minute))
+		default: // ideal: atendió y devolvió al bot
+			la := escAt.Add(time.Duration(1+rand.Intn(40)) * time.Minute)
+			lastAgent = ts(la)
+			resumed = ts(la.Add(time.Duration(2+rand.Intn(30)) * time.Minute))
+			status = "completed"
+		}
+
+		e.sess.add(sid, phone, from, status, nil, nil, nil, nil, nil, nil, nil,
+			ts(t), ts(escAt), ts(t.Add(72*time.Hour)), ts(t), ts(escAt),
+			ag.id, ag.name, lastAgent, resumed)
+		e.event(sid, phone, "escalated_to_agent", map[string]any{"from_state": from, "agent": ag.name}, escAt)
+		e.flow("sess:"+sid, "escalacion", "escalated", 2, "escalated", "", phone, "", "", escAt)
 		switch i % 4 {
 		case 0:
 			e.event(sid, phone, "agent_reminder_sent", nil, t.Add(20*time.Minute))
@@ -542,7 +576,8 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		phone := fakePhone(61000 + i)
 		sidv := uuid.NewString()
 		e.sess.add(sidv, phone, "SHOW_SLOTS", "active", nil, nil, nil, nil, nil, nz(entities[i%len(entities)]), nil,
-			ts(now.Add(-time.Duration(i+1)*time.Minute)), nil, ts(now.Add(2*time.Hour)), ts(now.Add(-30*time.Minute)), ts(now.Add(-time.Duration(i+1)*time.Minute)))
+			ts(now.Add(-time.Duration(i+1)*time.Minute)), nil, ts(now.Add(2*time.Hour)), ts(now.Add(-30*time.Minute)), ts(now.Add(-time.Duration(i+1)*time.Minute)),
+			nil, nil, nil, nil)
 		e.s.inc("sesiones_activas")
 	}
 
@@ -555,6 +590,45 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 // ---------------------------------------------------------------------------
 
 func newSID() string { return uuid.NewString() }
+
+// seedAgent es un agente para asignar a las escalaciones sembradas.
+type seedAgent struct{ id, name string }
+
+// loadBirdAgents intenta traer los agentes REALES de Bird (mismos que el bot usa al escalar). Si Bird
+// no está configurado o la API falla, cae a una lista sintética para que el seeder funcione offline.
+func loadBirdAgents() []seedAgent {
+	cfg := config.Load()
+	if cfg.BirdAccessKeyID == "" || cfg.BirdWorkspaceID == "" {
+		fmt.Println("Bird no configurado (BIRD_ACCESS_KEY_ID/BIRD_WORKSPACE_ID) → agentes sintéticos")
+		return fallbackAgents()
+	}
+	infos, err := bird.NewClient(cfg).ListAllAgents()
+	if err != nil || len(infos) == 0 {
+		fmt.Printf("Bird ListAllAgents sin datos (%v) → agentes sintéticos\n", err)
+		return fallbackAgents()
+	}
+	out := make([]seedAgent, 0, len(infos))
+	for _, a := range infos {
+		name := strings.TrimSpace(a.DisplayName)
+		if name == "" {
+			name = a.ID
+		}
+		out = append(out, seedAgent{a.ID, name})
+	}
+	fmt.Printf("Bird: %d agentes reales cargados para el SLA por agente\n", len(out))
+	return out
+}
+
+func fallbackAgents() []seedAgent {
+	return []seedAgent{
+		{"agt-001", "Laura Gómez"},
+		{"agt-002", "Carlos Ruiz"},
+		{"agt-003", "Ana Torres"},
+		{"agt-004", "Diego Marín"},
+		{"agt-005", "Paula Castro"},
+		{"agt-006", "Jorge Niño"},
+	}
+}
 
 func randTS(days int) time.Time {
 	var day time.Time
