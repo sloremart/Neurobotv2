@@ -79,6 +79,15 @@ func main() {
 	if strings.Contains(localDSN, "192.168.1.207") || strings.Contains(strings.ToLower(localDSN), "prod") {
 		log.Fatal("abortado: el LOCAL_DSN parece de producción")
 	}
+	// Forzar utf8mb4 en la conexión: sin esto los acentos (nombres de agentes/pacientes) se guardan
+	// doble-codificados (mojibake, p.ej. "García" → "GarcÃ­a").
+	if !strings.Contains(strings.ToLower(localDSN), "charset=") {
+		if strings.Contains(localDSN, "?") {
+			localDSN += "&charset=utf8mb4"
+		} else {
+			localDSN += "?charset=utf8mb4"
+		}
+	}
 
 	ldb, err := sql.Open("mysql", localDSN)
 	must(err, "open local")
@@ -100,8 +109,36 @@ func main() {
 	seedFromCitas(ldb, sdb, catalog, *days, s)
 	seedSynthetic(ldb, catalog, *days, *leakRatio, s)
 
+	// Demo local: atribuir parte de las citas de SIESA al usuario del bot para que la participación
+	// y la conversión real muestren datos. Guardado contra prod.
+	attributeBotCitas(sdb, siesaDSN, config.Load().SIESAAssignUserCedula, *days)
+
 	s.print()
 	fmt.Println("== listo ==")
+}
+
+// attributeBotCitas atribuye ~40% de las citas locales recientes de SIESA al usuario del bot
+// (cod_user_asigna_cita = botCedula) para el demo local. SOLO local: aborta si el DSN parece de prod.
+func attributeBotCitas(sdb *sql.DB, siesaDSN, botCedula string, days int) {
+	low := strings.ToLower(siesaDSN)
+	if strings.Contains(low, "192.168.1.207") || strings.Contains(low, "prod") {
+		fmt.Println("SIESA parece producción → NO se atribuyen citas al bot (skip)")
+		return
+	}
+	if strings.TrimSpace(botCedula) == "" {
+		botCedula = "000000"
+	}
+	res, err := sdb.Exec(`
+		UPDATE citas SET cod_user_asigna_cita = @p1
+		WHERE fecha_solicitud >= DATEADD(DAY, @p2, GETDATE())
+		  AND id % 5 < 2
+		  AND cod_user_asigna_cita <> @p1`, botCedula, -days)
+	if err != nil {
+		fmt.Printf("warn atribuir citas al bot: %v\n", err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	fmt.Printf("SIESA (local): %d citas atribuidas al bot (cod_user_asigna_cita=%s)\n", n, botCedula)
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +243,7 @@ func newEmitters(db *sql.DB, s *summary) *emitters {
 		ev:   newBatch(db, "chat_events", "session_id", "phone_number", "event_type", "event_data", "created_at"),
 		fe:   newBatch(db, "flow_events", "trace_id", "flow", "step", "level", "outcome", "reason", "phone", "ref_type", "ref_id", "created_at"),
 		sess: newBatch(db, "sessions", "id", "phone_number", "current_state", "status", "patient_id", "patient_doc", "patient_name", "patient_age", "patient_gender", "patient_entity", "conversation_id", "last_activity_at", "escalated_at", "expires_at", "created_at", "updated_at", "agent_id", "agent_name", "last_agent_msg_at", "resumed_at"),
-		wl:   newBatch(db, "waiting_list", "id", "phone_number", "patient_id", "patient_doc", "patient_name", "patient_age", "patient_gender", "patient_entity", "patient_contract", "cups_code", "cups_name", "is_contrasted", "is_sedated", "espacios", "procedures_json", "procedure_type", "status", "created_at", "updated_at", "expires_at"),
+		wl:   newBatch(db, "waiting_list", "id", "phone_number", "patient_id", "patient_doc", "patient_name", "patient_age", "patient_gender", "patient_entity", "patient_contract", "cups_code", "cups_name", "is_contrasted", "is_sedated", "espacios", "procedures_json", "procedure_type", "status", "created_at", "updated_at", "expires_at", "resolved_at"),
 		np:   newBatch(db, "notification_pending", "phone", "type", "appointment_id", "retry_count", "expires_at", "created_at"),
 		nh:   newBatch(db, "notification_history", "phone", "type", "appointment_id", "status", "created_at", "resolved_at"),
 		cl:   newBatch(db, "confirmation_log", "appointment_id", "patient_id", "confirmed_at", "channel", "channel_id", "created_at"),
@@ -501,9 +538,14 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		c := catalog[rand.Intn(len(catalog))]
 		phone := fakePhone(30000 + i)
 		wlID := uuid.NewString()
+		// resolved_at: cuándo se resolvió la entrada (agendada/declinada). Da el "tiempo a agendar".
+		var resolved any
+		if st == "scheduled" || st == "declined" {
+			resolved = ts(t.Add(time.Duration(2+rand.Intn(70)) * time.Hour))
+		}
 		e.wl.add(wlID, phone, fmt.Sprintf("P%05d", i), fmt.Sprintf("%d", 10000000+rand.Intn(80000000)),
 			"PACIENTE ESPERA "+fmt.Sprintf("%d", i), 20+rand.Intn(60), pick("F", "M"), entities[rand.Intn(len(entities))], "8",
-			c.code, c.name, 0, 0, 1, "[]", svcType(c.asunto), st, ts(t), ts(t), ts(t.Add(360*time.Hour)))
+			c.code, c.name, 0, 0, 1, "[]", svcType(c.asunto), st, ts(t), ts(t), ts(t.Add(360*time.Hour)), resolved)
 		e.event(newSID(), phone, "waiting_list_joined", map[string]any{"cups_code": c.code}, t)
 		e.flow("wl:"+wlID, "lista_espera", "enrolled", 3, "ok", "", phone, "", "", t)
 		switch st {
