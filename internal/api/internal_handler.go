@@ -405,7 +405,8 @@ func (h *InternalHandler) HandleSiesaBotShare(w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"from": fromStr, "to": toStr,
 		"total": totalSum, "bot": botSum, "otros": totalSum - botSum, "bot_pct": botPct,
-		"rows": rows,
+		"bot_user_configured": botCedula != "" && botCedula != "000000",
+		"rows":                rows,
 	})
 }
 
@@ -473,7 +474,9 @@ func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.R
 		"from": fromStr, "to": toStr,
 		"sessions": sessions, "bot_created": botCreated, "siesa_real": siesaReal,
 		"conversion_real_pct": convReal, "conversion_bot_pct": convBot,
-		"discrepancy": botCreated - siesaReal, "rows": rows,
+		"discrepancy":         botCreated - siesaReal,
+		"bot_user_configured": botCedula != "" && botCedula != "000000",
+		"rows":                rows,
 	})
 }
 
