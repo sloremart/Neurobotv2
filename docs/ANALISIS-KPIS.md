@@ -22,11 +22,14 @@ Resultado tras los lotes de fixes (quick wins + estructurales). Mapeo contra las
 
 **Otros corregidos:** ✅ tendencias de 30 días ahora se renderizan (5 páginas); ✅ conciliación incluye consultas (`citas_procedimientos_asuntos`); ✅ embudo con drops acotados; ✅ ventana de efectividad de lista de espera unificada a `CURDATE`; ✅ embudo "Eligió agendar" filtra `option='agendar'`; ✅ **TTFR (1ª respuesta del agente)** vía `first_agent_msg_at` (migración 030); ✅ **donut de Sesiones por status** (excluyente, suma al total); + los 26 hallazgos de la auditoría de código (ver `neuro-dashboard/AUDITORIA-DASHBOARD.md`).
 
+**Corregidos (2ª tanda — "todo lo conocido"):** ✅ cierre por inactividad ahora marca `status='abandoned'` (no 'completed') → donut/breakdown por status fiel; ✅ queries restantes sargables (`GetNotificationBreakdown`/`GetAppointmentBreakdown`/`GetSessionsByHour`/`GetTopEscalationStates`); ✅ `avg_session_duration` solo sobre `session_completed` (sin el padding del timeout de inactividad); ✅ efectividad de lista de espera excluye `duplicate_found` del total.
+
 **No aplica / deferido con razón:**
 - `ocr_attempts`: revisado, `attempts = success + failed` ya es correcto.
 - `waiting_list_auto_joined`: no se mapea porque ese KPI no se muestra; los auto-inscritos ya cuentan en la efectividad (que lee la tabla, no el evento).
 - Dedupe de las 2 `GetFunnel`: están en servicios distintos (bot vs dashboard) con consumidores distintos; no se pueden unificar sin acoplarlos por HTTP. Intencional.
-- Pendiente real: separar `sessions.status='completed'` del cierre por inactividad (hoy el donut lo agrupa en "Completadas"); requiere un status propio en el bot.
+
+**Residual (definicional/inherente, no son bugs):** discrepancia de conversión real puede salir negativa (DISTINCT sesiones vs filas-cita) — es informativa; reagendamientos mezclan 1/operación admin vs 1/paciente self-service en un COUNT; `appointment_breakdown`/`top_cups` subcuentan citas multi-CUPS (un `cups_code` por sesión en el evento). Requieren redefinir el KPI, no corregir código.
 
 
 ## 1. Resumen ejecutivo
