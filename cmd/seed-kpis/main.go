@@ -411,6 +411,14 @@ ORDER BY c.id`
 			e.nh.add(phone, "confirmation", apptID, "cancelled", ts(notifBase), ts(ch))
 			e.flow("notif:"+apptID, "notif_recordatorio", "cancelled", 2, "ok", "", phone, "cita", apptID, ch)
 			s.inc("canceladas")
+		} else if id%3 == 0 {
+			// reprogramó DESDE el recordatorio de confirmación (4º desenlace, atado al envío para que
+			// reprogramados ⊆ enviadas y el 'sin respuesta' derivado no lo cuente).
+			ch := notifBase.Add(40 * time.Minute)
+			e.event("", phone, "notification_reschedule_confirmed", map[string]any{"appointment_id": apptID}, ch)
+			e.nh.add(phone, "confirmation", apptID, "rescheduled", ts(notifBase), ts(ch))
+			e.flow("notif:"+apptID, "notif_recordatorio", "rescheduled", 2, "ok", "", phone, "cita", apptID, ch)
+			s.inc("reprogramadas")
 		} else {
 			// sin respuesta
 			e.event("", phone, "notification_timeout", map[string]any{"appointment_id": apptID}, notifBase.Add(6*time.Hour))
@@ -581,7 +589,10 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		apptID := fmt.Sprintf("9%06d", i)
 		switch i % 6 {
 		case 0:
-			e.event("", phone, "notification_reschedule_confirmed", map[string]any{"appointment_id": apptID}, t)
+			// notification_reschedule_confirmed (reagendado DESDE el recordatorio) ya se genera en el
+			// loop principal atado al envío; aquí solo autogestión del paciente para no descuadrar el
+			// 'sin respuesta' derivado por canal.
+			e.event("", phone, "notification_reschedule_self_service", map[string]any{"appointment_id": apptID}, t)
 		case 1:
 			e.event("", phone, "notification_reschedule_self_service", map[string]any{"appointment_id": apptID}, t)
 		case 2:
