@@ -231,8 +231,11 @@ func (r *SessionRepo) TouchPatientActivity(ctx context.Context, sessionID string
 // Se invoca cuando un saliente humano del agente llega por webhook; frena el recordatorio.
 // No-op si no hay sesión escalada para ese teléfono.
 func (r *SessionRepo) TouchAgentActivity(ctx context.Context, phone string) error {
+	// first_agent_msg_at se sella una sola vez (COALESCE): es la PRIMERA respuesta del agente (TTFR).
+	// last_agent_msg_at sí se actualiza en cada mensaje (frena el recordatorio).
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE sessions SET last_agent_msg_at = NOW(), updated_at = NOW()
+		`UPDATE sessions SET last_agent_msg_at = NOW(),
+		 first_agent_msg_at = COALESCE(first_agent_msg_at, NOW()), updated_at = NOW()
 		 WHERE phone_number = ? AND status = 'escalated' AND expires_at > NOW()`,
 		phone)
 	if err != nil {
