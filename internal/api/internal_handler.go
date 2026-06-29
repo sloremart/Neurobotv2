@@ -311,14 +311,22 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 		Cups    string `json:"cups"`
 		Fecha   string `json:"fecha"`
 	}
+	// La fuente trae UNA fila por (cita, CUPS): una cita con varios CUPS aparece varias veces. Los KPIs
+	// titulares se cuentan por CITAS DISTINTAS (no filas) y los pares cita-CUPS se exponen aparte (_cups)
+	// para el detalle. mal_asignadas conserva el detalle por par cita-CUPS.
 	bad := make([]misassigned, 0)
-	checked := 0
+	checkedRows := 0
+	distinctCitas := make(map[int]struct{})
+	evaluatedCitas := make(map[int]struct{})
+	badCitas := make(map[int]struct{})
 	for _, c := range citas {
+		distinctCitas[c.CitaID] = struct{}{}
 		allowed, err := h.cupsMedico.FindMedicosForCups(r.Context(), c.Cups)
 		if err != nil || len(allowed) == 0 {
 			continue // fail-open: CUPS sin médicos configurados no se evalúa
 		}
-		checked++
+		checkedRows++
+		evaluatedCitas[c.CitaID] = struct{}{}
 		ok := false
 		for _, m := range allowed {
 			if m == c.CodMedi {
@@ -328,11 +336,24 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 		}
 		if !ok {
 			bad = append(bad, misassigned{c.CitaID, c.CodMedi, c.Cups, c.Fecha})
+			badCitas[c.CitaID] = struct{}{}
 		}
 	}
+	// La cédula del bot sin configurar (vacía o el placeholder '000000') deja la conciliación en 0 sin
+	// que sea un 0 real; la UI lo distingue con esta bandera.
+	botConfigured := botCedula != "" && botCedula != "000000"
 	w.Header().Set("Content-Type", "application/json")
+	// Titulares por CITAS distintas; los pares cita-CUPS (filas) se exponen con sufijo _cups.
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"mal_asignadas": bad, "total_mal": len(bad), "evaluadas": checked, "bot_citas": len(citas), "dias": dias,
+		"mal_asignadas":       bad,
+		"total_mal":           len(badCitas),
+		"total_mal_cups":      len(bad),
+		"evaluadas":           len(evaluatedCitas),
+		"evaluadas_cups":      checkedRows,
+		"bot_citas":           len(distinctCitas),
+		"bot_cita_cups":       len(citas),
+		"bot_user_configured": botConfigured,
+		"dias":                dias,
 	})
 }
 

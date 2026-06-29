@@ -621,7 +621,8 @@ func TestIsoWeekMonday(t *testing.T) {
 // --- mock SiesaAnalyticsReader (solo BotCreatedByDay configurable) ---
 
 type mockSiesaAnalyticsReader struct {
-	botCreatedFn func(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
+	botCreatedFn      func(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
+	botAppointmentsFn func(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
 }
 
 func (m *mockSiesaAnalyticsReader) Occupancy(_ context.Context, _ int) ([]domain.OccupancyRow, error) {
@@ -647,8 +648,20 @@ func (m *mockSiesaAnalyticsReader) CreatedByDay(_ context.Context, _, _ string) 
 	return nil, nil
 }
 
-func (m *mockSiesaAnalyticsReader) BotAppointmentsWithCups(_ context.Context, _ string, _ int) ([]domain.BotAppointmentCup, error) {
+func (m *mockSiesaAnalyticsReader) BotAppointmentsWithCups(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error) {
+	if m.botAppointmentsFn != nil {
+		return m.botAppointmentsFn(ctx, botCedula, days)
+	}
 	return nil, nil
+}
+
+// mockCupsMedicoReader devuelve los médicos permitidos por CUPS desde un mapa.
+type mockCupsMedicoReader struct {
+	medicos map[string][]int
+}
+
+func (m *mockCupsMedicoReader) FindMedicosForCups(_ context.Context, cups string) ([]int, error) {
+	return m.medicos[cups], nil
 }
 
 // #6: la discrepancia debe comparar FILAS de citas (no sesiones distintas) y acotarse a >=0.
@@ -706,5 +719,83 @@ func TestHandleSiesaConversion_DiscrepancyUsesRowsAndClamps(t *testing.T) {
 				t.Errorf("discrepancy: want %v, got %v", tc.wantDiscrep, result["discrepancy"])
 			}
 		})
+	}
+}
+
+// #8: la conciliación debe contar CITAS DISTINTAS (no filas cita-CUPS) en los KPIs titulares y
+// distinguir 'usuario del bot no configurado' de un 0 real.
+func TestHandleSiesaConciliacion_CountsDistinctCitas(t *testing.T) {
+	// cita 100 tiene 3 CUPS (X ok, Y/Z mal); cita 200 tiene 1 CUPS (X mal). 4 filas, 2 citas.
+	rows := []domain.BotAppointmentCup{
+		{CitaID: 100, CodMedi: 5, Cups: "X", Fecha: "2026-06-28"},
+		{CitaID: 100, CodMedi: 5, Cups: "Y", Fecha: "2026-06-28"},
+		{CitaID: 100, CodMedi: 5, Cups: "Z", Fecha: "2026-06-28"},
+		{CitaID: 200, CodMedi: 9, Cups: "X", Fecha: "2026-06-28"},
+	}
+	analytics := &mockSiesaAnalyticsReader{
+		botAppointmentsFn: func(_ context.Context, _ string, _ int) ([]domain.BotAppointmentCup, error) {
+			return rows, nil
+		},
+	}
+	cups := &mockCupsMedicoReader{medicos: map[string][]int{
+		"X": {5}, // cita100 X ok (medi 5); cita200 X mal (medi 9)
+		"Y": {7}, // cita100 Y mal (medi 5)
+		"Z": {7}, // cita100 Z mal (medi 5)
+	}}
+	h := &InternalHandler{
+		siesaAnalytics: analytics,
+		cupsMedico:     cups,
+		cfg:            &config.Config{SIESAAssignUserCedula: "123456"},
+	}
+
+	req := httptest.NewRequest("GET", "/api/internal/siesa/conciliacion?dias=4", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSiesaConciliacion(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var res map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	// Titulares por CITAS distintas.
+	assertNum(t, res, "bot_citas", 2)
+	assertNum(t, res, "evaluadas", 2)
+	assertNum(t, res, "total_mal", 2)
+	// Detalle por par cita-CUPS.
+	assertNum(t, res, "bot_cita_cups", 4)
+	assertNum(t, res, "evaluadas_cups", 4)
+	assertNum(t, res, "total_mal_cups", 3)
+	if res["bot_user_configured"] != true {
+		t.Errorf("bot_user_configured: want true, got %v", res["bot_user_configured"])
+	}
+}
+
+func TestHandleSiesaConciliacion_BotUserNotConfigured(t *testing.T) {
+	h := &InternalHandler{
+		siesaAnalytics: &mockSiesaAnalyticsReader{},
+		cupsMedico:     &mockCupsMedicoReader{},
+		cfg:            &config.Config{SIESAAssignUserCedula: "000000"}, // placeholder = no configurado
+	}
+	req := httptest.NewRequest("GET", "/api/internal/siesa/conciliacion", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSiesaConciliacion(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var res map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["bot_user_configured"] != false {
+		t.Errorf("bot_user_configured: want false for placeholder cedula, got %v", res["bot_user_configured"])
+	}
+}
+
+func assertNum(t *testing.T, res map[string]interface{}, key string, want float64) {
+	t.Helper()
+	if got, ok := res[key].(float64); !ok || got != want {
+		t.Errorf("%s: want %v, got %v", key, want, res[key])
 	}
 }
