@@ -290,7 +290,9 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 		elapsedMin := int(elapsed.Minutes())
 
 		if elapsedMin >= deps.CloseMin && s.Reminders >= 1 {
-			if err := m.repo.UpdateStatus(ctx, s.ID, StatusCompleted); err != nil {
+			// Cierre por inactividad = ABANDONO (no "completada"): el paciente dejó de responder.
+			// Antes se marcaba 'completed', mezclando abandono con finalización real en sessions.status.
+			if err := m.repo.UpdateStatus(ctx, s.ID, StatusAbandoned); err != nil {
 				slog.Error("inactivity close failed", "session_id", s.ID, "error", err)
 				continue
 			}
