@@ -235,3 +235,20 @@ func (r *EventRepo) GetFunnel(ctx context.Context, from, to time.Time) (*FunnelD
 
 	return funnel, nil
 }
+
+// CountAppointmentsCreated cuenta las FILAS del evento appointment_created (una por cita creada,
+// slots.go lo emite una vez por cita) en la ventana [from, to+1día). A diferencia del embudo
+// (COUNT(DISTINCT session_id)), esto cuenta citas, no sesiones — la unidad correcta para comparar
+// contra las filas de la tabla citas de SIESA en la discrepancia de conversión real.
+func (r *EventRepo) CountAppointmentsCreated(ctx context.Context, from, to time.Time) (int, error) {
+	toExclusive := to.AddDate(0, 0, 1)
+	var count int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM chat_events
+		 WHERE event_type = 'appointment_created' AND created_at >= ? AND created_at < ?`,
+		from, toExclusive).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count appointments created: %w", err)
+	}
+	return count, nil
+}

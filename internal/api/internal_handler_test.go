@@ -131,8 +131,9 @@ func (m *mockNotifCounterAPI) PendingCount() int { return m.count }
 // --- mock EventKPIReader ---
 
 type mockEventKPIReader struct {
-	funnelFn      func(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error)
-	findByPhoneFn func(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]localrepo.ChatEvent, error)
+	funnelFn       func(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error)
+	countCreatedFn func(ctx context.Context, from, to time.Time) (int, error)
+	findByPhoneFn  func(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]localrepo.ChatEvent, error)
 }
 
 func (m *mockEventKPIReader) GetFunnel(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error) {
@@ -140,6 +141,13 @@ func (m *mockEventKPIReader) GetFunnel(ctx context.Context, from, to time.Time) 
 		return m.funnelFn(ctx, from, to)
 	}
 	return &localrepo.FunnelData{}, nil
+}
+
+func (m *mockEventKPIReader) CountAppointmentsCreated(ctx context.Context, from, to time.Time) (int, error) {
+	if m.countCreatedFn != nil {
+		return m.countCreatedFn(ctx, from, to)
+	}
+	return 0, nil
 }
 
 func (m *mockEventKPIReader) FindByPhone(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]localrepo.ChatEvent, error) {
@@ -607,5 +615,96 @@ func TestIsoWeekMonday(t *testing.T) {
 		if got.Format("2006-01-02") != c.want {
 			t.Errorf("isoWeekMonday(%d,%d) = %s, want %s", c.year, c.week, got.Format("2006-01-02"), c.want)
 		}
+	}
+}
+
+// --- mock SiesaAnalyticsReader (solo BotCreatedByDay configurable) ---
+
+type mockSiesaAnalyticsReader struct {
+	botCreatedFn func(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
+}
+
+func (m *mockSiesaAnalyticsReader) Occupancy(_ context.Context, _ int) ([]domain.OccupancyRow, error) {
+	return nil, nil
+}
+
+func (m *mockSiesaAnalyticsReader) AppointmentsByState(_ context.Context, _, _ string) ([]domain.AppointmentStateRow, error) {
+	return nil, nil
+}
+
+func (m *mockSiesaAnalyticsReader) NoShowByDay(_ context.Context, _, _ string) ([]domain.NoShowRow, error) {
+	return nil, nil
+}
+
+func (m *mockSiesaAnalyticsReader) BotCreatedByDay(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error) {
+	if m.botCreatedFn != nil {
+		return m.botCreatedFn(ctx, botCedula, from, to)
+	}
+	return nil, nil
+}
+
+func (m *mockSiesaAnalyticsReader) CreatedByDay(_ context.Context, _, _ string) ([]domain.BotCreatedRow, error) {
+	return nil, nil
+}
+
+func (m *mockSiesaAnalyticsReader) BotAppointmentsWithCups(_ context.Context, _ string, _ int) ([]domain.BotAppointmentCup, error) {
+	return nil, nil
+}
+
+// #6: la discrepancia debe comparar FILAS de citas (no sesiones distintas) y acotarse a >=0.
+func TestHandleSiesaConversion_DiscrepancyUsesRowsAndClamps(t *testing.T) {
+	cases := []struct {
+		name          string
+		botCreatedRow int // filas de appointment_created (CountAppointmentsCreated)
+		siesaTotal    int // filas en citas SIESA
+		wantBotCreate float64
+		wantDiscrep   float64
+	}{
+		// multi_cups_no_loss: una sesión con varios CUPS genera varias filas en ambos lados → 0 (no pérdida).
+		// real_loss: el bot creyó crear 12 pero solo 10 aterrizaron → 2 perdidas.
+		// more_in_siesa_clamped: más filas en SIESA que eventos → se acota a 0 (no es pérdida).
+		{"multi_cups_no_loss", 12, 12, 12, 0},
+		{"real_loss", 12, 10, 12, 2},
+		{"more_in_siesa_clamped", 8, 12, 8, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eventRepo := &mockEventKPIReader{
+				funnelFn: func(_ context.Context, _, _ time.Time) (*localrepo.FunnelData, error) {
+					return &localrepo.FunnelData{TotalSessions: 10, AppointmentCreated: 8}, nil
+				},
+				countCreatedFn: func(_ context.Context, _, _ time.Time) (int, error) {
+					return tc.botCreatedRow, nil
+				},
+			}
+			analytics := &mockSiesaAnalyticsReader{
+				botCreatedFn: func(_ context.Context, _, _, _ string) ([]domain.BotCreatedRow, error) {
+					return []domain.BotCreatedRow{{Total: tc.siesaTotal}}, nil
+				},
+			}
+			h := &InternalHandler{
+				eventRepo:      eventRepo,
+				siesaAnalytics: analytics,
+				cfg:            &config.Config{SIESAAssignUserCedula: "123456"},
+			}
+
+			req := httptest.NewRequest("GET", "/api/internal/siesa/conversion?from=2026-06-01&to=2026-06-30", nil)
+			rec := httptest.NewRecorder()
+			h.HandleSiesaConversion(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			var result map[string]interface{}
+			if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+				t.Fatal(err)
+			}
+			if result["bot_created"].(float64) != tc.wantBotCreate {
+				t.Errorf("bot_created: want %v (filas), got %v", tc.wantBotCreate, result["bot_created"])
+			}
+			if result["discrepancy"].(float64) != tc.wantDiscrep {
+				t.Errorf("discrepancy: want %v, got %v", tc.wantDiscrep, result["discrepancy"])
+			}
+		})
 	}
 }

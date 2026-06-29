@@ -41,6 +41,9 @@ type NotificationCounter interface {
 // EventKPIReader provides the funnel (para la conversión real bot→SIESA) y la búsqueda de eventos.
 type EventKPIReader interface {
 	GetFunnel(ctx context.Context, from, to time.Time) (*localrepo.FunnelData, error)
+	// CountAppointmentsCreated cuenta las FILAS del evento appointment_created (1 por cita creada),
+	// no sesiones distintas — para comparar manzanas con manzanas contra las filas de citas en SIESA.
+	CountAppointmentsCreated(ctx context.Context, from, to time.Time) (int, error)
 	FindByPhone(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]localrepo.ChatEvent, error)
 }
 
@@ -462,19 +465,36 @@ func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.R
 		siesaReal += d.Total
 	}
 
+	// botCreated se cuenta por FILAS de appointment_created (1 por cita), no por sesiones distintas,
+	// para que la unidad coincida con siesaReal (filas de la tabla citas). Así la discrepancia compara
+	// citas-vs-citas: una sesión que agenda varios CUPS genera varias filas en ambos lados y ya no
+	// produce una discrepancia negativa espuria.
+	botCreated, err := h.eventRepo.CountAppointmentsCreated(r.Context(), from, to)
+	if err != nil {
+		slog.Error("siesa conversion count created failed", "error", err)
+		http.Error(w, "failed to count appointments created", http.StatusInternalServerError)
+		return
+	}
+
 	sessions := funnel.TotalSessions
-	botCreated := funnel.AppointmentCreated
 	convReal, convBot := 0.0, 0.0
 	if sessions > 0 {
 		convReal = float64(siesaReal) / float64(sessions) * 100
 		convBot = float64(botCreated) / float64(sessions) * 100
+	}
+	// La discrepancia solo es real cuando el bot creyó crear MÁS citas de las que aterrizaron en SIESA
+	// (INSERT perdido). Se acota a >=0: un valor negativo significaría más filas en SIESA que eventos,
+	// lo cual no es una pérdida y solo confundiría (la UI la pinta 'danger' solo si es positiva).
+	discrepancy := botCreated - siesaReal
+	if discrepancy < 0 {
+		discrepancy = 0
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"from": fromStr, "to": toStr,
 		"sessions": sessions, "bot_created": botCreated, "siesa_real": siesaReal,
 		"conversion_real_pct": convReal, "conversion_bot_pct": convBot,
-		"discrepancy":         botCreated - siesaReal,
+		"discrepancy":         discrepancy,
 		"bot_user_configured": botCedula != "" && botCedula != "000000",
 		"rows":                rows,
 	})
