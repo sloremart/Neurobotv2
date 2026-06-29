@@ -593,7 +593,17 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 			e.event("", phone, "admin_cancel_agenda", map[string]any{"agenda_id": 100 + i, "reason": "médico incapacitado"}, t)
 			e.flow(fmt.Sprintf("agenda:%d:%s", 100+i, t.Format("20060102")), "admin_agenda", "agenda_cancelled", 2, "ok", "", phone, "agenda", "", t)
 		case 5:
-			e.event("", phone, "admin_reschedule_agenda", map[string]any{"agenda_id": 200 + i, "slots_offered": 8}, t)
+			// Una operación de agenda mueve N pacientes de golpe. Según el escenario lleva
+			// appointments_cancelled (new_agenda) o appointments_updated (same_agenda).
+			if i%2 == 0 {
+				e.event("", phone, "admin_reschedule_agenda", map[string]any{
+					"agenda_id": 200 + i, "scenario": "new_agenda", "appointments_cancelled": 5 + rand.Intn(25),
+				}, t)
+			} else {
+				e.event("", phone, "admin_reschedule_agenda", map[string]any{
+					"agenda_id": 200 + i, "scenario": "same_agenda", "appointments_updated": 5 + rand.Intn(25),
+				}, t)
+			}
 			e.flow(fmt.Sprintf("agenda:%d:%s", 200+i, t.Format("20060102")), "admin_agenda", "agenda_rescheduled", 2, "ok", "", phone, "agenda", "", t)
 		}
 	}
