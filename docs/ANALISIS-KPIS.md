@@ -5,6 +5,26 @@ Fecha: 2026-06-29. Método: análisis multi-agente end-to-end (captura → almac
 **Cobertura:** 71 KPIs analizados en 10 áreas; 46 con algún problema.
 
 
+## 0. Estado de remediación (2026-06-29)
+
+Resultado tras los lotes de fixes (quick wins + estructurales). Mapeo contra las 8 prioridades del §1:
+
+| # Prioridad | Estado | Detalle |
+|---|---|---|
+| 1. Unificar los dos motores de KPI | 🟡 Parcial | Eliminado el motor **muerto** del bot (`/api/internal/kpis/*` + GetDailyKPIs/breakdowns/health + structs + tests, −862 líneas). `GetFunnel` se conserva (lo usa la conversión real). La doble `GetFunnel` (bot vs dashboard) no se puede dedupe sin re-arquitectura: ambos tienen consumidores. |
+| 2. `waiting_list` 'scheduled' | ✅ Corregido | `createAppointmentHandler` marca `scheduled` (+`resolved_at`) al agendar desde la lista. |
+| 3. Mismatches de clave (charts vacíos) | ✅ Corregido | `appointment_breakdown` y `top_entities` ahora coinciden con la UI. |
+| 4. `no_response` inflado ~3× | ✅ Corregido | Se recuenta por cita distinta (`COUNT(DISTINCT appointment_id)`). |
+| 5. Embudo: orden + filtro 'agendar' | 🟡 Parcial | Reordenado a secuencia monótona (sin `identified_patients`). Falta filtrar `menu_selected` por `option='agendar'` (hoy relabelado "Eligió en el menú"). |
+| 6. Ventanas de fecha heterogéneas | 🟡 Parcial | Selector de fecha (default ayer) + ChartCards rotuladas (día vs 30d). Falta homogeneización total. |
+| 7. `session_started` proactivas / abandono | 🟡 Parcial | `session_started` ✅ emitido en sesiones proactivas; `escalation_expired` ✅ visible como abandono. Falta mapear `waiting_list_auto_joined`. |
+| 8. `db_latency` invertido / Salud real | 🟡 Parcial | `db_latency<0` → "BD caída" ✅. Falta que Salud consuma `/health` del bot (estado de SIESA). |
+
+**Otros corregidos:** ✅ tendencias de 30 días ahora se renderizan (5 páginas); ✅ conciliación incluye consultas (`citas_procedimientos_asuntos`); ✅ embudo con drops acotados; ✅ ventana de efectividad de lista de espera unificada a `CURDATE`; + los 26 hallazgos de la auditoría de código (ver `neuro-dashboard/AUDITORIA-DASHBOARD.md`).
+
+**Pendientes (menores):** filtro `menu_selected` por opción; `ocr_attempts` con denominador ambiguo (`ocr_success += count`); donuts que no suman exacto al total; TTFR exacto (primera respuesta del agente, requiere columna nueva); homogeneizar las 2 `GetFunnel`; mapear `waiting_list_auto_joined`.
+
+
 ## 1. Resumen ejecutivo
 
 ### Prioridades (lo más importante)
