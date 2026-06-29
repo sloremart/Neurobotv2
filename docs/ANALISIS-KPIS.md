@@ -20,9 +20,13 @@ Resultado tras los lotes de fixes (quick wins + estructurales). Mapeo contra las
 | 7. `session_started` proactivas / abandono | 🟡 Parcial | `session_started` ✅ emitido en sesiones proactivas; `escalation_expired` ✅ visible como abandono. Falta mapear `waiting_list_auto_joined`. |
 | 8. `db_latency` invertido / Salud real | 🟡 Parcial | `db_latency<0` → "BD caída" ✅. Falta que Salud consuma `/health` del bot (estado de SIESA). |
 
-**Otros corregidos:** ✅ tendencias de 30 días ahora se renderizan (5 páginas); ✅ conciliación incluye consultas (`citas_procedimientos_asuntos`); ✅ embudo con drops acotados; ✅ ventana de efectividad de lista de espera unificada a `CURDATE`; + los 26 hallazgos de la auditoría de código (ver `neuro-dashboard/AUDITORIA-DASHBOARD.md`).
+**Otros corregidos:** ✅ tendencias de 30 días ahora se renderizan (5 páginas); ✅ conciliación incluye consultas (`citas_procedimientos_asuntos`); ✅ embudo con drops acotados; ✅ ventana de efectividad de lista de espera unificada a `CURDATE`; ✅ embudo "Eligió agendar" filtra `option='agendar'`; ✅ **TTFR (1ª respuesta del agente)** vía `first_agent_msg_at` (migración 030); ✅ **donut de Sesiones por status** (excluyente, suma al total); + los 26 hallazgos de la auditoría de código (ver `neuro-dashboard/AUDITORIA-DASHBOARD.md`).
 
-**Pendientes (menores):** filtro `menu_selected` por opción; `ocr_attempts` con denominador ambiguo (`ocr_success += count`); donuts que no suman exacto al total; TTFR exacto (primera respuesta del agente, requiere columna nueva); homogeneizar las 2 `GetFunnel`; mapear `waiting_list_auto_joined`.
+**No aplica / deferido con razón:**
+- `ocr_attempts`: revisado, `attempts = success + failed` ya es correcto.
+- `waiting_list_auto_joined`: no se mapea porque ese KPI no se muestra; los auto-inscritos ya cuentan en la efectividad (que lee la tabla, no el evento).
+- Dedupe de las 2 `GetFunnel`: están en servicios distintos (bot vs dashboard) con consumidores distintos; no se pueden unificar sin acoplarlos por HTTP. Intencional.
+- Pendiente real: separar `sessions.status='completed'` del cierre por inactividad (hoy el donut lo agrupa en "Completadas"); requiere un status propio en el bot.
 
 
 ## 1. Resumen ejecutivo
