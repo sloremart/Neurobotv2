@@ -63,7 +63,7 @@ func TestEscalateHandler_Success(t *testing.T) {
 	cfg := testEscalationConfig()
 
 	m := sm.NewMachine()
-	RegisterEscalationHandlers(m, birdClient, cfg)
+	RegisterEscalationHandlers(m, birdClient, cfg, nil)
 
 	sess := testSess(sm.StateEscalateToAgent)
 	sess.Context["patient_name"] = "Juan"
@@ -85,6 +85,60 @@ func TestEscalateHandler_Success(t *testing.T) {
 	}
 }
 
+// mockEscalationCreator captura las llamadas a Create para asertar el registro por escalación.
+type mockEscalationCreator struct {
+	calls      int
+	fromStates []string
+	sessions   []string
+}
+
+func (m *mockEscalationCreator) Create(_ context.Context, sessionID, _, fromState, _, _, _ string) error {
+	m.calls++
+	m.fromStates = append(m.fromStates, fromState)
+	m.sessions = append(m.sessions, sessionID)
+	return nil
+}
+
+func TestEscalateHandler_RecordsEscalation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/workspaces/ws-test/agents":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"agent-1","name":"Test Agent","teams":[{"id":"team-fallback","name":"CC"}],"availability":{"status":"active","activity":"available"},"rootItemAssignedCount":0}]}`))
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/search/feed-items"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"fi-conv-test","feedId":"channel:ch-test","closed":false}]}`))
+		default:
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"msg-ok"}`))
+		}
+	}))
+	defer srv.Close()
+
+	rec := &mockEscalationCreator{}
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), testEscalationConfig(), rec)
+
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.Context["patient_name"] = "Juan"
+	sess.Context["_pre_auto_state"] = "ASK_MANUAL_CUPS" // el paso donde se confundió
+	sess.ConversationID = "conv-test"
+
+	_, err := m.Process(context.Background(), sess, bird.InboundMessage{Phone: "+573001234567", ConversationID: "conv-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("expected 1 Create call, got %d", rec.calls)
+	}
+	if rec.fromStates[0] != "ASK_MANUAL_CUPS" {
+		t.Errorf("expected from_state=ASK_MANUAL_CUPS, got %q", rec.fromStates[0])
+	}
+	if rec.sessions[0] != sess.ID {
+		t.Errorf("expected session_id=%s, got %q", sess.ID, rec.sessions[0])
+	}
+}
+
 func TestEscalateHandler_EmptyConversationFallback(t *testing.T) {
 	// EscalateToAgent will fail with empty conversationID
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +150,7 @@ func TestEscalateHandler_EmptyConversationFallback(t *testing.T) {
 	birdClient := bird.NewClientForTest(srv.URL)
 	cfg := testEscalationConfig()
 	m := sm.NewMachine()
-	RegisterEscalationHandlers(m, birdClient, cfg)
+	RegisterEscalationHandlers(m, birdClient, cfg, nil)
 
 	sess := testSess(sm.StateEscalateToAgent)
 	// No conversationID anywhere → EscalateToAgent("") returns error
@@ -134,7 +188,7 @@ func TestEscalateHandler_TeamRouting(t *testing.T) {
 	cfg := testEscalationConfig()
 
 	m := sm.NewMachine()
-	RegisterEscalationHandlers(m, birdClient, cfg)
+	RegisterEscalationHandlers(m, birdClient, cfg, nil)
 
 	sess := testSess(sm.StateEscalateToAgent)
 	sess.Context["cups_code"] = "883100" // Resonancia → Grupo A

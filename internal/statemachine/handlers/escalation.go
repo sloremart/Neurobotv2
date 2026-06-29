@@ -15,15 +15,20 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
+// EscalationCreator registra una fila por escalación (tabla escalations). Opcional (nil = no registra).
+type EscalationCreator interface {
+	Create(ctx context.Context, sessionID, phone, fromState, teamID, agentID, agentName string) error
+}
+
 // RegisterEscalationHandlers registra los handlers de escalación a agente (Fase 11).
-func RegisterEscalationHandlers(m *sm.Machine, birdClient *bird.Client, cfg *config.Config) {
-	m.Register(sm.StateEscalateToAgent, escalateHandler(birdClient, cfg))
+func RegisterEscalationHandlers(m *sm.Machine, birdClient *bird.Client, cfg *config.Config, escRepo EscalationCreator) {
+	m.Register(sm.StateEscalateToAgent, escalateHandler(birdClient, cfg, escRepo))
 	m.Register(sm.StateEscalated, escalatedHandler())
 }
 
 // ESCALATE_TO_AGENT (automático) — transfiere la conversación a un agente humano.
 // Routes to the correct Bird team based on the CUPS procedure code.
-func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandler {
+func escalateHandler(birdClient *bird.Client, cfg *config.Config, escRepo EscalationCreator) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		// 1. Determine team based on service (CUPS code)
 		cupsCode := sess.GetContext("cups_code")
@@ -146,6 +151,12 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config) sm.StateHandle
 		sess.EscalatedTeam = teamID
 		sess.AgentID = assignedAgentID
 		sess.AgentName = assignedAgentName
+		// Registrar la escalación (una fila por escalación, con el paso del chat donde se escaló).
+		if escRepo != nil {
+			if err := escRepo.Create(ctx, sess.ID, msg.Phone, preState, teamID, assignedAgentID, assignedAgentName); err != nil {
+				slog.Warn("create escalation record failed", "session_id", sess.ID, "error", err)
+			}
+		}
 		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalated",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
 

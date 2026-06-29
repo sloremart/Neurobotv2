@@ -896,3 +896,64 @@ func TestStartInactivityChecker_ContextCancellation(t *testing.T) {
 		t.Fatal("StartInactivityChecker goroutine did not exit after context cancellation")
 	}
 }
+
+// --- Escalation recorder wiring (tabla escalations) ---
+
+type mockEscalationRecorder struct {
+	touch, resume, closeN, expire int
+}
+
+func (m *mockEscalationRecorder) TouchAgent(_ context.Context, _ string) error { m.touch++; return nil }
+func (m *mockEscalationRecorder) Resume(_ context.Context, _ string) error     { m.resume++; return nil }
+func (m *mockEscalationRecorder) Close(_ context.Context, _ string) error      { m.closeN++; return nil }
+func (m *mockEscalationRecorder) Expire(_ context.Context, _ string) error     { m.expire++; return nil }
+
+func TestTouchAgentActivity_RecordsEscalation(t *testing.T) {
+	mgr := NewSessionManager(&mockRepo{}, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	if err := mgr.TouchAgentActivity(context.Background(), "+573001234567"); err != nil {
+		t.Fatal(err)
+	}
+	if rec.touch != 1 {
+		t.Errorf("expected TouchAgent called once, got %d", rec.touch)
+	}
+}
+
+func TestResumeFromEscalation_RecordsResume(t *testing.T) {
+	mgr := NewSessionManager(&mockRepo{}, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	if err := mgr.ResumeFromEscalation(context.Background(), newTestSession(), "GREETING"); err != nil {
+		t.Fatal(err)
+	}
+	if rec.resume != 1 {
+		t.Errorf("expected Resume called once, got %d", rec.resume)
+	}
+}
+
+func TestComplete_EscalatedRecordsClose(t *testing.T) {
+	mgr := NewSessionManager(&mockRepo{}, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	sess := newTestSession()
+	sess.Status = StatusEscalated
+	if err := mgr.Complete(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if rec.closeN != 1 {
+		t.Errorf("expected Close called once for escalated session, got %d", rec.closeN)
+	}
+}
+
+func TestComplete_NonEscalatedNoClose(t *testing.T) {
+	mgr := NewSessionManager(&mockRepo{}, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	if err := mgr.Complete(context.Background(), newTestSession()); err != nil {
+		t.Fatal(err)
+	}
+	if rec.closeN != 0 {
+		t.Errorf("expected no Close for non-escalated session, got %d", rec.closeN)
+	}
+}

@@ -65,10 +65,20 @@ type InactivityDeps struct {
 	AgentReminderMax   int // Máximo de recordatorios por ventana de espera
 }
 
+// EscalationRecorder registra el ciclo de vida de cada escalación en la tabla `escalations`
+// (una fila por escalación, para el SLA y el KPI por paso). Opcional (nil = no registra).
+type EscalationRecorder interface {
+	TouchAgent(ctx context.Context, phone string) error
+	Resume(ctx context.Context, phone string) error
+	Close(ctx context.Context, phone string) error
+	Expire(ctx context.Context, sessionID string) error
+}
+
 type SessionManager struct {
-	repo    SessionRepo
-	mutex   *PhoneMutex
-	timeout time.Duration
+	repo        SessionRepo
+	mutex       *PhoneMutex
+	timeout     time.Duration
+	escalations EscalationRecorder
 }
 
 func NewSessionManager(repo SessionRepo, timeoutMinutes int) *SessionManager {
@@ -78,6 +88,9 @@ func NewSessionManager(repo SessionRepo, timeoutMinutes int) *SessionManager {
 		timeout: time.Duration(timeoutMinutes) * time.Minute,
 	}
 }
+
+// SetEscalationRecorder inyecta el registro por-escalación (opcional).
+func (m *SessionManager) SetEscalationRecorder(e EscalationRecorder) { m.escalations = e }
 
 // FindOrCreate busca sesión activa o crea una nueva.
 // Retorna (session, isNew, error).
@@ -133,6 +146,11 @@ func (m *SessionManager) TouchPatientActivity(ctx context.Context, s *Session) e
 // TouchAgentActivity sella last_agent_msg_at para la sesión escalada del teléfono (si existe).
 // La invoca el webhook outbound cuando el agente responde; frena el recordatorio al agente.
 func (m *SessionManager) TouchAgentActivity(ctx context.Context, phone string) error {
+	if m.escalations != nil {
+		if err := m.escalations.TouchAgent(ctx, phone); err != nil {
+			slog.Warn("escalation touch agent failed", "error", err)
+		}
+	}
 	return m.repo.TouchAgentActivity(ctx, phone)
 }
 
@@ -201,6 +219,12 @@ func (m *SessionManager) ClearAllContext(ctx context.Context, s *Session) error 
 
 // Complete marca la sesión como completada
 func (m *SessionManager) Complete(ctx context.Context, s *Session) error {
+	// Si se completa una sesión ESCALADA (p.ej. el agente cerró con /bot cerrar), marca la escalación.
+	if s.Status == StatusEscalated && m.escalations != nil {
+		if err := m.escalations.Close(ctx, s.PhoneNumber); err != nil {
+			slog.Warn("escalation close failed", "error", err)
+		}
+	}
 	s.Status = StatusCompleted
 	return m.repo.UpdateStatus(ctx, s.ID, StatusCompleted)
 }
@@ -221,6 +245,11 @@ func (m *SessionManager) ResumeFromEscalation(ctx context.Context, s *Session, t
 	now := time.Now()
 	s.ResumedAt = &now
 	s.ExpiresAt = now.Add(m.timeout)
+	if m.escalations != nil {
+		if err := m.escalations.Resume(ctx, s.PhoneNumber); err != nil {
+			slog.Warn("escalation resume failed", "error", err)
+		}
+	}
 	return m.repo.ResumeSession(ctx, s.ID, targetState, int(m.timeout.Minutes()))
 }
 
@@ -346,6 +375,11 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 			if err := m.repo.MarkAbandoned(ctx, s.ID); err != nil {
 				slog.Error("mark escalated abandoned failed", "session_id", s.ID, "error", err)
 				continue
+			}
+			if m.escalations != nil {
+				if err := m.escalations.Expire(ctx, s.ID); err != nil {
+					slog.Warn("escalation expire failed", "session_id", s.ID, "error", err)
+				}
 			}
 			if s.ConversationID != "" {
 				if err := deps.BirdClient.CloseFeedItems(s.ConversationID); err != nil {

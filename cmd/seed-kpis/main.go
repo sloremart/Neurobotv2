@@ -172,7 +172,7 @@ func loadCatalog(db *sql.DB) []cup {
 var analyticsTables = []string{
 	"chat_events", "flow_events", "flow_daily_stats", "session_context", "sessions",
 	"waiting_list", "notification_pending", "notification_history", "confirmation_log",
-	"communication_messages", "communication_calls", "message_inbox",
+	"communication_messages", "communication_calls", "message_inbox", "escalations",
 }
 
 func truncate(db *sql.DB) {
@@ -235,6 +235,7 @@ type emitters struct {
 	np   *batch // notification_pending
 	nh   *batch // notification_history
 	cl   *batch // confirmation_log
+	esc  *batch // escalations (una fila por escalación)
 	s    *summary
 }
 
@@ -247,12 +248,13 @@ func newEmitters(db *sql.DB, s *summary) *emitters {
 		np:   newBatch(db, "notification_pending", "phone", "type", "appointment_id", "retry_count", "expires_at", "created_at"),
 		nh:   newBatch(db, "notification_history", "phone", "type", "appointment_id", "status", "created_at", "resolved_at"),
 		cl:   newBatch(db, "confirmation_log", "appointment_id", "patient_id", "confirmed_at", "channel", "channel_id", "created_at"),
+		esc:  newBatch(db, "escalations", "session_id", "phone_number", "from_state", "team_id", "agent_id", "agent_name", "escalated_at", "first_agent_msg_at", "last_agent_msg_at", "resumed_at", "outcome", "created_at"),
 		s:    s,
 	}
 }
 
 func (e *emitters) flushAll() {
-	for _, b := range []*batch{e.ev, e.fe, e.sess, e.wl, e.np, e.nh, e.cl} {
+	for _, b := range []*batch{e.ev, e.fe, e.sess, e.wl, e.np, e.nh, e.cl, e.esc} {
 		b.flush()
 	}
 }
@@ -516,6 +518,17 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		e.sess.add(sid, phone, from, status, nil, nil, nil, nil, nil, nil, nil,
 			ts(t), ts(escAt), ts(t.Add(72*time.Hour)), ts(t), ts(escAt),
 			ag.id, ag.name, lastAgent, resumed)
+		// Una fila por escalación. outcome derivado igual que el bot: devuelta > cerrada > expirada.
+		var outcome any
+		switch {
+		case resumed != nil:
+			outcome = "returned"
+		case status == "completed":
+			outcome = "completed"
+		case status == "abandoned":
+			outcome = "expired"
+		}
+		e.esc.add(sid, phone, from, "", ag.id, ag.name, ts(escAt), lastAgent, lastAgent, resumed, outcome, ts(escAt))
 		e.event(sid, phone, "escalated_to_agent", map[string]any{"from_state": from, "agent": ag.name}, escAt)
 		e.flow("sess:"+sid, "escalacion", "escalated", 2, "escalated", "", phone, "", "", escAt)
 		switch i % 4 {

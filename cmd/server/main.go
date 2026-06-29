@@ -121,6 +121,8 @@ func main() {
 	// Session manager (BD local + phone mutex)
 	sessionRepo := localrepo.NewSessionRepo(localDB)
 	sessionManager := session.NewSessionManager(sessionRepo, cfg.SessionTimeoutMinutes)
+	escalationRepo := localrepo.NewEscalationRepo(localDB)
+	sessionManager.SetEscalationRecorder(escalationRepo)
 
 	// Iniciar phone mutex cleanup
 	safeGo("phone-mutex-cleanup", func() { sessionManager.PhoneMutex().StartCleanup(ctx) })
@@ -217,7 +219,7 @@ func main() {
 	}
 	// Fase 11: Post-Acción y Escalación
 	handlers.RegisterPostActionHandlers(machine, birdClient)
-	handlers.RegisterEscalationHandlers(machine, birdClient, cfg)
+	handlers.RegisterEscalationHandlers(machine, birdClient, cfg, escalationRepo)
 
 	// Fase 12: Notificaciones Proactivas y Scheduler
 	if appointmentSvc != nil {
