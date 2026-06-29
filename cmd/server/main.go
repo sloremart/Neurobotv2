@@ -427,11 +427,8 @@ func main() {
 		internalMux.HandleFunc("POST /api/internal/reschedule-agenda", internalHandler.HandleRescheduleAgenda)
 		internalMux.HandleFunc("POST /api/internal/waiting-list/check", internalHandler.HandleWaitingListCheck)
 		internalMux.HandleFunc("GET /api/internal/waiting-list", internalHandler.HandleWaitingListGet)
-		// Fase 14: KPI endpoints
-		internalMux.HandleFunc("GET /api/internal/kpis/daily", internalHandler.HandleDailyKPIs)
-		internalMux.HandleFunc("GET /api/internal/kpis/weekly", internalHandler.HandleWeeklyKPIs)
-		internalMux.HandleFunc("GET /api/internal/kpis/funnel", internalHandler.HandleFunnel)
-		internalMux.HandleFunc("GET /api/internal/kpis/health", internalHandler.HandleHealthKPIs)
+		// (Eliminados los endpoints /api/internal/kpis/* — motor de KPIs duplicado/no consumido; el
+		// dashboard calcula sus KPIs leyendo MySQL directo. Ver docs/ANALISIS-KPIS.md.)
 		internalMux.HandleFunc("POST /api/internal/test-alert", internalHandler.HandleTestAlert)
 		internalMux.HandleFunc("POST /api/internal/send-reminders", internalHandler.HandleSendReminders)
 		internalMux.HandleFunc("POST /api/internal/send-agenda-confirmations", internalHandler.HandleSendAgendaConfirmations)

@@ -302,11 +302,20 @@ func (r *AnalyticsRepo) BotAppointmentsWithCups(ctx context.Context, botCedula s
 		return v.([]domain.BotAppointmentCup), nil
 	}
 
+	// Incluye procedimientos/imágenes (citas_procedimientos) Y consultas (citas_procedimientos_asuntos),
+	// que antes quedaban fuera de la conciliación. UNION ALL: una fila por (cita, CUPS).
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT c.id, c.cod_medi, RTRIM(ISNULL(cp.id_procedimiento,'')) AS cups,
 		       CONVERT(VARCHAR(10), c.fecha, 23) AS dia
 		FROM citas c WITH (NOLOCK)
 		JOIN citas_procedimientos cp WITH (NOLOCK) ON cp.id_cita = c.id
+		WHERE c.cod_user_asigna_cita = @p1
+		  AND c.fecha_solicitud >= DATEADD(DAY, @p2, GETDATE())
+		UNION ALL
+		SELECT c.id, c.cod_medi, RTRIM(ISNULL(cpa.CodProcedimiento,'')) AS cups,
+		       CONVERT(VARCHAR(10), c.fecha, 23) AS dia
+		FROM citas c WITH (NOLOCK)
+		JOIN citas_procedimientos_asuntos cpa WITH (NOLOCK) ON cpa.IdCita = c.id
 		WHERE c.cod_user_asigna_cita = @p1
 		  AND c.fecha_solicitud >= DATEADD(DAY, @p2, GETDATE())
 		OPTION (MAXDOP 1)`, botCedula, -days)

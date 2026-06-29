@@ -149,6 +149,9 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 			"Lo sentimos, ocurrió un problema. Por favor intenta más tarde.")
 		return
 	}
+	if m.tracker != nil { // sesión proactiva: contar también en total_sessions
+		m.tracker.LogEvent(ctx, sess.ID, phone, "session_started", map[string]interface{}{"proactive": true})
+	}
 
 	if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessionCtx); err != nil {
 		slog.Error("self_reschedule: set context", "error", err)

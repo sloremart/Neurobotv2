@@ -445,6 +445,9 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		m.birdClient.SendText(phone, pending.ConversationID, "Lo sentimos, ocurrió un problema. Por favor intenta más tarde.")
 		return
 	}
+	if m.tracker != nil { // sesión proactiva: contar también en total_sessions
+		m.tracker.LogEvent(ctx, sess.ID, phone, "session_started", map[string]interface{}{"proactive": true})
+	}
 	if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessCtx); err != nil {
 		slog.Error("startConfirmRescheduleSession: set context", "error", err)
 		m.sessionRepo.UpdateStatus(ctx, sess.ID, session.StatusCompleted) // cleanup orphan
@@ -539,6 +542,9 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 		slog.Error("startConfirmCancelSession: create session", "error", err)
 		m.birdClient.SendText(phone, pending.ConversationID, "Lo sentimos, ocurrió un problema. Por favor intenta más tarde.")
 		return
+	}
+	if m.tracker != nil { // sesión proactiva: contar también en total_sessions
+		m.tracker.LogEvent(ctx, sess.ID, phone, "session_started", map[string]interface{}{"proactive": true})
 	}
 	if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessCtx); err != nil {
 		slog.Error("startConfirmCancelSession: set context", "error", err)
