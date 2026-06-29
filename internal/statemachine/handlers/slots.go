@@ -53,6 +53,7 @@ func currentProcQuantity(sess *session.Session) int {
 type WaitingListCreator interface {
 	Create(ctx context.Context, entry *domain.WaitingListEntry) error
 	HasActiveForPatientAndCups(ctx context.Context, patientID, cupsCode string) (bool, error)
+	UpdateStatus(ctx context.Context, id, status string) error
 }
 
 // advanceToNextProcedure checks if there are more procedure groups to process.
@@ -147,7 +148,7 @@ func RegisterSlotHandlers(
 		Handler: confirmBookingHandler(),
 	})
 	m.Register(sm.StateReconfirmBooking, reconfirmBookingHandler(addrMapper))
-	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, priceRepo, entityRepo, procRepo))
+	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, priceRepo, entityRepo, procRepo, waitingListRepo))
 	m.Register(sm.StateBookingSuccess, bookingSuccessHandler(addrMapper))
 	m.Register(sm.StateBookingFailed, bookingFailedHandler())
 }
@@ -955,7 +956,7 @@ func reconfirmBookingHandler(addrMapper *services.AddressMapper) sm.StateHandler
 }
 
 // CREATE_APPOINTMENT (automático) — crea la cita en la BD externa.
-func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, procRepo repository.ProcedureRepository) sm.StateHandler {
+func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository, procRepo repository.ProcedureRepository, waitingListRepo WaitingListCreator) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		slog.Info(
 			"create_appointment_handler_started",
@@ -1354,6 +1355,11 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				"waiting_list_id": wlID,
 				"appointment_id":  apptID,
 			})
+			// Marcar la entrada como 'scheduled' (sella resolved_at): sin esto, la efectividad y el
+			// tiempo-a-agendar de la lista de espera quedaban en ~0 con datos reales. Best-effort.
+			if err := waitingListRepo.UpdateStatus(ctx, wlID, "scheduled"); err != nil {
+				slog.Warn("waiting list mark scheduled failed", "wl_id", wlID, "appt_id", apptID, "error", err)
+			}
 			// Cierra el recorrido de lista de espera en su propia traza (pivote por ref cita_id).
 			observability.Emit(observability.TraceWaitingList(wlID), "lista_espera", "booked",
 				observability.EmitOpts{Phone: sess.PhoneNumber, RefID: apptID})

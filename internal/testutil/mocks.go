@@ -551,6 +551,15 @@ func (m *MockSessionRepo) CompleteActiveByPhone(ctx context.Context, phone strin
 type MockWaitingListCreator struct {
 	CreateFn                     func(ctx context.Context, entry *domain.WaitingListEntry) error
 	HasActiveForPatientAndCupsFn func(ctx context.Context, patientID, cupsCode string) (bool, error)
+	UpdateStatusFn               func(ctx context.Context, id, status string) error
+}
+
+// UpdateStatus registra/simula el cambio de estado de una entrada de lista de espera.
+func (m *MockWaitingListCreator) UpdateStatus(ctx context.Context, id, status string) error {
+	if m.UpdateStatusFn != nil {
+		return m.UpdateStatusFn(ctx, id, status)
+	}
+	return nil
 }
 
 func (m *MockWaitingListCreator) Create(ctx context.Context, entry *domain.WaitingListEntry) error {
