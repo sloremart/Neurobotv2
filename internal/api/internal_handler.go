@@ -1307,18 +1307,27 @@ func (h *InternalHandler) handleRescheduleSameAgenda(ctx context.Context, w http
 		}
 	}
 
-	// 2. Update working day exception date
-	wdUpdated := false
-	if h.scheduleRepo != nil {
-		wdUpdated, _ = h.scheduleRepo.UpdateWorkingDayExceptionDate(ctx, req.AgendaID, req.DoctorDocument, req.OldDate, req.NewDate)
-	}
-
-	// 3. Move appointments to new date (preserving time slots)
+	// M7 (auditoría): mover las CITAS primero. Antes se actualizaba la excepción de día ANTES de mover
+	// las citas (e ignorando su error): si el movimiento fallaba, la excepción quedaba en la fecha nueva
+	// con las citas aún en la vieja (estado inconsistente). Ahora, si el movimiento falla, no se tocó
+	// nada (return 500); la excepción se actualiza solo tras confirmar el movimiento.
 	updated, err := h.appointmentRepo.RescheduleDate(ctx, req.AgendaID, req.DoctorDocument, req.OldDate, req.NewDate)
 	if err != nil {
 		slog.Error("reschedule same agenda: move appointments", "error", err)
 		http.Error(w, "error moving appointments", http.StatusInternalServerError)
 		return
+	}
+
+	// Actualizar la excepción de día (metadato de disponibilidad) solo tras mover las citas. Si esto
+	// falla, las citas YA quedaron correctas en la fecha nueva; se registra el error (sin un tx cross-repo
+	// no se puede revertir, pero la inconsistencia es de metadato, no de citas activas).
+	wdUpdated := false
+	if h.scheduleRepo != nil {
+		var werr error
+		wdUpdated, werr = h.scheduleRepo.UpdateWorkingDayExceptionDate(ctx, req.AgendaID, req.DoctorDocument, req.OldDate, req.NewDate)
+		if werr != nil {
+			slog.Error("reschedule same agenda: update working day exception (citas ya movidas)", "agenda_id", req.AgendaID, "error", werr)
+		}
 	}
 
 	// 4. Get affected appointments for notifications (now on new date)

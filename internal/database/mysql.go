@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"time"
 
@@ -64,6 +65,12 @@ func NewSIESADB(cfg *config.Config) (*sql.DB, error) {
 	query.Set("encrypt", encrypt)
 	if encrypt != "disable" {
 		query.Set("TrustServerCertificate", "true")
+	} else {
+		// M2 (auditoría): canal TDS sin cifrar hacia la BD clínica → PII/PHI (teléfono, documento,
+		// nombre, diagnósticos) viaja en claro por la red. Se avisa fuerte para que en producción se
+		// setee EXTERNAL_DB_ENCRYPT=true. (No se fuerza por defecto para no romper servers sin TLS.)
+		slog.Warn("SIESA TDS ENCRYPTION DISABLED — PHI viaja en claro; setea EXTERNAL_DB_ENCRYPT=true en producción",
+			"host", cfg.ExtDBHost)
 	}
 
 	u := &url.URL{
@@ -84,10 +91,14 @@ func NewSIESADB(cfg *config.Config) (*sql.DB, error) {
 	db.SetConnMaxIdleTime(1 * time.Minute)
 
 	// N-48: Ping con timeout acotado para no colgar el startup si la BD no responde.
+	// M5 (auditoría): si el Ping falla al arrancar (blip transitorio de SQL Server), NO se descarta el
+	// pool — database/sql reconecta solo cuando SIESA vuelva, así que las queries se recuperan sin
+	// reiniciar el bot. Antes se devolvía nil y el bot quedaba PERMANENTEMENTE degradado (repos nil, sin
+	// reintento). /health (que hace su propio Ping) reporta el estado real mientras tanto.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("siesa db ping: %w", err)
+		slog.Warn("siesa db ping failed at startup — pool retained, will reconnect lazily when SIESA recovers", "error", err)
 	}
 
 	return db, nil

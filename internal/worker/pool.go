@@ -1254,6 +1254,15 @@ func (p *MessageWorkerPool) EnqueueVirtual(phone string) {
 	case p.queue <- msg:
 		slog.Info("virtual message enqueued", "phone", utils.MaskPhone(phone))
 	default:
+		// M4 (auditoría): mismo tope de overflow que Enqueue — sin él, bajo saturación EnqueueVirtual
+		// lanzaba goroutines sin límite (sin backpressure).
+		if p.activeOverflow.Load() >= int32(maxOverflowGoroutines) {
+			slog.Error("backpressure: overflow limit reached, dropping virtual message",
+				"phone", utils.MaskPhone(phone),
+				"queue_size", len(p.queue),
+				"overflow_active", p.activeOverflow.Load())
+			return
+		}
 		// Overflow processing — tracked with WaitGroup
 		p.activeOverflow.Add(1)
 		p.wg.Add(1)

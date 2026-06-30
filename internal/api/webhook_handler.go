@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -220,18 +222,16 @@ func (h *WebhookHandler) verifyAndParse(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if !valid {
-		// Log truncated body to identify the source of unknown events
-		preview := string(body)
-		if len(preview) > 300 {
-			preview = preview[:300]
-		}
+		// M1 (auditoría): NO loguear el body crudo — contiene PHI (teléfono/nombre/texto del paciente).
+		// Para correlacionar eventos idénticos basta un hash corto del cuerpo (sin exponer contenido).
+		sum := sha256.Sum256(body)
 		slog.Warn("invalid webhook signature",
 			"has_signature", signature != "",
 			"has_timestamp", timestamp != "",
 			"url", requestURL,
 			"body_len", len(body),
 			"outbound", outbound,
-			"body_preview", preview,
+			"body_sha256", hex.EncodeToString(sum[:])[:16],
 		)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return nil, bird.WebhookEvent{}, false

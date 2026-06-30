@@ -1113,10 +1113,13 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 							"cup_code", cupEntry.Code,
 							"error", priceErr,
 						)
-					} else if price == nil {
+					} else if price == nil || *price <= 0 {
+						// M6 (auditoría): precio 0 = SIN convenio, igual que nil (misma regla que
+						// isCupCovered en el gate de cobertura). Antes solo se chequeaba nil, así que un
+						// precio 0 pasaba el gate y persistía cpa.Valor=0 pese a no haber convenio real.
 						pricingFailed = true
 						slog.Warn(
-							"price_not_found",
+							"price_not_found_or_zero",
 							"entity_code", entity,
 							"price_type", priceType,
 							"cup_code", cupEntry.Code,
