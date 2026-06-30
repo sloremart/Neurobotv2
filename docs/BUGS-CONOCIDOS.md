@@ -201,6 +201,106 @@ partir de ahí toda escalación depende del lookup (roto).
 - `TestLookupConversationByPhone_Pagination`: la conversación buscada solo está en la página 2 y solo se
   alcanza siguiendo el `nextPageToken` de la raíz → verifica que se piden 2 páginas y se encuentra.
 
-### Mejora futura (opcional, no bloqueante)
+### Actualización 2026-06-30 — SEGUNDA causa (también resuelta)
+Tras desplegar el fix de paginación, el auditor confirmó que "empty conversation ID" **seguía** de forma
+**intermitente** (sesiones 5823 ×5, 8637, 4491, 7283). Causa raíz adicional: el emparejamiento del lookup
+usaba **igualdad exacta de string** (`p.IdentifierValue == phone`). Bird puede devolver el `identifierValue`
+**sin `+`** (o sin prefijo de país), así que en los casos que llegan al lookup (caché y sesión vacías: tras
+reinicio, sesión reabierta o flujo proactivo) el match fallaba. **Fix (commit `3c4d087`):** `utils.SamePhone`
+compara solo dígitos y por los últimos 10 (número nacional, único). Tests: `TestSamePhone`,
+`TestLookupConversationByPhone_PhoneFormatTolerant`. **Requiere deploy** (prod corría build de 08:53 sin este fix).
+
+### Mejora futura (opcional, no bloqueante) → ver BUG-006
 - Persistir el `conversation_id` (p. ej. en la sesión/BD local) para sobrevivir reinicios y evitar el
   lookup por completo; o cachearlo en cada inbound si Bird llega a incluirlo en el webhook.
+- Si aun así el lookup no encuentra conversación (paciente sin conversación indexable), **crear/abrir la
+  conversación explícitamente** antes del handoff y emitir un terminal `escalacion/escalation_no_channel`
+  para medir el residual en vez de fallar en silencio. (Pendiente — ver BUG-006.)
+
+---
+
+## BUG-004 — Víctimas de reinicio: estado de sesión no persistido al apagar/redeploy
+
+- **Estado:** 🔴 Pendiente (documentado, sin corregir)
+- **Severidad:** Media — un paciente a mitad de flujo pierde su avance y/o tarda 10-15 min en ser re-atendido.
+- **Detectado:** 2026-06-30 por el auditor (ciclo 28), tras el redeploy ~08:53.
+- **Componentes:** `internal/worker/pool.go` (`worker`, `processMessage`), `cmd/server/main.go` (shutdown),
+  `internal/worker/pool.go` (`StartStaleReplay` — ver también BUG-001).
+
+### Síntoma observable
+Al redeploy/apagado, ráfaga simultánea de:
+```
+ERROR log event failed / save_state_error / save_state_fallback_complete_failed / inbox mark done failed
+      error="context canceled"
+```
+Víctima ejemplo: +57***5143 (session 914734c9) en `UPLOAD_MEDICAL_ORDER` → su estado **pudo no persistir**.
+
+### Causa raíz
+El worker procesa cada mensaje con el **`ctx` cancelable de la app** (`worker(ctx)` → `safeProcess(ctx,msg)`,
+`pool.go`). El `select { case <-ctx.Done(): return }` evita tomar mensajes **nuevos**, pero al mensaje que
+**ya está a medio procesar** le aborta TODAS las escrituras en vuelo (`RenewTimeout`, `SaveState`, `MarkDone`)
+con `context canceled` → el cambio de estado no se persiste.
+
+Red de seguridad actual y su hueco: el WAL re-encola los `pending` no marcados `done`, PERO el replay es
+**solo periódico** (ticker cada 5 min, edad > 10 min) — **no hay replay inmediato al arrancar** → la víctima
+recupera **10-15 min después**, no al instante. Riesgo adicional: respuesta ya enviada pero estado no guardado
+(inconsistencia).
+
+### Fix propuesto (A + B)
+- **A (prevención):** procesar cada mensaje con un contexto **desacoplado del shutdown** para la sección
+  crítica: `context.WithoutCancel(parentCtx)` + timeout acotado (~45s). El worker sigue dejando de tomar
+  mensajes nuevos al `ctx.Done()`, pero el que ya empezó **completa** `SaveState`/`MarkDone` dentro de la
+  ventana de gracia (`Stop` ya espera al `wg`; `main` da 20s). Convierte "context canceled" en "completado".
+- **B (recuperación rápida):** barrido de replay **one-shot al arrancar** que re-encole los `pending` sin
+  esperar 10-15 min. **OJO:** hacerlo **por lotes/throttle** para no reproducir BUG-001 (re-encolar todo de
+  golpe → backpressure). Idempotente (dedup + MarkDone).
+- Test: "shutdown a mitad de mensaje" → el estado SÍ persiste; replay de arranque por lotes sin drops.
+
+---
+
+## BUG-005 — `agent reminder send failed: conversation not active` (recordatorio a conversación cerrada)
+
+- **Estado:** 🔴 Pendiente (documentado, sin corregir)
+- **Severidad:** Media — el recordatorio al agente (SLA de escalación) no se entrega; ruido de error recurrente.
+- **Detectado:** 2026-06-30 por el auditor (al actualizar el script: nuevo stream de error visible).
+- **Componentes:** envío del recordatorio de escalación (NotificationManager / worker), `internal/bird/client.go`
+  (`trySendToConversation` / Conversations API).
+
+### Síntoma observable
+```
+ERROR agent reminder send failed  session_id=bc365c59... conversation_id=6f9528b2...
+      error="conversation not active: {...\".status\":[\"conversation status is not active\"]}"
+```
+Se repite cada ~1 min sobre la misma sesión.
+
+### Causa raíz (hipótesis a confirmar)
+El recordatorio al agente intenta enviar a un `conversation_id` cuya conversación en Bird **ya está cerrada**
+(el agente la cerró, o se cerró por inactividad) mientras el reloj del recordatorio seguía corriendo. La
+Conversations API rechaza el envío con `conversation status is not active`.
+
+### Fix propuesto
+- Antes de enviar el recordatorio, verificar/abrir el estado de la conversación (o capturar el error
+  `conversation status is not active` y **cancelar el reloj del recordatorio** + cerrar la escalación en vez
+  de reintentar cada minuto).
+- Drill: `flow-trace?trace_id=sess:bc365c59...` y `logs?search=conversation%20not%20active` para confirmar el
+  ciclo de vida (cuándo se cerró la conversación vs cuándo dispara el recordatorio).
+
+---
+
+## BUG-006 — Escalación residual: garantizar canal antes del handoff (hardening)
+
+- **Estado:** 🔴 Pendiente (documentado) — complementa BUG-003 (ya resuelto en sus dos causas).
+- **Severidad:** Baja/Media — caso borde tras los fixes de BUG-003; hoy cae a `FallbackMenu` (no crash).
+- **Componentes:** `internal/statemachine/handlers/escalation.go`, `internal/bird/client.go`,
+  `internal/observability/tracer.go` (catálogo).
+
+### Qué falta
+Si tras caché + sesión + `LookupConversationByPhone` (con paginación y match tolerante ya corregidos) el
+`conversation_id` **sigue vacío** (paciente sin conversación indexable en Bird), la escalación no completa.
+
+### Fix propuesto
+- **Crear/abrir explícitamente** la conversación en Bird (Conversations API) cuando el lookup falle, y usar
+  ese id en el handoff.
+- Emitir un terminal nuevo `escalacion/escalation_no_channel` (catálogo en `tracer.go`) para **medir** el
+  residual en el funnel en vez de que sea invisible.
+- Requiere verificación contra la API real de Bird (qué endpoint crea conversación en este workspace/canal).
