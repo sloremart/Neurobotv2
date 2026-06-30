@@ -31,6 +31,14 @@ type HandlerConfig struct {
 	ErrorMsg     string                               // Mensaje de error en retry
 	RetryPrompt  func(*session.Session, *StateResult) // Rebuild UI en retry (opcional)
 	Handler      StateHandler                         // Solo lógica de negocio (input ya validado)
+
+	// --- Recuperación asistida por IA (opt-in por estado; ver docs/RECUPERACION-IA.md) ---
+	// AIRecovery activa la capa de recuperación IA para este estado (texto libre ambiguo).
+	AIRecovery bool
+	// AIInputHint describe el formato/opciones válidas esperadas (va al prompt del LLM).
+	AIInputHint string
+	// AICarryKeys mapea claves de "dato adelantado" del LLM → claves de contexto de sesión.
+	AICarryKeys map[string]string
 }
 
 // ValidatedPayload extrae el payload validado del context (para InputButton handlers).
@@ -42,6 +50,10 @@ func ValidatedPayload(ctx context.Context) string {
 // RegisterWithConfig registra un handler con validación declarativa.
 // Internamente crea un wrapper que valida primero y luego llama al Handler de negocio.
 func (m *Machine) RegisterWithConfig(state string, cfg HandlerConfig) {
+	// Retener la config para que la capa de recuperación pueda consultar el validador puro,
+	// las opciones válidas y los metadatos de IA sin re-correr Process.
+	m.configs[state] = cfg
+
 	switch cfg.InputType {
 	case InputButton:
 		m.Register(state, wrapButtonHandler(cfg))

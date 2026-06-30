@@ -16,22 +16,56 @@ type StateHandler func(ctx context.Context, sess *session.Session, msg bird.Inbo
 // Retorna (result, true) si interceptó; (nil, false) si no.
 type Interceptor func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool)
 
+// RecoveryCoordinator es la capa de recuperación asistida por IA (opcional, inyectable).
+// La FSM la invoca en dos puntos (ver docs/RECUPERACION-IA.md §2.1):
+//   - TryStart: antes de escalar a humano (primer disparo); retorna (result, true) si toma el
+//     control en lugar de escalar, (nil, false) para escalar de verdad.
+//   - Active/Handle: mientras el modo recuperación esté activo, procesa cada mensaje del paciente
+//     (interceptor); Handle retorna (result, true) si lo atiende.
+//
+// nil = capa desactivada → comportamiento idéntico al actual.
+type RecoveryCoordinator interface {
+	Active(sess *session.Session) bool
+	Handle(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool)
+	TryStart(ctx context.Context, sess *session.Session, msg bird.InboundMessage, blockedState string) (*StateResult, bool)
+}
+
 // Machine es el motor de la máquina de estados
 type Machine struct {
 	handlers     map[string]StateHandler
 	interceptors []Interceptor
+	// configs retiene la HandlerConfig declarativa por estado (validador puro, opciones,
+	// metadatos de recuperación IA). La capa de recuperación la consulta para validar el
+	// input sin re-correr Process. Solo se llena para estados registrados con RegisterWithConfig.
+	configs map[string]HandlerConfig
+	// recovery es la capa de recuperación asistida por IA (opcional). nil = desactivada.
+	recovery RecoveryCoordinator
+}
+
+// SetRecoveryCoordinator inyecta la capa de recuperación IA (opcional). Se llama desde main
+// después de construir la máquina. nil mantiene el comportamiento actual.
+func (m *Machine) SetRecoveryCoordinator(rc RecoveryCoordinator) {
+	m.recovery = rc
 }
 
 // NewMachine crea una nueva máquina de estados
 func NewMachine() *Machine {
 	return &Machine{
 		handlers: make(map[string]StateHandler),
+		configs:  make(map[string]HandlerConfig),
 	}
 }
 
 // Register registra un handler para un estado
 func (m *Machine) Register(state string, handler StateHandler) {
 	m.handlers[state] = handler
+}
+
+// Config devuelve la HandlerConfig declarativa de un estado, si fue registrado con
+// RegisterWithConfig. ok=false si el estado no tiene config declarativa.
+func (m *Machine) Config(state string) (HandlerConfig, bool) {
+	cfg, ok := m.configs[state]
+	return cfg, ok
 }
 
 // AddInterceptor agrega un interceptor global
