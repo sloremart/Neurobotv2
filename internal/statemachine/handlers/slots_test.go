@@ -820,3 +820,86 @@ func TestSlotKey_UniquePerDoctorSameTime(t *testing.T) {
 		t.Error("dos médicos a la misma hora deben tener claves de slot distintas")
 	}
 }
+
+// twoProcSession arma una sesión multi-procedimiento (idx 0 de 2) para los tests de lista de espera.
+func twoProcSession(state string) *session.Session {
+	groups := []services.CUPSGroup{
+		{ServiceType: "4", Espacios: 1, Cups: []services.CUPSEntry{{Code: "871121", Name: "RX TORAX"}}},
+		{ServiceType: "5", Espacios: 1, Cups: []services.CUPSEntry{{Code: "881434", Name: "TAC CRANEO"}}},
+	}
+	pj, _ := json.Marshal(groups)
+	sess := testSess(state)
+	sess.Context["total_procedures"] = "2"
+	sess.Context["current_procedure_idx"] = "0"
+	sess.Context["procedures_json"] = string(pj)
+	sess.Context["patient_id"] = "PAT001"
+	sess.Context["patient_age"] = "30"
+	sess.Context["cups_code"] = "871121"
+	sess.Context["cups_name"] = "RX TORAX"
+	sess.Context["espacios"] = "1"
+	return sess
+}
+
+// #9 (re-análisis): al avanzar al siguiente procedimiento se debe LIMPIAR waiting_list_entry_id, para
+// que la entrada del procedimiento anterior (sin slots) no quede "pegada" y sea marcada 'scheduled' por
+// error cuando el siguiente procedimiento agende.
+func TestAdvanceToNextProcedure_ClearsWaitingListEntryID(t *testing.T) {
+	sess := twoProcSession(sm.StateShowSlots)
+	sess.Context["waiting_list_entry_id"] = "WL-STALE"
+
+	res := advanceToNextProcedure(sess)
+	if res == nil {
+		t.Fatal("expected advance to next procedure, got nil")
+	}
+	found := false
+	for _, k := range res.ClearCtx {
+		if k == "waiting_list_entry_id" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("advanceToNextProcedure debe limpiar waiting_list_entry_id; ClearCtx=%v", res.ClearCtx)
+	}
+}
+
+// El auto-join a lista de espera de un procedimiento sin slots NO debe propagar su waiting_list_entry_id
+// al siguiente procedimiento (ni en UpdateCtx), y debe limpiarlo. Así el booking posterior del siguiente
+// procedimiento no marca por error la entrada anterior como 'scheduled'.
+func TestAutoAddToWaitingList_DoesNotLeakEntryIDToNextProcedure(t *testing.T) {
+	var createdID string
+	wlRepo := &testutil.MockWaitingListCreator{
+		CreateFn: func(_ context.Context, entry *domain.WaitingListEntry) error {
+			createdID = entry.ID
+			return nil
+		},
+	}
+	sess := twoProcSession(sm.StateNoSlotsAvailable)
+
+	res, err := autoAddToWaitingList(context.Background(), sess, wlRepo, "RX TORAX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if createdID == "" {
+		t.Fatal("expected a waiting list entry to be created")
+	}
+	// Debe avanzar al siguiente procedimiento.
+	if res.NextState != sm.StateCheckSpecialCups {
+		t.Errorf("expected advance to CHECK_SPECIAL_CUPS, got %s", res.NextState)
+	}
+	// NO debe setear waiting_list_entry_id en el contexto del siguiente procedimiento.
+	if v, ok := res.UpdateCtx["waiting_list_entry_id"]; ok {
+		t.Errorf("auto-join no debe propagar waiting_list_entry_id al siguiente procedimiento, got %q", v)
+	}
+	// Y debe limpiarla (defensa por si venía de antes).
+	cleared := false
+	for _, k := range res.ClearCtx {
+		if k == "waiting_list_entry_id" {
+			cleared = true
+			break
+		}
+	}
+	if !cleared {
+		t.Errorf("auto-join debe limpiar waiting_list_entry_id al avanzar; ClearCtx=%v", res.ClearCtx)
+	}
+}

@@ -89,7 +89,12 @@ func advanceToNextProcedure(sess *session.Session) *sm.StateResult {
 			"preferred_doctor_doc", "ocr_is_sedated", "ocr_is_contrasted",
 			"_prompted_contrast", "_prompted_sedation", "_prompted_pregnancy",
 			"cups_preparation", "cups_video_url", "cups_audio_url",
-			"alternative_cups_codes", "created_appointment_id")
+			"alternative_cups_codes", "created_appointment_id",
+			// La entrada de lista de espera pertenece al procedimiento ANTERIOR (el que se quedó sin
+			// slots); no debe propagarse al siguiente, o al agendarlo createAppointmentHandler marcaría
+			// esa entrada como 'scheduled' por error y la sacaría de la lista. Solo el flujo de
+			// notificación (notifications/waiting_list.go) setea esta clave para el CUPS correcto.
+			"waiting_list_entry_id")
 
 	// Propagate OCR sedation/contrast detection for next group
 	for _, c := range nextGroup.Cups {
@@ -699,7 +704,9 @@ func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo Wai
 
 	if next := advanceToNextProcedure(sess); next != nil {
 		next.Messages = append([]sm.OutboundMessage{&sm.TextMessage{Text: autoMsg}}, next.Messages...)
-		return next.WithContext("waiting_list_entry_id", entry.ID).
+		// NO se propaga waiting_list_entry_id al siguiente procedimiento (ver advanceToNextProcedure):
+		// es la entrada de ESTE CUPS sin slots, no del que se agendará después.
+		return next.
 			WithEvent("waiting_list_auto_joined", map[string]interface{}{
 				"cups_code":      cupsCode,
 				"patient_id":     patientID,
@@ -830,7 +837,8 @@ func offerWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
 
 			if next := advanceToNextProcedure(sess); next != nil {
 				next.Messages = append([]sm.OutboundMessage{&sm.TextMessage{Text: wlMsg}}, next.Messages...)
-				return next.WithContext("waiting_list_entry_id", entry.ID).
+				// NO se propaga waiting_list_entry_id al siguiente procedimiento (ver advanceToNextProcedure).
+				return next.
 					WithEvent("waiting_list_joined", map[string]interface{}{
 						"cups_code":      cupsCode,
 						"patient_id":     patientID,
