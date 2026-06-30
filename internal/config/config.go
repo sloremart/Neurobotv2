@@ -264,21 +264,23 @@ func Load() *Config {
 
 		// Security
 		InternalAPIKey: os.Getenv("INTERNAL_API_KEY"),
-		LogMaskPhones:  getEnv("LOG_MASK_PHONES", "true") == "true",
+		// #31 (auditoría): getEnvBool (acepta true/1/false/0, case-insensitive) en vez de == "true"
+		// estricto — un "True"/"1" desactivaba el masking de teléfonos (PII) silenciosamente.
+		LogMaskPhones: getEnvBool("LOG_MASK_PHONES", true),
 
 		// Ngrok
 		NgrokHostname: os.Getenv("NGROK_HOSTNAME"),
 
 		// Testing
-		TestingAlwaysOpen: getEnv("TESTING_ALWAYS_OPEN", "") == "true",
+		TestingAlwaysOpen: getEnvBool("TESTING_ALWAYS_OPEN", false),
 		MaxRetries:        getEnvInt("MAX_RETRIES", 4),
 
 		// CUPS group limits
-		CupsGroupLimitsEnabled: getEnv("CUPS_GROUP_LIMITS_ENABLED", "true") == "true",
-		TeamRoutingEnabled:     getEnv("TEAM_ROUTING_ENABLED", "true") == "true",
+		CupsGroupLimitsEnabled: getEnvBool("CUPS_GROUP_LIMITS_ENABLED", true),
+		TeamRoutingEnabled:     getEnvBool("TEAM_ROUTING_ENABLED", true),
 
 		// Confirmation escalation
-		ConfirmFollowupEnabled: getEnv("CONFIRMATION_FOLLOWUP_ENABLED", "false") == "true",
+		ConfirmFollowupEnabled: getEnvBool("CONFIRMATION_FOLLOWUP_ENABLED", false),
 		ConfirmFollowup1Hours:  getEnvInt("CONFIRMATION_FOLLOWUP_1_HOURS", 3),
 		ConfirmFollowup2Hours:  getEnvInt("CONFIRMATION_FOLLOWUP_2_HOURS", 3),
 		ConfirmPostIVRMinutes:  getEnvInt("CONFIRMATION_POST_IVR_MINUTES", 30),

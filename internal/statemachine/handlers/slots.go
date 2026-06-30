@@ -464,6 +464,11 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 		if audioURL := sess.GetContext("cups_audio_url"); audioURL != "" {
 			result.WithContext("cups_audio_url", audioURL)
 		}
+		// #16 (auditoría): persistir también cups_maps_url; se lee al confirmar/agendar (FormatAddress)
+		// en turnos posteriores y antes no quedaba guardado, así que el enlace al mapa no aparecía.
+		if mapsURL := sess.GetContext("cups_maps_url"); mapsURL != "" {
+			result.WithContext("cups_maps_url", mapsURL)
+		}
 		if procType := sess.GetContext("procedure_type"); procType != "" {
 			result.WithContext("procedure_type", procType)
 		}

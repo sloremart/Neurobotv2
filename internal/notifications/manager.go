@@ -316,7 +316,9 @@ func (m *NotificationManager) HandleResponse(phone, payload, conversationID stri
 	}
 
 	pending := val.(*PendingNotification)
-	pending.Timer.Stop()
+	if pending.Timer != nil { // #18: entradas restauradas de la BD pueden no tener Timer en memoria
+		pending.Timer.Stop()
+	}
 	// Cleanup callIDMap
 	if pending.CallID != "" {
 		m.callIDMap.Delete(pending.CallID)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -965,6 +967,18 @@ type CancelAgendaRequest struct {
 // maxReasonLength limits the length of reason/observation fields to prevent oversized DB writes.
 const maxReasonLength = 500
 
+// truncateReason recorta a maxReasonLength BYTES sin partir un carácter UTF-8 multibyte (#29).
+func truncateReason(s string) string {
+	if len(s) <= maxReasonLength {
+		return s
+	}
+	b := s[:maxReasonLength]
+	for len(b) > 0 && !utf8.ValidString(b) {
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
 // HandleCancelAgenda cancels all appointments for a given agenda/date and optionally notifies patients.
 func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Request) {
 	var req CancelAgendaRequest
@@ -983,9 +997,7 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if len(req.Reason) > maxReasonLength {
-		req.Reason = req.Reason[:maxReasonLength]
-	}
+	req.Reason = truncateReason(req.Reason)
 
 	ctx := r.Context()
 
@@ -1172,9 +1184,7 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if len(req.Reason) > maxReasonLength {
-		req.Reason = req.Reason[:maxReasonLength]
-	}
+	req.Reason = truncateReason(req.Reason)
 
 	ctx := r.Context()
 
@@ -1466,7 +1476,13 @@ func (h *InternalHandler) HandleWaitingListCheck(w http.ResponseWriter, r *http.
 		CupsCode string `json:"cups_code"`
 		DryRun   bool   `json:"dry_run"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	// #28 (auditoría): rechazar JSON malformado. Antes el error se ignoraba y req quedaba en cero
+	// (dry_run=false) → un body inválido disparaba un BARRIDO real de toda la lista. Body vacío (EOF)
+	// se permite (= barrido de todos los CUPS).
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
 
 	ctx := r.Context()
 

@@ -26,9 +26,13 @@ func NewInboxRepo(db *sql.DB) *InboxRepo {
 
 // InsertIfNotExists persists an inbound message. Returns true if inserted (not a duplicate).
 func (r *InboxRepo) InsertIfNotExists(ctx context.Context, id, phone, rawBody, msgType string, receivedAt time.Time) (bool, error) {
+	// #14 (auditoría): ON DUPLICATE KEY UPDATE en vez de INSERT IGNORE — IGNORE traga TODOS los errores
+	// (truncado, etc.) como si fueran duplicados; así solo se silencia el choque de PK. Fila nueva →
+	// RowsAffected=1; duplicado (id=id, sin cambio) → 0; error real → se propaga.
 	res, err := r.db.ExecContext(ctx,
-		`INSERT IGNORE INTO message_inbox (id, phone, raw_body, msg_type, received_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO message_inbox (id, phone, raw_body, msg_type, received_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE id = id`,
 		id, phone, rawBody, msgType, receivedAt)
 	if err != nil {
 		return false, err

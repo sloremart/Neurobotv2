@@ -32,6 +32,7 @@ func NewLocalDB(cfg *config.Config) (*sql.DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close() // #34 (auditoría): cerrar el pool si el Ping falla (no fugarlo)
 		return nil, fmt.Errorf("local db ping: %w", err)
 	}
 
