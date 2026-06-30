@@ -453,6 +453,8 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		{"already_has_appt", "already_has_appt"},
 		{"booking_failed", "booking_failed"},
 		{"ocr_failed", "ocr_failed"},
+		{"ocr_error", "ocr_failed"},
+		{"ocr_timeout", "ocr_failed"},
 		{"slot_taken", "no_slots"},
 	}
 	for i := 0; i < nLeak; i++ {
@@ -467,9 +469,11 @@ func seedSynthetic(ldb *sql.DB, catalog []cup, days int, leakRatio float64, s *s
 		e.event(sid, phone, "menu_selected", map[string]any{"option": "agendar"}, t.Add(time.Minute))
 		lk := leaks[i%len(leaks)]
 		switch lk.ev {
-		case "ocr_failed":
-			e.event(sid, phone, "ocr_failed", nil, t.Add(2*time.Minute))
-			e.flow("sess:"+sid, "agendar", "ocr_failed", 1, "error", "ocr_parse", phone, "", "", t.Add(2*time.Minute))
+		case "ocr_failed", "ocr_error", "ocr_timeout":
+			// Los tres son intentos de OCR que fallaron (parse vacío / error / timeout): cuentan como
+			// intento en la tasa de éxito.
+			e.event(sid, phone, lk.ev, nil, t.Add(2*time.Minute))
+			e.flow("sess:"+sid, "agendar", "ocr_failed", 1, "error", lk.ev, phone, "", "", t.Add(2*time.Minute))
 		default:
 			e.event(sid, phone, "ocr_success", nil, t.Add(2*time.Minute))
 			e.flow("sess:"+sid, "agendar", "ocr_ok", 3, "ok", "", phone, "", "", t.Add(2*time.Minute))
