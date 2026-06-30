@@ -305,3 +305,43 @@ Si tras caché + sesión + `LookupConversationByPhone` (con paginación y match 
 - Emitir un terminal nuevo `escalacion/escalation_no_channel` (catálogo en `tracer.go`) para **medir** el
   residual en el funnel en vez de que sea invisible.
 - Requiere verificación contra la API real de Bird (qué endpoint crea conversación en este workspace/canal).
+
+---
+
+## BUG-007 — Handoff de escalación falla en conversaciones REABIERTAS (feed item cerrado)
+
+- **Estado:** ✅ Resuelto — implementado (commit `2b226c2`). Requiere deploy.
+- **Severidad:** Media — la transferencia a agente **falla** para pacientes que ya tuvieron un chat cerrado y vuelven a escribir.
+- **Detectado:** 2026-06-30 por el auditor (ciclo 37, post-deploy del fix de teléfono). Causa raíz confirmada contra la API de Bird (read-only).
+- **Componentes:** `internal/bird/client.go` (`searchFeedItem`, `AssignFeedItem`).
+
+### Síntoma observable
+```
+ERROR escalation failed error='assign feed item: no feed item found after retries' conversation_id=7e92988c... (NO vacío)
+```
+Distinto de "empty conversation ID": aquí el `conversation_id` SÍ se resolvió.
+
+### Causa raíz (confirmada contra Bird)
+El handoff busca el "feed item" (ticket de inbox) por `conversationId` y solo aceptaba los **NO cerrados**
+(`searchFeedItem`: `if !item.Closed`). Consulta read-only a Bird de la conversación afectada:
+`total feed items: 1, closed=True`. Es una **conversación reabierta**: el ticket viejo se cerró al
+completar el chat anterior (`CloseFeedItems`), y al re-escalar `searchFeedItem` devolvía `""` → tras 4
+reintentos → error. **No era race/latencia** (la hipótesis inicial): más reintentos nunca ayudarían
+porque el ticket existe pero está cerrado, y Bird no permite asignar un feed item cerrado a un equipo.
+Nota: el fix de teléfono (BUG-003) destapó este modo — antes estos casos morían en "empty conversation ID".
+
+### Fix implementado (commit `2b226c2`)
+- `searchFeedItem` ahora, si no hay ticket abierto pero sí uno cerrado, lo devuelve como fallback con
+  `closed=true`.
+- `AssignFeedItem`, cuando el ticket está cerrado, lo **REABRE** (`PATCH closed:false`) en el MISMO PATCH
+  de asignación (mismo endpoint/campo que `CloseFeedItems` usa para cerrar).
+- Test `TestAssignFeedItem_ReopensClosed`.
+
+### Relacionado (pendiente)
+- **BUG-006 / "empty conversation ID" residual:** el auditor confirmó (ciclo 37, sesión f1f140ad) que
+  AÚN ocurre el caso donde NO se encuentra ninguna conversación (ni reabierta) → hay que crear/abrir la
+  conversación antes del handoff. Sigue ABIERTO.
+- **FLUJO-INCOMPLETO (ciclo 37):** cuando el handoff falla, la escalación queda estancada en
+  `agent_reminder_sent` sin terminal. Verificar si es real o artefacto de la ventana del detector
+  (escalaciones de días previos cuyo terminal `escalated` queda fuera del `from=hoy`); si es real,
+  garantizar que TODO fallo de handoff lleve la sesión a un terminal.
