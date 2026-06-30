@@ -1231,15 +1231,24 @@ func (h *InternalHandler) handleRescheduleWithNewAgenda(ctx context.Context, w h
 	cancelled := len(cancelIDs)
 	if len(cancelIDs) > 0 {
 		if err := h.appointmentRepo.CancelBatch(ctx, cancelIDs, reason, "admin_reschedule_agenda", ""); err != nil {
-			slog.Error("cancel batch in reschedule", "error", err)
-			cancelled = 0
+			// H3 (igual que M1 en HandleCancelAgenda): si la cancelación falló, NO continuar a borrar la
+			// excepción de día ni notificar. Antes se tragaba el error (cancelled=0, sin return), borraba
+			// la disponibilidad del día y respondía status:ok → citas activas + día "libre" = doble reserva.
+			slog.Error("cancel batch in reschedule", "agenda_id", req.AgendaID, "old_date", req.OldDate, "error", err)
+			http.Error(w, "error cancelling appointments — none cancelled, day availability not modified", http.StatusInternalServerError)
+			return
 		}
 	}
 
-	// 4. Delete working day exception for old agenda+doctor+old date
+	// 4. Delete working day exception for old agenda+doctor+old date. Solo se llega aquí si la
+	// cancelación tuvo éxito (o no había citas que cancelar).
 	wdDeleted := false
 	if h.scheduleRepo != nil {
-		wdDeleted, _ = h.scheduleRepo.DeleteWorkingDayException(ctx, req.AgendaID, req.DoctorDocument, req.OldDate)
+		var derr error
+		wdDeleted, derr = h.scheduleRepo.DeleteWorkingDayException(ctx, req.AgendaID, req.DoctorDocument, req.OldDate)
+		if derr != nil {
+			slog.Error("reschedule new agenda: delete working day exception", "agenda_id", req.AgendaID, "old_date", req.OldDate, "error", derr)
+		}
 	}
 
 	// 5. Notify patients — query from NEW agenda/date (like Laravel).

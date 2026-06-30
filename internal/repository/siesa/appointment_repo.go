@@ -532,11 +532,15 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	// medio-reservados ni cita huérfana). Reemplaza el modelo viejo de crear N citas.
 	if input.Espacios > 1 {
 		start := fmt.Sprintf("%s %s:00", fecha, hora) // fecha=YYYY-MM-DD, hora=HH:MM (24h)
+		// H2 (auditoría): la ventana se acota al MISMO día (Fecha < medianoche siguiente). Antes solo
+		// exigía Fecha >= start sin cota superior, así que reservar cerca del fin del día tomaba filas
+		// libres del día SIGUIENTE (mañana) marcándolas con "éxito" silencioso.
 		extra, err := tx.ExecContext(ctx, `
 		WITH win AS (
 		    SELECT TOP (@p3) Id
 		    FROM programacion_medico_detalle
-		    WHERE IdProgramacionMedico = @p2 AND Fecha >= @p4
+		    WHERE IdProgramacionMedico = @p2
+		      AND Fecha >= @p4 AND Fecha < DATEADD(DAY, 1, CAST(@p4 AS DATE))
 		    ORDER BY Fecha
 		)
 		UPDATE pmd SET IdCita = @p1
@@ -548,9 +552,26 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 			return nil, fmt.Errorf("claim consecutive slots: %w", err)
 		}
 		// Se esperan Espacios-1 adicionales (la fila inicial ya quedó reclamada arriba, así que
-		// dentro de la ventana de Espacios filas solo restan las Espacios-1 siguientes).
+		// dentro de la ventana de Espacios filas solo restan las Espacios-1 siguientes). Un slot
+		// ocupado/bloqueado en medio rompe el conteo aquí (la rejilla lo incluye por Fecha pero el
+		// WHERE IdCita IS NULL no lo actualiza) → rollback.
 		if n, _ := extra.RowsAffected(); int(n) != input.Espacios-1 {
 			return nil, fmt.Errorf("slots_consecutivos_insuficientes: reservados %d de %d", n+1, input.Espacios)
+		}
+
+		// H2: verificar contigüidad TEMPORAL real. El conteo no detecta un HUECO de rejilla (p. ej.
+		// almuerzo, sin filas): las Espacios filas libres seguidas por Fecha quedarían reservadas pero
+		// no equiespaciadas. Se exige que el gap entre slots consecutivos reservados sea uniforme.
+		var minGap, maxGap sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `
+		SELECT MIN(d), MAX(d) FROM (
+		    SELECT DATEDIFF(MINUTE, LAG(Fecha) OVER (ORDER BY Fecha), Fecha) AS d
+		    FROM programacion_medico_detalle WHERE IdCita = @p1
+		) t WHERE d IS NOT NULL`, newID).Scan(&minGap, &maxGap); err != nil {
+			return nil, fmt.Errorf("verify slot contiguity: %w", err)
+		}
+		if minGap.Valid && maxGap.Valid && minGap.Int64 != maxGap.Int64 {
+			return nil, fmt.Errorf("slots_no_contiguos: gaps min=%d max=%d min", minGap.Int64, maxGap.Int64)
 		}
 	}
 

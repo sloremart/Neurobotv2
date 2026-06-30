@@ -799,3 +799,27 @@ func assertNum(t *testing.T, res map[string]interface{}, key string, want float6
 		t.Errorf("%s: want %v, got %v", key, want, res[key])
 	}
 }
+
+// H3 (auditoría): reagendar a nueva agenda debe retornar 500 si CancelBatch falla (no borrar la
+// excepción de día ni responder ok con citas aún activas). scheduleRepo nil → se omite la validación
+// de la nueva agenda y se ejercita directamente el path de cancelación.
+func TestRescheduleNewAgenda_CancelBatchFails_Returns500(t *testing.T) {
+	repo := &mockApptRepoAPI{
+		findByAgendaAndDateFn: func(_ context.Context, _ int, _ string) ([]domain.Appointment, error) {
+			return []domain.Appointment{{ID: "A1", DoctorID: "DOC1"}}, nil
+		},
+		cancelBatchFn: func(_ context.Context, _ []string, _, _, _ string) error {
+			return errors.New("siesa tx failed")
+		},
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+
+	body := `{"agenda_id":1,"doctor_document":"DOC1","old_date":"2027-01-01","new_date":"2027-01-02","new_agenda_id":2,"notify_patients":false}`
+	req := httptest.NewRequest("POST", "/api/internal/reschedule-agenda", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	h.HandleRescheduleAgenda(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when CancelBatch fails, got %d", rec.Code)
+	}
+}

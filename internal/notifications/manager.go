@@ -547,14 +547,46 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 	p.RetryCount = 3
 
 	if !m.cfg.ConfirmFollowupEnabled {
-		// Followup chain disabled: IVR was the last step, no post-IVR escalation.
-		m.pending.Delete(phone)
+		// H1 (auditoría): followup deshabilitado, pero el paciente AÚN NO contestó el DTMF. Antes se
+		// borraba el pending de inmediato y, al llegar el webhook de voz, HandleVoiceGatherResult ya no
+		// encontraba la cita (AppointmentID/ConversationID solo viven en el pending) → confirmar/cancelar
+		// por teléfono se perdían (cupo ocupado, no-show garantizado). Ahora se mantiene el pending durante
+		// una ventana de gracia (ConfirmPostIVRMinutes) para que el DTMF se procese; si el paciente no
+		// contesta, se limpia (pending + callIDMap) y se resuelve como escalado a IVR — SIN cadena de
+		// followup (que es justo lo que este flag deshabilita).
+		duration := time.Duration(safeMinutes(m.cfg.ConfirmPostIVRMinutes, 30)) * time.Minute
+		p.ExpiresAt = time.Now().Add(duration)
+		p.Timer = time.AfterFunc(duration, func() {
+			if !m.lockPhone(phone) {
+				return
+			}
+			defer m.unlockPhone(phone)
+			val, ok := m.pending.LoadAndDelete(phone)
+			if !ok {
+				return // el DTMF ya lo consumió
+			}
+			pp := val.(*PendingNotification)
+			if pp.CallID != "" {
+				m.callIDMap.Delete(pp.CallID) // evita el leak de callIDMap en llamadas sin respuesta
+			}
+			if m.persister != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_ = m.persister.Resolve(ctx, phone, "escalated_to_ivr")
+			}
+			slog.Info("IVR grace window expired (followup disabled), pending cleared", "phone", utils.MaskPhone(phone))
+		})
+		m.pending.Store(phone, p)
 		if m.persister != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			_ = m.persister.Resolve(ctx, phone, "escalated_to_ivr")
+			if err := m.persister.Upsert(ctx, p.Phone, p.Type,
+				p.AppointmentID, p.WaitingListID, p.BirdMessageID, p.ConversationID,
+				p.RetryCount, p.ExpiresAt); err != nil {
+				slog.Error("persist IVR sent (followup disabled)", "phone", utils.MaskPhone(phone), "error", err)
+			}
 		}
-		slog.Info("IVR sent (followup disabled), pending cleared", "phone", utils.MaskPhone(phone))
+		slog.Info("IVR sent (followup disabled), grace window started", "phone", utils.MaskPhone(phone), "minutes", safeMinutes(m.cfg.ConfirmPostIVRMinutes, 30))
 		return
 	}
 

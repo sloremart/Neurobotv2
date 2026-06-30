@@ -2209,3 +2209,18 @@ func TestEscalateNotifToAgent_EmitsEventsAndRecordsEscalation(t *testing.T) {
 		t.Errorf("expected from_state NOTIF_PENDING, got %q", fs)
 	}
 }
+
+// H1 (auditoría): con ConfirmFollowupEnabled=false, MarkIVRSent NO debe borrar el pending de inmediato
+// (antes lo hacía y el DTMF de confirmar/cancelar por voz se perdía). Debe mantenerlo vivo en la
+// ventana de gracia para que HandleVoiceGatherResult pueda procesarlo.
+func TestMarkIVRSent_FollowupDisabled_KeepsPendingForDTMF(t *testing.T) {
+	mgr := &NotificationManager{cfg: &config.Config{ConfirmFollowupEnabled: false, ConfirmPostIVRMinutes: 30}}
+	mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: "+573001234567", AppointmentID: "APT1"})
+	mgr.RegisterCallID("call-1", "+573001234567")
+
+	mgr.MarkIVRSent("+573001234567")
+
+	if !mgr.HasPending("+573001234567") {
+		t.Error("con followup deshabilitado, MarkIVRSent debe MANTENER el pending para que el DTMF se procese")
+	}
+}
