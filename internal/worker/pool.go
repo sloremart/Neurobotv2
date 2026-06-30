@@ -795,6 +795,10 @@ func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.
 	}()
 
 	if p.tracker != nil {
+		// session_completed además de escalation_closed: la sesión SÍ se completó (el agente la resolvió
+		// y cerró). Sin él, el donut por status la cuenta como 'completed' pero el StatCard 'Completadas'
+		// (que cuenta session_completed) y avg_session_duration la excluían → cifras incoherentes.
+		p.tracker.LogEvent(ctx, sess.ID, cmd.Phone, "session_completed", nil)
 		p.tracker.LogEvent(ctx, sess.ID, cmd.Phone, "escalation_closed", nil)
 	}
 	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "agent_closed",

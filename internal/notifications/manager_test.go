@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2115,5 +2116,96 @@ func TestHandleResponse_ResolvesWithStatus(t *testing.T) {
 	}
 	if p.resolvedPhone != "+573001112233" {
 		t.Errorf("esperaba phone +573001112233, got %q", p.resolvedPhone)
+	}
+}
+
+// --- M5 (re-análisis): escalateNotifToAgent debe emitir session_started + escalated_to_agent y
+// registrar la escalación en la tabla escalations (antes creaba la sesión escalada sin ningún evento). ---
+
+type mockEventLoggerNotif struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (m *mockEventLoggerNotif) LogEvent(_ context.Context, _, _, eventType string, _ map[string]interface{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, eventType)
+}
+
+type mockEscRecorderNotif struct {
+	mu        sync.Mutex
+	created   int
+	fromState string
+}
+
+func (m *mockEscRecorderNotif) Create(_ context.Context, _, _, fromState, _, _, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.created++
+	m.fromState = fromState
+	return nil
+}
+
+func TestEscalateNotifToAgent_EmitsEventsAndRecordsEscalation(t *testing.T) {
+	// Server que satisface EscalateToAgent (lista de agentes + búsqueda de feed item para asignar).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/agents"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"agent-1","name":"Test Agent","teams":[{"id":"team-fallback","name":"CC"}],"availability":{"status":"active","activity":"available"},"rootItemAssignedCount":0}]}`))
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/search/feed-items"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"fi-conv-1","feedId":"channel:ch-test","closed":false}]}`))
+		default:
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"ok"}`))
+		}
+	}))
+	defer srv.Close()
+	birdClient := bird.NewClientForTest(srv.URL)
+
+	apptSvc := services.NewAppointmentService(&mockApptRepoNotif{}, nil)
+	mgr := NewNotificationManager(birdClient, apptSvc, &config.Config{BirdTeamFallback: "team-fallback"})
+	sessRepo := &mockSessionCreator{}
+	mgr.SetWaitingListDeps(nil, sessRepo, &mockVirtualEnqueuer{})
+	tracker := &mockEventLoggerNotif{}
+	mgr.SetTracker(tracker)
+	rec := &mockEscRecorderNotif{}
+	mgr.SetEscalationRecorder(rec)
+
+	mgr.escalateNotifToAgent(&PendingNotification{
+		Phone: "+573001234567", AppointmentID: "APT001", Type: "confirmation",
+	}, "conv-1")
+
+	if sessRepo.createdSession == nil {
+		t.Fatal("expected escalated session to be created")
+	}
+	tracker.mu.Lock()
+	evs := append([]string{}, tracker.events...)
+	tracker.mu.Unlock()
+	hasStarted, hasEsc := false, false
+	for _, e := range evs {
+		switch e {
+		case "session_started":
+			hasStarted = true
+		case "escalated_to_agent":
+			hasEsc = true
+		}
+	}
+	if !hasStarted {
+		t.Errorf("expected session_started emitted; got %v", evs)
+	}
+	if !hasEsc {
+		t.Errorf("expected escalated_to_agent emitted; got %v", evs)
+	}
+	rec.mu.Lock()
+	created, fs := rec.created, rec.fromState
+	rec.mu.Unlock()
+	if created != 1 {
+		t.Errorf("expected 1 escalations.Create call, got %d", created)
+	}
+	if fs != "NOTIF_PENDING" {
+		t.Errorf("expected from_state NOTIF_PENDING, got %q", fs)
 	}
 }

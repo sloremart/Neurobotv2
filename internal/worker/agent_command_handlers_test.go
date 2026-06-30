@@ -8,6 +8,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/tracking"
 )
 
 // escalatedPool arma un pool con una sesión ESCALADA lista para recibir comandos de agente.
@@ -55,6 +56,38 @@ func TestAgentCommand_Close(t *testing.T) {
 	}
 	if countSent(sender, "text") == 0 {
 		t.Error("expected a goodbye text to the patient")
+	}
+}
+
+// M4 (re-análisis): al cerrar por agente debe emitirse session_completed (además de escalation_closed),
+// para que el StatCard 'Completadas' y avg_session_duration coincidan con el donut por status.
+func TestAgentCommand_Close_EmitsSessionCompleted(t *testing.T) {
+	pool, sm, _, _ := escalatedPool(t)
+	sm.completeFn = func(_ context.Context, s *session.Session) error {
+		s.Status = session.StatusCompleted
+		return nil
+	}
+	store := &mockEventStoreWorker{}
+	pool.SetTracker(tracking.NewEventTracker(store))
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "close", Phone: "+573001234567"})
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var hasCompleted, hasClosed bool
+	for _, e := range store.insertedEvents {
+		switch e.EventType {
+		case "session_completed":
+			hasCompleted = true
+		case "escalation_closed":
+			hasClosed = true
+		}
+	}
+	if !hasCompleted {
+		t.Error("handleAgentClose debe emitir session_completed")
+	}
+	if !hasClosed {
+		t.Error("handleAgentClose debe seguir emitiendo escalation_closed")
 	}
 }
 

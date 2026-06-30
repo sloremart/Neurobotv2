@@ -132,6 +132,7 @@ type NotificationManager struct {
 	persister       NotificationPersister
 	callTracker     CallTracker
 	tracker         EventLogger
+	escalations     EscalationRecorder
 
 	// Cambio 13: real-time WL notification on cancellation
 	slotSearcher SlotSearcher
@@ -220,6 +221,16 @@ func (m *NotificationManager) SetCallTracker(ct CallTracker) {
 // SetTracker injects the event logger for auditing.
 func (m *NotificationManager) SetTracker(t EventLogger) {
 	m.tracker = t
+}
+
+// EscalationRecorder registra una escalación en la tabla `escalations` (una fila por escalación).
+type EscalationRecorder interface {
+	Create(ctx context.Context, sessionID, phone, fromState, teamID, agentID, agentName string) error
+}
+
+// SetEscalationRecorder injects the per-escalation recorder (tabla escalations) for SLA tracking.
+func (m *NotificationManager) SetEscalationRecorder(e EscalationRecorder) {
+	m.escalations = e
 }
 
 // SetWaitingListCheckDeps injects Cambio 13 dependencies for real-time WL notification.
@@ -1112,6 +1123,7 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	}
 
 	// Crear sesión escalada con contexto de la notificación
+	var sessID string
 	if m.sessionRepo != nil {
 		sess := &session.Session{
 			ID:             uuid.New().String(),
@@ -1134,8 +1146,15 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		}
 		if err := m.sessionRepo.Create(ctx, sess); err != nil {
 			slog.Error("escalateNotifToAgent: create session", "error", err, "phone", utils.MaskPhone(p.Phone))
-		} else if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessCtx); err != nil {
-			slog.Error("escalateNotifToAgent: set context", "error", err, "phone", utils.MaskPhone(p.Phone))
+		} else {
+			sessID = sess.ID
+			if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessCtx); err != nil {
+				slog.Error("escalateNotifToAgent: set context", "error", err, "phone", utils.MaskPhone(p.Phone))
+			}
+			// Sesión proactiva: contarla en total_sessions/sesiones-por-hora como las demás.
+			if m.tracker != nil {
+				m.tracker.LogEvent(ctx, sess.ID, p.Phone, "session_started", map[string]interface{}{"proactive": true})
+			}
 		}
 	}
 
@@ -1189,6 +1208,22 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 			"error", err,
 		)
 		return
+	}
+
+	// Escalación efectiva: registrar el evento (cuenta en 'Escaladas' y en el KPI de paso from_state) y
+	// la fila en la tabla escalations (SLA por escalación, #11). from_state = NOTIF_PENDING.
+	if sessID != "" {
+		if m.tracker != nil {
+			m.tracker.LogEvent(ctx, sessID, p.Phone, "escalated_to_agent", map[string]interface{}{
+				"from_state": sm.StateNotifPending,
+				"agent":      "Call Center",
+			})
+		}
+		if m.escalations != nil {
+			if err := m.escalations.Create(ctx, sessID, p.Phone, sm.StateNotifPending, m.cfg.BirdTeamFallback, "", "Call Center"); err != nil {
+				slog.Warn("escalateNotifToAgent: record escalation", "error", err, "phone", utils.MaskPhone(p.Phone))
+			}
+		}
 	}
 
 	slog.Info("notif escalated to agent (invalid inputs)", "phone", utils.MaskPhone(p.Phone), "appointment_id", p.AppointmentID)

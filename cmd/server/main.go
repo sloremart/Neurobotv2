@@ -243,6 +243,7 @@ func main() {
 		notifyManager.SetPersister(notifRepo)
 		notifyManager.SetCallTracker(callRepo)
 		notifyManager.SetTracker(tracker)
+		notifyManager.SetEscalationRecorder(escalationRepo)
 		if repos != nil {
 			notifyManager.SetProcedureRepo(repos.Procedure)
 		}
