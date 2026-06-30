@@ -29,6 +29,7 @@ const (
 	dedupTTL              = 5 * time.Minute
 	dedupCleanup          = 2 * time.Minute
 	phoneLockTimeout      = 30 * time.Second
+	processMsgTimeout     = 2 * time.Minute // BUG-004: cota por mensaje del ctx desacoplado del apagado
 	agentCmdQueueSize     = 50
 	maxDedupEntries       = 100000 // safety cap; fail-open if exceeded (allow potential dups)
 
@@ -384,6 +385,15 @@ func recoverLog(name string) {
 }
 
 func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.InboundMessage) {
+	// BUG-004: el procesamiento NO debe abortarse si el app-ctx se cancela en pleno apagado/redeploy.
+	// Antes, un mensaje en vuelo veía sus escrituras (SaveState/MarkDone/log) abortadas con
+	// "context canceled" → el estado del paciente quedaba sin persistir (víctima de reinicio). Se
+	// desacopla con WithoutCancel + timeout propio: el worker deja de tomar mensajes NUEVOS al apagar
+	// (worker() <-ctx.Done()), pero el que YA empezó completa su persistencia en la ventana de gracia
+	// (Stop espera al wg; main da 20s). Aplica a todas las rutas (worker, overflow y drain).
+	parentCtx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), processMsgTimeout)
+	defer cancel()
+
 	// WAL: mark message as done after processing (crash recovery)
 	if p.inboxRepo != nil && msg.ID != "" && !strings.HasPrefix(msg.ID, "virtual-") && !strings.HasPrefix(msg.ID, "agent-") {
 		defer func() {
@@ -607,6 +617,11 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 
 // processAgentCommand handles /bot commands from human agents via outbound webhook.
 func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd AgentCommand) {
+	// BUG-004: desacoplar del ctx de apagado (igual que processMessage) para no abortar a medias el
+	// comando del agente (resume/close/etc.) si el redeploy cancela el app-ctx en vuelo.
+	parentCtx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), processMsgTimeout)
+	defer cancel()
+
 	// 1. Acquire phone lock
 	lockCtx, lockCancel := context.WithTimeout(parentCtx, phoneLockTimeout)
 	defer lockCancel()

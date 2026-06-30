@@ -401,6 +401,41 @@ func TestProcessMessage_Success_TextResponse(t *testing.T) {
 	}
 }
 
+// TestProcessMessage_DetachesFromShutdownContext (BUG-004): aunque el ctx padre esté CANCELADO
+// (apagado/redeploy en pleno vuelo), el procesamiento debe completar — el ctx se desacopla con
+// WithoutCancel, así que SaveState/MarkDone/respuesta no se abortan con "context canceled".
+func TestProcessMessage_DetachesFromShutdownContext(t *testing.T) {
+	var procCtxErr error
+	sm := newMockSessionMgmt()
+	sender := &mockMessageSender{}
+	processor := &mockMessageProcessor{
+		processFn: func(ctx context.Context, _ *session.Session, _ bird.InboundMessage) (*statemachine.StateResult, error) {
+			procCtxErr = ctx.Err() // debe ser nil pese a que el padre está cancelado
+			return &statemachine.StateResult{
+				NextState: "MAIN_MENU",
+				Messages:  []statemachine.OutboundMessage{&statemachine.TextMessage{Text: "ok"}},
+			}, nil
+		},
+	}
+
+	pool := NewMessageWorkerPool(1, 10)
+	pool.SetDependencies(sm, sender, processor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simular shutdown: el ctx YA está cancelado al entrar
+
+	pool.processMessage(ctx, bird.InboundMessage{
+		ID: "msg-bug004", Phone: "+573001234567", MessageType: "text", Text: "hola", ReceivedAt: time.Now(),
+	})
+
+	if procCtxErr != nil {
+		t.Fatalf("el ctx de procesamiento NO debe estar cancelado pese al padre cancelado, got %v", procCtxErr)
+	}
+	if len(sender.sent) != 1 {
+		t.Fatalf("el mensaje debió procesarse pese al ctx padre cancelado, got %d enviados", len(sender.sent))
+	}
+}
+
 func TestProcessMessage_StateMachineError_SendsErrorMsg(t *testing.T) {
 	sm := newMockSessionMgmt()
 	sender := &mockMessageSender{}

@@ -1390,12 +1390,14 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 		return "", nil
 	}
 
-	// Paginate through conversations to find the one matching this phone. La lista viene ordenada
-	// por createdAt DESC y mezcla activas y cerradas (Bird ignora el filtro status=active), así que
-	// ~la mitad de cada página son cerradas irrelevantes. Con la conversación activa actual entre las
-	// más recientes, 10 páginas (500 conversaciones) cubren picos de tráfico sin latencia excesiva
-	// (cada página = 1 llamada; la escalación no es sensible a latencia y se cachea al primer acierto).
-	baseURL := fmt.Sprintf("%s/workspaces/%s/conversations?channelId=%s&status=active&limit=50",
+	// Paginate through conversations to find the one matching this phone. La lista viene ordenada por
+	// createdAt DESC. BUG-006: NO se filtra por status. Una conversación REABIERTA (paciente que ya tuvo
+	// un chat cerrado y vuelve a escribir) puede estar 'cerrada' en Bird; con &status=active podía quedar
+	// EXCLUIDA → el lookup devolvía "" → escalación "empty conversation ID". Sin el filtro se incluyen
+	// todas y el orden createdAt DESC ya prefiere la más reciente; si solo existe la reabierta (cerrada),
+	// se devuelve y el handoff la reabre (ver searchFeedItem/AssignFeedItem, BUG-007). 10 páginas (500
+	// conversaciones) cubren picos; se cachea al primer acierto.
+	baseURL := fmt.Sprintf("%s/workspaces/%s/conversations?channelId=%s&limit=50",
 		c.conversationsBase(), c.workspaceID, c.channelID)
 
 	reqURL := baseURL

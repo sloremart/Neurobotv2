@@ -657,8 +657,9 @@ func TestLookupConversationByPhone_Success(t *testing.T) {
 		if r.URL.Query().Get("channelId") != "ch-test" {
 			t.Error("expected channelId=ch-test")
 		}
-		if r.URL.Query().Get("status") != "active" {
-			t.Error("expected status=active")
+		// BUG-006: ya NO se filtra por status=active (incluir conversaciones reabiertas/cerradas).
+		if r.URL.Query().Get("status") != "" {
+			t.Errorf("no debe enviarse filtro status, got %q", r.URL.Query().Get("status"))
 		}
 		w.WriteHeader(200)
 		w.Write([]byte(`{"results":[{"id":"conv-found-123","featuredParticipants":[{"contact":{"identifierValue":"+573001234567"}}]}]}`))
