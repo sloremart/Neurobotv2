@@ -50,9 +50,75 @@ func (r *MunicipalityRepo) Search(ctx context.Context, name string) ([]domain.Mu
 	// El split por '-'/',' puede tomar como "departamento" algo que no lo es (p.ej. "Bogotá, D.C."
 	// o "Miriti - Parana"), dejando 0 filas aunque la ciudad exista. Sin filtro de dept recupera.
 	if len(municipalities) == 0 && dept != "" {
-		return r.searchMunicipios(ctx, city, "")
+		if municipalities, err = r.searchMunicipios(ctx, city, ""); err != nil {
+			return nil, err
+		}
+	}
+	// Fallback por TOKENS: la gente escribe "Villavicencio Meta" (sin guion/coma) y el LIKE por el
+	// string completo falla porque "VILLAVICENCIO META" no es un nombre de municipio. Se tokeniza el
+	// input y se exige que CADA palabra aparezca en el municipio O el departamento. Maneja cualquier
+	// separador (espacio/guion/coma) y nombres multi-palabra ("San José del Guaviare", "Valle del
+	// Cauca"): todas las palabras caen en muni+dept. Solo se usa si lo anterior no encontró nada.
+	if len(municipalities) == 0 {
+		if toks := muniSearchTokens(name); len(toks) > 0 {
+			return r.searchMunicipiosByTokens(ctx, toks)
+		}
 	}
 	return municipalities, nil
+}
+
+// muniSearchTokens normaliza el input a palabras de búsqueda: minúsculas, separadores ('-', ',', '.') →
+// espacio, y descarta conectores ("y") y palabras de 1 carácter. Conserva "de/del/la" porque son parte
+// de nombres reales (San José DEL Guaviare, LA Guajira, Valle DEL Cauca). Cap de 6 tokens.
+func muniSearchTokens(s string) []string {
+	s = strings.ToLower(s)
+	s = strings.NewReplacer("-", " ", ",", " ", ".", " ").Replace(s)
+	var toks []string
+	for _, w := range strings.Fields(s) {
+		if w == "y" || len(w) < 2 {
+			continue
+		}
+		toks = append(toks, w)
+		if len(toks) == 6 {
+			break
+		}
+	}
+	return toks
+}
+
+// searchMunicipiosByTokens busca municipios donde CADA token aparezca en el nombre del municipio O del
+// departamento (LIKE acento-insensible). El AND de todos los tokens acota al resultado correcto
+// ("villavicencio"→muni, "meta"→dept). El conteo alto lo maneja el handler (ValidateSearchCount).
+func (r *MunicipalityRepo) searchMunicipiosByTokens(ctx context.Context, tokens []string) ([]domain.Municipality, error) {
+	conds := make([]string, 0, len(tokens))
+	args := make([]interface{}, 0, len(tokens))
+	for i, t := range tokens {
+		p := fmt.Sprintf("@p%d", i+1)
+		conds = append(conds, fmt.Sprintf("(m.nombre LIKE %s COLLATE Latin1_General_CI_AI OR d.nombre LIKE %s COLLATE Latin1_General_CI_AI)", p, p))
+		args = append(args, "%"+t+"%")
+	}
+	// conds son fragmentos FIJOS con placeholders @pN (sin input del usuario); los valores van
+	// parametrizados en args. La concatenación es solo de esos fragmentos controlados, no de datos.
+	base := "SELECT TOP 10 m.Id, CAST(m.id_dep AS VARCHAR(10)) AS dep_code, ISNULL(d.nombre, '') AS dep_name, " +
+		"m.codigo AS muni_code, m.nombre AS muni_name FROM sis_muni m WITH (NOLOCK) " +
+		"LEFT JOIN departamentos d WITH (NOLOCK) ON d.codigo = CAST(m.id_dep AS VARCHAR(10)) WHERE "
+	query := base + strings.Join(conds, " AND ") + " ORDER BY m.nombre" //nolint:gosec // G202: conds = placeholders fijos (@pN), valores parametrizados; sin input en el SQL
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("municipality token search: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var municipalities []domain.Municipality
+	for rows.Next() {
+		var m domain.Municipality
+		if err := rows.Scan(&m.ID, &m.DepartmentCode, &m.DepartmentName, &m.MunicipalityCode, &m.MunicipalityName); err != nil {
+			return nil, err
+		}
+		municipalities = append(municipalities, m)
+	}
+	return municipalities, rows.Err()
 }
 
 // searchMunicipios ejecuta la consulta a sis_muni por nombre de ciudad y, opcionalmente,

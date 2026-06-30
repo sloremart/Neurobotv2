@@ -52,6 +52,31 @@ func (m *mockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phon
 	return nil
 }
 
+// ==================== AskDocumentType ====================
+
+// TestAskDocumentType_AssumesCCOnDocNumber: el paciente escribe su NÚMERO de documento en el paso del
+// TIPO (confusión común con el prompt). Se asume CC y se va DIRECTO al lookup con ese número, en vez de
+// rechazar y terminar escalando por reintentos.
+func TestAskDocumentType_AssumesCCOnDocNumber(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskDocumentType, askDocumentTypeHandler())
+
+	sess := testSess(sm.StateAskDocumentType)
+	result, err := m.Process(context.Background(), sess, textM("17318898"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StatePatientLookup {
+		t.Errorf("esperaba PATIENT_LOOKUP (asume CC y busca), got %s", result.NextState)
+	}
+	if result.UpdateCtx["patient_doc_type"] != "CC" {
+		t.Errorf("esperaba patient_doc_type=CC, got %q", result.UpdateCtx["patient_doc_type"])
+	}
+	if result.UpdateCtx["patient_doc"] != "17318898" {
+		t.Errorf("esperaba patient_doc=17318898, got %q", result.UpdateCtx["patient_doc"])
+	}
+}
+
 // ==================== AskDocument ====================
 
 func registerAskDocumentConfig(m *sm.Machine) {

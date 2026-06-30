@@ -282,11 +282,30 @@ var documentTypeCatalog = []struct{ Code, Label string }{
 // a patient must have a real identification document to register.
 func docTypeMenuText() string {
 	var b strings.Builder
-	b.WriteString("Selecciona tu *tipo de documento* respondiendo con el *número*:\n")
+	// B: mensaje anti-confusión. La gente leía "responde con el número" y escribía su NÚMERO de cédula
+	// (8-10 dígitos) en vez de la opción 1-12 → input inválido → reintentos → escalación evitable.
+	b.WriteString("¿Cuál es tu *tipo* de documento? Responde con el *número de la opción* de la lista (1-12), *no* con tu número de cédula.\n")
+	b.WriteString("👉 La mayoría: responde *1* (Cédula de Ciudadanía).\n")
 	for i, d := range documentTypeCatalog {
 		b.WriteString(fmt.Sprintf("%d. %s - %s\n", i+1, d.Code, d.Label))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// looksLikeDocNumber detecta que, en el paso de TIPO de documento, el paciente escribió su NÚMERO de
+// documento (confusión común con el prompt). Es un número de ≥5 dígitos (cédula/TI tienen 6-10):
+// inequívocamente NO es una opción de menú (1-12). Permite asumir CC y seguir en vez de escalar.
+func looksLikeDocNumber(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 5 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // parseDocType resolves a user reply (a 1..N number where N=len(documentTypeCatalog)=12, or the code itself) to a catalog code,
@@ -307,14 +326,25 @@ func parseDocType(input string) string {
 // REG_DOCUMENT_TYPE — menú de texto numerado (12 tipos del catálogo SIESA).
 func regDocumentTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		retry := sm.ValidateWithRetry(sess, msg.Text,
+		input := strings.TrimSpace(msg.Text)
+		// A: el paciente escribió su NÚMERO de documento en el paso del tipo (confusión común). Asumir CC
+		// y continuar (el número ya se capturó en identificación; aquí solo falta el tipo) en vez de
+		// rechazar y terminar escalando por reintentos.
+		if parseDocType(input) == "" && looksLikeDocNumber(input) {
+			sess.RetryCount = 0
+			return sm.NewResult(sm.StateRegFirstSurname).
+				WithContext("reg_document_type", "CC").
+				WithText("Asumimos *Cédula de Ciudadanía* (si es otro tipo, podrás corregirlo después).\n\nAhora escribe tu *primer apellido* (solo letras, sin números ni símbolos):").
+				WithEvent("doc_type_assumed_cc", map[string]interface{}{"flow": "registro"}), nil
+		}
+		retry := sm.ValidateWithRetry(sess, input,
 			func(s string) bool { return parseDocType(s) != "" }, docTypeMenuText())
 		if retry != nil {
 			return retry, nil
 		}
 		sess.RetryCount = 0
 		return sm.NewResult(sm.StateRegFirstSurname).
-			WithContext("reg_document_type", parseDocType(msg.Text)).
+			WithContext("reg_document_type", parseDocType(input)).
 			WithText("Por favor escribe tu *primer apellido* (solo letras, sin números ni símbolos):"), nil
 	}
 }

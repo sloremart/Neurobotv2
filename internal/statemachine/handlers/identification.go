@@ -67,13 +67,27 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 // (para la búsqueda y para reusarlo en el registro) y pasa a pedir el número.
 func askDocumentTypeHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		retry := sm.ValidateWithRetry(sess, msg.Text,
+		input := strings.TrimSpace(msg.Text)
+		// A: el paciente escribió su NÚMERO de documento en vez del tipo (confusión común con el prompt).
+		// Asumir CC (la gran mayoría) y seguir DIRECTO al lookup con ese número, avisando — en vez de
+		// rechazar y terminar escalando por reintentos. Si no fuera CC, el "no encontrado" lo encamina a
+		// registro (donde elige el tipo correcto).
+		if parseDocType(input) == "" && looksLikeDocNumber(input) {
+			sess.RetryCount = 0
+			return sm.NewResult(sm.StatePatientLookup).
+				WithContext("patient_doc_type", "CC").
+				WithContext("reg_document_type", "CC").
+				WithContext("patient_doc", input).
+				WithText("Asumimos *Cédula de Ciudadanía*. Buscando tu información…").
+				WithEvent("doc_type_assumed_cc", map[string]interface{}{"doc": utils.MaskDocument(input)}), nil
+		}
+		retry := sm.ValidateWithRetry(sess, input,
 			func(s string) bool { return parseDocType(s) != "" }, docTypeMenuText())
 		if retry != nil {
 			return retry, nil
 		}
 		sess.RetryCount = 0
-		code := parseDocType(msg.Text)
+		code := parseDocType(input)
 		return sm.NewResult(sm.StateAskDocument).
 			WithContext("patient_doc_type", code).
 			WithContext("reg_document_type", code). // reusado por el flujo de registro si el paciente no existe

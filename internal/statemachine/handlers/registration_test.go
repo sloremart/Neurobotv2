@@ -81,6 +81,38 @@ func TestRegDocumentType_Invalid(t *testing.T) {
 	}
 }
 
+// TestRegDocumentType_AssumesCCOnDocNumber: si el paciente escribe su NÚMERO de documento en el paso del
+// tipo (confusión común), se asume CC y se continúa, en vez de rechazar y escalar por reintentos.
+func TestRegDocumentType_AssumesCCOnDocNumber(t *testing.T) {
+	m := sm.NewMachine()
+	registerDocumentTypeConfig(m)
+
+	sess := testSess(sm.StateRegDocumentType)
+	result, err := m.Process(context.Background(), sess, textM("17318898"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateRegFirstSurname {
+		t.Errorf("esperaba REG_FIRST_SURNAME (asume CC y avanza), got %s", result.NextState)
+	}
+	if result.UpdateCtx["reg_document_type"] != "CC" {
+		t.Errorf("esperaba reg_document_type=CC, got %q", result.UpdateCtx["reg_document_type"])
+	}
+}
+
+func TestLooksLikeDocNumber(t *testing.T) {
+	cases := map[string]bool{
+		"17318898": true, "1234567890": true, "100200300": true,
+		"1": false, "12": false, "13": false, // opciones de menú / cortas
+		"CC": false, "cc": false, "1a2b3c": false, "": false,
+	}
+	for in, want := range cases {
+		if got := looksLikeDocNumber(in); got != want {
+			t.Errorf("looksLikeDocNumber(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestRegFirstSurname_Valid(t *testing.T) {
 	m := sm.NewMachine()
 	m.Register(sm.StateRegFirstSurname, regFieldHandler("reg_first_surname", "Ingresa tu primer apellido:", validateName, sm.StateRegSecondSurname, ""))
