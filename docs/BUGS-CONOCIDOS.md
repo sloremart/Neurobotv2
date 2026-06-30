@@ -221,7 +221,12 @@ compara solo dígitos y por los últimos 10 (número nacional, único). Tests: `
 
 ## BUG-004 — Víctimas de reinicio: estado de sesión no persistido al apagar/redeploy
 
-- **Estado:** 🔴 Pendiente (documentado, sin corregir)
+- **Estado:** 🟢 Fix A implementado (commit `3de8a17`); Fix B (replay inmediato por lotes) PENDIENTE junto con BUG-001.
+- **Fix A (hecho):** `processMessage`/`processAgentCommand` desacoplan el ctx del apagado con
+  `context.WithoutCancel` + `processMsgTimeout` (2m) → un mensaje en vuelo COMPLETA su persistencia al
+  redeploy en vez de abortar con "context canceled". Test `TestProcessMessage_DetachesFromShutdownContext`.
+- **Fix B (pendiente):** replay one-shot al arrancar (por lotes, respetando BUG-001) para recuperar en
+  segundos lo que igual quede `pending`, en vez de esperar 10-15 min al ticker. Se hará junto con BUG-001.
 - **Severidad:** Media — un paciente a mitad de flujo pierde su avance y/o tarda 10-15 min en ser re-atendido.
 - **Detectado:** 2026-06-30 por el auditor (ciclo 28), tras el redeploy ~08:53.
 - **Componentes:** `internal/worker/pool.go` (`worker`, `processMessage`), `cmd/server/main.go` (shutdown),
@@ -290,7 +295,14 @@ el recordatorio **nunca** tendría éxito → bucle hasta la expiración a las 6
 
 ## BUG-006 — Escalación residual: garantizar canal antes del handoff (hardening)
 
-- **Estado:** 🔴 Pendiente (documentado) — complementa BUG-003 (ya resuelto en sus dos causas).
+- **Estado:** 🟢 Mitigado (commit `3de8a17`) — cubierto el caso de conversación REABIERTA. Queda solo el
+  caso de paciente SIN ninguna conversación (crear conversación), de muy baja frecuencia.
+- **Actualización 2026-06-30:** la mayoría del `empty conversation ID` residual era la conversación
+  reabierta **oculta por `&status=active`** en `LookupConversationByPhone`. Se quitó el filtro (BUG-006
+  fix) → ahora se encuentra la reabierta y el handoff la reabre (BUG-007). Solo restaría el caso genuino
+  de "sin conversación alguna" → crear/abrir conversación en Bird (pendiente, requiere verificar el
+  endpoint de creación; baja prioridad por frecuencia).
+- **Estado original:** 🔴 Pendiente (documentado) — complementa BUG-003 (ya resuelto en sus dos causas).
 - **Severidad:** Baja/Media — caso borde tras los fixes de BUG-003; hoy cae a `FallbackMenu` (no crash).
 - **Componentes:** `internal/statemachine/handlers/escalation.go`, `internal/bird/client.go`,
   `internal/observability/tracer.go` (catálogo).
