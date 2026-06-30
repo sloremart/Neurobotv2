@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
@@ -437,8 +438,33 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 		reminder := fmt.Sprintf(
 			"Recordatorio interno: el paciente lleva %s esperando respuesta en este chat escalado. "+
 				"Por favor atiéndelo. (aviso %d de %d)",
-			formatMinutes(int(patientSilent.Minutes())), s.RemindersSent+1, deps.AgentReminderMax)
+			formatMinutes(int(patientSilent.Minutes())), s.RemindersSent+1, deps.AgentReminderMax,
+		)
 		if _, err := deps.BirdClient.SendInternalText(s.ConversationID, reminder); err != nil {
+			// BUG-005: si Bird responde que la conversación ya NO está activa (el agente la cerró),
+			// el recordatorio nunca tendrá éxito. Sin esto, el checker reintentaba cada minuto
+			// indefinidamente (no incrementa RemindersSent en el error) hasta la expiración a las 6h.
+			// La conversación cerrada = el agente terminó el chat → cerrar la escalación, igual que el
+			// cierre por silencio del paciente.
+			if errors.Is(err, bird.ErrConversationNotActive) {
+				if cerr := m.repo.MarkAbandoned(ctx, s.ID); cerr != nil {
+					slog.Error("close escalated on inactive conversation failed", "session_id", s.ID, "error", cerr)
+					continue
+				}
+				if m.escalations != nil {
+					if eerr := m.escalations.Expire(ctx, s.ID); eerr != nil {
+						slog.Warn("escalation expire failed", "session_id", s.ID, "error", eerr)
+					}
+				}
+				if deps.Tracker != nil {
+					deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_closed_conversation_inactive", nil)
+				}
+				observability.Emit(observability.TraceSession(s.ID), "escalacion", "agent_closed",
+					observability.EmitOpts{Phone: s.PhoneNumber, Reason: "conversation_inactive"})
+				slog.Info("escalated session closed: bird conversation inactive (agente la cerró)",
+					"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
+				continue
+			}
 			slog.Error("agent reminder send failed", "session_id", s.ID, "conversation_id", s.ConversationID, "error", err)
 			continue
 		}

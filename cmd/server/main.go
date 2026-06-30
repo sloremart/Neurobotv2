@@ -417,7 +417,7 @@ func main() {
 	// HTTP Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB))
-	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB))))
+	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -704,7 +704,7 @@ func safeGo(name string, f func()) {
 	}()
 }
 
-func debugHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
+func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
@@ -720,6 +720,20 @@ func debugHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 			"memory_heap_mb":  float64(m.HeapAlloc) / 1024 / 1024,
 			"gc_cycles":       m.NumGC,
 			"gc_last":         time.Since(time.Unix(0, int64(m.LastGC))).String(),
+		}
+
+		// Carga del bot. Tras eliminar /api/internal/kpis/* (motor de KPIs duplicado), estas señales
+		// quedaron sin exponer por API y el auditor perdió visibilidad de BACKPRESSURE (cola) y carga.
+		// Se reponen aquí (es el endpoint de runtime), NO resucitando el motor de KPIs.
+		if pool != nil {
+			qsize, qcap := pool.QueueStats()
+			info["worker_queue_size"] = qsize
+			info["worker_queue_cap"] = qcap
+		}
+		var activeSessions int
+		if err := localDB.QueryRowContext(r.Context(),
+			"SELECT COUNT(*) FROM sessions WHERE status = 'active'").Scan(&activeSessions); err == nil {
+			info["active_sessions"] = activeSessions
 		}
 
 		localStats := localDB.Stats()

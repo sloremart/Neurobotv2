@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	birdpkg "github.com/neuro-bot/neuro-bot/internal/bird"
 )
 
 // mockRepo is a test-local mock implementing SessionRepo.
@@ -738,8 +740,9 @@ func TestPhoneMutex_Returns(t *testing.T) {
 
 // mockInactivityBird records calls for the escalated-session checker tests.
 type mockInactivityBird struct {
-	internalTexts []string
-	closedFeeds   int
+	internalTexts   []string
+	closedFeeds     int
+	internalSendErr error // si != nil, SendInternalText lo devuelve (no agrega a internalTexts)
 }
 
 func (m *mockInactivityBird) SendText(_, _, _ string) (string, error) {
@@ -747,6 +750,9 @@ func (m *mockInactivityBird) SendText(_, _, _ string) (string, error) {
 }
 
 func (m *mockInactivityBird) SendInternalText(_, text string) (string, error) {
+	if m.internalSendErr != nil {
+		return "", m.internalSendErr
+	}
 	m.internalTexts = append(m.internalTexts, text)
 	return "msg-id", nil
 }
@@ -871,6 +877,41 @@ func TestCheckEscalatedSessions_StopsAtMax(t *testing.T) {
 	}
 }
 
+// TestCheckEscalatedSessions_ClosesOnInactiveConversation (BUG-005): si el recordatorio al agente
+// falla porque la conversación de Bird ya no está activa (el agente la cerró), la escalación se cierra
+// en vez de reintentar cada minuto indefinidamente.
+func TestCheckEscalatedSessions_ClosesOnInactiveConversation(t *testing.T) {
+	var abandoned string
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-90 * time.Minute), // ya vencido el recordatorio
+				RemindersSent:  0,
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, sessionID string) error { abandoned = sessionID; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	bird := &mockInactivityBird{internalSendErr: fmt.Errorf("send: %w", birdpkg.ErrConversationNotActive)}
+
+	deps := escalationDeps(bird)
+	deps.EscalationCloseMin = 0 // aislar: que NO cierre por silencio, solo por conversación inactiva
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if abandoned != "s1" {
+		t.Errorf("esperaba que la sesión s1 se cerrara (MarkAbandoned), got %q", abandoned)
+	}
+	if rec.expire != 1 {
+		t.Errorf("esperaba 1 Expire de la escalación, got %d", rec.expire)
+	}
+	if len(bird.internalTexts) != 0 {
+		t.Errorf("no debió registrarse recordatorio enviado, got %d", len(bird.internalTexts))
+	}
+}
+
 func TestStartInactivityChecker_ContextCancellation(t *testing.T) {
 	repo := &mockRepo{}
 	mgr := NewSessionManager(repo, 120)
@@ -904,9 +945,12 @@ type mockEscalationRecorder struct {
 }
 
 func (m *mockEscalationRecorder) TouchAgent(_ context.Context, _ string) error { m.touch++; return nil }
-func (m *mockEscalationRecorder) Resume(_ context.Context, _ string) error     { m.resume++; return nil }
-func (m *mockEscalationRecorder) Close(_ context.Context, _ string) error      { m.closeN++; return nil }
-func (m *mockEscalationRecorder) Expire(_ context.Context, _ string) error     { m.expire++; return nil }
+
+func (m *mockEscalationRecorder) Resume(_ context.Context, _ string) error { m.resume++; return nil }
+
+func (m *mockEscalationRecorder) Close(_ context.Context, _ string) error { m.closeN++; return nil }
+
+func (m *mockEscalationRecorder) Expire(_ context.Context, _ string) error { m.expire++; return nil }
 
 func TestTouchAgentActivity_RecordsEscalation(t *testing.T) {
 	mgr := NewSessionManager(&mockRepo{}, 120)
