@@ -28,14 +28,29 @@ func TestCreateMultiSlot(t *testing.T) {
 	const agenda = 315 // TAC (médico 4, asunto 3) — validado
 	const espacios = 3
 
-	// Primer slot libre futuro de la agenda.
+	// Inicio de un tramo de `espacios` grid-rows CONTIGUAS y libres (no el primer libre a ciegas):
+	// tomar el primer libre y asumir que los siguientes lo están es frágil — si el 3.º contiguo ya
+	// está ocupado por una cita real, repo.Create devuelve "slots_consecutivos_insuficientes" y el
+	// test falla por estado de datos, no por un bug. El LEAD recorre la rejilla por Fecha y exige que
+	// las 2 filas siguientes (espacios-1=2) también estén libres, que es justo lo que el claim reclama.
 	var fecha time.Time
 	err := db.QueryRowContext(ctx, `
-		SELECT MIN(Fecha) FROM programacion_medico_detalle WITH (NOLOCK)
-		WHERE IdProgramacionMedico=@p1 AND IdCita IS NULL AND Bloqueado=0 AND SinProgramacion=0 AND Fecha>=GETDATE()`,
+		WITH g AS (
+		    SELECT Fecha, IdCita, Bloqueado, SinProgramacion,
+		           LEAD(IdCita, 1)    OVER (ORDER BY Fecha) AS c1,
+		           LEAD(IdCita, 2)    OVER (ORDER BY Fecha) AS c2,
+		           LEAD(Bloqueado, 1) OVER (ORDER BY Fecha) AS b1,
+		           LEAD(Bloqueado, 2) OVER (ORDER BY Fecha) AS b2
+		    FROM programacion_medico_detalle WITH (NOLOCK)
+		    WHERE IdProgramacionMedico=@p1 AND SinProgramacion=0 AND Fecha>=GETDATE()
+		)
+		SELECT TOP 1 Fecha FROM g
+		WHERE IdCita IS NULL AND c1 IS NULL AND c2 IS NULL
+		  AND Bloqueado=0 AND b1=0 AND b2=0
+		ORDER BY Fecha`,
 		agenda).Scan(&fecha)
 	if err != nil {
-		t.Fatalf("buscar slot libre: %v", err)
+		t.Fatalf("buscar tramo de %d slots contiguos libres: %v", espacios, err)
 	}
 	timeSlot := fecha.Format("200601021504") // YYYYMMDDHHmm
 
