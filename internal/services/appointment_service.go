@@ -311,68 +311,22 @@ func (s *AppointmentService) CreateWithConsecutive(ctx context.Context, input do
 	}
 	input.Espacios = espacios
 
+	// repo.Create inserta la cita, reclama los N slots contiguos Y registra TODOS los CUPS
+	// (citas_procedimientos / citas_procedimientos_asuntos) en UNA sola transacción de SIESA: todo
+	// o nada (audit #26). Antes los CUPS se insertaban en un segundo paso FUERA de la tx y un fallo
+	// parcial dejaba filas huérfanas (CUPS apuntando a una cita cancelada) o una cita sin
+	// procedimientos; la compensación por CancelBatch además podía fallar dejando una cita activa
+	// huérfana. Con la inserción atómica dentro de Create eso ya no puede ocurrir.
 	appt, err := s.repo.Create(ctx, input)
 	if err != nil {
 		return "", err
 	}
 
-	// Create appointment procedure records (CUPS) on the single cita. The citas row + its N slots
-	// were already committed atomically by repo.Create; if procedure insertion fails we compensate
-	// by cancelling the appointment (INTEG-02) — CancelBatch libera los N slots por IdCita —,
-	// si no SIESA queda con una cita sin procedimientos (operador confundido, conteo MRC errado).
-	if err := s.createAppointmentProcedureRecords(ctx, appt.ID, input.Procedures); err != nil {
-		if cancelErr := s.repo.CancelBatch(ctx, []string{appt.ID}, "appointment procedure creation failed", "system", ""); cancelErr != nil {
-			slog.Error("appointment procedure compensation failed — orphan appointment", "appointment_id", appt.ID, "cancel_error", cancelErr, "procedure_error", err)
-		}
-		return "", fmt.Errorf("create appointment procedure: %w", err)
-	}
-
-	// Auditoría SIESA: con los CUPS ya insertados, registrar log_citas + log_citas_procedimientos
-	// (paridad con la UI). Best-effort/asíncrono — no afecta el resultado del agendamiento.
+	// Auditoría SIESA: con la cita y sus CUPS ya committeados, registrar log_citas +
+	// log_citas_procedimientos (paridad con la UI). Best-effort/asíncrono — no afecta el resultado.
 	s.repo.WriteCreationAudit(ctx, appt.ID, input.Observations)
 
 	return appt.ID, nil
-}
-
-// createAppointmentProcedureRecords creates a appointment procedure record for each procedure in the appointment
-func (s *AppointmentService) createAppointmentProcedureRecords(ctx context.Context, appointmentID string, procedures []domain.CreateProcedureInput) error {
-	slog.Debug("createAppointmentProcedureRecords called",
-		"appointment_id", appointmentID,
-		"procedures_count", len(procedures),
-	)
-
-	apptIDInt, err := strconv.Atoi(appointmentID)
-	if err != nil {
-		return fmt.Errorf("invalid appointment ID: %w", err)
-	}
-
-	for i, proc := range procedures {
-		slog.Debug("createAppointmentProcedureRecords iteration",
-			"appointment_id", appointmentID,
-			"iteration", i,
-			"cup_code", proc.CupCode,
-			"quantity", proc.Quantity,
-		)
-
-		procInput := domain.CreateAppointmentProcedureInput{
-			AppointmentID: apptIDInt,
-			CupCode:       proc.CupCode,
-			Quantity:      proc.Quantity,
-			UnitValue:     proc.UnitValue,
-			ServiceID:     proc.ServiceID,
-		}
-
-		if err := s.repo.CreateAppointmentProcedure(ctx, procInput); err != nil {
-			return fmt.Errorf("create appointment procedure for %s: %w", proc.CupCode, err)
-		}
-	}
-
-	slog.Debug("createAppointmentProcedureRecords completed",
-		"appointment_id", appointmentID,
-		"total_inserted", len(procedures),
-	)
-
-	return nil
 }
 
 // FindLastDoctorForCups returns the document of the last doctor who attended the patient for any of the given CUPS codes.

@@ -176,7 +176,7 @@ func TestWriteCreationAuditMatchesUI(t *testing.T) {
 	defer tx.Rollback() // garantiza que NADA se persista
 
 	// Ejecuta el SQL de producción (mismo que WriteCreationAudit). @p1=cita, @p2=obs, @p3=usuario.
-	if _, err := tx.ExecContext(ctx, creationAuditQuery, fmt.Sprintf("%d", cita), marker, siesaBotUserID); err != nil {
+	if _, err := tx.ExecContext(ctx, creationAuditQuery, fmt.Sprintf("%d", cita), marker, defaultSiesaBotUserID); err != nil {
 		t.Fatalf("creationAuditQuery: %v", err)
 	}
 
@@ -328,7 +328,7 @@ func TestProcServicioMatchesHistory(t *testing.T) {
 		if i := strings.LastIndex(base, "-"); i > 0 {
 			base = base[:i]
 		}
-		if repo.resolveProcServicio(ctx, r.contrato, base, r.cup) == r.stored {
+		if repo.resolveProcServicio(ctx, repo.db, r.contrato, base, r.cup) == r.stored {
 			match++
 		}
 	}

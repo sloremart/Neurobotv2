@@ -27,6 +27,14 @@ func isUniqueViolation(err error) bool {
 	return false
 }
 
+// queryer abstrae *sql.DB y *sql.Tx para reutilizar la misma lógica de inserción de un
+// procedimiento (insertProcedureTx) en dos contextos: fuera de transacción (CreateAppointmentProcedure
+// standalone, con r.db) y DENTRO de la transacción de Create (cita + slots + CUPS atómicos).
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 var _ repository.AppointmentRepository = (*AppointmentRepo)(nil)
 
 // AppointmentRepo manages appointments in the external SQL Server database.
@@ -434,7 +442,7 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 	if !isConsultationSubject(subjectType) && len(input.Procedures) > 0 {
 		baseCups := strings.SplitN(input.Procedures[0].CupCode, "-", 2)[0]
 		contratoInt, _ := strconv.Atoi(contractCode)
-		if svc := r.resolveProcServicio(ctx, contratoInt, baseCups, input.Procedures[0].CupCode); svc > 0 {
+		if svc := r.resolveProcServicio(ctx, r.db, contratoInt, baseCups, input.Procedures[0].CupCode); svc > 0 {
 			serviceType = svc
 		}
 	}
@@ -575,14 +583,35 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		}
 	}
 
+	// Registrar los CUPS (citas_procedimientos / citas_procedimientos_asuntos) DENTRO de esta misma
+	// transacción: cita + slots + procedimientos son atómicos, todo o nada (audit #26). Si algún
+	// INSERT de CUPS falla, el defer tx.Rollback() deshace TODO — no quedan filas de CUPS huérfanas
+	// apuntando a una cita inexistente, ni una cita sin sus procedimientos. asunto (subjectType) y
+	// contrato ya están resueltos arriba; la cita aún NO está committeada, así que se pasan directos
+	// a insertProcedureTx en vez de releerlos de `citas`.
+	apptIDStr := strconv.FormatInt(newID, 10)
+	contractInt, _ := strconv.Atoi(contractCode)
+	for _, p := range input.Procedures {
+		procInput := domain.CreateAppointmentProcedureInput{
+			AppointmentID: int(newID),
+			CupCode:       p.CupCode,
+			Quantity:      p.Quantity,
+			UnitValue:     p.UnitValue,
+			ServiceID:     p.ServiceID,
+		}
+		if err := r.insertProcedureTx(ctx, tx, apptIDStr, subjectType, contractInt, procInput); err != nil {
+			return nil, fmt.Errorf("insert appointment procedure %s: %w", p.CupCode, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 
-	// Auditoría SIESA: se difiere a WriteCreationAudit, llamado por el servicio DESPUÉS de
-	// insertar los CUPS (citas_procedimientos). La UI registra log_citas + su detalle
-	// log_citas_procedimientos juntos, y el detalle necesita que las filas de CUPS ya existan;
-	// aquí dentro de Create todavía no se han insertado.
+	// Auditoría SIESA: se difiere a WriteCreationAudit, llamado por el servicio DESPUÉS del commit.
+	// La UI registra log_citas + su detalle log_citas_procedimientos juntos, y el detalle necesita
+	// que las filas de CUPS ya existan; tras este commit ya están persistidas (se insertaron arriba,
+	// en la misma transacción que la cita).
 
 	// Resolve doctor name from sis_medi (avoids returning cod_medi as DoctorName)
 	var doctorName string
@@ -654,12 +683,12 @@ const catchAllServicio = 27
 // contaminadas de citas viejas. Verificado contra la BD (2026-06-24): excluyendo el catch-all,
 // (contrato, cod_proc) da un Servicio único (0 ambigüedad en 572 citas; corrige 3 registros
 // históricos erróneos). Devuelve 0 si el CUPS no está cubierto por el contrato.
-func (r *AppointmentRepo) resolveProcServicio(ctx context.Context, contrato int, baseCup, fullCup string) int {
+func (r *AppointmentRepo) resolveProcServicio(ctx context.Context, q queryer, contrato int, baseCup, fullCup string) int {
 	if contrato == 0 {
 		return 0
 	}
 	var servicio int
-	_ = r.db.QueryRowContext(ctx, `
+	_ = q.QueryRowContext(ctx, `
 		SELECT TOP 1 codigo FROM servicios WITH (NOLOCK)
 		WHERE contrato = @p1 AND codigo <> @p2 AND cod_proc IN (@p3, @p4)
 		ORDER BY codigo`,
@@ -670,12 +699,24 @@ func (r *AppointmentRepo) resolveProcServicio(ctx context.Context, contrato int,
 func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error {
 	apptID := strconv.Itoa(input.AppointmentID)
 
+	// Camino standalone: la cita ya está committeada, así que se releen asunto y contrato de `citas`.
+	// (En el camino atómico de Create la cita aún NO está committeada y se pasan directos.)
 	var subjectType, contrato int
 	_ = r.db.QueryRowContext(
 		ctx,
 		`SELECT ISNULL(asunto,0), ISNULL(TRY_CONVERT(INT, contrato),0) FROM citas WITH (NOLOCK) WHERE id = @p1`, apptID,
 	).Scan(&subjectType, &contrato)
 
+	return r.insertProcedureTx(ctx, r.db, apptID, subjectType, contrato, input)
+}
+
+// insertProcedureTx registra UN procedimiento de la cita en SIESA usando el queryer dado: la
+// transacción de Create (atómico) o r.db (camino standalone). Recibe asunto y contrato ya
+// resueltos por el caller — en Create la cita aún no está committeada, así que no se pueden releer
+// de `citas`. Decide la tabla destino por tipo de asunto:
+//   - consulta    → citas_procedimientos_asuntos (con Valor)
+//   - proc/imagen → citas_procedimientos
+func (r *AppointmentRepo) insertProcedureTx(ctx context.Context, q queryer, apptID string, subjectType, contrato int, input domain.CreateAppointmentProcedureInput) error {
 	qty := input.Quantity
 	if qty == 0 {
 		qty = 1
@@ -687,14 +728,14 @@ func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input 
 		// mal asignados por la versión vieja del bot), y AsuntoPctos es la fuente oficial.
 		var serviceID int
 		var procName string
-		_ = r.db.QueryRowContext(ctx,
+		_ = q.QueryRowContext(ctx,
 			`SELECT TOP 1 ISNULL(Servicio,0), ISNULL(NomProcedimiento,'') FROM AsuntoPctos WITH (NOLOCK) WHERE Asunto = @p1`,
 			subjectType).Scan(&serviceID, &procName)
 		if procName == "" {
 			procName = input.CupCode
 		}
 
-		_, err := r.db.ExecContext(ctx, `
+		_, err := q.ExecContext(ctx, `
 		INSERT INTO citas_procedimientos_asuntos
 		    (IdCita, IdSisDeta, Asunto, Servicio, TipoManual, CodProcedimiento, NomProcedimiento, Valor, FechaRegistro)
 		VALUES (@p1, 0, @p2, @p3, '256', @p4, @p5, @p6, GETDATE())`,
@@ -717,19 +758,19 @@ func (r *AppointmentRepo) CreateAppointmentProcedure(ctx context.Context, input 
 	// Servicio CANÓNICO desde la tabla `servicios` por (contrato, cod_proc), excluyendo el catch-all
 	// (ver resolveProcServicio). Reemplaza la derivación por historia (ORDER BY fecha DESC), que era
 	// frágil y podía heredar asignaciones contaminadas.
-	servicio := r.resolveProcServicio(ctx, contrato, baseCup, input.CupCode)
+	servicio := r.resolveProcServicio(ctx, q, contrato, baseCup, input.CupCode)
 
 	// ¿Existe la variante con sufijo {base}-{qty} en sis_proc_precios? (ver chooseCupStorage)
 	variantExists := false
 	if qty >= 2 {
 		var found int
-		_ = r.db.QueryRowContext(ctx, cupVariantExistsQuery,
+		_ = q.QueryRowContext(ctx, cupVariantExistsQuery,
 			fmt.Sprintf("%s-%d", baseCup, qty)).Scan(&found)
 		variantExists = found == 1
 	}
 	cupCode, storedQty := chooseCupStorage(baseCup, qty, variantExists)
 
-	_, err := r.db.ExecContext(ctx, `
+	_, err := q.ExecContext(ctx, `
 	INSERT INTO citas_procedimientos (id_procedimiento, tipo, id_cita, Servicio, Cantidad)
 	VALUES (@p1, '256', @p2, @p3, @p4)`,
 		cupCode, apptID, servicio, storedQty)
