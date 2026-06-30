@@ -169,10 +169,17 @@ func (r *AnalyticsRepo) NoShowByDay(ctx context.Context, from, to string) ([]dom
 		return v.([]domain.NoShowRow), nil
 	}
 
+	// Se separa el no-show PURO (pasada, no cancelada, no atendida y NO confirmada) de "sin cerrar"
+	// (confirmada vía AsistenciaConfirmada=1 o estado='CC' pero no finalizada): esta última pudo haber
+	// asistido y no haberse cerrado en SIESA, así que atribuirla a inasistencia inflaría el no-show. Misma
+	// definición de "confirmada" que AppointmentsByState.
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT CONVERT(VARCHAR(10), fecha, 23) AS dia,
 		       SUM(CASE WHEN ISNULL(estado,'') = 'A' THEN 1 ELSE 0 END) AS atendidas,
-		       SUM(CASE WHEN ISNULL(estado,'') NOT IN ('C','A') THEN 1 ELSE 0 END) AS no_show
+		       SUM(CASE WHEN ISNULL(estado,'') NOT IN ('C','A')
+		                 AND (ISNULL(AsistenciaConfirmada,0) = 1 OR estado = 'CC') THEN 1 ELSE 0 END) AS sin_cerrar,
+		       SUM(CASE WHEN ISNULL(estado,'') NOT IN ('C','A')
+		                 AND NOT (ISNULL(AsistenciaConfirmada,0) = 1 OR estado = 'CC') THEN 1 ELSE 0 END) AS no_show
 		FROM citas WITH (NOLOCK)
 		WHERE fecha >= @p1 AND fecha < @p2 AND fecha < CAST(GETDATE() AS DATE)
 		GROUP BY CONVERT(VARCHAR(10), fecha, 23)
@@ -186,10 +193,10 @@ func (r *AnalyticsRepo) NoShowByDay(ctx context.Context, from, to string) ([]dom
 	out := make([]domain.NoShowRow, 0, 64)
 	for rows.Next() {
 		var n domain.NoShowRow
-		if err := rows.Scan(&n.Fecha, &n.Atendidas, &n.NoShow); err != nil {
+		if err := rows.Scan(&n.Fecha, &n.Atendidas, &n.SinCerrar, &n.NoShow); err != nil {
 			return nil, fmt.Errorf("scan no-show: %w", err)
 		}
-		n.Esperadas = n.Atendidas + n.NoShow
+		n.Esperadas = n.Atendidas + n.SinCerrar + n.NoShow
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {

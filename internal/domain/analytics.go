@@ -29,10 +29,11 @@ type AppointmentStateRow struct {
 // atendieron (estado 'A') y cuántas quedaron sin finalizar (no-show: ni canceladas ni atendidas).
 // Las citas pendientes/confirmadas FUTURAS no cuentan: aún no han ocurrido, no son inasistencia.
 type NoShowRow struct {
-	Fecha     string `json:"fecha"`     // YYYY-MM-DD
-	Esperadas int    `json:"esperadas"` // citas pasadas no canceladas (= atendidas + no_show)
-	Atendidas int    `json:"atendidas"` // estado 'A'
-	NoShow    int    `json:"no_show"`   // no canceladas, no atendidas, fecha ya pasada
+	Fecha     string `json:"fecha"`      // YYYY-MM-DD
+	Esperadas int    `json:"esperadas"`  // citas pasadas no canceladas (= atendidas + sin_cerrar + no_show)
+	Atendidas int    `json:"atendidas"`  // estado 'A'
+	SinCerrar int    `json:"sin_cerrar"` // confirmada (AsistenciaConfirmada=1 o estado='CC') pero no cerrada — pudo asistir
+	NoShow    int    `json:"no_show"`    // no-show PURO: pasada, no cancelada, no atendida y NO confirmada
 }
 
 // BotCreatedRow es el conteo de citas REALES creadas por el bot en SIESA por día (por

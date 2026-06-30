@@ -269,12 +269,14 @@ func (h *InternalHandler) HandleSiesaNoShow(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "failed to read no-show", http.StatusInternalServerError)
 		return
 	}
-	var esperadas, atendidas, noShow int
+	var esperadas, atendidas, noShow, sinCerrar int
 	for _, n := range rows {
 		esperadas += n.Esperadas
 		atendidas += n.Atendidas
 		noShow += n.NoShow
+		sinCerrar += n.SinCerrar
 	}
+	// % no-show calculado SOLO sobre el no-show puro (no incluye 'sin cerrar', que pudo asistir).
 	pct := 0.0
 	if esperadas > 0 {
 		pct = float64(noShow) / float64(esperadas) * 100
@@ -282,7 +284,7 @@ func (h *InternalHandler) HandleSiesaNoShow(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"rows": rows, "esperadas": esperadas, "atendidas": atendidas,
-		"no_show": noShow, "no_show_pct": pct,
+		"sin_cerrar": sinCerrar, "no_show": noShow, "no_show_pct": pct,
 	})
 }
 
