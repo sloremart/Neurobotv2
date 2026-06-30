@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -98,6 +99,15 @@ func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.
 			ip := r.RemoteAddr
 			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 				ip = host
+			}
+			// El bot corre detrás de un reverse proxy: RemoteAddr es la IP del proxy (igual para todos),
+			// lo que haría el límite global. Se usa la PRIMERA IP de X-Forwarded-For (el cliente real).
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				if first, _, found := strings.Cut(xff, ","); found || first != "" {
+					if c := strings.TrimSpace(first); c != "" {
+						ip = c
+					}
+				}
 			}
 
 			mu.Lock()

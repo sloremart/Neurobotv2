@@ -129,9 +129,10 @@ func ParseInboundMessage(event WebhookEvent) InboundMessage {
 		"has_text_actions", len(payload.Body.Text.Actions) > 0,
 		"has_list_actions", len(payload.Body.List.Actions) > 0,
 		"has_interactive_actions", len(payload.Body.Interactive.Actions) > 0,
-		"text_text", payload.Body.Text.Text,
-		"list_text", payload.Body.List.Text,
-		"interactive_text", payload.Body.Interactive.Text,
+		// No loguear el texto del paciente (PHI) ni en debug; solo longitudes.
+		"text_len", len(payload.Body.Text.Text),
+		"list_len", len(payload.Body.List.Text),
+		"interactive_len", len(payload.Body.Interactive.Text),
 	)
 
 	// Clasificar tipo de mensaje

@@ -126,6 +126,13 @@ func (c *Client) CacheConversationID(phone, conversationID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// #23 (auditoría): init perezoso para no panicar si el Client se creó por struct literal (tests)
+	// sin pasar por el constructor.
+	if c.convCache == nil {
+		c.convCache = make(map[string]string)
+		c.convCacheTS = make(map[string]time.Time)
+	}
+
 	// Evict oldest entry if at capacity (skip if overwriting existing key)
 	if _, exists := c.convCache[phone]; !exists && len(c.convCache) >= maxConvCacheEntries {
 		var oldestPhone string
@@ -1454,7 +1461,10 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 			// API lookup with retries — Bird may need time to index the conversation
 			for attempt := 1; attempt <= 3 && conversationID == ""; attempt++ {
 				if attempt > 1 {
-					time.Sleep(time.Duration(attempt-1) * 500 * time.Millisecond) // 500ms, 1s
+					// #21 (auditoría): sleep cancelable por contexto (antes time.Sleep ignoraba el ctx).
+					if err := sleepWithContext(ctx, time.Duration(attempt-1)*500*time.Millisecond); err != nil { // 500ms, 1s
+						return "", "", err
+					}
 					// Re-check cache between retries (webhook may have arrived)
 					if cached := c.GetCachedConversationID(phone); cached != "" {
 						conversationID = cached
@@ -1762,7 +1772,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// parseRetryAfter parses the Retry-After header (integer seconds format).
+// parseRetryAfter parses the Retry-After header (integer seconds o HTTP-date).
 // Returns 2s default if missing, unparseable, or out of range [1, 120].
 func parseRetryAfter(value string) time.Duration {
 	if value == "" {
@@ -1770,6 +1780,12 @@ func parseRetryAfter(value string) time.Duration {
 	}
 	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 && seconds <= 120 {
 		return time.Duration(seconds) * time.Second
+	}
+	// #22 (auditoría): Retry-After también puede ser un HTTP-date (RFC 7231).
+	if t, err := http.ParseTime(value); err == nil {
+		if d := time.Until(t); d > 0 && d <= 120*time.Second {
+			return d
+		}
 	}
 	return 2 * time.Second
 }

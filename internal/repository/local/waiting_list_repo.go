@@ -248,10 +248,13 @@ func (r *WaitingListRepo) ExpireStaleNotified(ctx context.Context, hours int) (i
 	return res.RowsAffected()
 }
 
-// ExpireOld expires waiting entries older than N days.
+// ExpireOld expira entradas en espera vencidas: por su propio expires_at (30 días al crearse) o, como
+// cota dura, más antiguas que `days` días desde su creación. #13 (auditoría): antes el parámetro `days`
+// se ignoraba (la firma mentía); ahora se aplica.
 func (r *WaitingListRepo) ExpireOld(ctx context.Context, days int) (int64, error) {
 	result, err := r.db.ExecContext(ctx,
-		"UPDATE waiting_list SET status = 'expired', resolved_at = NOW() WHERE status = 'waiting' AND expires_at < NOW()")
+		`UPDATE waiting_list SET status = 'expired', resolved_at = NOW()
+		 WHERE status = 'waiting' AND (expires_at < NOW() OR created_at < DATE_SUB(NOW(), INTERVAL ? DAY))`, days)
 	if err != nil {
 		return 0, fmt.Errorf("expire waiting list: %w", err)
 	}

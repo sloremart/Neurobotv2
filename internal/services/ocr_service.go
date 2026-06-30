@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -366,8 +367,18 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	if err != nil {
 		return nil, fmt.Errorf("create download request: %w", err)
 	}
+	// #3 (auditoría): adjuntar la AccessKey de Bird SOLO si la URL es de Bird (*.bird.com). El
+	// documentURL viene del webhook (firmado), pero por defensa en profundidad evitamos filtrar la
+	// credencial a un host arbitrario (SSRF/leak). Las media pre-firmadas de otros hosts no la necesitan.
 	if s.birdAccessKey != "" {
-		req.Header.Set("Authorization", "AccessKey "+s.birdAccessKey)
+		if u, perr := url.Parse(documentURL); perr == nil {
+			host := strings.ToLower(u.Hostname())
+			if host == "bird.com" || strings.HasSuffix(host, ".bird.com") {
+				req.Header.Set("Authorization", "AccessKey "+s.birdAccessKey)
+			} else {
+				slog.Warn("ocr: media URL host no es de Bird — no se adjunta credencial", "host", host)
+			}
+		}
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {

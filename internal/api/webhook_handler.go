@@ -420,7 +420,7 @@ func (h *WebhookHandler) HandleConversation(w http.ResponseWriter, r *http.Reque
 		slog.Debug("conversation_event_no_phone",
 			"conversation_id", convID,
 			"event", event.Event,
-			"raw", string(body),
+			"body_len", len(body), // no loguear el body crudo (PHI) ni en debug
 		)
 	}
 }

@@ -271,6 +271,14 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) bool {
 	expiresAt := notif.CreatedAt.Add(duration)
 	notif.ExpiresAt = expiresAt // N-19
 
+	// #6 (auditoría): detener el timer del pending PREVIO (si existe) antes de sobreescribirlo, o su
+	// time.AfterFunc seguiría vivo y dispararía handleTimeout sobre datos viejos (fuga de timer).
+	if old, ok := m.pending.Load(notif.Phone); ok {
+		if op, _ := old.(*PendingNotification); op != nil && op.Timer != nil {
+			op.Timer.Stop()
+		}
+	}
+
 	// In-memory timer (handles timeout while running)
 	notif.Timer = time.AfterFunc(duration, func() {
 		m.handleTimeout(notif.Phone)

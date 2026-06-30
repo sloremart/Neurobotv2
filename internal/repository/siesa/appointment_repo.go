@@ -966,7 +966,7 @@ func (r *AppointmentRepo) Confirm(ctx context.Context, id string, channel, chann
 	    IdTipoConfirmacionAsistencia   = 1,
 	    IdUsuarioConfirmaAsistencia    = @p3,
 	    ObservacionConfirmaAsistencia  = @p2
-	WHERE id = @p1`, id, obs, r.botUserID)
+	WHERE id = @p1 AND estado <> 'C'`, id, obs, r.botUserID) // #11: no confirmar una cita ya cancelada
 	if err != nil {
 		return err
 	}
@@ -1007,11 +1007,15 @@ func (r *AppointmentRepo) Cancel(ctx context.Context, id string, reason, channel
 	WHERE id = @p1`, id, reason, obs, r.botUserID); err != nil {
 		return err
 	}
-	if idInt, perr := strconv.ParseInt(id, 10, 64); perr == nil {
-		if _, relErr := tx.ExecContext(ctx,
-			`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita = @p1`, idInt); relErr != nil {
-			return fmt.Errorf("liberar cupo: %w", relErr)
-		}
+	// #10 (auditoría): si el id no es numérico, NO se puede liberar el cupo → no commitear (quedaría una
+	// cita 'C' con su slot aún ocupado, huérfano). Se retorna error y la tx hace rollback.
+	idInt, perr := strconv.ParseInt(id, 10, 64)
+	if perr != nil {
+		return fmt.Errorf("cancel: id de cita no numérico %q: %w", id, perr)
+	}
+	if _, relErr := tx.ExecContext(ctx,
+		`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita = @p1`, idInt); relErr != nil {
+		return fmt.Errorf("liberar cupo: %w", relErr)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -1036,7 +1040,7 @@ func (r *AppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, channe
 		    IdTipoConfirmacionAsistencia   = 1,
 		    IdUsuarioConfirmaAsistencia    = @p2,
 		    ObservacionConfirmaAsistencia  = @p1
-		WHERE id IN (%s)`, clause), allArgs...)
+		WHERE estado <> 'C' AND id IN (%s)`, clause), allArgs...) // #11: no confirmar citas canceladas
 	if err != nil {
 		return err
 	}
@@ -1210,8 +1214,10 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 	         THEN TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10))
 	         ELSE ISNULL(cp.Cantidad, 1)
 	    END), 0)
-	FROM citas c WITH (NOLOCK)
-	JOIN citas_procedimientos cp WITH (NOLOCK) ON cp.id_cita = c.id
+	-- #8 (auditoría): sin NOLOCK — es una decisión de CUPO (tope mensual MRC); una lectura sucia
+	-- podría contar/omitir citas no confirmadas y pasar/bloquear el tope erróneamente.
+	FROM citas c
+	JOIN citas_procedimientos cp ON cp.id_cita = c.id
 	WHERE c.fecha >= @p1 AND c.fecha < @p2
 	  AND c.contrato IN ('5', '6')
 	  AND LEFT(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento + '-') - 1) IN (%s)
