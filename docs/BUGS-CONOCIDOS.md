@@ -260,7 +260,7 @@ recupera **10-15 min después**, no al instante. Riesgo adicional: respuesta ya 
 
 ## BUG-005 — `agent reminder send failed: conversation not active` (recordatorio a conversación cerrada)
 
-- **Estado:** 🔴 Pendiente (documentado, sin corregir)
+- **Estado:** ✅ Resuelto — implementado (commit `456e274`). Requiere deploy.
 - **Severidad:** Media — el recordatorio al agente (SLA de escalación) no se entrega; ruido de error recurrente.
 - **Detectado:** 2026-06-30 por el auditor (al actualizar el script: nuevo stream de error visible).
 - **Componentes:** envío del recordatorio de escalación (NotificationManager / worker), `internal/bird/client.go`
@@ -273,17 +273,18 @@ ERROR agent reminder send failed  session_id=bc365c59... conversation_id=6f9528b
 ```
 Se repite cada ~1 min sobre la misma sesión.
 
-### Causa raíz (hipótesis a confirmar)
-El recordatorio al agente intenta enviar a un `conversation_id` cuya conversación en Bird **ya está cerrada**
-(el agente la cerró, o se cerró por inactividad) mientras el reloj del recordatorio seguía corriendo. La
-Conversations API rechaza el envío con `conversation status is not active`.
+### Causa raíz (confirmada)
+`checkEscalatedSessions` (`internal/session/manager.go`) enviaba el recordatorio con
+`deps.BirdClient.SendInternalText(...)`; al fallar hacía `continue` **sin incrementar `RemindersSent`**, así
+que la misma sesión seguía elegible y reintentaba en cada tick (1/min). La conversación de Bird estaba
+**cerrada** (el agente la cerró) → `sendToConversation` devuelve `ErrConversationNotActive` (HTTP 422) →
+el recordatorio **nunca** tendría éxito → bucle hasta la expiración a las 6h.
 
-### Fix propuesto
-- Antes de enviar el recordatorio, verificar/abrir el estado de la conversación (o capturar el error
-  `conversation status is not active` y **cancelar el reloj del recordatorio** + cerrar la escalación en vez
-  de reintentar cada minuto).
-- Drill: `flow-trace?trace_id=sess:bc365c59...` y `logs?search=conversation%20not%20active` para confirmar el
-  ciclo de vida (cuándo se cerró la conversación vs cuándo dispara el recordatorio).
+### Fix implementado (commit `456e274`)
+- Ante `errors.Is(err, bird.ErrConversationNotActive)`, dar por terminada la escalación: `MarkAbandoned`
+  + `escalations.Expire` + emit `escalacion/agent_closed` (reason `conversation_inactive`) — la conversación
+  cerrada por el agente ES la señal de que el chat terminó. Detiene el bucle y refleja la realidad.
+- Test `TestCheckEscalatedSessions_ClosesOnInactiveConversation` (la sesión se cierra, no se reintenta).
 
 ---
 
