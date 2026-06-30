@@ -574,6 +574,43 @@ func TestAssignFeedItem_Success(t *testing.T) {
 	}
 }
 
+// TestAssignFeedItem_ReopensClosed (BUG-007): conversación REABIERTA cuyo único feed item está
+// CERRADO. Antes searchFeedItem lo saltaba → "no feed item found after retries". Ahora debe reabrirlo
+// (closed:false) Y asignar en el mismo PATCH.
+func TestAssignFeedItem_ReopensClosed(t *testing.T) {
+	var payload map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case isFeedItemSearch(r):
+			w.WriteHeader(200)
+			// feed item CERRADO (conversación reabierta)
+			_, _ = w.Write([]byte(`{"results":[{"id":"fi-closed","feedId":"channel:ch-test","closed":true}]}`))
+		case r.Method == "PATCH":
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &payload)
+			w.WriteHeader(200)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	if err := c.AssignFeedItem(context.Background(), "conv-reopen", "team-a", "agent-1"); err != nil {
+		t.Fatalf("expected no error (debe reabrir + asignar), got %v", err)
+	}
+	if payload["closed"] != false {
+		t.Errorf("esperaba closed:false en el PATCH (reabrir), got %v", payload["closed"])
+	}
+	if payload["teamId"] != "team-a" {
+		t.Errorf("esperaba team-a, got %v", payload["teamId"])
+	}
+	if payload["agentId"] != "agent-1" {
+		t.Errorf("esperaba agent-1, got %v", payload["agentId"])
+	}
+}
+
 func TestAssignFeedItem_EmptyConversation(t *testing.T) {
 	c := NewClientForTest("http://localhost")
 	err := c.AssignFeedItem(context.Background(), "", "team-a", "agent-1")

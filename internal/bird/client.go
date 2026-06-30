@@ -1060,7 +1060,7 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 			}
 		}
 
-		feedItemID, feedID, err := c.searchFeedItem(conversationID)
+		feedItemID, feedID, closed, err := c.searchFeedItem(conversationID)
 		if err != nil {
 			slog.Warn(
 				"search_feed_item_failed",
@@ -1082,7 +1082,22 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 		url := fmt.Sprintf("%s/workspaces/%s/feeds/%s/items/%s",
 			c.conversationsBase(), c.workspaceID, feedID, feedItemID)
 
-		resp, err := c.doPatchFeedItem(url, jsonBody)
+		// Conversación REABIERTA: el ticket está cerrado. Reabrirlo (closed:false) Y asignar en el
+		// MISMO PATCH; si no, Bird no permite asignar un feed item cerrado y el handoff fallaba con
+		// "no feed item found after retries". Mismo endpoint/campo que usa CloseFeedItems para cerrar.
+		body := jsonBody
+		if closed {
+			reopen := map[string]interface{}{"teamId": teamID, "closed": false}
+			if agentID != "" {
+				reopen["agentId"] = agentID
+			}
+			if b, mErr := json.Marshal(reopen); mErr == nil {
+				body = b
+			}
+			slog.Info("feed_item_reopen_on_assign", "conversation_id", conversationID, "feed_item_id", feedItemID)
+		}
+
+		resp, err := c.doPatchFeedItem(url, body)
 		if err != nil {
 			return fmt.Errorf("assign feed item: %w", err)
 		}
@@ -1103,7 +1118,7 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 
 // searchFeedItem finds the feed item ID for a conversation via POST /search/feed-items.
 // Returns (feedItemID, feedID, error). Returns ("", "", nil) if no item found.
-func (c *Client) searchFeedItem(conversationID string) (string, string, error) {
+func (c *Client) searchFeedItem(conversationID string) (feedItemID, feedID string, closed bool, err error) {
 	searchURL := fmt.Sprintf("%s/workspaces/%s/search/feed-items",
 		c.conversationsBase(), c.workspaceID)
 
@@ -1113,20 +1128,20 @@ func (c *Client) searchFeedItem(conversationID string) (string, string, error) {
 
 	req, err := http.NewRequest("POST", searchURL, bytes.NewReader(searchPayload))
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "AccessKey "+c.accessKeyID)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return "", "", fmt.Errorf("search feed items: status %d, body: %s", resp.StatusCode, string(respBody))
+		return "", "", false, fmt.Errorf("search feed items: status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
@@ -1137,16 +1152,27 @@ func (c *Client) searchFeedItem(conversationID string) (string, string, error) {
 		} `json:"results"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", fmt.Errorf("decode search response: %w", err)
+		return "", "", false, fmt.Errorf("decode search response: %w", err)
 	}
 
-	// Return the first non-closed feed item
+	// Preferir un feed item ABIERTO. Pero si la conversación fue REABIERTA, su único ticket puede
+	// estar CERRADO: en ese caso se devuelve igualmente (closed=true) para que el caller lo REABRA
+	// (PATCH closed:false) y pueda asignarlo — no se puede asignar a un equipo un ticket cerrado.
+	// Antes esto devolvía "" y reventaba en "no feed item found after retries" (bug del handoff de
+	// escalación para conversaciones reabiertas; confirmado contra Bird: feed item closed=true).
+	var closedID, closedFeed string
 	for _, item := range result.Results {
 		if !item.Closed {
-			return item.ID, item.FeedID, nil
+			return item.ID, item.FeedID, false, nil
+		}
+		if closedID == "" {
+			closedID, closedFeed = item.ID, item.FeedID
 		}
 	}
-	return "", "", nil
+	if closedID != "" {
+		return closedID, closedFeed, true, nil
+	}
+	return "", "", false, nil
 }
 
 // doPatchFeedItem sends a PATCH request to the feed items endpoint. Returns status code.
@@ -1182,7 +1208,7 @@ func (c *Client) UnassignFeedItem(conversationID string, closed bool) error {
 		return nil
 	}
 
-	feedItemID, feedID, err := c.searchFeedItem(conversationID)
+	feedItemID, feedID, _, err := c.searchFeedItem(conversationID)
 	if err != nil {
 		slog.Warn("unassign_search_failed", "error", err, "conversation_id", conversationID)
 		return nil
