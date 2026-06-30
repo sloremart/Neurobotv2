@@ -111,6 +111,11 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config, escRepo Escala
 				"conversation_id", conversationID,
 				"session_id", sess.ID,
 			)
+			// Terminal medible del residual: no se pudo resolver/crear la conversación en Bird para el
+			// handoff (p.ej. recurrente cuyo hilo no aparece en el lookup y el webhook no llegó a tiempo).
+			// Sin esto, el fallo quedaba solo en logs; el funnel lo necesita para medir el residual real.
+			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_no_channel",
+				observability.EmitOpts{Phone: msg.Phone, Reason: err.Error()})
 			// Agent unavailable → fallback to restart/end menu
 			return sm.NewResult(sm.StateFallbackMenu).
 				WithButtons(

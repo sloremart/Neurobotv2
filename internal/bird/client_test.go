@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// Acelera el sondeo de caché de conversation_id en los tests (en prod es 1s × 6 ≈ ventana para el webhook).
+func init() { convCachePollInterval = time.Millisecond }
+
 func TestSendText_PayloadAndResponse(t *testing.T) {
 	var received map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -798,6 +801,50 @@ func TestEscalateToAgent_LookupByPhone(t *testing.T) {
 	_, _, err := c.EscalateToAgent(context.Background(), "", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
 	if err != nil {
 		t.Fatalf("expected no error (lookup by phone), got %v", err)
+	}
+}
+
+// TestEscalateToAgent_ResolvesFromCache (fix conv_id): si el conversation_id está en CACHÉ (poblado por
+// el webhook outbound del mensaje que la escalación envió), el handoff lo usa SIN recurrir al lookup
+// global por lista (poco fiable). Verifica que el lookup NO se invoca.
+func TestEscalateToAgent_ResolvesFromCache(t *testing.T) {
+	lookupHit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/workspaces/ws-test/conversations":
+			lookupHit = true
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[]}`))
+		case r.Method == "PATCH" && r.URL.Path == "/workspaces/ws-test/conversations/conv-cached":
+			w.WriteHeader(200)
+		case r.Method == "GET" && r.URL.Path == "/workspaces/ws-test/agents":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(agentsJSON(AgentInfo{
+				ID: "agent-1", DisplayName: "Agent",
+				Teams:                 []AgentTeam{{ID: "team-a", Name: "A"}},
+				Availability:          AgentAvailability{Status: "active", Activity: "available"},
+				RootItemAssignedCount: 0,
+			})))
+		case isFeedItemSearch(r):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(feedItemSearchJSON("conv-cached")))
+		case r.Method == "PATCH" && r.URL.Path == "/workspaces/ws-test/feeds/channel:ch-test/items/fi-conv-cached":
+			w.WriteHeader(200)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.CacheConversationID("+573001234567", "conv-cached") // simula el webhook outbound de Bird
+	_, _, err := c.EscalateToAgent(context.Background(), "", "+573001234567", "team-a", "Grupo A", "Patient", "team-fallback")
+	if err != nil {
+		t.Fatalf("expected no error (resuelto por caché), got %v", err)
+	}
+	if lookupHit {
+		t.Error("no debió pegarle al lookup global: el conversation_id estaba en caché")
 	}
 }
 

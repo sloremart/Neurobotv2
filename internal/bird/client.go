@@ -22,6 +22,15 @@ import (
 // request because the conversation is closed/inactive (HTTP 422).
 var ErrConversationNotActive = errors.New("conversation not active")
 
+// Sondeo de caché de conversation_id en la escalación (ver EscalateToAgent). La caché la puebla el
+// webhook outbound de Bird del mensaje que la escalación acaba de enviar; tarda unos segundos. Se
+// sondea hasta convCachePollTries veces cada convCachePollInterval antes de recurrir al lookup global.
+// Son var (no const) para que los tests bajen el intervalo y no esperen segundos reales.
+var (
+	convCachePollTries    = 6
+	convCachePollInterval = 1 * time.Second
+)
+
 // ErrWhatsAppNotificationsDisabled / ErrIVRNotificationsDisabled se devuelven cuando el canal
 // está apagado por config (WHATSAPP_NOTIFICATIONS_ENABLED / IVR_NOTIFICATIONS_ENABLED = false).
 // Los callers ya tratan el error saltando el envío, así no se registra pending ni se coloca llamada.
@@ -1495,22 +1504,26 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 				conversationID = cached
 			}
 
-			// API lookup with retries — Bird may need time to index the conversation
-			for attempt := 1; attempt <= 3 && conversationID == ""; attempt++ {
-				if attempt > 1 {
-					// #21 (auditoría): sleep cancelable por contexto (antes time.Sleep ignoraba el ctx).
-					if err := sleepWithContext(ctx, time.Duration(attempt-1)*500*time.Millisecond); err != nil { // 500ms, 1s
-						return "", "", err
-					}
-					// Re-check cache between retries (webhook may have arrived)
-					if cached := c.GetCachedConversationID(phone); cached != "" {
-						conversationID = cached
-						break
-					}
+			// Resolución del conversation_id. La fuente FIABLE es la CACHÉ, que se puebla con el webhook
+			// outbound/conversación de Bird — incluido el del mensaje que la propia escalación acaba de
+			// enviarle al paciente (escalation.go). Ese webhook tarda unos segundos, así que se SONDEA la
+			// caché (barato, en memoria) con backoff antes de recurrir al lookup global. El lookup por
+			// lista es poco fiable para pacientes recurrentes / tráfico alto: la lista va por createdAt y
+			// el hilo del paciente puede caer fuera de las páginas (verificado contra Bird). pet_ct escala
+			// instantáneamente, por eso necesita esta ventana para que llegue el webhook.
+			for i := 0; i < convCachePollTries && conversationID == ""; i++ {
+				if cached := c.GetCachedConversationID(phone); cached != "" {
+					conversationID = cached
+					break
 				}
-				lookedUp, err := c.LookupConversationByPhone(phone)
-				if err != nil {
-					slog.Warn("conversation_lookup_failed", "phone", utils.MaskPhone(phone), "attempt", attempt, "error", err)
+				if err := sleepWithContext(ctx, convCachePollInterval); err != nil {
+					return "", "", err
+				}
+			}
+			// Último recurso: lookup global por teléfono (un intento; ya esperamos el webhook arriba).
+			if conversationID == "" {
+				if lookedUp, lerr := c.LookupConversationByPhone(phone); lerr != nil {
+					slog.Warn("conversation_lookup_failed", "phone", utils.MaskPhone(phone), "error", lerr)
 				} else if lookedUp != "" {
 					conversationID = lookedUp
 				}
