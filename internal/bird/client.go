@@ -401,7 +401,8 @@ func (c *Client) trySendToConversation(phone, conversationID string, body interf
 		c.mu.Unlock()
 
 		if freshID, lookErr := c.LookupConversationByPhone(phone); lookErr == nil && freshID != "" && freshID != conversationID {
-			slog.Info("conversation_id_self_healed",
+			slog.Info(
+				"conversation_id_self_healed",
 				"phone", utils.MaskPhone(phone),
 				"old", conversationID,
 				"new", freshID,
@@ -1061,7 +1062,8 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 
 		feedItemID, feedID, err := c.searchFeedItem(conversationID)
 		if err != nil {
-			slog.Warn("search_feed_item_failed",
+			slog.Warn(
+				"search_feed_item_failed",
 				"attempt", attempt,
 				"conversation_id", conversationID,
 				"error", err,
@@ -1069,7 +1071,8 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 			continue
 		}
 		if feedItemID == "" {
-			slog.Info("feed_item_not_found_yet",
+			slog.Info(
+				"feed_item_not_found_yet",
 				"attempt", attempt,
 				"conversation_id", conversationID,
 			)
@@ -1084,7 +1087,8 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 			return fmt.Errorf("assign feed item: %w", err)
 		}
 		if resp < 400 {
-			slog.Info("feed_item_assigned",
+			slog.Info(
+				"feed_item_assigned",
 				"conversation_id", conversationID,
 				"feed_item_id", feedItemID,
 				"feed_id", feedID,
@@ -1417,8 +1421,12 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 		// Bird may place identifierValue at the top level OR nested in contact.
 		for _, conv := range result.Results {
 			for _, p := range conv.FeaturedParticipants {
-				if p.IdentifierValue == phone || p.Contact.IdentifierValue == phone {
-					slog.Info("conversation_lookup_success",
+				// Comparación TOLERANTE al formato (utils.SamePhone): Bird puede devolver el
+				// identifierValue sin '+' o sin prefijo de país; la igualdad exacta fallaba y dejaba
+				// la escalación sin conversation_id ("empty conversation ID").
+				if utils.SamePhone(p.IdentifierValue, phone) || utils.SamePhone(p.Contact.IdentifierValue, phone) {
+					slog.Info(
+						"conversation_lookup_success",
 						"phone", utils.MaskPhone(phone),
 						"conversation_id", conv.ID,
 						"page", pages,
@@ -1436,7 +1444,8 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 		reqURL = baseURL + "&pageToken=" + result.NextPageToken
 	}
 
-	slog.Warn("conversation_lookup_not_found",
+	slog.Warn(
+		"conversation_lookup_not_found",
 		"phone", utils.MaskPhone(phone),
 		"pages_searched", pages,
 	)
@@ -1481,7 +1490,8 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 		} else {
 			// Verify the ID is still active via cache (populated by processMessage lookup)
 			if cached := c.GetCachedConversationID(phone); cached != "" && cached != conversationID {
-				slog.Info("escalation_conversation_id_refreshed",
+				slog.Info(
+					"escalation_conversation_id_refreshed",
 					"phone", utils.MaskPhone(phone),
 					"old", conversationID,
 					"new", cached,
@@ -1495,7 +1505,8 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 		return "", "", fmt.Errorf("empty conversation ID")
 	}
 
-	slog.Debug("escalate_to_agent_start",
+	slog.Debug(
+		"escalate_to_agent_start",
 		"conversation_id", conversationID,
 		"team_id", teamID,
 		"team_name", teamName,
@@ -1509,14 +1520,16 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 	// 2. List active agents; if none active, fall back to all agents (pick least loaded)
 	agents, err := c.ListActiveAgents()
 	if err != nil {
-		slog.Warn("list active agents failed, falling back to all agents",
+		slog.Warn(
+			"list active agents failed, falling back to all agents",
 			"conversation_id", conversationID,
 			"team_id", teamID,
 			"error", err,
 		)
 		agents, err = c.ListAllAgents()
 		if err != nil {
-			slog.Warn("list all agents failed, assigning to team only",
+			slog.Warn(
+				"list all agents failed, assigning to team only",
 				"conversation_id", conversationID,
 				"team_id", teamID,
 				"error", err,
@@ -1525,7 +1538,8 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 		}
 	}
 	if len(agents) == 0 {
-		slog.Warn("no agents found at all, assigning to team only",
+		slog.Warn(
+			"no agents found at all, assigning to team only",
 			"conversation_id", conversationID,
 			"team_id", teamID,
 		)
@@ -1535,7 +1549,8 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 	// 3. Pick least loaded agent in target team
 	agent := pickLeastLoadedAgent(agents, teamID)
 	if agent != nil {
-		slog.Info("agent assigned",
+		slog.Info(
+			"agent assigned",
 			"conversation_id", conversationID,
 			"agent_id", agent.ID,
 			"agent_name", agent.DisplayName,
@@ -1549,7 +1564,8 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 	if fallbackTeamID != "" && fallbackTeamID != teamID {
 		agent = pickLeastLoadedAgent(agents, fallbackTeamID)
 		if agent != nil {
-			slog.Info("agent assigned (fallback team)",
+			slog.Info(
+				"agent assigned (fallback team)",
 				"conversation_id", conversationID,
 				"agent_id", agent.ID,
 				"agent_name", agent.DisplayName,
@@ -1562,7 +1578,8 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 	}
 
 	// 5. Agents online but none available (all busy/away) — assign to team, they'll pick up when free
-	slog.Warn("no available agents, assigning to team only",
+	slog.Warn(
+		"no available agents, assigning to team only",
 		"conversation_id", conversationID,
 		"team_id", teamID,
 	)

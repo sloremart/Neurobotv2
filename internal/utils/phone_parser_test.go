@@ -54,3 +54,25 @@ func TestParseColombianPhone(t *testing.T) {
 		})
 	}
 }
+
+func TestSamePhone(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"+573001234567", "573001234567", true},          // con vs sin '+'
+		{"+573001234567", "3001234567", true},            // E.164 vs nacional (últimos 10)
+		{"573001234567", "3001234567", true},             // con país vs sin país
+		{"+57 300 123 4567", "+573001234567", true},      // espacios
+		{"whatsapp:+573001234567", "573001234567", true}, // prefijo de canal
+		{"+573001234567", "+573009999999", false},        // distintos
+		{"+573001234567", "", false},                     // vacío
+		{"", "", false},                                  // ambos vacíos
+		{"123", "456", false},                            // cortos y distintos
+	}
+	for _, c := range cases {
+		if got := SamePhone(c.a, c.b); got != c.want {
+			t.Errorf("SamePhone(%q,%q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

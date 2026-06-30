@@ -53,6 +53,26 @@ func onlyDigits(s string) string {
 	return strings.Join(digitRe.FindAllString(s, -1), "")
 }
 
+// SamePhone compara dos teléfonos de forma TOLERANTE al formato (con/sin '+', con/sin prefijo de país
+// '57', espacios, guiones o prefijos tipo 'whatsapp:'): compara solo dígitos y, si ambos tienen ≥10,
+// por los ÚLTIMOS 10 (el número nacional colombiano, único). Existe para el lookup de conversación en
+// Bird: comparar con igualdad exacta de string dejaba escalaciones sin conversation_id cuando Bird
+// devolvía el identificador en otro formato (p.ej. "573001234567" vs "+573001234567") → "empty
+// conversation ID". No colisiona entre pacientes distintos (el nacional de 10 dígitos es único).
+func SamePhone(a, b string) bool {
+	da, db := onlyDigits(a), onlyDigits(b)
+	if da == "" || db == "" {
+		return false
+	}
+	if da == db {
+		return true
+	}
+	if len(da) >= 10 && len(db) >= 10 {
+		return da[len(da)-10:] == db[len(db)-10:]
+	}
+	return false
+}
+
 // normalizeStrict acepta SOLO longitudes exactas de móvil colombiano: 10 dígitos (3XXXXXXXXX) o
 // 12 dígitos con prefijo "57". Cualquier otra longitud → "" (no se adivina).
 func normalizeStrict(digits string) string {

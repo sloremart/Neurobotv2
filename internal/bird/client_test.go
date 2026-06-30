@@ -692,6 +692,26 @@ func TestLookupConversationByPhone_Pagination(t *testing.T) {
 	}
 }
 
+// TestLookupConversationByPhone_PhoneFormatTolerant verifica el fix de "empty conversation ID":
+// Bird devuelve el identifierValue SIN '+' ("573001234567"); el lookup debe matchear igual contra
+// "+573001234567" por la comparación tolerante (utils.SamePhone), no por igualdad exacta de string.
+func TestLookupConversationByPhone_PhoneFormatTolerant(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"results":[{"id":"conv-noplus","featuredParticipants":[{"identifierValue":"573001234567"}]}]}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	convID, err := c.LookupConversationByPhone("+573001234567")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if convID != "conv-noplus" {
+		t.Errorf("expected conv-noplus (match tolerante sin '+'), got %q", convID)
+	}
+}
+
 func TestLookupConversationByPhone_EmptyPhone(t *testing.T) {
 	c := NewClientForTest("http://localhost")
 	convID, err := c.LookupConversationByPhone("")
