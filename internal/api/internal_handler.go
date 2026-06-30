@@ -321,8 +321,16 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 	distinctCitas := make(map[int]struct{})
 	evaluatedCitas := make(map[int]struct{})
 	badCitas := make(map[int]struct{})
+	// Dedupe del par (cita, CUPS): la fuente UNION ALL podría repetir el mismo par; sin dedupe se
+	// inflarían total_mal_cups/bot_cita_cups y la key de la tabla en la UI colisionaría.
+	seenPairs := make(map[string]struct{})
 	for _, c := range citas {
 		distinctCitas[c.CitaID] = struct{}{}
+		pairKey := fmt.Sprintf("%d|%s", c.CitaID, c.Cups)
+		if _, dup := seenPairs[pairKey]; dup {
+			continue
+		}
+		seenPairs[pairKey] = struct{}{}
 		allowed, err := h.cupsMedico.FindMedicosForCups(r.Context(), c.Cups)
 		if err != nil || len(allowed) == 0 {
 			continue // fail-open: CUPS sin médicos configurados no se evalúa
@@ -353,7 +361,7 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 		"evaluadas":           len(evaluatedCitas),
 		"evaluadas_cups":      checkedRows,
 		"bot_citas":           len(distinctCitas),
-		"bot_cita_cups":       len(citas),
+		"bot_cita_cups":       len(seenPairs),
 		"bot_user_configured": botConfigured,
 		"dias":                dias,
 	})
