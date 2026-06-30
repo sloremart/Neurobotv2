@@ -513,17 +513,32 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		return nil, fmt.Errorf("insert citas: %w", err)
 	}
 
-	// Claim slot with optimistic lock (AND IdCita IS NULL)
+	// Claim slot with optimistic lock (AND IdCita IS NULL).
+	// #7 (auditoría): se reclama el slot por agenda+fecha+hora, pero se EXIGE además que el slot sea
+	// del mismo médico de la cita (Medico = @p5) y que esté programado (SinProgramacion = 0), y se
+	// limita a UNA fila (TOP(1)). La invariante de SIESA es citas.cod_medi = pmd.Medico; hoy cada
+	// agenda es 1:1 con un médico (verificado: 0/601 agendas mezclan médicos), así que esto no cambia
+	// el comportamiento actual, pero blinda a nivel BD contra agendas compartidas o drift futuros
+	// (evita marcar el slot de OTRO médico). El UPDATE ... FROM con subconsulta TOP(1) ORDER BY Fecha
+	// asegura determinismo si la rejilla tuviera dos filas al mismo HH:MM.
 	result, err := tx.ExecContext(
 		ctx, `
-	UPDATE programacion_medico_detalle
-	SET IdCita = @p1
-	WHERE IdProgramacionMedico = @p2
-	  AND Fecha >= @p3 AND Fecha < DATEADD(DAY, 1, @p3)
-	  AND CONVERT(VARCHAR(5), Fecha, 108) = @p4
-	  AND IdCita IS NULL
-	  AND Bloqueado = 0`,
-		newID, input.AgendaID, fecha, hora,
+	UPDATE pmd
+	SET pmd.IdCita = @p1
+	FROM programacion_medico_detalle pmd
+	JOIN (
+	    SELECT TOP (1) Id
+	    FROM programacion_medico_detalle
+	    WHERE IdProgramacionMedico = @p2
+	      AND Fecha >= @p3 AND Fecha < DATEADD(DAY, 1, @p3)
+	      AND CONVERT(VARCHAR(5), Fecha, 108) = @p4
+	      AND Medico = @p5
+	      AND IdCita IS NULL
+	      AND Bloqueado = 0
+	      AND SinProgramacion = 0
+	    ORDER BY Fecha
+	) pick ON pick.Id = pmd.Id`,
+		newID, input.AgendaID, fecha, hora, doctorCodeInt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update pmd: %w", err)
@@ -543,19 +558,22 @@ func (r *AppointmentRepo) Create(ctx context.Context, input domain.CreateAppoint
 		// H2 (auditoría): la ventana se acota al MISMO día (Fecha < medianoche siguiente). Antes solo
 		// exigía Fecha >= start sin cota superior, así que reservar cerca del fin del día tomaba filas
 		// libres del día SIGUIENTE (mañana) marcándolas con "éxito" silencioso.
+		// #24 (auditoría): la ventana se restringe también al MISMO médico (Medico = @p5), igual que el
+		// claim principal — defensa en profundidad para la invariante citas.cod_medi = pmd.Medico.
 		extra, err := tx.ExecContext(ctx, `
 		WITH win AS (
 		    SELECT TOP (@p3) Id
 		    FROM programacion_medico_detalle
 		    WHERE IdProgramacionMedico = @p2
 		      AND Fecha >= @p4 AND Fecha < DATEADD(DAY, 1, CAST(@p4 AS DATE))
+		      AND Medico = @p5
 		    ORDER BY Fecha
 		)
 		UPDATE pmd SET IdCita = @p1
 		FROM programacion_medico_detalle pmd
 		JOIN win ON win.Id = pmd.Id
 		WHERE pmd.IdCita IS NULL AND pmd.Bloqueado = 0 AND pmd.SinProgramacion = 0`,
-			newID, input.AgendaID, input.Espacios, start)
+			newID, input.AgendaID, input.Espacios, start, doctorCodeInt)
 		if err != nil {
 			return nil, fmt.Errorf("claim consecutive slots: %w", err)
 		}
