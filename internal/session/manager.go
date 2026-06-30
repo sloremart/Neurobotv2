@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -12,6 +13,11 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
+
+// ErrActiveSessionExists lo devuelve Create cuando el índice único uq_active_phone (migración 032)
+// rechaza una segunda sesión activa/escalada para el mismo teléfono. FindOrCreate lo maneja re-leyendo
+// la sesión ganadora (cierra el race M3 worker↔NotificationManager sin compartir candado).
+var ErrActiveSessionExists = errors.New("active session already exists for phone")
 
 // SessionRepo define la interfaz que necesita el manager (implementada por local.SessionRepo)
 type SessionRepo interface {
@@ -121,6 +127,19 @@ func (m *SessionManager) FindOrCreate(ctx context.Context, phone string) (*Sessi
 	}
 
 	if err := m.repo.Create(ctx, newSession); err != nil {
+		// M3: otra ruta (worker/NotificationManager) creó la sesión activa de este teléfono entre nuestro
+		// FindActiveByPhone y el Create (índice único uq_active_phone). Re-leemos la ganadora en vez de
+		// duplicar — así nunca quedan dos sesiones activas para el mismo teléfono.
+		if errors.Is(err, ErrActiveSessionExists) {
+			if existing, ferr := m.repo.FindActiveByPhone(ctx, phone); ferr == nil && existing != nil {
+				ctxMap, cerr := m.repo.GetAllContext(ctx, existing.ID)
+				if cerr != nil {
+					return nil, false, cerr
+				}
+				existing.Context = ctxMap
+				return existing, false, nil
+			}
+		}
 		return nil, false, err
 	}
 

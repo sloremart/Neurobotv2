@@ -3,12 +3,18 @@ package local
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/neuro-bot/neuro-bot/internal/session"
 )
+
+// mysqlErrDupEntry es el código de error de MySQL para violación de clave única (1062).
+const mysqlErrDupEntry = 1062
 
 type SessionRepo struct {
 	db *sql.DB
@@ -112,6 +118,12 @@ func (r *SessionRepo) Create(ctx context.Context, s *session.Session) error {
 		s.RetryCount, s.ExpiresAt,
 	)
 	if err != nil {
+		// M3: el índice único uq_active_phone (migración 032) rechazó una segunda sesión activa para el
+		// mismo teléfono → sentinel para que FindOrCreate re-lea la ganadora en vez de duplicar.
+		var myErr *mysql.MySQLError
+		if errors.As(err, &myErr) && myErr.Number == mysqlErrDupEntry {
+			return session.ErrActiveSessionExists
+		}
 		return fmt.Errorf("create session: %w", err)
 	}
 	return nil

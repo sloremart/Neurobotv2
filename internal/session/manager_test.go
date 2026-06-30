@@ -957,3 +957,40 @@ func TestComplete_NonEscalatedNoClose(t *testing.T) {
 		t.Errorf("expected no Close for non-escalated session, got %d", rec.closeN)
 	}
 }
+
+// M3: si Create choca con el índice único (otra ruta creó la activa primero), FindOrCreate debe
+// re-leer la sesión ganadora en vez de duplicar o fallar.
+func TestFindOrCreate_DuplicateActive_RereadsWinner(t *testing.T) {
+	winner := &Session{ID: "winner", PhoneNumber: "+573001112233", Status: StatusActive}
+	findCalls := 0
+	repo := &mockRepo{
+		findActiveByPhoneFn: func(_ context.Context, _ string) (*Session, error) {
+			findCalls++
+			if findCalls == 1 {
+				return nil, nil // 1ª: no hay activa → se intenta crear
+			}
+			return winner, nil // tras el 1062: ya existe la ganadora
+		},
+		createFn: func(_ context.Context, _ *Session) error {
+			return ErrActiveSessionExists // otra ruta ganó el race
+		},
+		getAllContextFn: func(_ context.Context, _ string) (map[string]string, error) {
+			return map[string]string{"k": "v"}, nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+
+	s, isNew, err := mgr.FindOrCreate(context.Background(), "+573001112233")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if isNew {
+		t.Error("expected isNew=false (re-leyó la ganadora, no creó)")
+	}
+	if s == nil || s.ID != "winner" {
+		t.Errorf("expected winner session, got %+v", s)
+	}
+	if s != nil && s.Context["k"] != "v" {
+		t.Error("expected context cargado de la ganadora")
+	}
+}
