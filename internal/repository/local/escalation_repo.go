@@ -80,3 +80,19 @@ func (r *EscalationRepo) Expire(ctx context.Context, sessionID string) error {
 	}
 	return nil
 }
+
+// NoShow marca la escalación abierta como NO atendida por el agente: el agente nunca respondió
+// (first_agent_msg_at IS NULL) tras agotar los recordatorios, así que el bot la devuelve al paciente.
+// outcome='agent_no_show' es un terminal DISTINTO de 'expired' (abandono del paciente) y de 'returned'
+// (devuelta por el agente): mide el incumplimiento de SLA del agente. resumed_at se sella porque la
+// conversación vuelve al bot.
+func (r *EscalationRepo) NoShow(ctx context.Context, sessionID string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE escalations SET outcome = 'agent_no_show', resumed_at = NOW()
+		 WHERE session_id = ? AND outcome IS NULL
+		 ORDER BY escalated_at DESC LIMIT 1`, sessionID)
+	if err != nil {
+		return fmt.Errorf("escalation no-show: %w", err)
+	}
+	return nil
+}

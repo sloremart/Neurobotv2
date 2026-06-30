@@ -40,6 +40,47 @@ func countSent(s *mockMessageSender, msgType string) int {
 	return n
 }
 
+// TestAgentCommand_NoShow_ReturnsToBot (BUG agent no-show): el comando 'no_show' devuelve la sesión al
+// bot vía ResumeFromEscalationNoShow, avisa al paciente y re-promptea el paso.
+func TestAgentCommand_NoShow_ReturnsToBot(t *testing.T) {
+	pool, sm, sender, sess := escalatedPool(t)
+	sess.Context["pre_escalation_state"] = "ASK_DOCUMENT"
+	noShowResumed := ""
+	sm.resumeNoShowFn = func(_ context.Context, s *session.Session, target string) error {
+		noShowResumed = target
+		s.Status = session.StatusActive
+		s.CurrentState = target
+		return nil
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "no_show", Phone: "+573001234567"})
+
+	if noShowResumed != "ASK_DOCUMENT" {
+		t.Fatalf("esperaba ResumeFromEscalationNoShow a ASK_DOCUMENT, got %q", noShowResumed)
+	}
+	if countSent(sender, "text") < 1 {
+		t.Errorf("esperaba aviso de no-show al paciente, got %d mensajes text", countSent(sender, "text"))
+	}
+}
+
+// TestAgentCommand_NoShow_SkipsIfNotEscalated: guard de idempotencia — si la sesión ya no está escalada
+// (el agente respondió, o ya se procesó otro no_show), no re-promptea de nuevo.
+func TestAgentCommand_NoShow_SkipsIfNotEscalated(t *testing.T) {
+	pool, sm, sender, sess := escalatedPool(t)
+	sess.Status = session.StatusActive // ya no escalada
+	called := false
+	sm.resumeNoShowFn = func(_ context.Context, _ *session.Session, _ string) error { called = true; return nil }
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "no_show", Phone: "+573001234567"})
+
+	if called {
+		t.Error("no debe reanudar si la sesión ya no está escalada")
+	}
+	if countSent(sender, "text") != 0 {
+		t.Errorf("no debe enviar mensajes si se omite, got %d", countSent(sender, "text"))
+	}
+}
+
 func TestAgentCommand_Close(t *testing.T) {
 	pool, sm, sender, _ := escalatedPool(t)
 	completeCalled := false

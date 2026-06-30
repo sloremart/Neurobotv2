@@ -126,6 +126,7 @@ var catalog = map[string]stepSpec{
 	"escalacion/agent_closed":        {LvOutcome, "ok", ""},
 	"escalacion/agent_reminder_sent": {LvMilestone, "retry", ""},
 	"escalacion/escalation_expired":  {LvOutcome, "info", ""},
+	"escalacion/agent_no_show":       {LvOutcome, "no_show", ""}, // agente nunca atendió → bot retoma
 
 	// Tareas del scheduler (§3A) — trace task:<name>:<date>
 	"scheduler/task_completed": {LvOutcome, "ok", ""},

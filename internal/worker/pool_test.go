@@ -29,6 +29,7 @@ type mockSessionMgmt struct {
 	clearAllFn     func(ctx context.Context, sess *session.Session) error
 	escalateFn     func(ctx context.Context, sess *session.Session, teamID string) error
 	resumeFn       func(ctx context.Context, sess *session.Session, targetState string) error
+	resumeNoShowFn func(ctx context.Context, sess *session.Session, targetState string) error
 	completeFn     func(ctx context.Context, sess *session.Session) error
 }
 
@@ -92,6 +93,15 @@ func (m *mockSessionMgmt) Escalate(ctx context.Context, sess *session.Session, t
 func (m *mockSessionMgmt) ResumeFromEscalation(ctx context.Context, sess *session.Session, targetState string) error {
 	if m.resumeFn != nil {
 		return m.resumeFn(ctx, sess, targetState)
+	}
+	sess.Status = session.StatusActive
+	sess.CurrentState = targetState
+	return nil
+}
+
+func (m *mockSessionMgmt) ResumeFromEscalationNoShow(ctx context.Context, sess *session.Session, targetState string) error {
+	if m.resumeNoShowFn != nil {
+		return m.resumeNoShowFn(ctx, sess, targetState)
 	}
 	sess.Status = session.StatusActive
 	sess.CurrentState = targetState

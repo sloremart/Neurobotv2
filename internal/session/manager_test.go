@@ -941,7 +941,7 @@ func TestStartInactivityChecker_ContextCancellation(t *testing.T) {
 // --- Escalation recorder wiring (tabla escalations) ---
 
 type mockEscalationRecorder struct {
-	touch, resume, closeN, expire int
+	touch, resume, closeN, expire, noShow int
 }
 
 func (m *mockEscalationRecorder) TouchAgent(_ context.Context, _ string) error { m.touch++; return nil }
@@ -951,6 +951,106 @@ func (m *mockEscalationRecorder) Resume(_ context.Context, _ string) error { m.r
 func (m *mockEscalationRecorder) Close(_ context.Context, _ string) error { m.closeN++; return nil }
 
 func (m *mockEscalationRecorder) Expire(_ context.Context, _ string) error { m.expire++; return nil }
+
+func (m *mockEscalationRecorder) NoShow(_ context.Context, _ string) error { m.noShow++; return nil }
+
+type mockResumer struct{ phones []string }
+
+func (m *mockResumer) ResumeEscalationNoShow(phone string) { m.phones = append(m.phones, phone) }
+
+// TestCheckEscalatedSessions_AgentNoShow_ReturnsToBot: el agente NUNCA respondió y se agotó la ventana
+// de recordatorios → se devuelve al bot (resumer) y NO se cierra como abandono del paciente.
+func TestCheckEscalatedSessions_AgentNoShow_ReturnsToBot(t *testing.T) {
+	var abandoned bool
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-70 * time.Minute), // > 60 = AgentReminderMin*(Max+1)=15*4
+				LastAgentMsg:   nil,                               // agente nunca respondió
+				RemindersSent:  3,
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, _ string) error { abandoned = true; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	resumer := &mockResumer{}
+	deps := escalationDeps(&mockInactivityBird{})
+	deps.Resumer = resumer
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if len(resumer.phones) != 1 || resumer.phones[0] != "+57300" {
+		t.Fatalf("esperaba ResumeEscalationNoShow(+57300), got %v", resumer.phones)
+	}
+	if abandoned {
+		t.Error("NO debe marcar abandono: el agente nunca atendió (es no-show)")
+	}
+}
+
+// TestCheckEscalatedSessions_ClosesWhenAgentEngaged: si el agente YA atendió y el paciente lleva >2h
+// en silencio, SÍ se cierra como abandono (escalation_expired), no como no-show.
+func TestCheckEscalatedSessions_ClosesWhenAgentEngaged(t *testing.T) {
+	agentReplied := time.Now().Add(-100 * time.Minute)
+	var abandoned bool
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-130 * time.Minute), // > EscalationCloseMin (120)
+				LastAgentMsg:   &agentReplied,                      // el agente SÍ atendió
+				RemindersSent:  1,
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, _ string) error { abandoned = true; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	resumer := &mockResumer{}
+	deps := escalationDeps(&mockInactivityBird{})
+	deps.Resumer = resumer
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if !abandoned {
+		t.Error("debe cerrar como abandono cuando el agente atendió y el paciente lleva >2h en silencio")
+	}
+	if rec.expire != 1 {
+		t.Errorf("esperaba 1 Expire, got %d", rec.expire)
+	}
+	if len(resumer.phones) != 0 {
+		t.Errorf("no debe disparar no-show cuando el agente atendió, got %v", resumer.phones)
+	}
+}
+
+// TestCheckEscalatedSessions_NoShowFallbackClosesWithoutResumer: sin resumer, el no-show no puede actuar;
+// para no fugar la sesión, a las 2h se cierra igual aunque el agente nunca atendió (fallback defensivo).
+func TestCheckEscalatedSessions_NoShowFallbackClosesWithoutResumer(t *testing.T) {
+	var abandoned bool
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-130 * time.Minute),
+				LastAgentMsg:   nil,
+				RemindersSent:  3,
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, _ string) error { abandoned = true; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.SetEscalationRecorder(&mockEscalationRecorder{})
+	deps := escalationDeps(&mockInactivityBird{}) // sin Resumer (nil)
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if !abandoned {
+		t.Error("sin resumer, a las 2h debe cerrar igual para no fugar la sesión")
+	}
+}
 
 func TestTouchAgentActivity_RecordsEscalation(t *testing.T) {
 	mgr := NewSessionManager(&mockRepo{}, 120)

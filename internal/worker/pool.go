@@ -57,6 +57,7 @@ type SessionManagement interface {
 	ClearAllContext(ctx context.Context, sess *session.Session) error
 	Escalate(ctx context.Context, sess *session.Session, teamID string) error
 	ResumeFromEscalation(ctx context.Context, sess *session.Session, targetState string) error
+	ResumeFromEscalationNoShow(ctx context.Context, sess *session.Session, targetState string) error
 	Complete(ctx context.Context, sess *session.Session) error
 	UpdateConversationID(ctx context.Context, phone, conversationID string) error
 	SetContext(ctx context.Context, sess *session.Session, key, value string) error
@@ -677,7 +678,72 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 
 	case "cups":
 		p.handleAgentCups(parentCtx, sess, cmd)
+
+	case "no_show":
+		p.handleAgentNoShow(parentCtx, sess)
 	}
+}
+
+// ResumeEscalationNoShow implementa session.EscalationResumer: lo invoca el checker de escalaciones
+// cuando una escalación agotó los recordatorios sin que el agente respondiera. Encola un comando
+// 'no_show' para que el worker (que tiene la state machine) reanude al bot y re-promptee el paso.
+func (p *MessageWorkerPool) ResumeEscalationNoShow(phone string) {
+	p.EnqueueAgentCommand(AgentCommand{Action: "no_show", Phone: phone})
+}
+
+// handleAgentNoShow devuelve al bot una escalación NO atendida por el agente: reanuda en el
+// pre_escalation_state, re-promptea el paso al paciente, libera el feed item y marca 'agent_no_show'
+// (métrica del agente). Análogo a handleAgentResume sin-dato, pero con outcome no-show y mensaje propio.
+func (p *MessageWorkerPool) handleAgentNoShow(ctx context.Context, sess *session.Session) {
+	// Guard de idempotencia: si entre el encolado y aquí la sesión dejó de estar escalada (el agente
+	// respondió, o ya se procesó otro no_show), no re-promptear de nuevo.
+	if sess.Status != session.StatusEscalated {
+		return
+	}
+
+	targetState := sess.GetContext("pre_escalation_state")
+	if targetState == "" {
+		targetState = statemachine.StateGreeting
+	}
+
+	// Reanuda la sesión marcando la escalación como 'agent_no_show' (no 'returned').
+	if err := p.sessionManager.ResumeFromEscalationNoShow(ctx, sess, targetState); err != nil {
+		slog.Error("no_show resume failed", "error", err, "phone", utils.MaskPhone(sess.PhoneNumber), "session_id", sess.ID)
+		return
+	}
+
+	// El bot retoma: liberar el feed item en Bird (mantener abierto, sin agente).
+	if err := p.birdClient.UnassignFeedItem(sess.ConversationID, false); err != nil {
+		slog.Warn("no_show unassign feed item failed", "error", err, "conversation_id", sess.ConversationID)
+	}
+
+	// Avisar al paciente y re-promptear el paso (virtual __resume__ → la state machine re-muestra el prompt).
+	if _, err := p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
+		"No pudimos conectarte con un agente en este momento. Sigamos por aquí para continuar tu solicitud."); err != nil {
+		slog.Warn("no_show patient notice failed", "error", err, "phone", utils.MaskPhone(sess.PhoneNumber))
+	}
+	virtualMsg := bird.InboundMessage{
+		ID:          fmt.Sprintf("no-show-%s-%d", sess.PhoneNumber, time.Now().UnixNano()),
+		Phone:       sess.PhoneNumber,
+		Text:        "__resume__",
+		MessageType: "text",
+		ReceivedAt:  time.Now(),
+	}
+	if result, err := p.machine.Process(ctx, sess, virtualMsg); err != nil {
+		slog.Error("no_show re-prompt failed", "error", err, "phone", utils.MaskPhone(sess.PhoneNumber), "session_id", sess.ID)
+	} else if result != nil {
+		p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
+	}
+
+	if p.tracker != nil {
+		p.tracker.LogEvent(ctx, sess.ID, sess.PhoneNumber, "escalation_agent_no_show", map[string]interface{}{
+			"resumed_at_state": targetState,
+		})
+	}
+	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "agent_no_show",
+		observability.EmitOpts{Phone: sess.PhoneNumber})
+	slog.Info("escalation returned to bot (agent no-show)",
+		"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "state", targetState)
 }
 
 // handleAgentResume resumes a session from escalation at a specific state, optionally with corrected data.

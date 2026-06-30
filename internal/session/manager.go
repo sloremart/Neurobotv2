@@ -70,6 +70,9 @@ type InactivityDeps struct {
 	EscalationCloseMin int // Cierre por silencio del PACIENTE (no del agente)
 	AgentReminderMin   int // Minutos sin respuesta del agente antes de recordarle
 	AgentReminderMax   int // Máximo de recordatorios por ventana de espera
+	// Resumer devuelve al bot las escalaciones no atendidas por el agente (no-show). nil = no actúa
+	// (en ese caso el no-show no se procesa y la escalación sigue hasta el cierre por silencio).
+	Resumer EscalationResumer
 }
 
 // EscalationRecorder registra el ciclo de vida de cada escalación en la tabla `escalations`
@@ -79,6 +82,14 @@ type EscalationRecorder interface {
 	Resume(ctx context.Context, phone string) error
 	Close(ctx context.Context, phone string) error
 	Expire(ctx context.Context, sessionID string) error
+	NoShow(ctx context.Context, sessionID string) error // agente nunca atendió → bot retoma
+}
+
+// EscalationResumer devuelve al bot una escalación que el agente NUNCA atendió (no-show): reanuda la
+// sesión en su pre_escalation_state y re-muestra el paso al paciente. Lo implementa el worker (necesita
+// la state machine para re-promptear); el checker de escalaciones lo invoca. Opcional (nil = no actúa).
+type EscalationResumer interface {
+	ResumeEscalationNoShow(phone string)
 }
 
 type SessionManager struct {
@@ -273,6 +284,23 @@ func (m *SessionManager) ResumeFromEscalation(ctx context.Context, s *Session, t
 	return m.repo.ResumeSession(ctx, s.ID, targetState, int(m.timeout.Minutes()))
 }
 
+// ResumeFromEscalationNoShow reanuda igual que ResumeFromEscalation pero marca la escalación como
+// 'agent_no_show' (el agente nunca atendió), no como 'returned'. Lo usa el worker al devolver al bot
+// una escalación que agotó los recordatorios sin respuesta del agente.
+func (m *SessionManager) ResumeFromEscalationNoShow(ctx context.Context, s *Session, targetState string) error {
+	s.Status = StatusActive
+	s.CurrentState = targetState
+	now := time.Now()
+	s.ResumedAt = &now
+	s.ExpiresAt = now.Add(m.timeout)
+	if m.escalations != nil {
+		if err := m.escalations.NoShow(ctx, s.ID); err != nil {
+			slog.Warn("escalation no-show mark failed", "error", err)
+		}
+	}
+	return m.repo.ResumeSession(ctx, s.ID, targetState, int(m.timeout.Minutes()))
+}
+
 // UpdateConversationID persiste el conversationID en la sesión activa/escalada del teléfono.
 // H2: hace un UPDATE DIRIGIDO de solo esa columna (no FindActiveByPhone + Save de la fila completa).
 // El viejo enfoque corría desde el webhook outbound FUERA del phone-lock y, al reescribir toda la
@@ -389,9 +417,26 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 	now := time.Now()
 	for _, s := range sessions {
 		patientSilent := now.Sub(s.LastPatientMsg)
+		agentEverReplied := s.LastAgentMsg != nil
 
-		// (1) Cierre por silencio del paciente.
-		if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute {
+		// (0) Agente NO-SHOW: el agente NUNCA respondió y ya pasó la ventana de recordatorios
+		// (AgentReminderMin*(Max+1) = 15 min tras el último recordatorio). NO es abandono del paciente
+		// (estaba esperando una respuesta que no llegó) → se DEVUELVE al bot en su paso (el worker
+		// re-promptea) y se marca 'agent_no_show' para la métrica del agente. Requiere el resumer.
+		if !agentEverReplied && deps.Resumer != nil && deps.AgentReminderMin > 0 &&
+			patientSilent >= time.Duration(deps.AgentReminderMin*(deps.AgentReminderMax+1))*time.Minute {
+			deps.Resumer.ResumeEscalationNoShow(s.PhoneNumber)
+			slog.Info("escalation no-show: agente nunca atendió, devolviendo al bot",
+				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
+				"patient_silent_min", int(patientSilent.Minutes()), "reminders_sent", s.RemindersSent)
+			continue
+		}
+
+		// (1) Cierre por silencio del PACIENTE — solo si el agente YA atendió al menos una vez. Si el
+		// agente nunca atendió, lo maneja (0) no-show; el fallback (sin resumer) cierra igual para no
+		// fugar la sesión.
+		if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute &&
+			(agentEverReplied || deps.Resumer == nil) {
 			if err := m.repo.MarkAbandoned(ctx, s.ID); err != nil {
 				slog.Error("mark escalated abandoned failed", "session_id", s.ID, "error", err)
 				continue

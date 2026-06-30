@@ -254,19 +254,6 @@ func main() {
 		safeGo("notification-expiry", func() { notifyManager.StartExpirationChecker(ctx) })
 	}
 
-	// Fase 20: Inactivity checker (single reminder + silent close for active, expire for escalated)
-	safeGo("inactivity-checker", func() {
-		sessionManager.StartInactivityChecker(ctx, session.InactivityDeps{
-			BirdClient:         birdClient,
-			Tracker:            tracker,
-			ReminderMin:        cfg.InactivityReminderMin,
-			CloseMin:           cfg.InactivityCloseMin,
-			EscalationCloseMin: cfg.EscalationPatientCloseMin,
-			AgentReminderMin:   cfg.EscalationAgentReminderMin,
-			AgentReminderMax:   cfg.EscalationAgentReminderMax,
-		})
-	})
-
 	// Message inbox (WAL for crash recovery)
 	inboxRepo := localrepo.NewInboxRepo(localDB)
 
@@ -281,6 +268,22 @@ func main() {
 		workerPool.SetNotifyResponder(notifyManager)
 	}
 	workerPool.Start(ctx)
+
+	// Fase 20: Inactivity checker (single reminder + silent close for active, expire for escalated).
+	// Va DESPUÉS del worker pool porque le inyecta el Resumer (workerPool) para el no-show de escalación
+	// (devolver al bot las escalaciones que el agente nunca atendió — necesita la state machine del worker).
+	safeGo("inactivity-checker", func() {
+		sessionManager.StartInactivityChecker(ctx, session.InactivityDeps{
+			BirdClient:         birdClient,
+			Tracker:            tracker,
+			ReminderMin:        cfg.InactivityReminderMin,
+			CloseMin:           cfg.InactivityCloseMin,
+			EscalationCloseMin: cfg.EscalationPatientCloseMin,
+			AgentReminderMin:   cfg.EscalationAgentReminderMin,
+			AgentReminderMax:   cfg.EscalationAgentReminderMax,
+			Resumer:            workerPool,
+		})
+	})
 
 	// Capacity monitor — sends Telegram alerts when approaching limits
 	capMon := monitor.New(monitor.Config{
