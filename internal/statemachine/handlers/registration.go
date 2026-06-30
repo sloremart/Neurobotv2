@@ -954,8 +954,7 @@ func buildRegistrationSummary(sess *session.Session) string {
 			"Email: %s\n\n"+
 			"*Afiliación*\n"+
 			"Entidad: %s\n"+
-			"Tipo usuario: %s\n"+
-			"Afiliación: %s\n\n"+
+			"Tipo usuario: %s\n\n"+
 			"*Dirección*\n"+
 			"Municipio: %s\n"+
 			"Zona: %s\n"+
@@ -973,7 +972,6 @@ func buildRegistrationSummary(sess *session.Session) string {
 		formatOptional(sess.GetContext("reg_email")),
 		entityDisplay,
 		formatUserType(sess.GetContext("reg_user_type")),
-		formatAffiliation(sess.GetContext("reg_affiliation_type")),
 		formatMunicipality(sess.GetContext("reg_municipality"), sess.GetContext("reg_municipality_name")),
 		formatZone(sess.GetContext("reg_zone")),
 		sess.GetContext("reg_address"),
@@ -1060,14 +1058,6 @@ func formatMaritalStatus(id string) string {
 	return id
 }
 
-// affiliationLabels maps TipoAfiliado catalog IDs to display labels.
-var affiliationLabels = map[string]string{
-	"1": "Cotizante",
-	"2": "Beneficiario",
-	"3": "Sustituto de pensión",
-	"4": "Pensionado",
-}
-
 // affiliationTypeValues returns the valid payloads (TipoAfiliado catalog IDs).
 func affiliationTypeValues() []string {
 	return []string{"1", "2", "3", "4"}
@@ -1081,13 +1071,6 @@ func affiliationTypeListRows() []sm.ListRow {
 		{ID: "3", Title: "Sustituto de pensión"},
 		{ID: "4", Title: "Pensionado"},
 	}
-}
-
-func formatAffiliation(id string) string {
-	if label, ok := affiliationLabels[id]; ok {
-		return label
-	}
-	return id
 }
 
 // userTypeLabels maps numeric user type IDs to display labels.
