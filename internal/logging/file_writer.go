@@ -49,6 +49,9 @@ func (w *DailyFileWriter) Write(p []byte) (int, error) {
 		if err := w.rotateLocked(today); err != nil {
 			return 0, err
 		}
+		// #32 (auditoría): limpiar logs viejos en cada rotación diaria, no solo al arranque (en procesos
+		// longevos, sin esto crecían sin límite). Async para no sostener el lock.
+		go w.cleanup()
 	}
 	return w.current.Write(p)
 }

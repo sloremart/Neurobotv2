@@ -1178,8 +1178,11 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 		http.Error(w, "new_date must be YYYY-MM-DD format", http.StatusBadRequest)
 		return
 	}
-	today := time.Now().Truncate(24 * time.Hour)
-	if newDate.Before(today) {
+	// #30 (auditoría): comparar contra HOY en hora de Colombia (UTC-5, sin DST). Truncate(24h) usa
+	// medianoche UTC, así que de tarde/noche en Colombia daba "mañana" y rechazaba un new_date de hoy.
+	bogota := time.FixedZone("America/Bogota", -5*3600)
+	todayCO, _ := time.Parse("2006-01-02", time.Now().In(bogota).Format("2006-01-02"))
+	if newDate.Before(todayCO) {
 		http.Error(w, "new_date must be today or later", http.StatusBadRequest)
 		return
 	}

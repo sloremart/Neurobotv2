@@ -128,7 +128,14 @@ func TestShowSlots_Selection(t *testing.T) {
 }
 
 func TestShowSlots_MoreSlots(t *testing.T) {
-	slots := sampleSlots()
+	// "Ver más" solo se ofrece con >=5 slots (#17): se arman 5 y se elige la opción 6 (len+1).
+	slots := make([]services.AvailableSlot, 5)
+	for i := range slots {
+		slots[i] = services.AvailableSlot{
+			TimeSlot: fmt.Sprintf("2026032010%02d", i), Date: "2026-03-20",
+			TimeDisplay: fmt.Sprintf("1%d:00", i), DoctorName: "Garcia", DoctorDoc: "DOC001", AgendaID: 1, Duration: 30,
+		}
+	}
 
 	m := sm.NewMachine()
 	m.Register(sm.StateShowSlots, showSlotsHandler(nil))
@@ -136,13 +143,30 @@ func TestShowSlots_MoreSlots(t *testing.T) {
 	sess := testSess(sm.StateShowSlots)
 	sess.Context["available_slots_json"] = slotsJSON(slots)
 
-	// "Ver más" = slot count + 1 = option "2" (1 slot available)
-	result, err := m.Process(context.Background(), sess, textM("2"))
+	// "Ver más" = slot count + 1 = option "6" (5 slots → se ofrece "Ver más")
+	result, err := m.Process(context.Background(), sess, textM("6"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.NextState != sm.StateSearchSlots {
 		t.Errorf("expected SEARCH_SLOTS for more_slots, got %s", result.NextState)
+	}
+}
+
+// #17: con <5 slots no se ofrece "Ver más", así que la opción len+1 debe ser inválida.
+func TestShowSlots_MoreNotOfferedBelow5(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateShowSlots, showSlotsHandler(nil))
+
+	sess := testSess(sm.StateShowSlots)
+	sess.Context["available_slots_json"] = slotsJSON(sampleSlots()) // 1 slot
+
+	result, err := m.Process(context.Background(), sess, textM("2")) // len+1 = 2, no ofrecido
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sess.CurrentState {
+		t.Errorf("expected to stay in %s (opción inválida), got %s", sess.CurrentState, result.NextState)
 	}
 }
 

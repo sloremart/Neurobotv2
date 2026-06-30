@@ -537,22 +537,25 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 		slog.Debug("show_slots_parsed", "slots_count", len(slots), "option_num", optionNum)
 
 		// Check if user wants "Ver más"
-		if optionNum == len(slots)+1 {
-			if len(slots) > 0 {
-				lastSlot := slots[len(slots)-1]
-				return sm.NewResult(sm.StateSearchSlots).
-					WithContext("slots_after_date", lastSlot.Date).
-					WithClearCtx("available_slots_json").
-					WithEvent("more_slots_requested", nil), nil
-			}
+		// #17 (auditoría): "Ver más" (opción N+1) solo es válida si se ofreció — y solo se ofrece con
+		// len(slots) >= 5 (ver línea ~445). Con menos, N+1 es una opción inválida, no "ver más".
+		moreOffered := len(slots) >= 5
+		if moreOffered && optionNum == len(slots)+1 {
+			lastSlot := slots[len(slots)-1]
 			return sm.NewResult(sm.StateSearchSlots).
-				WithClearCtx("available_slots_json"), nil
+				WithContext("slots_after_date", lastSlot.Date).
+				WithClearCtx("available_slots_json").
+				WithEvent("more_slots_requested", nil), nil
 		}
 
 		// Validate selection
-		if optionNum > len(slots) {
+		maxOption := len(slots)
+		if moreOffered {
+			maxOption = len(slots) + 1
+		}
+		if optionNum > maxOption {
 			return sm.NewResult(sess.CurrentState).
-				WithText(fmt.Sprintf("Opción inválida. Por favor escribe un número entre 1 y %d", len(slots)+1)), nil
+				WithText(fmt.Sprintf("Opción inválida. Por favor escribe un número entre 1 y %d", maxOption)), nil
 		}
 
 		// Get selected slot (convert 1-based to 0-based index)
