@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	mssql "github.com/microsoft/go-mssqldb"
@@ -60,6 +61,12 @@ type AppointmentRepo struct {
 	// de automatización (ver defaultSiesaBotCedula / defaultSiesaBotUserID).
 	assignCedula string
 	botUserID    int
+
+	// #33 (auditoría): las escrituras de log_citas son fire-and-forget (goroutines detached con
+	// context.WithoutCancel) y tocan la BD. bgWG las rastrea para que el apagado pueda esperarlas
+	// (WaitBackground) ANTES de cerrar el pool — si no, una auditoría en vuelo veía "sql: database is
+	// closed". Best-effort: si no terminan dentro del timeout, el apagado continúa igual.
+	bgWG sync.WaitGroup
 }
 
 // NewAppointmentRepo construye el repo. assignCedula y botUserID definen la identidad del bot en
@@ -72,6 +79,23 @@ func NewAppointmentRepo(db *sql.DB, assignCedula string, botUserID int) *Appoint
 		botUserID = defaultSiesaBotUserID
 	}
 	return &AppointmentRepo{db: db, assignCedula: assignCedula, botUserID: botUserID}
+}
+
+// WaitBackground espera (hasta timeout) a que terminen las escrituras de auditoría fire-and-forget en
+// vuelo (#33). Se llama en el apagado ANTES de cerrar el pool de BD, para que una auditoría a medio
+// camino no falle con "sql: database is closed". Best-effort: si vence el timeout, retorna igual y el
+// apagado continúa (la auditoría es best-effort; la cita ya está committeada).
+func (r *AppointmentRepo) WaitBackground(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		r.bgWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("apagado: timeout esperando auditorías SIESA en vuelo", "timeout", timeout)
+	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -875,7 +899,9 @@ func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs str
 	// request (context.WithoutCancel → no se cancela cuando la petición termina) y timeout
 	// propio. recover() evita que un fallo del INSERT tumbe el proceso.
 	bgCtx := context.WithoutCancel(ctx)
+	r.bgWG.Add(1) // #33: rastreada para que el apagado la espere antes de cerrar la BD
 	go func() {
+		defer r.bgWG.Done()
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("audit_log_panic", "appointment_id", id, "evento", evento, "recover", rec)
@@ -936,7 +962,9 @@ const creationAuditQuery = `
 // SCOPE_IDENTITY() devuelva el id_log correcto del log_citas recién insertado.
 func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID, observations string) {
 	bgCtx := context.WithoutCancel(ctx)
+	r.bgWG.Add(1) // #33: rastreada para que el apagado la espere antes de cerrar la BD
 	go func() {
+		defer r.bgWG.Done()
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("creation_audit_panic", "appointment_id", appointmentID, "recover", rec)
@@ -1001,7 +1029,9 @@ func (r *AppointmentRepo) writeAuditLogBatch(ctx context.Context, ids []string, 
 		FROM citas WHERE id IN (` + clause + `)`
 	}
 	bgCtx := context.WithoutCancel(ctx)
+	r.bgWG.Add(1) // #33: rastreada para que el apagado la espere antes de cerrar la BD
 	go func() {
+		defer r.bgWG.Done()
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("audit_log_batch_panic", "evento", evento, "recover", rec)

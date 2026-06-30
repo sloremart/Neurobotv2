@@ -106,6 +106,13 @@ type MessageWorkerPool struct {
 	wg             sync.WaitGroup  // tracks all goroutines for graceful shutdown
 	ctx            context.Context // stored from Start() for overflow goroutines
 
+	// #5 (auditoría): cierra el race wg.Add vs wg.Wait. Stop() fija closing=true bajo closeMu.Lock()
+	// ANTES de wg.Wait(); los enqueuers registran su goroutine de overflow vía tryAddOverflow(), que
+	// toma closeMu.RLock() y se niega a hacer wg.Add si ya se está cerrando. Así ningún Add puede
+	// colarse después de que Wait empiece (evita el panic "WaitGroup is reused").
+	closeMu sync.RWMutex
+	closing bool
+
 	botEnabled bool // BOT_ENABLED=false → escala directo sin tocar SIESA/Antares
 
 	// Dependencias (inyectadas después de creación)
@@ -193,6 +200,13 @@ func (p *MessageWorkerPool) Start(ctx context.Context) {
 // Stop waits for all workers and overflow goroutines to finish,
 // then drains remaining queued messages (up to 15s) before returning.
 func (p *MessageWorkerPool) Stop() {
+	// #5: marcar el cierre ANTES de Wait, bajo Lock. tryAddOverflow toma RLock, así que cualquier
+	// enqueuer en curso termina su chequeo+Add antes de que este Lock retorne; tras esto, los nuevos
+	// enqueuers ven closing=true y NO hacen wg.Add → no hay Add concurrente con el Wait de abajo.
+	p.closeMu.Lock()
+	p.closing = true
+	p.closeMu.Unlock()
+
 	p.wg.Wait()
 
 	// Drain remaining queued messages with a deadline
@@ -228,6 +242,21 @@ func (p *MessageWorkerPool) Stop() {
 }
 
 // Enqueue agrega un mensaje al queue. Retorna false si es duplicado o si se excede backpressure.
+// tryAddOverflow registra una goroutine de overflow en el WaitGroup salvo que el pool esté cerrando
+// (#5). Devuelve false si Stop() ya marcó el cierre; en ese caso el caller NO debe lanzar la goroutine
+// (el mensaje se descarta y se replaya por WAL al reiniciar). Hace activeOverflow.Add(1)+wg.Add(1)
+// atómicamente respecto al cierre, así que nunca ocurre un wg.Add después de que Stop empiece a esperar.
+func (p *MessageWorkerPool) tryAddOverflow() bool {
+	p.closeMu.RLock()
+	defer p.closeMu.RUnlock()
+	if p.closing {
+		return false
+	}
+	p.activeOverflow.Add(1)
+	p.wg.Add(1)
+	return true
+}
+
 func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
 	// 1. Dedup check (fail-open if map is too large — allow potential dups rather than leak memory).
 	// Se reclama ANTES de encolar (claim-then-enqueue) para que dos entregas duplicadas concurrentes
@@ -264,8 +293,16 @@ func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
 				"overflow_active", p.activeOverflow.Load())
 			return false
 		}
-		p.activeOverflow.Add(1)
-		p.wg.Add(1)
+		// #5: registrar la goroutine respetando el cierre. Si el pool ya está cerrando, se descarta el
+		// mensaje (se replaya por WAL al reiniciar) y se libera el claim de dedup para no perderlo.
+		if !p.tryAddOverflow() {
+			if claimed {
+				p.recentMessages.Delete(msg.ID)
+				p.dedupCount.Add(-1)
+			}
+			slog.Warn("pool closing, dropping overflow message", "id", msg.ID)
+			return false
+		}
 		go func() {
 			defer p.wg.Done()
 			defer p.activeOverflow.Add(-1)
@@ -1263,9 +1300,11 @@ func (p *MessageWorkerPool) EnqueueVirtual(phone string) {
 				"overflow_active", p.activeOverflow.Load())
 			return
 		}
-		// Overflow processing — tracked with WaitGroup
-		p.activeOverflow.Add(1)
-		p.wg.Add(1)
+		// Overflow processing — tracked with WaitGroup. #5: respetar el cierre (no wg.Add tras Stop).
+		if !p.tryAddOverflow() {
+			slog.Warn("pool closing, dropping virtual message", "phone", utils.MaskPhone(phone))
+			return
+		}
 		go func() {
 			defer p.wg.Done()
 			defer p.activeOverflow.Add(-1)

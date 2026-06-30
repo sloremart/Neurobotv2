@@ -516,6 +516,16 @@ func main() {
 	if sched != nil {
 		sched.Wait(20 * time.Second)
 	}
+
+	// 4. #33: esperar a las auditorías SIESA fire-and-forget en vuelo ANTES de que los defer cierren
+	// el pool externo (si no, una auditoría a medio camino falla con "sql: database is closed"). El
+	// pool de workers ya paró (no se disparan nuevas), así que esto solo drena lo que quedó en vuelo.
+	// Best-effort: si vence el timeout, el apagado continúa igual (la cita ya está committeada).
+	if repos != nil {
+		if bw, ok := repos.Appointment.(interface{ WaitBackground(time.Duration) }); ok {
+			bw.WaitBackground(10 * time.Second)
+		}
+	}
 }
 
 func initLogger(level, logDir string) {

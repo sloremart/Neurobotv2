@@ -1516,3 +1516,51 @@ func TestHandleAgentOrder_OCRNotSuccess(t *testing.T) {
 		t.Fatalf("expected 1 error message, got %d", len(sender.sent))
 	}
 }
+
+// TestTryAddOverflow_RespectsClosing verifica el guard del #5: con el pool abierto registra la
+// goroutine de overflow; tras marcar el cierre (como hace Stop antes de wg.Wait) se niega a hacer
+// wg.Add, evitando el panic "WaitGroup is reused".
+func TestTryAddOverflow_RespectsClosing(t *testing.T) {
+	pool := NewMessageWorkerPool(1, 1)
+
+	if !pool.tryAddOverflow() {
+		t.Fatal("pool abierto: tryAddOverflow debería registrar (true)")
+	}
+	pool.wg.Done()              // deshacer el Add del caso abierto
+	pool.activeOverflow.Add(-1) // y su contador
+
+	pool.closeMu.Lock()
+	pool.closing = true
+	pool.closeMu.Unlock()
+
+	if pool.tryAddOverflow() {
+		t.Fatal("pool cerrando: tryAddOverflow debería rechazar (false)")
+	}
+	if got := pool.activeOverflow.Load(); got != 0 {
+		t.Fatalf("overflow no debió incrementarse al cerrar, got %d", got)
+	}
+}
+
+// TestEnqueue_DropsOverflowWhenClosing: con la cola llena y el pool cerrando, Enqueue descarta el
+// mensaje (no lanza goroutine) y LIBERA el claim de dedup para que el replay por WAL pueda re-encolarlo.
+func TestEnqueue_DropsOverflowWhenClosing(t *testing.T) {
+	pool := NewMessageWorkerPool(1, 1)
+	pool.queue <- bird.InboundMessage{ID: "fill"} // llenar el único slot (sin Start, nada consume)
+
+	pool.closeMu.Lock()
+	pool.closing = true
+	pool.closeMu.Unlock()
+
+	ok := pool.Enqueue(bird.InboundMessage{
+		ID: "drop-me", Phone: "+573001234567", MessageType: "text", ReceivedAt: time.Now(),
+	})
+	if ok {
+		t.Fatal("esperaba Enqueue=false (cola llena + cerrando)")
+	}
+	if got := pool.activeOverflow.Load(); got != 0 {
+		t.Fatalf("no debió lanzarse goroutine de overflow, activeOverflow=%d", got)
+	}
+	if _, seen := pool.recentMessages.Load("drop-me"); seen {
+		t.Fatal("el claim de dedup debió liberarse al descartar (para re-encolar por WAL)")
+	}
+}
