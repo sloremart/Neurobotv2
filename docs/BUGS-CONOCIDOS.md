@@ -295,8 +295,25 @@ el recordatorio **nunca** tendría éxito → bucle hasta la expiración a las 6
 
 ## BUG-006 — Escalación residual: garantizar canal antes del handoff (hardening)
 
-- **Estado:** 🟢 Mitigado (commit `3de8a17`) — cubierto el caso de conversación REABIERTA. Queda solo el
-  caso de paciente SIN ninguna conversación (crear conversación), de muy baja frecuencia.
+- **Estado:** ✅ Resuelto (commit `1bae67e`) — fix por sondeo de caché del webhook. Requiere deploy.
+
+### Causa raíz (investigada a fondo contra la API de Bird, 2026-06-30)
+El handoff no resolvía `conversation_id` para ciertos pacientes —sobre todo **pet_ct**, que escala
+INSTANTÁNEAMENTE desde el menú— → `empty conversation ID` → no se creaba el ticket. Verificado en vivo:
+- **Crear conversación DUPLICA** (`POST /conversations` → 201 con id NUEVO aunque ya exista; Bird no
+  deduplica por participante+canal). → descartado como fix (fragmentaría el hilo).
+- **Lookup por participante** inconsistente: `GET /participants/{id}/conversations?status=active` devuelve
+  0 aún con conversación activa; el `participantId` es por-conversación y no se resuelve por teléfono. → descartado.
+- **List global** (`/conversations`) va por `createdAt` DESC, sin orden ni filtro por teléfono; el hilo del
+  paciente recurrente cae fuera de las páginas. **Channels API** no devuelve `conversation_id`.
+- La fuente FIABLE es la **caché**, que puebla el webhook outbound del mensaje que la propia escalación
+  acaba de enviar — pero el reintento previo (~1.5s) era muy corto.
+
+### Fix implementado (`1bae67e`)
+`EscalateToAgent` SONDEA la caché (`convCachePollTries=6 × convCachePollInterval=1s`) antes de un único
+lookup global de último recurso → da tiempo a que llegue el webhook. Si aun así no hay conversación, emite
+el terminal medible `escalacion/escalation_no_channel` (outcome=error) para cuantificar el residual genuino.
+Tests: resolución desde caché sin lookup + catálogo.
 - **Actualización 2026-06-30:** la mayoría del `empty conversation ID` residual era la conversación
   reabierta **oculta por `&status=active`** en `LookupConversationByPhone`. Se quitó el filtro (BUG-006
   fix) → ahora se encuentra la reabierta y el handoff la reabre (BUG-007). Solo restaría el caso genuino
