@@ -331,7 +331,13 @@ func TestCreatePatient_Error(t *testing.T) {
 // --- Mock types for municipality and entity repositories ---
 
 type mockMunicipalityRepo struct {
-	searchFn func(ctx context.Context, query string) ([]domain.Municipality, error)
+	searchFn        func(ctx context.Context, query string) ([]domain.Municipality, error)
+	searchBarriosFn func(name, depCode, muniCode string) ([]domain.Barrio, error)
+	createReturn    string // código que devuelve CreateNeighborhood (simula el IDENTITY de SIESA)
+	createErr       error
+	createCalls     int    // cuántas veces se llamó a CreateNeighborhood
+	lastCreateName  string // nombre con el que se intentó crear (para asertar la normalización)
+	lastCreateZone  string
 }
 
 func (m *mockMunicipalityRepo) Search(ctx context.Context, query string) ([]domain.Municipality, error) {
@@ -341,12 +347,26 @@ func (m *mockMunicipalityRepo) Search(ctx context.Context, query string) ([]doma
 	return nil, nil
 }
 
-func (m *mockMunicipalityRepo) SearchBarrios(ctx context.Context, name, depCode, muniCode string) ([]domain.Barrio, error) {
+func (m *mockMunicipalityRepo) SearchBarrios(_ context.Context, name, depCode, muniCode string) ([]domain.Barrio, error) {
+	if m.searchBarriosFn != nil {
+		return m.searchBarriosFn(name, depCode, muniCode)
+	}
 	return nil, nil
 }
 
-func (m *mockMunicipalityRepo) CreateNeighborhood(_ context.Context, _, _, _, _ string) (string, error) {
-	return "", nil
+// CreateNeighborhood simula la escritura en SIESA: registra la llamada y devuelve un código falso
+// (createReturn) o "9001" por defecto. No toca ninguna base de datos.
+func (m *mockMunicipalityRepo) CreateNeighborhood(_ context.Context, name, _, _, zone string) (string, error) {
+	m.createCalls++
+	m.lastCreateName = name
+	m.lastCreateZone = zone
+	if m.createErr != nil {
+		return "", m.createErr
+	}
+	if m.createReturn != "" {
+		return m.createReturn, nil
+	}
+	return "9001", nil
 }
 
 // =============================================================================
@@ -1033,5 +1053,181 @@ func TestCorrectionRedirect_DocumentType(t *testing.T) {
 	}
 	if result.UpdateCtx["reg_document_type"] != "TI" {
 		t.Errorf("expected reg_document_type=TI, got %q", result.UpdateCtx["reg_document_type"])
+	}
+}
+
+// =============================================================================
+// Tests para la creación de barrio en SIESA (regBarrioHandler). La escritura a
+// SIESA se SIMULA con mockMunicipalityRepo.CreateNeighborhood (no toca la BD).
+// =============================================================================
+
+// applyResult simula la persistencia del worker entre mensajes: vuelca UpdateCtx/ClearCtx a la sesión.
+func applyResult(sess *session.Session, r *sm.StateResult) {
+	for k, v := range r.UpdateCtx {
+		sess.SetContext(k, v)
+	}
+	for _, k := range r.ClearCtx {
+		delete(sess.Context, k)
+	}
+	sess.CurrentState = r.NextState
+}
+
+// barrioSess crea una sesión ya en REG_BARRIO con dept/municipio/zona resueltos (como en el flujo real).
+func barrioSess() *session.Session {
+	s := testSess(sm.StateRegBarrio)
+	s.SetContext("reg_department", "50")
+	s.SetContext("reg_municipality", "001")
+	s.SetContext("reg_municipality_name", "VILLAVICENCIO - META")
+	s.SetContext("reg_zone", "U")
+	return s
+}
+
+func TestRegBarrio_ExactUsesExisting(t *testing.T) {
+	repo := &mockMunicipalityRepo{
+		searchBarriosFn: func(_, _, _ string) ([]domain.Barrio, error) {
+			return []domain.Barrio{{Code: "555", Name: "CENTRO", Zone: "U"}}, nil
+		},
+	}
+	m := sm.NewMachine()
+	m.Register(sm.StateRegBarrio, regBarrioHandler(repo))
+
+	res, err := m.Process(context.Background(), barrioSess(), textM("centro"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateConfirmRegistration {
+		t.Errorf("esperaba CONFIRM_REGISTRATION, got %s", res.NextState)
+	}
+	if repo.createCalls != 0 {
+		t.Errorf("existe → no debió crear; createCalls=%d", repo.createCalls)
+	}
+	if res.UpdateCtx["reg_barrio"] != "555" {
+		t.Errorf("reg_barrio esperado 555, got %q", res.UpdateCtx["reg_barrio"])
+	}
+}
+
+func TestRegBarrio_CreateOnDoubleEntry(t *testing.T) {
+	repo := &mockMunicipalityRepo{
+		createReturn:    "9999",
+		searchBarriosFn: func(_, _, _ string) ([]domain.Barrio, error) { return nil, nil }, // nunca existe
+	}
+	m := sm.NewMachine()
+	m.Register(sm.StateRegBarrio, regBarrioHandler(repo))
+	sess := barrioSess()
+
+	// 1er intento: no existe → pide re-escribir, no crea aún.
+	r1, err := m.Process(context.Background(), sess, textM("Villa Sol"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.NextState != sm.StateRegBarrio {
+		t.Fatalf("esperaba quedarse en REG_BARRIO, got %s", r1.NextState)
+	}
+	if r1.UpdateCtx["reg_barrio_pending"] != "VILLA SOL" {
+		t.Fatalf("pending esperado VILLA SOL, got %q", r1.UpdateCtx["reg_barrio_pending"])
+	}
+	if repo.createCalls != 0 {
+		t.Fatalf("no debió crear en el 1er intento")
+	}
+	applyResult(sess, r1)
+
+	// 2do intento IGUAL (aunque en otra capitalización) → crea con el nombre normalizado.
+	r2, err := m.Process(context.Background(), sess, textM("villa sol"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.createCalls != 1 {
+		t.Errorf("esperaba 1 creación, got %d", repo.createCalls)
+	}
+	if repo.lastCreateName != "VILLA SOL" {
+		t.Errorf("nombre creado esperado VILLA SOL, got %q", repo.lastCreateName)
+	}
+	if repo.lastCreateZone != "U" {
+		t.Errorf("zona esperada U, got %q", repo.lastCreateZone)
+	}
+	if r2.NextState != sm.StateConfirmRegistration {
+		t.Errorf("esperaba CONFIRM_REGISTRATION, got %s", r2.NextState)
+	}
+	if r2.UpdateCtx["reg_barrio"] != "9999" {
+		t.Errorf("reg_barrio esperado 9999, got %q", r2.UpdateCtx["reg_barrio"])
+	}
+}
+
+func TestRegBarrio_CorrectionFindsExisting(t *testing.T) {
+	repo := &mockMunicipalityRepo{
+		searchBarriosFn: func(name, _, _ string) ([]domain.Barrio, error) {
+			if name == "centro" { // la corrección sí existe
+				return []domain.Barrio{{Code: "5", Name: "CENTRO"}}, nil
+			}
+			return nil, nil
+		},
+	}
+	m := sm.NewMachine()
+	m.Register(sm.StateRegBarrio, regBarrioHandler(repo))
+	sess := barrioSess()
+
+	r1, _ := m.Process(context.Background(), sess, textM("Cetro")) // typo → no existe
+	if r1.UpdateCtx["reg_barrio_pending"] != "CETRO" {
+		t.Fatalf("pending esperado CETRO, got %q", r1.UpdateCtx["reg_barrio_pending"])
+	}
+	applyResult(sess, r1)
+
+	r2, _ := m.Process(context.Background(), sess, textM("centro")) // corrección → existe
+	if repo.createCalls != 0 {
+		t.Errorf("la corrección encontró existente → no debió crear; createCalls=%d", repo.createCalls)
+	}
+	if r2.NextState != sm.StateConfirmRegistration {
+		t.Errorf("esperaba CONFIRM_REGISTRATION, got %s", r2.NextState)
+	}
+	if r2.UpdateCtx["reg_barrio"] != "5" {
+		t.Errorf("reg_barrio esperado 5, got %q", r2.UpdateCtx["reg_barrio"])
+	}
+}
+
+func TestRegBarrio_NASkips(t *testing.T) {
+	repo := &mockMunicipalityRepo{}
+	m := sm.NewMachine()
+	m.Register(sm.StateRegBarrio, regBarrioHandler(repo))
+
+	res, err := m.Process(context.Background(), barrioSess(), textM("NA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.createCalls != 0 {
+		t.Errorf("NA no debe crear")
+	}
+	if res.NextState != sm.StateConfirmRegistration {
+		t.Errorf("esperaba CONFIRM_REGISTRATION, got %s", res.NextState)
+	}
+	if res.UpdateCtx["reg_barrio"] != "" {
+		t.Errorf("reg_barrio esperado vacío, got %q", res.UpdateCtx["reg_barrio"])
+	}
+}
+
+func TestRegBarrio_CapGivesUp(t *testing.T) {
+	repo := &mockMunicipalityRepo{
+		searchBarriosFn: func(_, _, _ string) ([]domain.Barrio, error) { return nil, nil },
+	}
+	m := sm.NewMachine()
+	m.Register(sm.StateRegBarrio, regBarrioHandler(repo))
+	sess := barrioSess()
+
+	var last *sm.StateResult
+	for _, n := range []string{"Aaa", "Bbb", "Ccc", "Ddd", "Eee"} { // siempre distinto → nunca crea
+		r, err := m.Process(context.Background(), sess, textM(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		applyResult(sess, r)
+		last = r
+	}
+	if repo.createCalls != 0 {
+		t.Errorf("siempre distinto → no debió crear; createCalls=%d", repo.createCalls)
+	}
+	if last.NextState != sm.StateConfirmRegistration {
+		t.Errorf("tras el tope esperaba CONFIRM_REGISTRATION (sin barrio), got %s", last.NextState)
+	}
+	if last.UpdateCtx["reg_barrio"] != "" {
+		t.Errorf("tras el tope reg_barrio esperado vacío, got %q", last.UpdateCtx["reg_barrio"])
 	}
 }
