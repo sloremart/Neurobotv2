@@ -226,14 +226,14 @@ func main() {
 	// registrar los handlers para que la Machine tenga los metadatos de opt-in por estado. Requiere
 	// API key de OpenAI; usa su propio modelo (distinto al del OCR). Tope mensual: Fase 3 (nil = sin).
 	if cfg.AIRecoveryEnabled && cfg.OpenAIAPIKey != "" {
-		llm := recovery.NewLLMClient(cfg.OpenAIAPIKey, cfg.AIRecoveryModel, cfg.AIRecoveryMaxOutputTokens)
+		llm := recovery.NewLLMClient(cfg.OpenAIAPIKey, recovery.DefaultModel, recovery.DefaultMaxOutputTokens)
 		coord := recovery.NewCoordinator(machine, recovery.NewAIRecovery(llm), recovery.Config{
 			Enabled:            true,
 			MaxPatientAttempts: cfg.AIRecoveryMaxPatientAttempts,
 			Monthly:            localrepo.NewAIRecoveryCounterRepo(localDB, cfg.AIRecoveryMonthlyLimit),
 		})
 		machine.SetRecoveryCoordinator(coord)
-		slog.Info("ai_recovery_enabled", "model", cfg.AIRecoveryModel, "max_patient_attempts", cfg.AIRecoveryMaxPatientAttempts)
+		slog.Info("ai_recovery_enabled", "model", recovery.DefaultModel, "max_patient_attempts", cfg.AIRecoveryMaxPatientAttempts)
 	}
 
 	// Fase 12: Notificaciones Proactivas y Scheduler

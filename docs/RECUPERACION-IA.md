@@ -285,13 +285,18 @@ dentro de `processMsgTimeout=2min`). Si los 3 fallan → **escala a humano**.
 
 | Variable | Default | Descripción |
 |---|---|---|
+Solo **3 variables** son configurables (las operativas). El resto son constantes internas fijas en
+código (no se tunean en prod).
+
+| Variable | Default | Descripción |
+|---|---|---|
 | `AI_RECOVERY_ENABLED` | **`true`** | Master switch. `true` = intentar la IA antes de escalar; `false` = pasar **directo al agente** (comportamiento actual). |
-| `AI_RECOVERY_MONTHLY_LIMIT` | `0` | Tope de **recuperaciones que toma la IA por mes calendario**. Al alcanzarlo, la IA deja de actuar y se pasa **directo al agente** hasta el siguiente mes. `0` = sin límite. |
 | `AI_RECOVERY_MAX_PATIENT_ATTEMPTS` | `2` | Presupuesto de intentos del paciente con la IA (por conversación). |
-| `AI_RECOVERY_MODEL` | `gpt-4.1-nano` | Modelo OpenAI (reutiliza `OPENAI_API_KEY`). |
-| `AI_RECOVERY_MAX_OUTPUT_TOKENS` | `200` | Tope de tokens de salida por llamada. |
-| `AI_RECOVERY_LLM_RETRIES` | `3` | Reintentos ante fallo/timeout del LLM. |
-| `BOT_MAX_RETRIES` | (actual) | Presupuesto del bot. **No se toca.** (documentar nombre real en Fase 0) |
+| `AI_RECOVERY_MONTHLY_LIMIT` | `0` | Tope de **recuperaciones que toma la IA por mes calendario**. Al alcanzarlo, directo al agente hasta el siguiente mes. `0` = sin límite. |
+
+**Fijas en código** (`recovery`): modelo `gpt-4.1-nano` (`DefaultModel`, distinto al del OCR),
+`max_tokens` de salida `200` (`DefaultMaxOutputTokens`), y los reintentos del LLM (backoff 0.5/1/2s en
+el `LLMClient`). El presupuesto del bot (`BOT_MAX_RETRIES` / el env de reintentos actual) **no se toca**.
 
 > **Dos topes distintos:** `AI_RECOVERY_MAX_PATIENT_ATTEMPTS` limita los intentos **por conversación**;
 > `AI_RECOVERY_MONTHLY_LIMIT` limita el total de recuperaciones **por mes** (control de gasto global).

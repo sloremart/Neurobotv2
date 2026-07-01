@@ -89,11 +89,10 @@ type Config struct {
 	OpenAIModel  string
 
 	// Recuperación asistida por IA (capa antes de escalar; ver docs/RECUPERACION-IA.md).
-	// Reutiliza OpenAIAPIKey pero con su PROPIO modelo (distinto al del OCR).
+	// Reutiliza OpenAIAPIKey pero con su PROPIO modelo (fijo en código, distinto al del OCR).
+	// El modelo y el max_tokens de salida son constantes internas (recovery.DefaultModel/...).
 	AIRecoveryEnabled            bool
-	AIRecoveryModel              string
 	AIRecoveryMaxPatientAttempts int
-	AIRecoveryMaxOutputTokens    int
 	AIRecoveryMonthlyLimit       int
 
 	// Bot kill switch: false = escala inmediatamente sin tocar SIESA/Antares
@@ -246,11 +245,9 @@ func Load() *Config {
 		OpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
 
-		// Recuperación asistida por IA (modelo propio, distinto al del OCR)
+		// Recuperación asistida por IA (3 env; modelo y max_tokens fijos en código)
 		AIRecoveryEnabled:            getEnvBool("AI_RECOVERY_ENABLED", true),
-		AIRecoveryModel:              getEnv("AI_RECOVERY_MODEL", "gpt-4.1-nano"),
 		AIRecoveryMaxPatientAttempts: getEnvInt("AI_RECOVERY_MAX_PATIENT_ATTEMPTS", 2),
-		AIRecoveryMaxOutputTokens:    getEnvInt("AI_RECOVERY_MAX_OUTPUT_TOKENS", 200),
 		AIRecoveryMonthlyLimit:       getEnvInt("AI_RECOVERY_MONTHLY_LIMIT", 0),
 
 		// Bot kill switch

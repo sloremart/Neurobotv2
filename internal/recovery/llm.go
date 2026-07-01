@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// Constantes fijas de la capa de recuperación (no configurables por env, son detalles internos):
+// el modelo (decisión fija, distinto al del OCR) y el tope de tokens de salida (JSON corto).
+const (
+	DefaultModel           = "gpt-4.1-nano"
+	DefaultMaxOutputTokens = 200
+)
+
 // Usage acumula el consumo de tokens de una recuperación (para KPIs/costo, sin PII).
 type Usage struct {
 	PromptTokens     int
