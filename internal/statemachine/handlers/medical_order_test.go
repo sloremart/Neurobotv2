@@ -14,6 +14,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/testutil"
 )
 
 // --- Mock OCR service ---
@@ -74,6 +75,119 @@ func wrapOpenAIResponse(content string) string {
 	}
 	b, _ := json.Marshal(resp)
 	return string(b)
+}
+
+// --- Tests lista de espera up-front ---
+
+func TestAskMedicalOrder_ShowsWaitingList(t *testing.T) {
+	repo := &testutil.MockWaitingListCreator{
+		GetActiveByPatientFn: func(_ context.Context, _ string) ([]domain.WaitingListEntry, error) {
+			return []domain.WaitingListEntry{
+				{ID: "w1", CupsCode: "870102", CupsName: "RADIOGRAFIA DE ORBITAS", CreatedAt: time.Now()},
+				{ID: "w2", CupsCode: "883443", CupsName: "RESONANCIA DE PLACENTA", CreatedAt: time.Now()},
+			}, nil
+		},
+	}
+	sess := testSess(sm.StateAskMedicalOrder)
+	sess.SetContext("patient_id", "123")
+	res, err := askMedicalOrderHandler(repo)(context.Background(), sess, textM("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateSelectWaitingList {
+		t.Errorf("esperaba SELECT_WAITING_LIST, got %s", res.NextState)
+	}
+}
+
+func TestAskMedicalOrder_NoWaitingList_Proceeds(t *testing.T) {
+	repo := &testutil.MockWaitingListCreator{
+		GetActiveByPatientFn: func(_ context.Context, _ string) ([]domain.WaitingListEntry, error) {
+			return nil, nil
+		},
+	}
+	sess := testSess(sm.StateAskMedicalOrder)
+	sess.SetContext("patient_id", "123")
+	res, err := askMedicalOrderHandler(repo)(context.Background(), sess, textM("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateUploadMedicalOrder {
+		t.Errorf("sin espera esperaba UPLOAD_MEDICAL_ORDER, got %s", res.NextState)
+	}
+}
+
+func TestAskMedicalOrder_SkipsWhenOfferDone(t *testing.T) {
+	called := false
+	repo := &testutil.MockWaitingListCreator{
+		GetActiveByPatientFn: func(_ context.Context, _ string) ([]domain.WaitingListEntry, error) {
+			called = true
+			return []domain.WaitingListEntry{{ID: "w1", CupsName: "X"}}, nil
+		},
+	}
+	sess := testSess(sm.StateAskMedicalOrder)
+	sess.SetContext("patient_id", "123")
+	sess.SetContext("wl_offer_done", "1") // ya se ofreció (eligió "nueva")
+	res, err := askMedicalOrderHandler(repo)(context.Background(), sess, textM("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Error("no debió volver a consultar la lista de espera")
+	}
+	if res.NextState != sm.StateUploadMedicalOrder {
+		t.Errorf("esperaba UPLOAD_MEDICAL_ORDER, got %s", res.NextState)
+	}
+}
+
+func TestSelectWaitingList_PickEntry_GoesToSearchSlots(t *testing.T) {
+	entry := &domain.WaitingListEntry{
+		ID: "w1", CupsCode: "870102", CupsName: "RADIOGRAFIA DE ORBITAS", Espacios: 2,
+		ProcedureType: "RX", ContractCode: "4", ProceduresJSON: "[]", IsContrasted: true,
+	}
+	repo := &testutil.MockWaitingListCreator{
+		FindByIDFn: func(_ context.Context, id string) (*domain.WaitingListEntry, error) {
+			if id == "w1" {
+				return entry, nil
+			}
+			return nil, nil
+		},
+	}
+	sess := testSess(sm.StateSelectWaitingList)
+	res, err := selectWaitingListHandler(repo)(context.Background(), sess, postbackM("w1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateSearchSlots {
+		t.Fatalf("esperaba SEARCH_SLOTS, got %s", res.NextState)
+	}
+	checks := map[string]string{
+		"cups_code":             "870102",
+		"espacios":              "2",
+		"is_contrasted":         "1",
+		"from_waiting_list":     "1",
+		"waiting_list_entry_id": "w1",
+		"wl_offer_done":         "1",
+	}
+	for k, want := range checks {
+		if res.UpdateCtx[k] != want {
+			t.Errorf("ctx[%s]=%q, esperaba %q", k, res.UpdateCtx[k], want)
+		}
+	}
+}
+
+func TestSelectWaitingList_New_GoesToAskOrder(t *testing.T) {
+	repo := &testutil.MockWaitingListCreator{}
+	sess := testSess(sm.StateSelectWaitingList)
+	res, err := selectWaitingListHandler(repo)(context.Background(), sess, postbackM("wl_new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateAskMedicalOrder {
+		t.Errorf("esperaba ASK_MEDICAL_ORDER, got %s", res.NextState)
+	}
+	if res.UpdateCtx["wl_offer_done"] != "1" {
+		t.Errorf("wl_offer_done=%q, esperaba 1", res.UpdateCtx["wl_offer_done"])
+	}
 }
 
 // --- Tests ---

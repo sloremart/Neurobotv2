@@ -54,6 +54,90 @@ type WaitingListCreator interface {
 	Create(ctx context.Context, entry *domain.WaitingListEntry) error
 	HasActiveForPatientAndCups(ctx context.Context, patientID, cupsCode string) (bool, error)
 	UpdateStatus(ctx context.Context, id, status string) error
+	GetActiveByPatient(ctx context.Context, patientID string) ([]domain.WaitingListEntry, error)
+	FindByID(ctx context.Context, id string) (*domain.WaitingListEntry, error)
+}
+
+// citaProceduresJSON devuelve SOLO el grupo (la cita) que se está agendando —con TODOS sus CUPS,
+// cantidades y espacios— para persistirlo en la entrada de lista de espera. Antes se guardaba el
+// procedures_json completo (toda la orden), mezclando varias citas en una sola entrada; ahora cada
+// entrada representa fielmente su propia cita. Fallback al valor crudo si no se puede aislar el grupo.
+func citaProceduresJSON(sess *session.Session) string {
+	raw := sess.GetContext("procedures_json")
+	var groups []services.CUPSGroup
+	if err := json.Unmarshal([]byte(raw), &groups); err != nil {
+		return raw
+	}
+	idx, _ := strconv.Atoi(sess.GetContext("current_procedure_idx"))
+	if idx < 0 || idx >= len(groups) {
+		return raw
+	}
+	b, err := json.Marshal([]services.CUPSGroup{groups[idx]})
+	if err != nil {
+		return raw
+	}
+	return string(b)
+}
+
+// citaCupsSet devuelve el conjunto de códigos CUPS de un procedures_json de UNA cita (1 grupo),
+// para comparar citas en la deduplicación (mismos CUPS vs superset).
+func citaCupsSet(proceduresJSON string) map[string]bool {
+	set := map[string]bool{}
+	var groups []services.CUPSGroup
+	if err := json.Unmarshal([]byte(proceduresJSON), &groups); err != nil {
+		return set
+	}
+	for _, g := range groups {
+		for _, c := range g.Cups {
+			if c.Code != "" {
+				set[c.Code] = true
+			}
+		}
+	}
+	return set
+}
+
+// isSubset devuelve true si a ⊆ b (todos los CUPS de a están en b). a vacío → false.
+func isSubset(a, b map[string]bool) bool {
+	if len(a) == 0 {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// waitingListDedup decide qué hacer con una cita NUEVA (newSet = sus CUPS) frente a las citas activas
+// del paciente en lista de espera:
+//   - duplicate=true  → los CUPS nuevos ya están cubiertos por una entrada activa → NO crear (avisar).
+//   - supersedeIDs    → entradas activas cuyos CUPS son subconjunto de la nueva (la orden trae los
+//     mismos + al menos un CUPS nuevo en la misma cita) → se expiran y se crea la nueva (renovar).
+//
+// Entradas viejas sin procedures_json (datos previos) caen al conjunto {cups_code}.
+func waitingListDedup(ctx context.Context, wlRepo WaitingListCreator, patientID string, newSet map[string]bool) (duplicate bool, supersedeIDs []string) {
+	if wlRepo == nil || len(newSet) == 0 {
+		return false, nil
+	}
+	actives, err := wlRepo.GetActiveByPatient(ctx, patientID)
+	if err != nil {
+		return false, nil
+	}
+	for _, e := range actives {
+		exSet := citaCupsSet(e.ProceduresJSON)
+		if len(exSet) == 0 && e.CupsCode != "" {
+			exSet = map[string]bool{e.CupsCode: true}
+		}
+		if isSubset(newSet, exSet) { // la nueva no aporta CUPS → ya está cubierta
+			return true, nil
+		}
+		if isSubset(exSet, newSet) { // la existente ⊂ la nueva → la nueva la supersede
+			supersedeIDs = append(supersedeIDs, e.ID)
+		}
+	}
+	return false, supersedeIDs
 }
 
 // advanceToNextProcedure checks if there are more procedure groups to process.
@@ -604,6 +688,14 @@ func noSlotsHandler(wlRepo WaitingListCreator) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsName := sess.GetContext("cups_name")
 
+		// Viene de elegir una cita ya en lista de espera: la entrada YA existe → no se crea ni se
+		// ofrece de nuevo, solo se informa que aún no hay agenda (sigue en espera).
+		if sess.GetContext("from_waiting_list") == "1" {
+			return buildAutoCloseResult(fmt.Sprintf(
+				"Aún no hay horarios disponibles para *%s*.\n\nSigues en nuestra *lista de espera*; te avisaremos por WhatsApp apenas se abra un cupo.", cupsName)).
+				WithEvent("no_slots_from_waiting_list", map[string]interface{}{"cups_code": sess.GetContext("cups_code")}), nil
+		}
+
 		// Cambio 12: Auto-add to WL when coming from admin cancellation reschedule
 		if sess.GetContext("reschedule_skip_cancel") == "1" && wlRepo != nil {
 			return autoAddToWaitingList(ctx, sess, wlRepo, cupsName)
@@ -640,9 +732,13 @@ func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo Wai
 	patientID := sess.GetContext("patient_id")
 	cupsCode := sess.GetContext("cups_code")
 
-	// Check for duplicate
-	hasActive, err := wlRepo.HasActiveForPatientAndCups(ctx, patientID, cupsCode)
-	if err == nil && hasActive {
+	// Deduplicación por CONJUNTO de CUPS de la cita (no solo el primario).
+	newSet := citaCupsSet(citaProceduresJSON(sess))
+	if len(newSet) == 0 {
+		newSet = map[string]bool{cupsCode: true}
+	}
+	dup, supersedeIDs := waitingListDedup(ctx, wlRepo, patientID, newSet)
+	if dup {
 		dupMsg := "No hay horarios disponibles para *" + cupsName + "*.\n\n" +
 			"Ya tienes una inscripción activa en la lista de espera. " +
 			"Te avisaremos por WhatsApp cuando haya disponibilidad."
@@ -659,6 +755,10 @@ func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo Wai
 				"cups_code":  cupsCode,
 				"patient_id": patientID,
 			}), nil
+	}
+	// La orden trae los mismos CUPS + al menos uno nuevo → expira las citas anteriores superadas.
+	for _, id := range supersedeIDs {
+		_ = wlRepo.UpdateStatus(ctx, id, "expired")
 	}
 
 	age, _ := strconv.Atoi(sess.GetContext("patient_age"))
@@ -682,7 +782,7 @@ func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo Wai
 		IsContrasted:   sess.GetContext("is_contrasted") == "1",
 		IsSedated:      sess.GetContext("is_sedated") == "1",
 		Espacios:       espacios,
-		ProceduresJSON: sess.GetContext("procedures_json"),
+		ProceduresJSON: citaProceduresJSON(sess),
 		ProcedureType:  sess.GetContext("procedure_type"),
 		Status:         "waiting",
 		ExpiresAt:      time.Now().AddDate(0, 0, 30),
@@ -757,24 +857,32 @@ func offerWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
 			cupsCode := sess.GetContext("cups_code")
 			cupsName := sess.GetContext("cups_name")
 
-			// Verificar duplicado
-			if wlRepo != nil {
-				hasActive, err := wlRepo.HasActiveForPatientAndCups(ctx, patientID, cupsCode)
-				if err == nil && hasActive {
-					dupMsg := "Ya tienes una inscripción activa en la lista de espera para *" + cupsName + "*.\nTe avisaremos cuando haya disponibilidad."
-					if next := advanceToNextProcedure(sess); next != nil {
-						next.Messages = append([]sm.OutboundMessage{&sm.TextMessage{Text: dupMsg}}, next.Messages...)
-						return next.WithEvent("waiting_list_duplicate", map[string]interface{}{
-							"cups_code":      cupsCode,
-							"patient_id":     patientID,
-							"next_procedure": true,
-						}), nil
-					}
-					return buildAutoCloseResult(dupMsg).
-						WithEvent("waiting_list_duplicate", map[string]interface{}{
-							"cups_code":  cupsCode,
-							"patient_id": patientID,
-						}), nil
+			// Deduplicación por CONJUNTO de CUPS de la cita (mismos → no crear; superset → renovar).
+			newSet := citaCupsSet(citaProceduresJSON(sess))
+			if len(newSet) == 0 {
+				newSet = map[string]bool{cupsCode: true}
+			}
+			dup, supersedeIDs := waitingListDedup(ctx, wlRepo, patientID, newSet)
+			if dup {
+				dupMsg := "Ya tienes una inscripción activa en la lista de espera para *" + cupsName + "*.\nTe avisaremos cuando haya disponibilidad."
+				if next := advanceToNextProcedure(sess); next != nil {
+					next.Messages = append([]sm.OutboundMessage{&sm.TextMessage{Text: dupMsg}}, next.Messages...)
+					return next.WithEvent("waiting_list_duplicate", map[string]interface{}{
+						"cups_code":      cupsCode,
+						"patient_id":     patientID,
+						"next_procedure": true,
+					}), nil
+				}
+				return buildAutoCloseResult(dupMsg).
+					WithEvent("waiting_list_duplicate", map[string]interface{}{
+						"cups_code":  cupsCode,
+						"patient_id": patientID,
+					}), nil
+			}
+			// La orden trae los mismos CUPS + al menos uno nuevo → expira las citas anteriores superadas.
+			for _, id := range supersedeIDs {
+				if wlRepo != nil {
+					_ = wlRepo.UpdateStatus(ctx, id, "expired")
 				}
 			}
 
@@ -800,7 +908,7 @@ func offerWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
 				IsContrasted:   sess.GetContext("is_contrasted") == "1",
 				IsSedated:      sess.GetContext("is_sedated") == "1",
 				Espacios:       espacios,
-				ProceduresJSON: sess.GetContext("procedures_json"),
+				ProceduresJSON: citaProceduresJSON(sess),
 				ProcedureType:  sess.GetContext("procedure_type"),
 				Status:         "waiting",
 				ExpiresAt:      time.Now().AddDate(0, 0, 30),

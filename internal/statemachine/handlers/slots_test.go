@@ -927,3 +927,95 @@ func TestAutoAddToWaitingList_DoesNotLeakEntryIDToNextProcedure(t *testing.T) {
 		t.Errorf("auto-join debe limpiar waiting_list_entry_id al avanzar; ClearCtx=%v", res.ClearCtx)
 	}
 }
+
+// --- Tests deduplicación de lista de espera por conjunto de CUPS ---
+
+func cupsSetJSON(codes ...string) string {
+	cups := make([]services.CUPSEntry, 0, len(codes))
+	for _, c := range codes {
+		cups = append(cups, services.CUPSEntry{Code: c})
+	}
+	b, _ := json.Marshal([]services.CUPSGroup{{Cups: cups}})
+	return string(b)
+}
+
+func TestCitaCupsSet(t *testing.T) {
+	set := citaCupsSet(cupsSetJSON("A", "B"))
+	if len(set) != 2 || !set["A"] || !set["B"] {
+		t.Errorf("set=%v, esperaba {A,B}", set)
+	}
+}
+
+func TestIsSubset(t *testing.T) {
+	a := map[string]bool{"A": true}
+	ab := map[string]bool{"A": true, "B": true}
+	if !isSubset(a, ab) {
+		t.Error("{A} debe ser subconjunto de {A,B}")
+	}
+	if isSubset(ab, a) {
+		t.Error("{A,B} no es subconjunto de {A}")
+	}
+	if isSubset(map[string]bool{}, ab) {
+		t.Error("conjunto vacío → false por diseño")
+	}
+}
+
+func TestWaitingListDedup(t *testing.T) {
+	activesFn := func(entries ...domain.WaitingListEntry) *testutil.MockWaitingListCreator {
+		return &testutil.MockWaitingListCreator{
+			GetActiveByPatientFn: func(_ context.Context, _ string) ([]domain.WaitingListEntry, error) {
+				return entries, nil
+			},
+		}
+	}
+
+	// Duplicado: activo {A,B}, nueva {A,B} → no crear.
+	dup, sup := waitingListDedup(context.Background(),
+		activesFn(domain.WaitingListEntry{ID: "e1", ProceduresJSON: cupsSetJSON("A", "B")}),
+		"p", citaCupsSet(cupsSetJSON("A", "B")))
+	if !dup || len(sup) != 0 {
+		t.Errorf("duplicado: dup=%v sup=%v", dup, sup)
+	}
+
+	// Supersede: activo {A}, nueva {A,B} → expira e1, crea la nueva.
+	dup, sup = waitingListDedup(context.Background(),
+		activesFn(domain.WaitingListEntry{ID: "e1", ProceduresJSON: cupsSetJSON("A")}),
+		"p", citaCupsSet(cupsSetJSON("A", "B")))
+	if dup || len(sup) != 1 || sup[0] != "e1" {
+		t.Errorf("supersede: dup=%v sup=%v", dup, sup)
+	}
+
+	// Nueva sin overlap: activo {C}, nueva {A,B} → crear normal.
+	dup, sup = waitingListDedup(context.Background(),
+		activesFn(domain.WaitingListEntry{ID: "e1", ProceduresJSON: cupsSetJSON("C")}),
+		"p", citaCupsSet(cupsSetJSON("A", "B")))
+	if dup || len(sup) != 0 {
+		t.Errorf("nueva: dup=%v sup=%v", dup, sup)
+	}
+
+	// Fallback datos viejos (procedures_json vacío) → usa cups_code.
+	dup, _ = waitingListDedup(context.Background(),
+		activesFn(domain.WaitingListEntry{ID: "e1", CupsCode: "A", ProceduresJSON: "[]"}),
+		"p", citaCupsSet(cupsSetJSON("A")))
+	if !dup {
+		t.Errorf("fallback cups_code: dup=%v, esperaba true", dup)
+	}
+}
+
+func TestCitaProceduresJSON_OnlyCurrentCita(t *testing.T) {
+	pj, _ := json.Marshal([]services.CUPSGroup{
+		{ServiceType: "RX", Cups: []services.CUPSEntry{{Code: "A"}}, Espacios: 1},
+		{ServiceType: "Resonancia", Cups: []services.CUPSEntry{{Code: "B"}, {Code: "C"}}, Espacios: 2},
+	})
+	sess := testSess(sm.StateSearchSlots)
+	sess.SetContext("procedures_json", string(pj))
+	sess.SetContext("current_procedure_idx", "1")
+
+	var groups []services.CUPSGroup
+	if err := json.Unmarshal([]byte(citaProceduresJSON(sess)), &groups); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || len(groups[0].Cups) != 2 || groups[0].Cups[0].Code != "B" || groups[0].Espacios != 2 {
+		t.Errorf("esperaba solo la cita idx=1 {B,C} espacios=2, got %+v", groups)
+	}
+}

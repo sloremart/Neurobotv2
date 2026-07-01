@@ -552,6 +552,24 @@ type MockWaitingListCreator struct {
 	CreateFn                     func(ctx context.Context, entry *domain.WaitingListEntry) error
 	HasActiveForPatientAndCupsFn func(ctx context.Context, patientID, cupsCode string) (bool, error)
 	UpdateStatusFn               func(ctx context.Context, id, status string) error
+	GetActiveByPatientFn         func(ctx context.Context, patientID string) ([]domain.WaitingListEntry, error)
+	FindByIDFn                   func(ctx context.Context, id string) (*domain.WaitingListEntry, error)
+}
+
+// GetActiveByPatient simula las entradas activas de un paciente en lista de espera.
+func (m *MockWaitingListCreator) GetActiveByPatient(ctx context.Context, patientID string) ([]domain.WaitingListEntry, error) {
+	if m.GetActiveByPatientFn != nil {
+		return m.GetActiveByPatientFn(ctx, patientID)
+	}
+	return nil, nil
+}
+
+// FindByID simula la búsqueda de una entrada de lista de espera por ID.
+func (m *MockWaitingListCreator) FindByID(ctx context.Context, id string) (*domain.WaitingListEntry, error) {
+	if m.FindByIDFn != nil {
+		return m.FindByIDFn(ctx, id)
+	}
+	return nil, nil
 }
 
 // UpdateStatus registra/simula el cambio de estado de una entrada de lista de espera.

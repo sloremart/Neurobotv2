@@ -25,6 +25,7 @@ import (
 // RegisterMedicalOrderHandlers registra los handlers de Orden Médica y OCR (Fase 8)
 func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, procedureRepo repository.ProcedureRepository, birdClient *bird.Client, wlRepo WaitingListCreator) {
 	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(wlRepo))
+	m.Register(sm.StateSelectWaitingList, selectWaitingListHandler(wlRepo))
 	m.Register(sm.StateUploadMedicalOrder, uploadMedicalOrderHandler(ocrSvc, birdClient))
 	m.Register(sm.StateValidateOCR, validateOCRHandler(procedureRepo))
 	m.Register(sm.StateConfirmOCRResult, confirmOCRResultHandler(procedureRepo, birdClient))
@@ -50,6 +51,15 @@ func ocrRetryButtons(birdClient *bird.Client) []sm.Button {
 // Si sí → sube foto y flujo normal. Si no → escala a agente y registra en lista de espera.
 func askMedicalOrderHandler(wlRepo WaitingListCreator) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		// Antes de pedir la orden: si el paciente ya tiene citas ACTIVAS en lista de espera, ofrecerle
+		// elegir una de ellas (retoma en la búsqueda de slots con los datos guardados) o seguir como
+		// cita nueva. Si no tiene ninguna, no se pregunta nada y continúa el flujo normal.
+		if wlRepo != nil && sess.GetContext("wl_offer_done") == "" {
+			if entries, err := wlRepo.GetActiveByPatient(ctx, sess.GetContext("patient_id")); err == nil && len(entries) > 0 {
+				return buildWaitingListSelection(entries), nil
+			}
+		}
+
 		// Pacientes PARTICULAR: preguntar si tienen orden antes de pedir foto
 		if sess.GetContext("entity_category") == "PARTICULAR" {
 			// Primera entrada (auto-chain): mostrar botones y detener la cadena
@@ -128,6 +138,101 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator) sm.StateHandler {
 			WithText("Envía una *foto clara* o *PDF* de tu orden médica.\n\nAsegúrate de que:\n- Se vean bien los procedimientos\n- La foto no esté borrosa\n- Se lea el texto").
 			WithEvent("order_method_selected", map[string]interface{}{"method": "photo"}).
 			WithEvent("order_photo_requested", nil), nil
+	}
+}
+
+func boolTo1(b bool) string {
+	if b {
+		return "1"
+	}
+	return ""
+}
+
+// buildWaitingListSelection arma la lista para que el paciente elija una cita ya en espera o "nueva".
+func buildWaitingListSelection(entries []domain.WaitingListEntry) *sm.StateResult {
+	rows := make([]sm.ListRow, 0, len(entries)+1)
+	for i, e := range entries {
+		if i >= 9 { // límite de filas de lista en WhatsApp (dejamos 1 para "cita nueva")
+			break
+		}
+		rows = append(rows, sm.ListRow{
+			ID:          e.ID,
+			Title:       truncate(e.CupsName, 24),
+			Description: "En espera desde " + e.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	rows = append(rows, sm.ListRow{ID: "wl_new", Title: "➕ Es una cita nueva"})
+	return sm.NewResult(sm.StateSelectWaitingList).
+		WithList(
+			"Tienes procedimientos en *lista de espera*. ¿Deseas agendar uno de estos ahora o es una *cita nueva*?",
+			"Ver opciones",
+			sm.ListSection{Title: "En lista de espera", Rows: rows},
+		).
+		WithEvent("waiting_list_offered", map[string]interface{}{"count": len(entries)})
+}
+
+// SELECT_WAITING_LIST (interactivo) — el paciente elige una cita ya en lista de espera (retoma la
+// búsqueda de slots con los datos guardados) o "cita nueva" (sigue al flujo de subir la orden).
+func selectWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
+	return func(ctx context.Context, _ *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		choice := strings.TrimSpace(msg.Text)
+		if msg.IsPostback {
+			choice = msg.PostbackPayload
+		}
+
+		// "Cita nueva" (o sin selección clara) → seguir al flujo normal de subir la orden.
+		if choice == "" || choice == "wl_new" {
+			return sm.NewResult(sm.StateAskMedicalOrder).
+				WithContext("wl_offer_done", "1").
+				WithEvent("waiting_list_new_chosen", nil), nil
+		}
+
+		entry, err := wlRepo.FindByID(ctx, choice)
+		if err != nil || entry == nil {
+			// Si no se pudo cargar, continuar con la orden nueva; el error no se propaga a la FSM.
+			res := sm.NewResult(sm.StateAskMedicalOrder).
+				WithContext("wl_offer_done", "1").
+				WithText("No pude cargar esa cita en espera. Continuemos con tu orden médica.")
+			return res, nil //nolint:nilerr // manejado re-preguntando, no se propaga
+		}
+
+		// Cargar la cita al contexto (mismo mapeo que el flujo de notificación proactiva) y retomar en
+		// la búsqueda de slots. waiting_list_entry_id → createAppointmentHandler la marca 'scheduled'.
+		// from_waiting_list=1 → si no hay slots, no se re-registra (ya existe).
+		r := sm.NewResult(sm.StateSearchSlots).
+			WithContext("cups_code", entry.CupsCode).
+			WithContext("cups_name", entry.CupsName).
+			WithContext("espacios", strconv.Itoa(entry.Espacios)).
+			WithContext("is_contrasted", boolTo1(entry.IsContrasted)).
+			WithContext("is_sedated", boolTo1(entry.IsSedated)).
+			WithContext("procedure_type", entry.ProcedureType).
+			WithContext("procedures_json", entry.ProceduresJSON).
+			WithContext("total_procedures", "1").
+			WithContext("current_procedure_idx", "0").
+			WithContext("patient_contract", entry.ContractCode).
+			WithContext("waiting_list_entry_id", entry.ID).
+			WithContext("from_waiting_list", "1").
+			WithContext("wl_offer_done", "1").
+			WithText("Vamos a buscar horarios disponibles para *"+entry.CupsName+"*...").
+			WithEvent("waiting_list_selected", map[string]interface{}{"entry_id": entry.ID, "cups_code": entry.CupsCode})
+
+		if entry.PreferredDoctorDoc != "" {
+			r.WithContext("preferred_doctor_doc", entry.PreferredDoctorDoc)
+		}
+		if entry.GfrCreatinine > 0 {
+			r.WithContext("gfr_creatinine", fmt.Sprintf("%.2f", entry.GfrCreatinine)).
+				WithContext("gfr_height_cm", strconv.Itoa(entry.GfrHeightCm)).
+				WithContext("gfr_weight_kg", fmt.Sprintf("%.1f", entry.GfrWeightKg)).
+				WithContext("gfr_disease_type", entry.GfrDiseaseType).
+				WithContext("gfr_calculated", fmt.Sprintf("%.1f", entry.GfrCalculated))
+		}
+		if entry.IsPregnant {
+			r.WithContext("is_pregnant", "1")
+		}
+		if entry.BabyWeightCat != "" {
+			r.WithContext("baby_weight_cat", entry.BabyWeightCat)
+		}
+		return r, nil
 	}
 }
 

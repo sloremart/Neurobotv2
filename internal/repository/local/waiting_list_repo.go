@@ -123,6 +123,75 @@ func (r *WaitingListRepo) HasActiveForPatientAndCups(ctx context.Context, patien
 	return count > 0, nil
 }
 
+// GetActiveByPatient devuelve las entradas ACTIVAS (waiting/notified) de un paciente, más recientes
+// primero. Se usa para ofrecerle, al iniciar un agendamiento, elegir una cita ya en espera. Trae
+// todos los campos porque al elegirla se alimenta directamente la búsqueda de slots.
+func (r *WaitingListRepo) GetActiveByPatient(ctx context.Context, patientID string) ([]domain.WaitingListEntry, error) {
+	query := `SELECT id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity, patient_contract,
+		cups_code, cups_name, is_contrasted, is_sedated, espacios, procedures_json, procedure_type,
+		gfr_creatinine, gfr_height_cm, gfr_weight_kg, gfr_disease_type, gfr_calculated,
+		is_pregnant, baby_weight_cat, preferred_doctor_doc,
+		status, created_at, expires_at
+		FROM waiting_list
+		WHERE patient_id = ? AND status IN ('waiting', 'notified')
+		ORDER BY created_at DESC`
+
+	rows, err := r.db.QueryContext(ctx, query, patientID)
+	if err != nil {
+		return nil, fmt.Errorf("get active by patient: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []domain.WaitingListEntry
+	for rows.Next() {
+		var e domain.WaitingListEntry
+		var gfrCreatinine, gfrWeightKg, gfrCalculated sql.NullFloat64
+		var gfrHeightCm sql.NullInt32
+		var gfrDiseaseType, babyWeightCat, preferredDoctorDoc sql.NullString
+		var isPregnant sql.NullBool
+
+		if err := rows.Scan(
+			&e.ID, &e.PhoneNumber, &e.PatientID, &e.PatientDoc,
+			&e.PatientName, &e.PatientAge, &e.PatientGender, &e.PatientEntity, &e.ContractCode,
+			&e.CupsCode, &e.CupsName, &e.IsContrasted, &e.IsSedated,
+			&e.Espacios, &e.ProceduresJSON, &e.ProcedureType,
+			&gfrCreatinine, &gfrHeightCm, &gfrWeightKg, &gfrDiseaseType, &gfrCalculated,
+			&isPregnant, &babyWeightCat, &preferredDoctorDoc,
+			&e.Status, &e.CreatedAt, &e.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan active by patient: %w", err)
+		}
+
+		if gfrCreatinine.Valid {
+			e.GfrCreatinine = gfrCreatinine.Float64
+		}
+		if gfrHeightCm.Valid {
+			e.GfrHeightCm = int(gfrHeightCm.Int32)
+		}
+		if gfrWeightKg.Valid {
+			e.GfrWeightKg = gfrWeightKg.Float64
+		}
+		if gfrDiseaseType.Valid {
+			e.GfrDiseaseType = gfrDiseaseType.String
+		}
+		if gfrCalculated.Valid {
+			e.GfrCalculated = gfrCalculated.Float64
+		}
+		if isPregnant.Valid {
+			e.IsPregnant = isPregnant.Bool
+		}
+		if babyWeightCat.Valid {
+			e.BabyWeightCat = babyWeightCat.String
+		}
+		if preferredDoctorDoc.Valid {
+			e.PreferredDoctorDoc = preferredDoctorDoc.String
+		}
+
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
 // GetDistinctWaitingCups returns distinct CUPS codes with waiting entries.
 func (r *WaitingListRepo) GetDistinctWaitingCups(ctx context.Context) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx,

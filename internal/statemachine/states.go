@@ -88,6 +88,7 @@ const (
 
 // === Orden Médica y OCR ===
 const (
+	StateSelectWaitingList  = "SELECT_WAITING_LIST" // elegir una cita ya en lista de espera o seguir como nueva
 	StateAskMedicalOrder    = "ASK_MEDICAL_ORDER"
 	StateUploadMedicalOrder = "UPLOAD_MEDICAL_ORDER"
 	StateValidateOCR        = "VALIDATE_OCR"
@@ -228,6 +229,7 @@ var stateTypes = map[string]StateType{
 	StateNotifRescheduleFallback: StateTypeInteractive,
 
 	// Orden Médica y OCR
+	StateSelectWaitingList:  StateTypeInteractive,
 	StateAskMedicalOrder:    StateTypeAutomatic,
 	StateUploadMedicalOrder: StateTypeInteractive,
 	StateValidateOCR:        StateTypeAutomatic,
