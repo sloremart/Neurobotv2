@@ -230,7 +230,7 @@ func main() {
 		coord := recovery.NewCoordinator(machine, recovery.NewAIRecovery(llm), recovery.Config{
 			Enabled:            true,
 			MaxPatientAttempts: cfg.AIRecoveryMaxPatientAttempts,
-			Monthly:            nil,
+			Monthly:            localrepo.NewAIRecoveryCounterRepo(localDB, cfg.AIRecoveryMonthlyLimit),
 		})
 		machine.SetRecoveryCoordinator(coord)
 		slog.Info("ai_recovery_enabled", "model", cfg.AIRecoveryModel, "max_patient_attempts", cfg.AIRecoveryMaxPatientAttempts)

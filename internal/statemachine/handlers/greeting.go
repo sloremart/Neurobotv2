@@ -73,7 +73,8 @@ func outOfHoursHandler(cfg *config.Config) sm.StateHandler {
 		welcomeText := fmt.Sprintf("Soy *%s*, tu asistente virtual de *%s*.\n\n"+
 			"Antes de continuar, ten en cuenta que al seguir conversando aceptas "+
 			"el tratamiento de tus datos personales conforme a nuestra Política de "+
-			"Protección de Datos (Ley 1581 de 2012), disponibles en www.neuroelectrodx.com\n\n"+
+			"Protección de Datos (Ley 1581 de 2012), disponibles en www.neuroelectrodx.com. "+
+			"También podemos usar inteligencia artificial para ayudarte a completar tus datos.\n\n"+
 			"Podrás ejercer tus derechos de acceso, rectificación o supresión en cualquier momento.",
 			cfg.BotName, cfg.CenterName)
 
@@ -177,7 +178,8 @@ func greetingHandler(cfg *config.Config) sm.StateHandler {
 		welcomeText := fmt.Sprintf("Soy *%s*, tu asistente virtual de *%s*.\n\n"+
 			"Antes de continuar, ten en cuenta que al seguir conversando aceptas "+
 			"el tratamiento de tus datos personales conforme a nuestra Política de "+
-			"Protección de Datos (Ley 1581 de 2012), disponibles en www.neuroelectrodx.com\n\n"+
+			"Protección de Datos (Ley 1581 de 2012), disponibles en www.neuroelectrodx.com. "+
+			"También podemos usar inteligencia artificial para ayudarte a completar tus datos.\n\n"+
 			"Podrás ejercer tus derechos de acceso, rectificación o supresión en cualquier momento.",
 			cfg.BotName, cfg.CenterName)
 
