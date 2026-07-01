@@ -1173,6 +1173,21 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 		}
 	}
 
+	// Guardar el último texto que el bot envía al paciente, como contexto conversacional para la
+	// capa de recuperación IA (le permite reaccionar a lo último que se le mostró al paciente).
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if t := statemachine.OutboundText(result.Messages[i]); t != "" {
+			if r := []rune(t); len(r) > 600 { // cap rune-safe (columna de contexto)
+				t = string(r[:600])
+			}
+			if result.UpdateCtx == nil {
+				result.UpdateCtx = map[string]string{}
+			}
+			result.UpdateCtx[statemachine.CtxLastBotMsg] = t
+			break
+		}
+	}
+
 	// Persist state + context
 	clearAll := false
 	for _, k := range result.ClearCtx {

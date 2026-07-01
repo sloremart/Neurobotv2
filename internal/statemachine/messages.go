@@ -5,6 +5,25 @@ type OutboundMessage interface {
 	Type() string
 }
 
+// CtxLastBotMsg es la clave de contexto de sesión donde se guarda el último texto que el bot le
+// envió al paciente. Sirve de contexto conversacional para la capa de recuperación IA.
+const CtxLastBotMsg = "last_bot_msg"
+
+// OutboundText devuelve el texto visible de un mensaje saliente (para historial/contexto). "" si el
+// tipo no tiene texto legible.
+func OutboundText(m OutboundMessage) string {
+	switch v := m.(type) {
+	case *TextMessage:
+		return v.Text
+	case *ButtonMessage:
+		return v.Text
+	case *ListMessage:
+		return v.Body
+	default:
+		return ""
+	}
+}
+
 // TextMessage es un mensaje de texto simple
 type TextMessage struct {
 	Text string

@@ -157,12 +157,18 @@ func (c *Coordinator) evaluate(ctx context.Context, sess *session.Session, cfg s
 			return Result{Handled: true, Value: "", Message: message, Reason: "domain"}
 		}
 	}
-	// 3. LLM.
+	// 3. LLM. Se pasa como historial el último mensaje del bot (lo que el paciente estaba
+	// respondiendo) para dar contexto conversacional y que la IA reaccione a lo que vio el paciente.
+	var history []string
+	if last := sess.GetContext(sm.CtxLastBotMsg); last != "" {
+		history = []string{"Último mensaje del bot al paciente: " + last}
+	}
 	r := c.ai.Try(ctx, Request{
 		BlockedState: blockedState,
 		Input:        input,
 		Hint:         cfg.AIInputHint,
 		Options:      cfg.Options,
+		History:      history,
 		Attempt:      attempt,
 	})
 	// Diagnóstico sin PII: si formateó, código de razón, intento y tokens de salida.
