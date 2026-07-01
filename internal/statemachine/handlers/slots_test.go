@@ -1019,3 +1019,33 @@ func TestCitaProceduresJSON_OnlyCurrentCita(t *testing.T) {
 		t.Errorf("esperaba solo la cita idx=1 {B,C} espacios=2, got %+v", groups)
 	}
 }
+
+func TestCitaProceduresJSON_BakesOcrQuantity(t *testing.T) {
+	// Grupo agrupado con cantidad 1, pero el OCR original traía 4 y 2 → deben hornearse.
+	pj, _ := json.Marshal([]services.CUPSGroup{
+		{ServiceType: "Fisiatria", Cups: []services.CUPSEntry{{Code: "A", Quantity: 1}, {Code: "B", Quantity: 1}}, Espacios: 3},
+	})
+	ocr, _ := json.Marshal([]services.CUPSEntry{{Code: "A", Quantity: 4}, {Code: "B", Quantity: 2}})
+	sess := testSess(sm.StateSearchSlots)
+	sess.SetContext("procedures_json", string(pj))
+	sess.SetContext("current_procedure_idx", "0")
+	sess.SetContext("ocr_cups_json", string(ocr))
+
+	var groups []services.CUPSGroup
+	if err := json.Unmarshal([]byte(citaProceduresJSON(sess)), &groups); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || len(groups[0].Cups) != 2 {
+		t.Fatalf("grupo inesperado: %+v", groups)
+	}
+	got := map[string]int{}
+	for _, c := range groups[0].Cups {
+		got[c.Code] = c.Quantity
+	}
+	if got["A"] != 4 || got["B"] != 2 {
+		t.Errorf("esperaba cantidades del OCR A=4 B=2, got %v", got)
+	}
+	if groups[0].Espacios != 3 {
+		t.Errorf("espacios debe preservarse=3, got %d", groups[0].Espacios)
+	}
+}

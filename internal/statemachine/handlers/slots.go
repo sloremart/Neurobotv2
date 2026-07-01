@@ -72,7 +72,32 @@ func citaProceduresJSON(sess *session.Session) string {
 	if idx < 0 || idx >= len(groups) {
 		return raw
 	}
-	b, err := json.Marshal([]services.CUPSGroup{groups[idx]})
+	group := groups[idx]
+
+	// PARIDAD CON EL AGENDAMIENTO: fijar en cada CUPS la cantidad DEFINITIVA que usaría el flujo
+	// normal — la original del OCR (ocr_cups_json) si existe, si no la agrupada. Así, al agendar
+	// desde lista de espera (donde ya NO hay OCR), las cantidades quedan idénticas al flujo normal.
+	if ocrJSON := sess.GetContext("ocr_cups_json"); ocrJSON != "" {
+		var orig []services.CUPSEntry
+		if json.Unmarshal([]byte(ocrJSON), &orig) == nil {
+			qty := make(map[string]int, len(orig))
+			for _, c := range orig {
+				if c.Quantity > 0 {
+					qty[c.Code] = c.Quantity
+				}
+			}
+			cups := make([]services.CUPSEntry, len(group.Cups))
+			copy(cups, group.Cups)
+			for i := range cups {
+				if oq, ok := qty[cups[i].Code]; ok {
+					cups[i].Quantity = oq
+				}
+			}
+			group.Cups = cups
+		}
+	}
+
+	b, err := json.Marshal([]services.CUPSGroup{group})
 	if err != nil {
 		return raw
 	}
