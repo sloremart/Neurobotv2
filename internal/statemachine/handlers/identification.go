@@ -17,6 +17,22 @@ import (
 
 // RegisterIdentificationHandlers registra ASK_DOCUMENT, PATIENT_LOOKUP, CONFIRM_IDENTITY
 // y los nuevos estados de verificación de datos de contacto.
+// docTypeAIHint arma el hint de recuperación IA con las 12 opciones REALES del catálogo (número →
+// nombre), para que el LLM pueda mapear cualquier tipo dicho en palabras (ej. "registro civil" → 3),
+// no solo unos ejemplos. El valor a inyectar es el número de la opción.
+func docTypeAIHint() string {
+	var b strings.Builder
+	b.WriteString("el NÚMERO (1 a 12) del tipo de documento; el paciente debe responder SOLO ese número. Opciones: ")
+	for i, d := range documentTypeCatalog {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%d=%s", i+1, d.Label)
+	}
+	b.WriteString(". El más común es 1 (Cédula de Ciudadanía).")
+	return b.String()
+}
+
 func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientService) {
 	// Tipo de documento (15 tipos del catálogo SIESA) — se pregunta ANTES del número.
 	// sis_paci no es único por num_id (mismo número con distinto tipo_id existe), así que la
@@ -26,10 +42,8 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	// Opt-in de recuperación IA (piloto). El valor a inyectar es el número de opción (1-12);
 	// regla de dominio: NO inferir el tipo de documento a partir del número (ver docs/RECUPERACION-IA.md §5).
 	m.RegisterRecovery(sm.StateAskDocumentType, sm.HandlerConfig{
-		AIRecovery: true,
-		AIInputHint: "el NÚMERO (del 1 al 12) del tipo de documento, tomado de la lista que ya se le mostró al paciente. " +
-			"El paciente debe responder SOLO ese número (ej.: 1 = Cédula de Ciudadanía, la más común; 2 = Tarjeta de Identidad; 4 = Cédula de Extranjería). " +
-			"Indícale que responda únicamente con el número de la opción.",
+		AIRecovery:   true,
+		AIInputHint:  docTypeAIHint(),
 		TextValidate: func(s string) bool { return parseDocType(s) != "" },
 		AIDomainBlock: func(input string) (bool, string, map[string]string) {
 			if looksLikeDocNumber(input) {
