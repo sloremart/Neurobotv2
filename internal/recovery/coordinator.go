@@ -78,11 +78,11 @@ func (c *Coordinator) TryStart(ctx context.Context, sess *session.Session, msg b
 	if c.monthly != nil {
 		allowed, err := c.monthly.TryReserve(ctx)
 		if err == nil && !allowed {
-			c.emit(sess, "ai_month_cap_reached", "month_cap", Usage{})
+			c.emit(sess, blockedState, "ai_month_cap_reached", "month_cap", Usage{})
 			return nil, false
 		}
 	}
-	c.emit(sess, "ai_recovery_started", "", Usage{})
+	c.emit(sess, blockedState, "ai_recovery_started", "", Usage{})
 
 	// Deshacer el cambio de estado que hizo el auto-chain hacia ESCALATE_TO_AGENT: quedamos
 	// congelados en el estado bloqueado para inyectar/validar contra el handler correcto.
@@ -94,7 +94,7 @@ func (c *Coordinator) TryStart(ctx context.Context, sess *session.Session, msg b
 	}
 	if res.Value != "" {
 		if out, ok := c.inject(ctx, sess, blockedState, res, msg); ok {
-			c.emitResolved(sess, res)
+			c.emitResolved(sess, blockedState, res)
 			return out, true
 		}
 		res.Value = "" // inyección falló (no pasó validación) → tratar como aclaración
@@ -103,7 +103,7 @@ func (c *Coordinator) TryStart(ctx context.Context, sess *session.Session, msg b
 		return nil, false // sin mensaje que enviar → escalar
 	}
 	// Primer consumo sin formatear: NO cuenta intento (attempts=0).
-	c.emit(sess, "ai_clarified", res.Reason, res.Usage)
+	c.emit(sess, blockedState, "ai_clarified", res.Reason, res.Usage)
 	return c.clarify(blockedState, res, 0), true
 }
 
@@ -122,7 +122,7 @@ func (c *Coordinator) Handle(ctx context.Context, sess *session.Session, msg bir
 	res := c.evaluate(ctx, sess, cfg, blockedState, msg.Text, prior+1)
 	if res.Handled && res.Value != "" {
 		if out, ok := c.inject(ctx, sess, blockedState, res, msg); ok {
-			c.emitResolved(sess, res)
+			c.emitResolved(sess, blockedState, res)
 			return out, true
 		}
 		res.Value = ""
@@ -135,11 +135,11 @@ func (c *Coordinator) Handle(ctx context.Context, sess *session.Session, msg bir
 		// a propósito: el guard del handler de escalación lo detectará, escalará de verdad y limpiará
 		// los flags.
 		esc := c.human.Try(ctx, Request{BlockedState: blockedState})
-		c.emit(sess, "ai_failed", esc.Reason, res.Usage)
+		c.emit(sess, blockedState, "ai_failed", esc.Reason, res.Usage)
 		return sm.NewResult(sm.StateEscalateToAgent), true
 	}
 	// Aún hay presupuesto: segundo mensaje aclaratorio.
-	c.emit(sess, "ai_clarified", res.Reason, res.Usage)
+	c.emit(sess, blockedState, "ai_clarified", res.Reason, res.Usage)
 	return c.clarify(blockedState, res, attempts), true
 }
 
@@ -153,7 +153,7 @@ func (c *Coordinator) evaluate(ctx context.Context, sess *session.Session, cfg s
 	// 2. Regla de dominio (p. ej. no inferir tipo de documento desde el número).
 	if cfg.AIDomainBlock != nil {
 		if blocked, message, _ := cfg.AIDomainBlock(input); blocked {
-			c.emit(sess, "ai_domain_block", "domain", Usage{})
+			c.emit(sess, blockedState, "ai_domain_block", "domain", Usage{})
 			return Result{Handled: true, Value: "", Message: message, Reason: "domain"}
 		}
 	}
@@ -211,19 +211,22 @@ func (c *Coordinator) clarify(blockedState string, res Result, attempts int) *sm
 }
 
 // emitResolved emite el evento de éxito según haya resuelto el validador puro o la IA.
-func (c *Coordinator) emitResolved(sess *session.Session, res Result) {
+func (c *Coordinator) emitResolved(sess *session.Session, state string, res Result) {
 	step := "ai_recovered"
 	if res.ByBot {
 		step = "ai_resolved_by_bot"
 	}
-	c.emit(sess, step, res.Reason, res.Usage)
+	c.emit(sess, state, step, res.Reason, res.Usage)
 }
 
-func (c *Coordinator) emit(sess *session.Session, step, reason string, u Usage) {
+// emit registra un evento del flujo "recuperacion". state = estado bloqueado (para el KPI por estado).
+func (c *Coordinator) emit(sess *session.Session, state, step, reason string, u Usage) {
 	observability.Emit(observability.TraceSession(sess.ID), "recuperacion", step, observability.EmitOpts{
 		Phone:  sess.PhoneNumber,
 		Reason: reason,
-		Attrs:  map[string]interface{}{"tokens_in": u.PromptTokens, "tokens_out": u.CompletionTokens, "llm_calls": u.Calls},
+		Attrs: map[string]interface{}{
+			"state": state, "tokens_in": u.PromptTokens, "tokens_out": u.CompletionTokens, "llm_calls": u.Calls,
+		},
 	})
 }
 
