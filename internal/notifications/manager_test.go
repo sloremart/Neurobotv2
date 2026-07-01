@@ -815,11 +815,12 @@ func TestBoolToStr(t *testing.T) {
 // === Waiting list mock structs ===
 
 type mockWaitingListFinder struct {
-	mu             sync.Mutex
-	findByIDFn     func(ctx context.Context, id string) (*domain.WaitingListEntry, error)
-	updateStatusFn func(ctx context.Context, id, status string) error
-	updatedID      string
-	updatedStatus  string
+	mu                  sync.Mutex
+	findByIDFn          func(ctx context.Context, id string) (*domain.WaitingListEntry, error)
+	updateStatusFn      func(ctx context.Context, id, status string) error
+	resolveIfNotifiedFn func(ctx context.Context, id, status string) (bool, error)
+	updatedID           string
+	updatedStatus       string
 }
 
 func (m *mockWaitingListFinder) FindByID(ctx context.Context, id string) (*domain.WaitingListEntry, error) {
@@ -838,6 +839,18 @@ func (m *mockWaitingListFinder) UpdateStatus(ctx context.Context, id, status str
 		return m.updateStatusFn(ctx, id, status)
 	}
 	return nil
+}
+
+func (m *mockWaitingListFinder) ResolveIfNotified(ctx context.Context, id, status string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.resolveIfNotifiedFn != nil {
+		return m.resolveIfNotifiedFn(ctx, id, status)
+	}
+	// Por defecto simula que la entrada seguía 'notified' y se resolvió: registra igual que UpdateStatus.
+	m.updatedID = id
+	m.updatedStatus = status
+	return true, nil
 }
 
 type mockSessionCreator struct {
@@ -1319,6 +1332,70 @@ func TestHandleWaitingListTimeout_NilDeps(t *testing.T) {
 
 	if mgr.HasPending("+573001234567") {
 		t.Error("expected pending to be removed even with nil deps")
+	}
+}
+
+// El paciente agendó la oferta desde el bot (entrada → 'scheduled') mientras el timer de 6h seguía
+// vivo. Al dispararse el timeout, ResolveIfNotified NO la encuentra en 'notified' → NO debe degradarla.
+func TestHandleWaitingListTimeout_SkipsWhenAlreadyScheduled(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	wlRepo := &mockWaitingListFinder{
+		resolveIfNotifiedFn: func(_ context.Context, _, _ string) (bool, error) {
+			return false, nil // ya no está 'notified' (fue agendada → 'scheduled')
+		},
+	}
+	cfg := &config.Config{}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+	mgr.SetWaitingListDeps(wlRepo, &mockSessionCreator{}, &mockVirtualEnqueuer{})
+
+	mgr.pending.Store("+573001234567", &PendingNotification{
+		Type:          "waiting_list",
+		Phone:         "+573001234567",
+		WaitingListID: "wl-scheduled-1",
+		Timer:         time.NewTimer(999 * time.Hour),
+	})
+
+	mgr.handleTimeout("+573001234567")
+
+	wlRepo.mu.Lock()
+	defer wlRepo.mu.Unlock()
+	if wlRepo.updatedStatus != "" {
+		t.Errorf("no debía degradar una entrada ya resuelta, pero updatedStatus=%q", wlRepo.updatedStatus)
+	}
+	if mgr.HasPending("+573001234567") {
+		t.Error("el pending debe eliminarse igual tras el timeout")
+	}
+}
+
+// Igual para decline: si la entrada ya fue agendada desde el bot, un decline tardío no debe degradarla.
+func TestHandleWaitingList_Decline_SkipsWhenAlreadyScheduled(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	wlRepo := &mockWaitingListFinder{
+		resolveIfNotifiedFn: func(_ context.Context, _, _ string) (bool, error) {
+			return false, nil
+		},
+	}
+	cfg := &config.Config{}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+	mgr.SetWaitingListDeps(wlRepo, &mockSessionCreator{}, &mockVirtualEnqueuer{})
+
+	mgr.RegisterPending(PendingNotification{
+		Type:           "waiting_list",
+		Phone:          "+573001234567",
+		WaitingListID:  "wl-scheduled-2",
+		ConversationID: "conv-decline",
+	})
+
+	mgr.HandleResponse("+573001234567", "wl_decline", "conv-decline")
+
+	wlRepo.mu.Lock()
+	defer wlRepo.mu.Unlock()
+	if wlRepo.updatedStatus != "" {
+		t.Errorf("no debía degradar a 'declined' una entrada ya resuelta, updatedStatus=%q", wlRepo.updatedStatus)
 	}
 }
 

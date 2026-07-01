@@ -304,6 +304,22 @@ func (r *WaitingListRepo) MarkNotified(ctx context.Context, id string) (bool, er
 	return n == 1, nil
 }
 
+// ResolveIfNotified lleva una entrada de 'notified' a un estado terminal (p.ej. 'expired' por timeout,
+// 'declined' por respuesta del paciente) SOLO si sigue en 'notified' (claim, como MarkNotified). Evita
+// pisar una entrada ya resuelta: si el paciente agendó esa oferta desde el bot (→ 'scheduled') mientras
+// aún había un timer/decline pendiente, un UPDATE incondicional la degradaba a 'expired'/'declined' y
+// corrompía los KPIs. Devuelve true si ESTA llamada la resolvió (RowsAffected==1).
+func (r *WaitingListRepo) ResolveIfNotified(ctx context.Context, id, status string) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE waiting_list SET status = ?, resolved_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'notified'",
+		status, id)
+	if err != nil {
+		return false, fmt.Errorf("resolve if notified: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
 // ExpireStaleNotified expira entradas notificadas que no respondieron en `hours` horas: pasan a
 // 'expired' (salen de la lista activa) para no bloquear al paciente ni re-notificarle antes de que
 // responda. Devuelve cuántas expiró.

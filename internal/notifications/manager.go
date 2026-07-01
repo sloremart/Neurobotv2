@@ -45,6 +45,9 @@ type PendingNotification struct {
 type WaitingListFinder interface {
 	FindByID(ctx context.Context, id string) (*domain.WaitingListEntry, error)
 	UpdateStatus(ctx context.Context, id, status string) error
+	// ResolveIfNotified pasa la entrada a un estado terminal SOLO si sigue en 'notified' (evita
+	// pisar una entrada ya 'scheduled' desde el bot). Devuelve true si esta llamada la resolvió.
+	ResolveIfNotified(ctx context.Context, id, status string) (bool, error)
 }
 
 // SessionCreator creates sessions and sets context (avoids importing repo/local directly).

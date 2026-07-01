@@ -112,7 +112,11 @@ func (m *NotificationManager) handleWaitingList(phone, action string, pending *P
 			"cups_code", entry.CupsCode)
 
 	case "decline": // postback: "wl_decline"
-		m.waitingListRepo.UpdateStatus(ctx, pending.WaitingListID, "declined")
+		// Solo declina si sigue 'notified': si el paciente ya agendó esa oferta desde el bot
+		// (→ 'scheduled') no se debe degradar a 'declined'.
+		if _, err := m.waitingListRepo.ResolveIfNotified(ctx, pending.WaitingListID, "declined"); err != nil {
+			slog.Warn("waiting list: decline failed", "entry_id", pending.WaitingListID, "error", err)
+		}
 
 		m.birdClient.SendText(phone, pending.ConversationID,
 			"Entendido. Si cambias de opinión, puedes escribirnos para agendar tu cita.")
@@ -139,7 +143,18 @@ func (m *NotificationManager) handleWaitingListTimeout(pending *PendingNotificat
 	// N-46: acotar el ctx para el write a la BD local (UpdateStatus).
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	m.waitingListRepo.UpdateStatus(ctx, pending.WaitingListID, "expired")
+	// Solo expira si sigue 'notified': si el paciente agendó esa oferta desde el bot mientras el timer
+	// seguía vivo (→ 'scheduled'), un expire incondicional pisaba ese estado y corrompía los KPIs.
+	resolved, err := m.waitingListRepo.ResolveIfNotified(ctx, pending.WaitingListID, "expired")
+	if err != nil {
+		slog.Warn("waiting list: expire on timeout failed", "entry_id", pending.WaitingListID, "error", err)
+		return
+	}
+	if !resolved {
+		slog.Info("waiting list timeout skipped: entry no longer notified",
+			"phone", utils.MaskPhone(pending.Phone), "entry_id", pending.WaitingListID)
+		return
+	}
 	// Already removed from sync.Map by handleTimeout via LoadAndDelete
 	observability.Emit(observability.TraceWaitingList(pending.WaitingListID), "lista_espera",
 		"expired", observability.EmitOpts{Phone: pending.Phone, Reason: "timeout_6h"})
