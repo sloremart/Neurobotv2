@@ -156,6 +156,18 @@ func RegisterRegistrationHandlers(
 // API real (ver docs/RECUPERACION-IA.md). Municipio y barrio quedan fuera a propósito: municipio ya
 // tiene búsqueda determinista por tokens (más segura que la IA, que puede alucinar el departamento).
 func registerRegistrationRecovery(m *sm.Machine) {
+	// Tipo de documento dentro del menú de corrección (mismo handler/regla que el piloto).
+	m.RegisterRecovery(sm.StateRegDocumentType, sm.HandlerConfig{
+		AIRecovery:   true,
+		AIInputHint:  docTypeAIHint(),
+		TextValidate: func(s string) bool { return parseDocType(s) != "" },
+		AIDomainBlock: func(input string) (bool, string, map[string]string) {
+			if looksLikeDocNumber(input) {
+				return true, "Parece que enviaste tu *número* de documento. Primero dime tu *tipo* de documento respondiendo el número de la opción (ej.: *1* = Cédula de Ciudadanía).", nil
+			}
+			return false, "", nil
+		},
+	})
 	m.RegisterRecovery(sm.StateRegFirstName, sm.HandlerConfig{
 		AIRecovery: true, TextValidate: validateName,
 		AIInputHint: "El PRIMER NOMBRE del paciente; si escribe una frase o el nombre completo, toma solo el primer nombre. v = una sola palabra, solo letras.",
