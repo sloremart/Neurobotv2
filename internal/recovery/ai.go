@@ -47,8 +47,10 @@ func (a *AIRecovery) Try(ctx context.Context, req Request) Result {
 // mensaje de fallback. Mantiene el contrato JSON y las reglas de seguridad.
 func systemPrompt(req Request) string {
 	var b strings.Builder
-	b.WriteString("Un paciente está respondiendo por WhatsApp a un bot de una clínica de neurología. ")
-	b.WriteString("El sistema necesita este dato:\n")
+	b.WriteString("Eres un agente de una clínica de neurología en Colombia atendiendo a un paciente por ")
+	b.WriteString("WhatsApp. El bot le pidió UN dato y el paciente respondió algo que el sistema no pudo ")
+	b.WriteString("procesar. Tu tarea es entender qué quiso decir y entregar ese dato en el formato EXACTO ")
+	b.WriteString("que el sistema necesita.\n\nDato requerido:\n")
 	b.WriteString(req.Hint)
 	b.WriteString("\n")
 	if len(req.Options) > 0 {
@@ -56,18 +58,22 @@ func systemPrompt(req Request) string {
 		b.WriteString(strings.Join(req.Options, ", "))
 		b.WriteString("\n")
 	}
-	b.WriteString("\nTu tarea: según el mensaje del paciente, identifica cuál de esas opciones está ")
-	b.WriteString("eligiendo, aunque lo escriba con palabras, sinónimos, incompleto, sin tildes o mal ")
-	b.WriteString("escrito. Elige la opción cuyo significado coincida con lo que quiso decir.\n")
-	b.WriteString("- Si identificas la opción → ok=true y v = el valor exacto que espera el sistema (el ")
-	b.WriteString("número de la opción), nunca las palabras del paciente.\n")
-	b.WriteString("- Si el mensaje de verdad no corresponde a ninguna opción, o se niega o pregunta otra ")
-	b.WriteString("cosa → ok=false y en m escribe, como un agente humano cálido y natural (no robótico), ")
-	b.WriteString("una respuesta breve a lo que el paciente acaba de decir que lo invite a elegir de la lista.\n")
+	b.WriteString("\nCómo decidir:\n")
+	b.WriteString("- Interpreta con flexibilidad: el paciente puede escribir en palabras, con sinónimos, ")
+	b.WriteString("sin tildes, mal escrito, incompleto o desordenado.\n")
+	b.WriteString("- Si logras obtener el dato → ok=true y v = EXACTAMENTE el valor en el formato que indica ")
+	b.WriteString("'Dato requerido' (SOLO el valor final: sin etiquetas, sin explicaciones, sin el texto del ")
+	b.WriteString("paciente tal cual). Respeta el formato de ese dato (no quites ni agregues nada que ese ")
+	b.WriteString("formato requiera). Si el dato admite un valor especial (p. ej. NA cuando el paciente dice ")
+	b.WriteString("que no tiene), úsalo.\n")
+	b.WriteString("- Si el mensaje NO permite obtener el dato con seguridad (se niega, pregunta otra cosa, no ")
+	b.WriteString("lo aporta o es ambiguo) → ok=false y en m escribe, como una persona real cálida y natural, ")
+	b.WriteString("una respuesta breve a lo que el paciente dijo que lo oriente a darlo. No inventes.\n")
+	b.WriteString("- Nunca infieras datos clínicos o de identidad que el paciente no haya dado explícitamente.\n")
 	if req.Attempt >= 1 {
 		b.WriteString("Ya se lo pediste antes y no sirvió: en m reformula distinto, con más claridad, sin repetir.\n")
 	}
-	b.WriteString("\nNo inventes ni infieras datos clínicos que el paciente no dio. Responde SOLO un JSON: ")
+	b.WriteString("\nResponde SOLO un JSON: ")
 	b.WriteString(`{"ok":bool,"v":string,"m":string,"r":string} `)
 	b.WriteString("(r = código corto del motivo). Nada de texto fuera del JSON.")
 	return b.String()

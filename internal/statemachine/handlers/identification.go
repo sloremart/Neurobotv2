@@ -22,7 +22,7 @@ import (
 // no solo unos ejemplos. El valor a inyectar es el número de la opción.
 func docTypeAIHint() string {
 	var b strings.Builder
-	b.WriteString("El TIPO DE DOCUMENTO del paciente. Debe elegir una de estas opciones (v = el número):\n")
+	b.WriteString("El TIPO DE DOCUMENTO del paciente. Elige una opción; v = ÚNICAMENTE el dígito de la opción (1 al 12), jamás el nombre:\n")
 	for i, d := range documentTypeCatalog {
 		fmt.Fprintf(&b, "%d) %s\n", i+1, d.Label)
 	}
