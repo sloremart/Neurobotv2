@@ -40,6 +40,34 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	m.Register(sm.StateCheckPriorConsult, checkPriorConsultHandler(apptSvc))
 	m.Register(sm.StateCheckMRCLimit, checkMRCLimitHandler(apptSvc))
 	m.Register(sm.StateCheckAgeRestriction, checkAgeRestrictionHandler())
+
+	registerMedicalRecovery(m)
+}
+
+// registerMedicalRecovery habilita la recuperación IA en los estados clínicos de entrada numérica /
+// selección. Hints validados contra la API real (15/15): unidades y formato exactos que espera cada
+// handler. Peso del bebé es selección (baby_low/baby_normal); el resto son números.
+func registerMedicalRecovery(m *sm.Machine) {
+	m.RegisterRecovery(sm.StateGfrCreatinine, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "El valor de CREATININA en sangre, en mg/dL (número decimal entre 0 y 30). v = solo el número decimal (usa punto).",
+	})
+	m.RegisterRecovery(sm.StateGfrHeight, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "La ESTATURA del paciente en CENTÍMETROS. Si la dan en metros, conviértela (1.70 m → 170). v = solo el número entero en cm.",
+	})
+	m.RegisterRecovery(sm.StateGfrWeight, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "El PESO del paciente en KILOGRAMOS. v = solo el número (usa punto para decimales).",
+	})
+	m.RegisterRecovery(sm.StateAskGestationalWeeks, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "Las SEMANAS DE GESTACIÓN. v = el número de semanas; usa punto para los días (13 semanas y 6 días → 13.6).",
+	})
+	m.RegisterRecovery(sm.StateAskBabyWeight, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "El PESO DEL BEBÉ al nacer. Opciones: baby_low (bajo peso, menos de 2.5 kg) o baby_normal (2.5 kg o más). v = exactamente 'baby_low' o 'baby_normal'.",
+	})
 }
 
 // --- Helpers ---
