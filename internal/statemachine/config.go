@@ -39,6 +39,10 @@ type HandlerConfig struct {
 	AIInputHint string
 	// AICarryKeys mapea claves de "dato adelantado" del LLM → claves de contexto de sesión.
 	AICarryKeys map[string]string
+	// AIDomainBlock aplica la regla de dominio: dado el input, retorna blocked=true con un mensaje
+	// aclaratorio (y dato adelantado opcional) cuando la IA NO debe inferir (p. ej. el tipo de
+	// documento desde el número). nil = sin regla.
+	AIDomainBlock func(input string) (blocked bool, message string, carry map[string]string)
 }
 
 // ValidatedPayload extrae el payload validado del context (para InputButton handlers).

@@ -220,7 +220,7 @@ func TestImageOutOfContext_TextIgnored(t *testing.T) {
 func TestRegisterInterceptors_Count(t *testing.T) {
 	m := NewMachine()
 	RegisterInterceptors(m)
-	if len(m.interceptors) != 4 {
-		t.Errorf("expected 4 interceptors, got %d", len(m.interceptors))
+	if len(m.interceptors) != 5 {
+		t.Errorf("expected 5 interceptors, got %d", len(m.interceptors))
 	}
 }

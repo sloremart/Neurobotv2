@@ -125,10 +125,28 @@ func EscalationKeywordsInterceptor() Interceptor {
 	}
 }
 
+// AIRecoveryInterceptor entrega el mensaje del paciente al coordinador de recuperación (validador
+// puro → LLM) en vez del handler normal mientras la sesión esté en modo recuperación IA. Se registra
+// DESPUÉS del de keywords de escalación y el de menú, para que "agente"/"menú" sigan como escape.
+func AIRecoveryInterceptor(m *Machine) Interceptor {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool) {
+		rc := m.recovery
+		if rc == nil || !rc.Active(sess) {
+			return nil, false
+		}
+		// No interceptar postbacks (respuestas a botones); la recuperación es para texto libre.
+		if msg.IsPostback {
+			return nil, false
+		}
+		return rc.Handle(ctx, sess, msg)
+	}
+}
+
 // RegisterInterceptors registra todos los interceptores en la máquina
 func RegisterInterceptors(machine *Machine) {
 	machine.AddInterceptor(UnsupportedMessageInterceptor())
 	machine.AddInterceptor(ImageOutOfContextInterceptor())
 	machine.AddInterceptor(EscalationKeywordsInterceptor()) // Before menu reset
 	machine.AddInterceptor(MenuResetInterceptor())
+	machine.AddInterceptor(AIRecoveryInterceptor(machine)) // Last: keywords/menu escape first
 }

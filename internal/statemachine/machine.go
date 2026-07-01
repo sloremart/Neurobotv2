@@ -48,6 +48,28 @@ func (m *Machine) SetRecoveryCoordinator(rc RecoveryCoordinator) {
 	m.recovery = rc
 }
 
+// Recovery devuelve la capa de recuperación IA (nil si no se configuró).
+func (m *Machine) Recovery() RecoveryCoordinator {
+	return m.recovery
+}
+
+// RegisterRecovery adjunta metadatos de recuperación IA a un estado registrado con Register (no con
+// RegisterWithConfig). Hace merge sobre la config existente del estado, sin tocar su handler.
+func (m *Machine) RegisterRecovery(state string, cfg HandlerConfig) {
+	existing := m.configs[state]
+	existing.AIRecovery = cfg.AIRecovery
+	existing.AIInputHint = cfg.AIInputHint
+	existing.AICarryKeys = cfg.AICarryKeys
+	existing.AIDomainBlock = cfg.AIDomainBlock
+	if cfg.TextValidate != nil {
+		existing.TextValidate = cfg.TextValidate
+	}
+	if cfg.Options != nil {
+		existing.Options = cfg.Options
+	}
+	m.configs[state] = existing
+}
+
 // NewMachine crea una nueva máquina de estados
 func NewMachine() *Machine {
 	return &Machine{

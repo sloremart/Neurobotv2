@@ -2,27 +2,26 @@ package recovery
 
 import "context"
 
-// Request es el contexto que el coordinador pasa a una estrategia para que decida qué hacer con un
-// input bloqueado. No contiene PII más allá del input del paciente (que la estrategia procesa pero
-// no debe loguear).
+// Request es el contexto que el coordinador pasa a una estrategia para interpretar un input
+// bloqueado. No se loguea el Input (PII potencial).
 type Request struct {
-	BlockedState string            // estado de la FSM donde el paciente quedó bloqueado
-	Input        string            // texto del paciente a interpretar
-	Hint         string            // HandlerConfig.AIInputHint: formato/opciones esperadas
-	Options      []string          // opciones válidas (estados de selección), si aplica
-	Validate     func(string) bool // validador puro del estado (mismo que usa el bot)
-	History      []string          // últimos 1-2 mensajes (contexto mínimo)
-	CarryKeys    map[string]string // mapeo dato_adelantado → clave de contexto de sesión
+	BlockedState string   // estado de la FSM donde el paciente quedó bloqueado
+	Input        string   // texto del paciente a interpretar
+	Hint         string   // HandlerConfig.AIInputHint: formato/opciones esperadas
+	Options      []string // opciones válidas (estados de selección), si aplica
+	History      []string // últimos 1-2 mensajes (contexto mínimo)
 }
 
 // Result es la decisión de una estrategia sobre un input bloqueado.
 type Result struct {
 	Handled  bool              // la estrategia tomó el control de este intento
+	ByBot    bool              // resuelto por el validador puro (sin LLM)
 	Value    string            // valor a inyectar por machine.Process (si formateó)
 	Message  string            // mensaje aclaratorio al paciente (si no formateó)
-	Carry    map[string]string // dato adelantado a persistir en sesión
+	Carry    map[string]string // dato adelantado (claves crudas del LLM; el coordinador las mapea)
 	Escalate bool              // pide escalar a humano (fallback)
 	Reason   string            // código corto para KPIs/auditoría (no PII)
+	Usage    Usage             // tokens consumidos (para KPIs/costo)
 }
 
 // Strategy intenta recuperar un input bloqueado. Implementaciones: AIRecovery (LLM) y

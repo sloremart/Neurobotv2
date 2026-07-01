@@ -163,6 +163,10 @@ func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
 			"escalated", "agent_resumed", "agent_closed", "agent_reminder_sent", "escalation_expired",
 			"agent_no_show", "escalation_no_channel",
 		},
+		"recuperacion": {
+			"ai_recovery_started", "ai_recovered", "ai_resolved_by_bot", "ai_clarified",
+			"ai_failed", "ai_domain_block", "ai_month_cap_reached",
+		},
 		"scheduler": {"task_completed", "task_failed"},
 		"admin_agenda": {
 			"agenda_cancelled", "agenda_rescheduled", "patients_notified",

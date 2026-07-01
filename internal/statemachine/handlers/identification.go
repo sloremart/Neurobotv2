@@ -23,6 +23,19 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	// búsqueda necesita tipo + número. El tipo también se reutiliza si el paciente no existe y
 	// pasa a registro.
 	m.Register(sm.StateAskDocumentType, askDocumentTypeHandler())
+	// Opt-in de recuperación IA (piloto). El valor a inyectar es el número de opción (1-12);
+	// regla de dominio: NO inferir el tipo de documento a partir del número (ver docs/RECUPERACION-IA.md §5).
+	m.RegisterRecovery(sm.StateAskDocumentType, sm.HandlerConfig{
+		AIRecovery:   true,
+		AIInputHint:  "un número de opción entre 1 y 12 del catálogo de tipo de documento (ej.: 1 = Cédula de Ciudadanía, 2 = Tarjeta de Identidad, 4 = Cédula de Extranjería)",
+		TextValidate: func(s string) bool { return parseDocType(s) != "" },
+		AIDomainBlock: func(input string) (bool, string, map[string]string) {
+			if looksLikeDocNumber(input) {
+				return true, "Parece que enviaste tu *número* de documento. Primero dime tu *tipo* de documento respondiendo el número de la opción (ej.: *1* = Cédula de Ciudadanía).", nil
+			}
+			return false, "", nil
+		},
+	})
 	m.RegisterWithConfig(sm.StateAskDocument, sm.HandlerConfig{
 		InputType:    sm.InputText,
 		TextValidate: validators.Document,

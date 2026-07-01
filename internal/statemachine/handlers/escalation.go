@@ -10,6 +10,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
+	"github.com/neuro-bot/neuro-bot/internal/recovery"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -22,13 +23,13 @@ type EscalationCreator interface {
 
 // RegisterEscalationHandlers registra los handlers de escalación a agente (Fase 11).
 func RegisterEscalationHandlers(m *sm.Machine, birdClient *bird.Client, cfg *config.Config, escRepo EscalationCreator) {
-	m.Register(sm.StateEscalateToAgent, escalateHandler(birdClient, cfg, escRepo))
+	m.Register(sm.StateEscalateToAgent, escalateHandler(m, birdClient, cfg, escRepo))
 	m.Register(sm.StateEscalated, escalatedHandler())
 }
 
 // ESCALATE_TO_AGENT (automático) — transfiere la conversación a un agente humano.
 // Routes to the correct Bird team based on the CUPS procedure code.
-func escalateHandler(birdClient *bird.Client, cfg *config.Config, escRepo EscalationCreator) sm.StateHandler {
+func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config, escRepo EscalationCreator) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		// 1. Determine team based on service (CUPS code)
 		cupsCode := sess.GetContext("cups_code")
@@ -40,6 +41,15 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config, escRepo Escala
 			preState = sess.CurrentState
 		}
 		sess.SetContext("pre_escalation_state", preState)
+
+		// Capa de recuperación IA (§2.1): antes de escalar de verdad, darle la oportunidad de
+		// desbloquear el input. Solo si el estado es opt-in y NO estamos ya en recuperación (si ya
+		// lo estamos, llegamos aquí por presupuesto agotado o keyword del paciente → escalar).
+		if rc := m.Recovery(); rc != nil && !rc.Active(sess) {
+			if res, ok := rc.TryStart(ctx, sess, msg, preState); ok {
+				return res, nil
+			}
+		}
 
 		slog.Debug(
 			"escalation_start",
@@ -118,6 +128,7 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config, escRepo Escala
 				observability.EmitOpts{Phone: msg.Phone, Reason: err.Error()})
 			// Agent unavailable → fallback to restart/end menu
 			return sm.NewResult(sm.StateFallbackMenu).
+				WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
 				WithButtons(
 					"No pudimos conectarte con un agente en este momento. ¿Qué deseas hacer?",
 					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
@@ -166,6 +177,7 @@ func escalateHandler(birdClient *bird.Client, cfg *config.Config, escRepo Escala
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
 
 		return sm.NewResult(sm.StateEscalated).
+			WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
 			WithContext("pre_escalation_state", preState).
 			WithContext("escalation_team", teamID).
 			WithEvent("escalated_to_agent", map[string]interface{}{

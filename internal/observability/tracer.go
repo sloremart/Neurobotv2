@@ -129,6 +129,15 @@ var catalog = map[string]stepSpec{
 	"escalacion/agent_no_show":         {LvOutcome, "no_show", ""}, // agente nunca atendió → bot retoma
 	"escalacion/escalation_no_channel": {LvOutcome, "error", ""},   // no se pudo resolver conversación en Bird
 
+	// Recuperación asistida por IA (§11) — trace sess:<id>. Concepto distinto de escalación.
+	"recuperacion/ai_recovery_started":  {LvMilestone, "info", ""},    // 3.ª falla del bot → arranca IA
+	"recuperacion/ai_recovered":         {LvOutcome, "ok", ""},        // la IA formateó y el bot avanzó
+	"recuperacion/ai_resolved_by_bot":   {LvOutcome, "ok", ""},        // resolvió el validador puro (sin LLM)
+	"recuperacion/ai_clarified":         {LvMilestone, "retry", ""},   // la IA envió mensaje aclaratorio
+	"recuperacion/ai_failed":            {LvOutcome, "escalated", ""}, // agotó presupuesto IA → escala
+	"recuperacion/ai_domain_block":      {LvOutcome, "blocked", ""},   // regla de dominio impidió inferir
+	"recuperacion/ai_month_cap_reached": {LvOutcome, "info", ""},      // tope mensual → directo a agente
+
 	// Tareas del scheduler (§3A) — trace task:<name>:<date>
 	"scheduler/task_completed": {LvOutcome, "ok", ""},
 	"scheduler/task_failed":    {LvError, "error", ""},

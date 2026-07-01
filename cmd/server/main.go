@@ -25,6 +25,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
+	"github.com/neuro-bot/neuro-bot/internal/recovery"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/repository/siesa"
@@ -220,6 +221,20 @@ func main() {
 	// Fase 11: Post-Acción y Escalación
 	handlers.RegisterPostActionHandlers(machine, birdClient)
 	handlers.RegisterEscalationHandlers(machine, birdClient, cfg, escalationRepo)
+
+	// Recuperación asistida por IA (capa antes de escalar; docs/RECUPERACION-IA.md). Se cablea tras
+	// registrar los handlers para que la Machine tenga los metadatos de opt-in por estado. Requiere
+	// API key de OpenAI; usa su propio modelo (distinto al del OCR). Tope mensual: Fase 3 (nil = sin).
+	if cfg.AIRecoveryEnabled && cfg.OpenAIAPIKey != "" {
+		llm := recovery.NewLLMClient(cfg.OpenAIAPIKey, cfg.AIRecoveryModel, cfg.AIRecoveryMaxOutputTokens)
+		coord := recovery.NewCoordinator(machine, recovery.NewAIRecovery(llm), recovery.Config{
+			Enabled:            true,
+			MaxPatientAttempts: cfg.AIRecoveryMaxPatientAttempts,
+			Monthly:            nil,
+		})
+		machine.SetRecoveryCoordinator(coord)
+		slog.Info("ai_recovery_enabled", "model", cfg.AIRecoveryModel, "max_patient_attempts", cfg.AIRecoveryMaxPatientAttempts)
+	}
 
 	// Fase 12: Notificaciones Proactivas y Scheduler
 	if appointmentSvc != nil {
