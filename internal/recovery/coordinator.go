@@ -87,7 +87,7 @@ func (c *Coordinator) TryStart(ctx context.Context, sess *session.Session, msg b
 	// congelados en el estado bloqueado para inyectar/validar contra el handler correcto.
 	sess.CurrentState = blockedState
 
-	res := c.evaluate(ctx, sess, cfg, blockedState, msg.Text)
+	res := c.evaluate(ctx, sess, cfg, blockedState, msg.Text, 0)
 	if !res.Handled {
 		return nil, false // error del LLM → escalar
 	}
@@ -117,7 +117,8 @@ func (c *Coordinator) Handle(ctx context.Context, sess *session.Session, msg bir
 		return nil, false
 	}
 
-	res := c.evaluate(ctx, sess, cfg, blockedState, msg.Text)
+	prior := parseAttempts(sess.GetContext(CtxRecoveryAttempts))
+	res := c.evaluate(ctx, sess, cfg, blockedState, msg.Text, prior+1)
 	if res.Handled && res.Value != "" {
 		if out, ok := c.inject(ctx, sess, blockedState, res, msg); ok {
 			c.emitResolved(sess, res)
@@ -127,7 +128,7 @@ func (c *Coordinator) Handle(ctx context.Context, sess *session.Session, msg bir
 	}
 
 	// Falló este intento del paciente.
-	attempts := parseAttempts(sess.GetContext(CtxRecoveryAttempts)) + 1
+	attempts := prior + 1
 	if !res.Handled || res.Message == "" || attempts >= c.maxAttempts {
 		// Presupuesto agotado (o error LLM) → fallback de escalación humana. Se deja el flag activo
 		// a propósito: el guard del handler de escalación lo detectará, escalará de verdad y limpiará
@@ -141,8 +142,9 @@ func (c *Coordinator) Handle(ctx context.Context, sess *session.Session, msg bir
 	return c.clarify(blockedState, res, attempts), true
 }
 
-// evaluate corre el validador puro del bot, luego la regla de dominio, luego el LLM.
-func (c *Coordinator) evaluate(ctx context.Context, sess *session.Session, cfg sm.HandlerConfig, blockedState, input string) Result {
+// evaluate corre el validador puro del bot, luego la regla de dominio, luego el LLM. attempt es el
+// número de aclaración (0 = primer consumo; 1+ = reintentos) para que el LLM escale la claridad.
+func (c *Coordinator) evaluate(ctx context.Context, sess *session.Session, cfg sm.HandlerConfig, blockedState, input string, attempt int) Result {
 	// 1. Validador puro del bot (gratis): si pasa, lo resuelve el bot sin LLM.
 	if cfg.TextValidate != nil && cfg.TextValidate(input) {
 		return Result{Handled: true, ByBot: true, Value: input, Reason: "bot_validate"}
@@ -160,6 +162,7 @@ func (c *Coordinator) evaluate(ctx context.Context, sess *session.Session, cfg s
 		Input:        input,
 		Hint:         cfg.AIInputHint,
 		Options:      cfg.Options,
+		Attempt:      attempt,
 	})
 }
 

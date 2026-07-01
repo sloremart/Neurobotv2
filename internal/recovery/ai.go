@@ -42,13 +42,15 @@ func (a *AIRecovery) Try(ctx context.Context, req Request) Result {
 	return res
 }
 
-// systemPrompt fija el rol acotado, el contrato JSON de salida (claves cortas) y las reglas de
-// seguridad. Es el prefijo estable por estado.
+// systemPrompt da PERSONA + CONTEXTO (no reglas rígidas de estructura), para que el mensaje al
+// paciente salga natural y conversacional, como lo escribiría un agente humano. Mantiene el contrato
+// JSON de salida y las reglas de seguridad. Es el prefijo estable por estado.
 func systemPrompt(req Request) string {
 	var b strings.Builder
-	b.WriteString("Eres un asistente que SOLO reformatea la respuesta de un paciente al formato exacto ")
-	b.WriteString("que espera un bot de agendamiento médico. No agendas, no das consejo médico, no inventas datos.\n")
-	b.WriteString("Formato esperado para este paso: ")
+	b.WriteString("Eres un agente humano amable de una clínica de neurología en Colombia que atiende a un ")
+	b.WriteString("paciente por WhatsApp. Escribes natural, cálido y cercano, como una persona real; ")
+	b.WriteString("nunca robótico ni con plantillas. No agendas, no das consejo médico, no inventas datos.\n\n")
+	b.WriteString("El sistema necesita del paciente este dato: ")
 	b.WriteString(req.Hint)
 	b.WriteString("\n")
 	if len(req.Options) > 0 {
@@ -56,18 +58,25 @@ func systemPrompt(req Request) string {
 		b.WriteString(strings.Join(req.Options, ", "))
 		b.WriteString("\n")
 	}
-	b.WriteString("REGLAS:\n")
-	b.WriteString("- Si puedes mapear la respuesta al formato exacto, responde ok=true y v=<valor exacto>.\n")
-	b.WriteString("- Si NO puedes, responde ok=false y m=<un mensaje breve y claro, una sola pregunta, ")
-	b.WriteString("con el formato/opciones exactas, máx 2 líneas> en español.\n")
-	b.WriteString("- NUNCA infieras datos clínicos sensibles que el paciente no dio explícitamente.\n")
-	b.WriteString("- Responde SOLO un JSON con las claves: ")
-	b.WriteString(`{"ok":bool,"v":string,"c":{},"m":string,"r":string}. `)
-	b.WriteString("r es un código corto (ej: ambiguous, off_topic, empty). No agregues texto fuera del JSON.")
+	b.WriteString("\nSi lo que respondió el paciente ya sirve para ese dato → ok=true y v=<el valor exacto ")
+	b.WriteString("que espera el sistema>.\n")
+	b.WriteString("Si no sirve → ok=false y escribe en m un mensaje conversacional y amable, con TUS ")
+	b.WriteString("propias palabras, que RESPONDA a lo que el paciente acaba de decir: reacciona a su ")
+	b.WriteString("mensaje concreto (si dudó, si se negó, si preguntó otra cosa, si escribió algo sin ")
+	b.WriteString("relación) y desde ahí guíalo, con naturalidad, hacia lo que se necesita. Breve ")
+	b.WriteString("(1-2 líneas), una sola pregunta, sin sonar a formulario.\n")
+	if req.Attempt >= 1 {
+		b.WriteString("Ya le habías pedido esto y volvió a no servir: reformúlalo DISTINTO, con otras ")
+		b.WriteString("palabras y más claridad y paciencia, sin repetir el mensaje anterior.\n")
+	}
+	b.WriteString("\nReglas: NUNCA infieras datos clínicos sensibles que el paciente no dio ")
+	b.WriteString("explícitamente. Responde SOLO un JSON: ")
+	b.WriteString(`{"ok":bool,"v":string,"c":{},"m":string,"r":string} `)
+	b.WriteString("(r = código corto: ambiguous, off_topic, empty…). Nada de texto fuera del JSON.")
 	return b.String()
 }
 
-// userPrompt lleva el contexto mínimo: últimos mensajes + la respuesta a interpretar.
+// userPrompt lleva el contexto mínimo: nº de intento + lo que respondió el paciente.
 func userPrompt(req Request) string {
 	var b strings.Builder
 	if len(req.History) > 0 {
@@ -78,6 +87,9 @@ func userPrompt(req Request) string {
 			b.WriteString("\n")
 		}
 	}
-	fmt.Fprintf(&b, "Respuesta del paciente a reformatear: %q", req.Input)
+	if req.Attempt >= 1 {
+		fmt.Fprintf(&b, "(Ya le pediste esto %d vez/veces y no sirvió.)\n", req.Attempt)
+	}
+	fmt.Fprintf(&b, "El paciente respondió: %q", req.Input)
 	return b.String()
 }

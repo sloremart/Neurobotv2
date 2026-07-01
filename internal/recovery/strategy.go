@@ -10,6 +10,7 @@ type Request struct {
 	Hint         string   // HandlerConfig.AIInputHint: formato/opciones esperadas
 	Options      []string // opciones válidas (estados de selección), si aplica
 	History      []string // últimos 1-2 mensajes (contexto mínimo)
+	Attempt      int      // # de aclaración: 0 = primer intento; 1+ = reintentos (para escalar claridad)
 }
 
 // Result es la decisión de una estrategia sobre un input bloqueado.
