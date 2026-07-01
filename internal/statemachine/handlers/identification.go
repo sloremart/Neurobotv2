@@ -22,14 +22,10 @@ import (
 // no solo unos ejemplos. El valor a inyectar es el número de la opción.
 func docTypeAIHint() string {
 	var b strings.Builder
-	b.WriteString("el NÚMERO (1 a 12) del tipo de documento; el paciente debe responder SOLO ese número. Opciones: ")
+	b.WriteString("El TIPO DE DOCUMENTO del paciente. Debe elegir una de estas opciones (v = el número):\n")
 	for i, d := range documentTypeCatalog {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%d=%s", i+1, d.Label)
+		fmt.Fprintf(&b, "%d) %s\n", i+1, d.Label)
 	}
-	b.WriteString(". El más común es 1 (Cédula de Ciudadanía).")
 	return b.String()
 }
 

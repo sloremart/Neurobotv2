@@ -42,15 +42,13 @@ func (a *AIRecovery) Try(ctx context.Context, req Request) Result {
 	return res
 }
 
-// systemPrompt da PERSONA + CONTEXTO (no reglas rígidas de estructura), para que el mensaje al
-// paciente salga natural y conversacional, como lo escribiría un agente humano. Mantiene el contrato
-// JSON de salida y las reglas de seguridad. Es el prefijo estable por estado.
+// systemPrompt enmarca la tarea como una SELECCIÓN limpia ("¿qué opción está eligiendo el
+// paciente?") con las opciones como lista, sin ejemplos que distraigan. Persona humana solo para el
+// mensaje de fallback. Mantiene el contrato JSON y las reglas de seguridad.
 func systemPrompt(req Request) string {
 	var b strings.Builder
-	b.WriteString("Eres un agente humano amable de una clínica de neurología en Colombia que atiende a un ")
-	b.WriteString("paciente por WhatsApp. Escribes natural, cálido y cercano, como una persona real; ")
-	b.WriteString("nunca robótico ni con plantillas. No agendas, no das consejo médico, no inventas datos.\n\n")
-	b.WriteString("El sistema necesita del paciente este dato: ")
+	b.WriteString("Un paciente está respondiendo por WhatsApp a un bot de una clínica de neurología. ")
+	b.WriteString("El sistema necesita este dato:\n")
 	b.WriteString(req.Hint)
 	b.WriteString("\n")
 	if len(req.Options) > 0 {
@@ -58,26 +56,20 @@ func systemPrompt(req Request) string {
 		b.WriteString(strings.Join(req.Options, ", "))
 		b.WriteString("\n")
 	}
-	b.WriteString("\nTu PRIORIDAD es reconocer el dato en lo que el paciente escribió. Sé GENEROSO al ")
-	b.WriteString("mapear: si el texto se PARECE a alguna opción de arriba —aunque esté muy mal escrito, ")
-	b.WriteString("abreviado, sin tildes o mezcle idiomas (p. ej. 'permso spcial'→Permiso Especial, ")
-	b.WriteString("'cedula de ciudania'→Cédula de Ciudadanía, 'reg civil'→Registro Civil)— ELIGE la opción ")
-	b.WriteString("más parecida. Si logras reconocerlo → ok=true y v = EXACTAMENTE el valor que el sistema ")
-	b.WriteString("espera según lo de arriba (el número/código de la opción), NUNCA las palabras del paciente.\n")
-	b.WriteString("Marca que no corresponde SOLO si el texto no se parece a NINGUNA opción. En ese caso ")
-	b.WriteString("→ ok=false y escribe en m un mensaje conversacional y amable, con TUS ")
-	b.WriteString("propias palabras, que RESPONDA a lo que el paciente acaba de decir: reacciona a su ")
-	b.WriteString("mensaje concreto (si dudó, si se negó, si preguntó otra cosa, si escribió algo sin ")
-	b.WriteString("relación) y desde ahí guíalo, con naturalidad, hacia lo que se necesita. Breve ")
-	b.WriteString("(1-2 líneas), una sola pregunta, sin sonar a formulario.\n")
+	b.WriteString("\nTu tarea: según el mensaje del paciente, identifica cuál de esas opciones está ")
+	b.WriteString("eligiendo, aunque lo escriba con palabras, sinónimos, incompleto, sin tildes o mal ")
+	b.WriteString("escrito. Elige la opción cuyo significado coincida con lo que quiso decir.\n")
+	b.WriteString("- Si identificas la opción → ok=true y v = el valor exacto que espera el sistema (el ")
+	b.WriteString("número de la opción), nunca las palabras del paciente.\n")
+	b.WriteString("- Si el mensaje de verdad no corresponde a ninguna opción, o se niega o pregunta otra ")
+	b.WriteString("cosa → ok=false y en m escribe, como un agente humano cálido y natural (no robótico), ")
+	b.WriteString("una respuesta breve a lo que el paciente acaba de decir que lo invite a elegir de la lista.\n")
 	if req.Attempt >= 1 {
-		b.WriteString("Ya le habías pedido esto y volvió a no servir: reformúlalo DISTINTO, con otras ")
-		b.WriteString("palabras y más claridad y paciencia, sin repetir el mensaje anterior.\n")
+		b.WriteString("Ya se lo pediste antes y no sirvió: en m reformula distinto, con más claridad, sin repetir.\n")
 	}
-	b.WriteString("\nReglas: NUNCA infieras datos clínicos sensibles que el paciente no dio ")
-	b.WriteString("explícitamente. Responde SOLO un JSON: ")
-	b.WriteString(`{"ok":bool,"v":string,"c":{},"m":string,"r":string} `)
-	b.WriteString("(r = código corto: ambiguous, off_topic, empty…). Nada de texto fuera del JSON.")
+	b.WriteString("\nNo inventes ni infieras datos clínicos que el paciente no dio. Responde SOLO un JSON: ")
+	b.WriteString(`{"ok":bool,"v":string,"m":string,"r":string} `)
+	b.WriteString("(r = código corto del motivo). Nada de texto fuera del JSON.")
 	return b.String()
 }
 
