@@ -101,6 +101,9 @@ type MunicipalityRepository interface {
 	// SearchBarrios busca barrios del catálogo sis_barrios por nombre, acotados al
 	// municipio (depCode, muniCode) ya seleccionado.
 	SearchBarrios(ctx context.Context, name, depCode, muniCode string) ([]domain.Barrio, error)
+	// CreateNeighborhood crea un barrio en sis_barrios (nombres/municipio/zona/dept; codigo es
+	// IDENTITY) y devuelve el código nuevo. Hace una verificación exacta previa para no duplicar.
+	CreateNeighborhood(ctx context.Context, name, depCode, muniCode, zone string) (string, error)
 }
 
 // Repositories agrupa todas las interfaces para inyección de dependencias.

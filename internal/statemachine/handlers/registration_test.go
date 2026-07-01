@@ -345,6 +345,10 @@ func (m *mockMunicipalityRepo) SearchBarrios(ctx context.Context, name, depCode,
 	return nil, nil
 }
 
+func (m *mockMunicipalityRepo) CreateNeighborhood(_ context.Context, _, _, _, _ string) (string, error) {
+	return "", nil
+}
+
 // =============================================================================
 // Tests for regOptionalFieldHandler (second surname / second name)
 // =============================================================================

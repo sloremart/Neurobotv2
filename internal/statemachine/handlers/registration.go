@@ -849,15 +849,45 @@ func regBarrioHandler(municipalityRepo repository.MunicipalityRepository) sm.Sta
 				WithText("Escribe el nombre de tu *barrio* (ej: La Esperanza) o responde *NA* si no lo sabes:"), nil
 		}
 
+		zone := sess.GetContext("reg_zone")
+		muniName := sess.GetContext("reg_municipality_name")
+		if muniName == "" {
+			muniName = "tu municipio"
+		}
+
+		// Modo confirmación de creación: si hay un candidato pendiente y el paciente lo re-escribe
+		// IGUAL (normalizado), se crea el barrio. Escribirlo idéntico dos veces = barrera anti-typo.
+		if pending := sess.GetContext("reg_barrio_pending"); pending != "" && normalizeNeighborhood(input) == pending {
+			code, err := municipalityRepo.CreateNeighborhood(ctx, pending, dep, muni, zone)
+			if err != nil {
+				slog.Warn("create neighborhood failed", "error", err, "dep", dep, "muni", muni)
+				res := sm.NewResult(sm.StateRegBarrio).
+					WithText("No pude registrar el barrio en este momento. Escríbelo de nuevo o responde *NA* para omitirlo:")
+				return res, nil //nolint:nilerr // el error se maneja re-preguntando al paciente, no se propaga a la FSM
+			}
+			sess.RetryCount = 0
+			return finishRegistrationWithBarrio(sess, code, pending), nil
+		}
+		// Si el texto difiere del candidato, se reevalúa como una búsqueda nueva (posible corrección).
+
 		results, err := municipalityRepo.SearchBarrios(ctx, input, dep, muni)
 		if err != nil {
 			return sm.NewResult(sm.StateRegBarrio).
 				WithText("No pudimos buscar el barrio en este momento. Intenta de nuevo:"), nil
 		}
 		if len(results) == 0 {
-			sess.RetryCount++
+			// No existe: ofrecer crearlo con confirmación por doble escritura (evita barrios mal tipados).
+			norm := normalizeNeighborhood(input)
+			tries, _ := strconv.Atoi(sess.GetContext("reg_barrio_tries"))
+			if tries >= 4 {
+				sess.RetryCount = 0
+				return finishRegistrationWithBarrio(sess, "", ""), nil // se rinde → sin barrio
+			}
+			sess.RetryCount = 0
 			return sm.NewResult(sm.StateRegBarrio).
-				WithText("No encontré ese barrio en tu municipio. Escribe el nombre de otra forma o responde *NA* si no lo sabes:"), nil
+				WithContext("reg_barrio_pending", norm).
+				WithContext("reg_barrio_tries", strconv.Itoa(tries+1)).
+				WithText(fmt.Sprintf("No encontré *%s* en %s.\nSi está bien escrito, escríbelo *otra vez igual* para registrarlo; si te equivocaste, escribe el nombre correcto; o responde *NA* para omitirlo.", norm, muniName)), nil
 		}
 
 		outcome, errResult := sm.ValidateSearchCount(sess, len(results), 9,
@@ -883,13 +913,22 @@ func regBarrioHandler(municipalityRepo repository.MunicipalityRepository) sm.Sta
 	}
 }
 
+// normalizeNeighborhood normaliza el nombre de un barrio para comparar y almacenar de forma
+// consistente con sis_barrios: sin espacios sobrantes y en MAYÚSCULAS (la convención del catálogo).
+func normalizeNeighborhood(s string) string {
+	return strings.ToUpper(strings.Join(strings.Fields(s), " "))
+}
+
 // finishRegistrationWithBarrio guarda el barrio y muestra el resumen para confirmar.
 func finishRegistrationWithBarrio(sess *session.Session, code, name string) *sm.StateResult {
 	sess.SetContext("reg_barrio", code)
 	sess.SetContext("reg_barrio_name", name)
+	delete(sess.Context, "reg_barrio_pending")
+	delete(sess.Context, "reg_barrio_tries")
 	return sm.NewResult(sm.StateConfirmRegistration).
 		WithContext("reg_barrio", code).
 		WithContext("reg_barrio_name", name).
+		WithClearCtx("reg_barrio_pending", "reg_barrio_tries").
 		WithButtons(
 			buildRegistrationSummary(sess),
 			sm.Button{Text: "✅ Sí, confirmar", Payload: "reg_confirm"},

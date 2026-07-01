@@ -3,6 +3,7 @@ package siesa
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -158,6 +159,35 @@ func (r *MunicipalityRepo) searchMunicipios(ctx context.Context, city, dept stri
 		municipalities = append(municipalities, m)
 	}
 	return municipalities, rows.Err()
+}
+
+// CreateNeighborhood crea un barrio en sis_barrios y devuelve su código. codigo es IDENTITY (lo
+// genera SQL Server); solo se insertan nombres/municipio/zona/dept. Hace una verificación exacta
+// previa (mismo nombre + municipio + dept) para no duplicar si ya existe o se creó en paralelo.
+func (r *MunicipalityRepo) CreateNeighborhood(ctx context.Context, name, depCode, muniCode, zone string) (string, error) {
+	name = strings.TrimSpace(name)
+
+	var existing string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT TOP 1 CAST(codigo AS VARCHAR(20)) FROM sis_barrios WITH (NOLOCK)
+		 WHERE nombres = @p1 COLLATE Latin1_General_CI_AI AND municipio = @p2 AND dept = @p3`,
+		name, muniCode, depCode).Scan(&existing)
+	if err == nil {
+		return existing, nil // ya existe → reutilizar
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("neighborhood exact check: %w", err)
+	}
+
+	var code string
+	if err := r.db.QueryRowContext(ctx,
+		`INSERT INTO sis_barrios (nombres, municipio, zona, dept)
+		 OUTPUT CAST(INSERTED.codigo AS VARCHAR(20))
+		 VALUES (@p1, @p2, @p3, @p4)`,
+		name, muniCode, zone, depCode).Scan(&code); err != nil {
+		return "", fmt.Errorf("neighborhood insert: %w", err)
+	}
+	return code, nil
 }
 
 // SearchBarrios busca barrios en sis_barrios por nombre, acotados al municipio
