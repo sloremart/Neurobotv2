@@ -147,6 +147,51 @@ func RegisterRegistrationHandlers(
 		Handler: confirmRegistrationHandler(),
 	})
 	m.Register(sm.StateCreatePatient, createPatientHandler(patientSvc))
+
+	registerRegistrationRecovery(m)
+}
+
+// registerRegistrationRecovery habilita la recuperación IA (opt-in) en los campos de TEXTO LIBRE del
+// registro. El prompt es general; solo cambia el hint (formato del dato). Hints validados contra la
+// API real (ver docs/RECUPERACION-IA.md). Municipio y barrio quedan fuera a propósito: municipio ya
+// tiene búsqueda determinista por tokens (más segura que la IA, que puede alucinar el departamento).
+func registerRegistrationRecovery(m *sm.Machine) {
+	m.RegisterRecovery(sm.StateRegFirstName, sm.HandlerConfig{
+		AIRecovery: true, TextValidate: validateName,
+		AIInputHint: "El PRIMER NOMBRE del paciente; si escribe una frase o el nombre completo, toma solo el primer nombre. v = una sola palabra, solo letras.",
+	})
+	m.RegisterRecovery(sm.StateRegFirstSurname, sm.HandlerConfig{
+		AIRecovery: true, TextValidate: validateName,
+		AIInputHint: "El PRIMER APELLIDO del paciente; si escribe varios apellidos, toma solo el primero. v = una sola palabra, solo letras.",
+	})
+	m.RegisterRecovery(sm.StateRegSecondName, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "El SEGUNDO NOMBRE del paciente. v = una sola palabra solo letras; si no tiene, v = NA.",
+	})
+	m.RegisterRecovery(sm.StateRegSecondSurname, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "El SEGUNDO APELLIDO del paciente. v = una sola palabra solo letras; si no tiene, v = NA.",
+	})
+	m.RegisterRecovery(sm.StateRegBirthDate, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "La FECHA DE NACIMIENTO. v = la fecha en formato AAAA-MM-DD.",
+	})
+	m.RegisterRecovery(sm.StateRegPhone, sm.HandlerConfig{
+		AIRecovery: true, TextValidate: validators.ColombianPhone,
+		AIInputHint: "El CELULAR colombiano (10 dígitos, empieza en 3). v = exactamente 10 dígitos; quita espacios, guiones, puntos y prefijos como +57.",
+	})
+	m.RegisterRecovery(sm.StateRegPhone2, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "Un segundo teléfono opcional. v = 10 dígitos; si no tiene otro, v = NA.",
+	})
+	m.RegisterRecovery(sm.StateRegEmail, sm.HandlerConfig{
+		AIRecovery: true, TextValidate: validators.Email,
+		AIInputHint: "El CORREO electrónico. v = el email en minúsculas; si el paciente dice que no tiene, v = NA.",
+	})
+	m.RegisterRecovery(sm.StateRegAddress, sm.HandlerConfig{
+		AIRecovery: true, TextValidate: validateNotEmpty,
+		AIInputHint: "La DIRECCIÓN de residencia. v = la dirección tal como la indique (texto).",
+	})
 }
 
 // --- Validaciones reutilizables (delegadas al paquete validators) ---
