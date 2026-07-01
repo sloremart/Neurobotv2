@@ -361,6 +361,14 @@ frontend del dashboard, leyendo de `flow_events` (sin PII).
 
 ## 12. Inventario de estados y opt-in
 
+> **Estado de habilitación (2026-07-01, validado por API real):** ACTIVOS con IA (opt-in vía
+> `HandlerConfig.AIRecovery`): `ASK_DOCUMENT_TYPE`, `REG_DOCUMENT_TYPE`, `REG_FIRST_NAME`,
+> `REG_SECOND_NAME`, `REG_FIRST_SURNAME`, `REG_SECOND_SURNAME`, `REG_BIRTH_DATE`, `REG_PHONE`,
+> `REG_PHONE2`, `REG_EMAIL`, `REG_ADDRESS`, `GFR_CREATININE`, `GFR_HEIGHT`, `GFR_WEIGHT`,
+> `ASK_GESTATIONAL_WEEKS`, `ASK_BABY_WEIGHT` (17). **EXCLUIDOS por evidencia:** municipio /
+> `CONFIRM_MUNICIPALITY` (ya tiene búsqueda determinista por tokens; la IA alucinó el departamento),
+> `REG_BARRIO` (opcional, bajo valor), `CANCEL_REASON` (sin handler registrado).
+
 **Regla de alcance (decisión):** la IA aplica **solo a estados de TEXTO LIBRE donde la respuesta puede
 ser ambigua o malinterpretada**. Los estados de **botones/listas seleccionables NO usan IA** (las
 opciones son claras y `ValidateButtonResponse` ya acepta número/sinónimo; no dan problema al paciente).
