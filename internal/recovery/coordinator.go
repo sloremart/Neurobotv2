@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -157,13 +158,17 @@ func (c *Coordinator) evaluate(ctx context.Context, sess *session.Session, cfg s
 		}
 	}
 	// 3. LLM.
-	return c.ai.Try(ctx, Request{
+	r := c.ai.Try(ctx, Request{
 		BlockedState: blockedState,
 		Input:        input,
 		Hint:         cfg.AIInputHint,
 		Options:      cfg.Options,
 		Attempt:      attempt,
 	})
+	// Diagnóstico sin PII: si formateó, código de razón, intento y tokens de salida.
+	slog.Debug("ai_recovery_llm", "state", blockedState, "attempt", attempt,
+		"formatted", r.Value != "", "reason", r.Reason, "tokens_out", r.Usage.CompletionTokens)
+	return r
 }
 
 // inject corre el valor recuperado por machine.Process (misma validación que el bot). Limpia el modo
