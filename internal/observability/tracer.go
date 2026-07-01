@@ -172,6 +172,8 @@ var allowedAttrKeys = map[string]bool{
 	"trigger": true, "duration_ms": true, "n": true, "remaining": true, "count": true,
 	"contrast": true, "sedation": true, "reason": true, "year": true, "month": true,
 	"severity": true, "check": true,
+	// Recuperación IA: conteo de tokens/llamadas del LLM (sin PII) para KPIs de costo.
+	"tokens_in": true, "tokens_out": true, "llm_calls": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

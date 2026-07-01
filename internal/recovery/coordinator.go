@@ -209,7 +209,7 @@ func (c *Coordinator) emit(sess *session.Session, step, reason string, u Usage) 
 	observability.Emit(observability.TraceSession(sess.ID), "recuperacion", step, observability.EmitOpts{
 		Phone:  sess.PhoneNumber,
 		Reason: reason,
-		Attrs:  map[string]interface{}{"in": u.PromptTokens, "out": u.CompletionTokens, "calls": u.Calls},
+		Attrs:  map[string]interface{}{"tokens_in": u.PromptTokens, "tokens_out": u.CompletionTokens, "llm_calls": u.Calls},
 	})
 }
 
