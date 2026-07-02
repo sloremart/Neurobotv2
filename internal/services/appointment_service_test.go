@@ -22,6 +22,7 @@ type mockAppointmentRepo struct {
 	createFn                func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
 	slotCountFn             func(ctx context.Context, apptID string) (int, error)
 	writeCreationAuditFn    func(ctx context.Context, appointmentID, observations string)
+	createProcBatchFn       func(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error
 }
 
 func (m *mockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -123,10 +124,100 @@ func (m *mockAppointmentRepo) CreateAppointmentProcedure(ctx context.Context, in
 }
 
 func (m *mockAppointmentRepo) CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error {
+	if m.createProcBatchFn != nil {
+		return m.createProcBatchFn(ctx, inputs)
+	}
 	return nil
 }
 
 // --- Tests ---
+
+// apptWithProcs arma una cita con procedimientos (para consolidación).
+func apptWithProcs(id string, procs ...domain.AppointmentProcedure) *domain.Appointment {
+	return &domain.Appointment{ID: id, Procedures: procs}
+}
+
+func proc(code string, qty int) domain.AppointmentProcedure {
+	return domain.AppointmentProcedure{CupCode: code, Quantity: qty}
+}
+
+// Consolidar: agregar un dependiente (Onda F) a una cita EMG existente → in-place, agrega solo ese CUP.
+func TestConsolidateIntoAppointment_InPlaceAddsDependent(t *testing.T) {
+	var captured []domain.CreateAppointmentProcedureInput
+	repo := &mockAppointmentRepo{
+		slotCountFn: func(_ context.Context, _ string) (int, error) { return 1, nil },
+		createProcBatchFn: func(_ context.Context, in []domain.CreateAppointmentProcedureInput) error {
+			captured = in
+			return nil
+		},
+	}
+	svc := NewAppointmentService(repo, &config.Config{})
+	appt := apptWithProcs("18234", proc("930860", 2), proc("891509", 8)) // EMG×2 + NC×8
+
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891514", "Onda F", 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NeedsReschedule {
+		t.Fatal("no debía requerir reprogramación (espacios sin cambio)")
+	}
+	if len(res.AddedCups) != 1 || res.AddedCups[0] != "891514" {
+		t.Errorf("esperaba agregar [891514], got %v", res.AddedCups)
+	}
+	if len(captured) != 1 || captured[0].CupCode != "891514" || captured[0].AppointmentID != 18234 || captured[0].Quantity != 1 {
+		t.Errorf("batch inesperado: %+v", captured)
+	}
+}
+
+// Consolidar: subir una orden de NC cuando la cita ya tiene la NC sintetizada → nada que agregar.
+func TestConsolidateIntoAppointment_NCAlreadyPresent(t *testing.T) {
+	batchCalled := false
+	repo := &mockAppointmentRepo{
+		slotCountFn: func(_ context.Context, _ string) (int, error) { return 1, nil },
+		createProcBatchFn: func(_ context.Context, _ []domain.CreateAppointmentProcedureInput) error {
+			batchCalled = true
+			return nil
+		},
+	}
+	svc := NewAppointmentService(repo, &config.Config{})
+	appt := apptWithProcs("18234", proc("930860", 2), proc("891509", 8)) // EMG×2 + NC×8
+
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891509", "NC", 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NeedsReschedule || len(res.AddedCups) != 0 || batchCalled {
+		t.Errorf("esperaba nada que agregar (NC ya presente), got added=%v reschedule=%v batchCalled=%v", res.AddedCups, res.NeedsReschedule, batchCalled)
+	}
+}
+
+// Consolidar: la orden nueva trae EMG y sube el conteo → el bloque crece → reprogramar (no in-place).
+func TestConsolidateIntoAppointment_GrowsToReschedule(t *testing.T) {
+	batchCalled := false
+	repo := &mockAppointmentRepo{
+		slotCountFn: func(_ context.Context, _ string) (int, error) { return 1, nil },
+		createProcBatchFn: func(_ context.Context, _ []domain.CreateAppointmentProcedureInput) error {
+			batchCalled = true
+			return nil
+		},
+	}
+	svc := NewAppointmentService(repo, &config.Config{})
+	appt := apptWithProcs("18234", proc("930860", 2)) // EMG×2 (1 slot)
+
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("29120", "EMG", 2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.NeedsReschedule {
+		t.Errorf("esperaba NeedsReschedule=true (EMG total 4 → 2 espacios > 1 slot)")
+	}
+	if batchCalled {
+		t.Error("no debía insertar procedimientos en el camino de reprogramación")
+	}
+	if res.Espacios != 2 {
+		t.Errorf("esperaba espacios=2, got %d", res.Espacios)
+	}
+}
 
 func TestFormatTimeSlot(t *testing.T) {
 	tests := []struct {

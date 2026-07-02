@@ -342,6 +342,85 @@ func (s *AppointmentService) SlotCountForAppointment(ctx context.Context, apptID
 	return s.repo.SlotCountForAppointment(ctx, apptID)
 }
 
+// ConsolidateResult describe el resultado de consolidar CUPS en una cita EMG existente.
+type ConsolidateResult struct {
+	AddedCups       []string // CUPS agregados a la cita (camino in-place)
+	NeedsReschedule bool     // true si el bloque combinado requiere más slots o cambiar cantidades → reprogramar
+	Espacios        int      // espacios del bloque combinado según la regla de Fisiatría
+}
+
+// ConsolidateIntoAppointment agrega los CUPS de una orden nueva (dependientes/NC del bloque de Fisiatría)
+// a una cita EMG existente, reproduciendo applyFisiatriaRules sobre el conjunto combinado (CUPS de la
+// cita + nuevos). Camino IN-PLACE: si el bloque combinado cabe en los slots ya bloqueados y no cambia la
+// cantidad de ningún CUP ya presente, inserta solo las filas de citas_procedimientos que faltan (misma
+// cita y horario). Si el bloque crece en slots o cambiaría una cantidad existente (p.ej. la orden nueva
+// trae EMG y sube el conteo) → NO muta nada y devuelve NeedsReschedule=true; el flujo de agendamiento
+// reprograma el bloque completo con la maquinaria de reserva. El Servicio/tabla de cada CUP lo resuelve
+// el repo (resolveProcServicio).
+func (s *AppointmentService) ConsolidateIntoAppointment(ctx context.Context, appt *domain.Appointment, newCups []CUPSEntry) (ConsolidateResult, error) {
+	if appt == nil {
+		return ConsolidateResult{}, fmt.Errorf("cita nil")
+	}
+	apptID, err := strconv.Atoi(appt.ID)
+	if err != nil {
+		return ConsolidateResult{}, fmt.Errorf("id de cita inválido %q: %w", appt.ID, err)
+	}
+
+	// Recomputar el bloque combinado con la regla de Fisiatría.
+	combined := make([]CUPSEntry, 0, len(appt.Procedures)+len(newCups))
+	for _, p := range appt.Procedures {
+		combined = append(combined, CUPSEntry{Code: p.CupCode, Name: p.CupName, Quantity: p.Quantity})
+	}
+	combined = append(combined, newCups...)
+	finalGroup := applyFisiatriaRules(CUPSGroup{ServiceType: "Fisiatria", Cups: combined, Espacios: 1})
+
+	currentSlots, err := s.repo.SlotCountForAppointment(ctx, appt.ID)
+	if err != nil {
+		return ConsolidateResult{}, fmt.Errorf("conteo de slots: %w", err)
+	}
+	if currentSlots < 1 {
+		currentSlots = 1
+	}
+
+	// El bloque combinado crece en slots → reprogramar (no in-place).
+	if finalGroup.Espacios > currentSlots {
+		return ConsolidateResult{NeedsReschedule: true, Espacios: finalGroup.Espacios}, nil
+	}
+
+	existing := make(map[string]int, len(appt.Procedures))
+	for _, p := range appt.Procedures {
+		existing[p.CupCode] = p.Quantity
+	}
+
+	var toAdd []domain.CreateAppointmentProcedureInput
+	var added []string
+	for _, c := range finalGroup.Cups {
+		prevQty, ok := existing[c.Code]
+		if ok {
+			// Un CUP ya presente cambiaría de cantidad (p.ej. NC recalculada) → requiere rebuild.
+			if prevQty != c.Quantity {
+				return ConsolidateResult{NeedsReschedule: true, Espacios: finalGroup.Espacios}, nil
+			}
+			continue // ya está con la misma cantidad
+		}
+		toAdd = append(toAdd, domain.CreateAppointmentProcedureInput{
+			AppointmentID: apptID,
+			CupCode:       c.Code,
+			Quantity:      c.Quantity,
+		})
+		added = append(added, c.Code)
+	}
+
+	if len(toAdd) == 0 {
+		// El bloque ya cubría todos los CUPS nuevos (p.ej. la NC ya estaba sintetizada).
+		return ConsolidateResult{Espacios: finalGroup.Espacios}, nil
+	}
+	if err := s.repo.CreateAppointmentProcedureBatch(ctx, toAdd); err != nil {
+		return ConsolidateResult{}, fmt.Errorf("agregar procedimientos a la cita %d: %w", apptID, err)
+	}
+	return ConsolidateResult{AddedCups: added, Espacios: finalGroup.Espacios}, nil
+}
+
 // FindBlockByAppointmentID devuelve la cita y TODAS las citas del paciente ese día
 // (modelo 1 cita = N slots; ya no se agrupan citas consecutivas estilo Antares).
 func (s *AppointmentService) FindBlockByAppointmentID(ctx context.Context, apptID string) (*domain.Appointment, []domain.Appointment, error) {
