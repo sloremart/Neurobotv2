@@ -191,6 +191,33 @@ func TestConsolidateIntoAppointment_NCAlreadyPresent(t *testing.T) {
 	}
 }
 
+// El contrato SANITAS MRC (5/6) solo aplica si algún CUP es de un grupo MRC; si no, degrada a Evento (7/4).
+func TestEffectiveContractForCups(t *testing.T) {
+	cases := []struct {
+		name     string
+		contract string
+		cups     []string
+		want     string
+	}{
+		{"MRC subsidiado + CUP MRC → 5", "5", []string{"890274"}, "5"},
+		{"MRC subsidiado + CUP no-MRC → 7", "5", []string{"999999"}, "7"},
+		{"MRC contributivo + CUP no-MRC → 4", "6", []string{"999999"}, "4"},
+		{"MRC contributivo + mezcla (1 MRC) → 6", "6", []string{"999999", "930860"}, "6"},
+		{"MRC + CUP MRC con sufijo (base) → 5", "5", []string{"890274-1"}, "5"},
+		{"MRC + sin CUPS → degrada", "5", []string{}, "7"},
+		{"Evento subsidiado no cambia", "7", []string{"999999"}, "7"},
+		{"Evento contributivo no cambia", "4", []string{"930860"}, "4"},
+		{"No SANITAS no cambia", "13", []string{"999999"}, "13"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EffectiveContractForCups(tc.contract, tc.cups); got != tc.want {
+				t.Errorf("EffectiveContractForCups(%q, %v) = %q, quiero %q", tc.contract, tc.cups, got, tc.want)
+			}
+		})
+	}
+}
+
 // Consolidar: la cita almacena la NC con sufijo (891509-8 = 8 unidades); agregar Onda F NO debe
 // duplicar la NC (normalización a código base + cantidad efectiva por sufijo).
 func TestConsolidateIntoAppointment_SuffixNCNotDuplicated(t *testing.T) {

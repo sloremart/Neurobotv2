@@ -164,6 +164,29 @@ func IsMRCPatient(contractCode string) bool {
 	return contractCode == "5" || contractCode == "6"
 }
 
+// EffectiveContractForCups ajusta el contrato SANITAS con el que queda la CITA según sus CUPS: el
+// contrato MRC (5 subsidiado / 6 contributivo) SOLO aplica si al menos un CUP de la cita pertenece a un
+// grupo MRC; si NINGÚN CUP es de un grupo MRC, la cita se agenda con el contrato EVENTO respetando el
+// régimen (5→7 subsidiado, 6→4 contributivo). Contratos no-MRC (y no-SANITAS) se devuelven sin cambio.
+func EffectiveContractForCups(contractCode string, cupsCodes []string) string {
+	if !IsMRCPatient(contractCode) {
+		return contractCode
+	}
+	for _, c := range cupsCodes {
+		if _, _, found := IsMRCGroupCups(c); found {
+			return contractCode // al menos un CUP MRC → mantiene el contrato MRC
+		}
+	}
+	// Ningún CUP de grupo MRC → degradar a Evento (respetando el régimen).
+	switch contractCode {
+	case "5": // SANITAS MRC SUBSIDIADO → SANITAS EVENTO SUBSIDIADO
+		return "7"
+	case "6": // SANITAS MRC CONTRIBUTIVO → SANITAS EVENTO CONTRIBUTIVO
+		return "4"
+	}
+	return contractCode
+}
+
 // IsMRCGroupCups returns the group name, max per month, and whether the CUPS code belongs to an MRC group.
 // El match es por CUP BASE (sin sufijo): una orden "891509-8" pertenece al grupo de "891509". Sin
 // esto, un CUP con sufijo no se reconocería como del grupo (los grupos listan en su mayoría el base)

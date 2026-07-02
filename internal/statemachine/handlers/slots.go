@@ -122,6 +122,29 @@ func citaCupsSet(proceduresJSON string) map[string]bool {
 	return set
 }
 
+// effectiveContract devuelve el contrato con el que debe quedar la CITA actual. Para SANITAS MRC (5/6),
+// el contrato MRC solo aplica si algún CUP de la cita pertenece a un grupo MRC; si ninguno lo es, se
+// degrada a Evento (5→7, 6→4) respetando el régimen. Para el resto, devuelve patient_contract sin cambio.
+// Se usa en cobertura, tarifa y ContractCode del agendamiento, para no dejar una cita con contrato MRC
+// (y su tope/tarifa) cuando el procedimiento no corresponde al Modelo de Riesgo Compartido.
+func effectiveContract(sess *session.Session) string {
+	contract := sess.GetContext("patient_contract")
+	if !services.IsMRCPatient(contract) {
+		return contract
+	}
+	set := citaCupsSet(citaProceduresJSON(sess))
+	if len(set) == 0 { // fallback: el CUP primario en sesión
+		if cup := sess.GetContext("cups_code"); cup != "" {
+			set[cup] = true
+		}
+	}
+	codes := make([]string, 0, len(set))
+	for c := range set {
+		codes = append(codes, c)
+	}
+	return services.EffectiveContractForCups(contract, codes)
+}
+
 // isSubset devuelve true si a ⊆ b (todos los CUPS de a están en b). a vacío → false.
 func isSubset(a, b map[string]bool) bool {
 	if len(a) == 0 {
@@ -276,7 +299,9 @@ func isCupCovered(ctx context.Context, priceRepo repository.PriceRepository, ent
 	if priceRepo == nil || entityRepo == nil {
 		return false, fmt.Errorf("repos no disponibles")
 	}
-	lookupCode := sess.GetContext("patient_contract")
+	// Contrato efectivo: para SANITAS MRC, la cobertura se evalúa con Evento cuando el CUP no es de un
+	// grupo MRC (así un CUP no-MRC no se marca "sin convenio" por buscarlo con el manual MRC).
+	lookupCode := effectiveContract(sess)
 	if lookupCode == "" {
 		lookupCode = sess.GetContext("patient_entity")
 	}
@@ -801,7 +826,7 @@ func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo Wai
 		PatientAge:     age,
 		PatientGender:  sess.GetContext("patient_gender"),
 		PatientEntity:  sess.GetContext("patient_entity"),
-		ContractCode:   sess.GetContext("patient_contract"),
+		ContractCode:   effectiveContract(sess),
 		CupsCode:       cupsCode,
 		CupsName:       cupsName,
 		IsContrasted:   sess.GetContext("is_contrasted") == "1",
@@ -927,7 +952,7 @@ func offerWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
 				PatientAge:     age,
 				PatientGender:  sess.GetContext("patient_gender"),
 				PatientEntity:  sess.GetContext("patient_entity"),
-				ContractCode:   sess.GetContext("patient_contract"),
+				ContractCode:   effectiveContract(sess),
 				CupsCode:       cupsCode,
 				CupsName:       cupsName,
 				IsContrasted:   sess.GetContext("is_contrasted") == "1",
@@ -1216,7 +1241,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			// de Evento (manual 11) a pacientes MRC (contrato 5/6, manual 8). Fallback a la
 			// entidad solo si no hay contrato en la sesión.
 			priceLookupCode := entity
-			if pc := sess.GetContext("patient_contract"); pc != "" {
+			if pc := effectiveContract(sess); pc != "" {
 				priceLookupCode = pc
 			}
 			var unitValue float64
@@ -1389,7 +1414,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			CreatedBy:    "0", // Bot-created
 			Observations: observations,
 			SubjectType:  subjectType,
-			ContractCode: sess.GetContext("patient_contract"),
+			ContractCode: effectiveContract(sess),
 			Procedures:   procedures,
 		}
 
