@@ -386,6 +386,45 @@ func (c *Client) FetchMessageText(messageID string) string {
 	return result.Body.Text.Text
 }
 
+// FetchMessageConversationID resuelve el conversationId de un mensaje por su ID (GET del mensaje). Es la
+// vía SÍNCRONA y fiable de obtener la conversación tras enviar un mensaje al paciente: la respuesta del
+// envío suele venir SIN conversationId, y la caché (poblada por webhook) tarda o no llega, así que el
+// lookup por lista (conversations por createdAt paginado) fallaba para pacientes recurrentes cuyo hilo
+// queda fuera de las páginas → escalación "empty conversation ID". Bird puede asignar la conversación de
+// forma asíncrona, así que se sondea unas pocas veces con backoff. Devuelve "" si no se resuelve.
+func (c *Client) FetchMessageConversationID(ctx context.Context, messageID string) string {
+	if messageID == "" {
+		return ""
+	}
+	url := fmt.Sprintf("%s/%s", c.messagesURL(), messageID)
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			if err := sleepWithContext(ctx, convCachePollInterval); err != nil {
+				return ""
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return ""
+		}
+		req.Header.Set("Authorization", "AccessKey "+c.apiKeyWA)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			slog.Warn("fetch_message_conv_failed", "error", err, "message_id", messageID)
+			continue
+		}
+		var result struct {
+			ConversationID string `json:"conversationId"`
+		}
+		derr := json.NewDecoder(resp.Body).Decode(&result)
+		_ = resp.Body.Close()
+		if derr == nil && result.ConversationID != "" {
+			return result.ConversationID
+		}
+	}
+	return ""
+}
+
 // trySendToConversation attempts to send via Conversations API.
 // On 422 (conversation not active), it looks up the current conversation by phone,
 // updates the cache, and retries once with the fresh ID.

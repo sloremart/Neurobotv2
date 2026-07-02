@@ -221,6 +221,29 @@ func TestSendMessage_AuthHeader(t *testing.T) {
 	}
 }
 
+// TestFetchMessageConversationID valida la vía SÍNCRONA de resolver el conversationId de un mensaje
+// recién enviado (fix de "empty conversation ID": el GET del mensaje trae conversationId).
+func TestFetchMessageConversationID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"msg-1","conversationId":"conv-xyz","body":{"type":"text"}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.apiKeyWA = "test-key"
+	if got := c.FetchMessageConversationID(context.Background(), "msg-1"); got != "conv-xyz" {
+		t.Errorf("esperaba conv-xyz, got %q", got)
+	}
+	// message id vacío → "" sin llamar a la API.
+	if got := c.FetchMessageConversationID(context.Background(), ""); got != "" {
+		t.Errorf("esperaba \"\" para message id vacío, got %q", got)
+	}
+}
+
 func TestMessagesURL_UsesApiURL(t *testing.T) {
 	c := &Client{apiURL: "https://custom.api.com", workspaceID: "ws1", channelID: "ch1"}
 	url := c.messagesURL()

@@ -87,7 +87,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				"msg_conv_id", msg.ConversationID,
 				"sess_conv_id", sess.ConversationID,
 			)
-			_, sendErr := birdClient.SendText(msg.Phone, "", "Te voy a conectar con un agente. Un momento por favor...")
+			sentMsgID, sendErr := birdClient.SendText(msg.Phone, "", "Te voy a conectar con un agente. Un momento por favor...")
 			patientNotified = true
 			if sendErr != nil {
 				slog.Error(
@@ -97,9 +97,21 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 					"error", sendErr,
 				)
 			}
-			// Check cache — Channels API response should have populated it
+			// Check cache — el webhook de conversación de Bird puede haberla poblado.
 			conversationID = birdClient.GetCachedConversationID(msg.Phone)
-			// If cache still empty, try explicit API lookup as last resort
+			// Vía FIABLE: resolver el conversationId directamente del mensaje recién enviado (GET del
+			// mensaje trae conversationId). Es más fiable que el lookup por lista (createdAt paginado),
+			// que fallaba para pacientes recurrentes cuyo hilo queda fuera de las páginas → "empty
+			// conversation ID". Esta es la causa raíz del incidente abierto en auditoría.
+			if conversationID == "" && sentMsgID != "" {
+				if resolved := birdClient.FetchMessageConversationID(ctx, sentMsgID); resolved != "" {
+					conversationID = resolved
+					birdClient.CacheConversationID(msg.Phone, resolved)
+					slog.Info("escalation_conv_id_from_message",
+						"phone", utils.MaskPhone(msg.Phone), "conversation_id", resolved)
+				}
+			}
+			// Último recurso: lookup por lista.
 			if conversationID == "" && sendErr == nil {
 				if looked, lookErr := birdClient.LookupConversationByPhone(msg.Phone); lookErr == nil && looked != "" {
 					conversationID = looked
