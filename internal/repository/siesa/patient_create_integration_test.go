@@ -136,3 +136,51 @@ func TestCreatePatientFlow(t *testing.T) {
 		t.Errorf("municipality not updated: got %s want 001", p2.CityCode)
 	}
 }
+
+// TestCreatePatient_GetOrCreateOnDrift reproduce el bug sis_paci_uq: nro_historia queda "congelado"
+// en el tipo+num del primer registro y no se reconstruye si luego cambia num_id, así que FindByDocument
+// (por num_id actual) no encuentra al paciente pero el INSERT chocaría contra la clave única
+// (nro_historia, tipo_id). Create debe hacer GET-OR-CREATE y devolver el autoid existente, no fallar.
+func TestCreatePatient_GetOrCreateOnDrift(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	repo := NewPatientRepo(db)
+	ctx := context.Background()
+
+	const docType, doc = "CC", "999000778"
+	const driftedNum = "999000778999" // num_id "corrido" tras el registro original
+	_, _ = db.ExecContext(ctx, `DELETE FROM sis_paci WHERE nro_historia=@p1`, docType+doc)
+	_, _ = db.ExecContext(ctx, `DELETE FROM sis_paci WHERE tipo_id=@p1 AND num_id=@p2`, docType, driftedNum)
+
+	birth, _ := time.Parse("2006-01-02", "1988-03-10")
+	in := domain.CreatePatientInput{
+		DocumentType: docType, DocumentNumber: doc,
+		FirstName: "ANA", FirstSurname: "DRIFT", BirthDate: birth, Gender: "F",
+		Phone: "3005550000", Address: "CLL 9", DepartmentCode: "50", CityCode: "001", Zone: "U",
+		EntityCode: "EPS005", AffiliationType: "1", UserType: "1", MaritalStatus: "1", BloodType: "O+", CountryCode: "170",
+	}
+	firstID, err := repo.Create(ctx, in)
+	if err != nil {
+		t.Fatalf("Create inicial: %v", err)
+	}
+	defer func() { _, _ = db.ExecContext(ctx, `DELETE FROM sis_paci WHERE autoid=@p1`, firstID) }()
+
+	// Simular DRIFT: cambiar num_id dejando nro_historia congelado (="CC999000778").
+	if _, err := db.ExecContext(ctx, `UPDATE sis_paci SET num_id=@p1 WHERE autoid=@p2`, driftedNum, firstID); err != nil {
+		t.Fatalf("simular drift: %v", err)
+	}
+
+	// FindByDocument (por num_id actual) ya NO lo encuentra → antes iría a registro y el INSERT chocaría.
+	if p, _ := repo.FindByDocument(ctx, docType, doc); p != nil {
+		t.Fatalf("esperaba FindByDocument nil tras el drift, got autoid=%s", p.ID)
+	}
+
+	// Create de nuevo con (CC, 999000778): get-or-create debe devolver el MISMO autoid, sin UNIQUE violation.
+	secondID, err := repo.Create(ctx, in)
+	if err != nil {
+		t.Fatalf("Create tras drift NO debía fallar (get-or-create): %v", err)
+	}
+	if secondID != firstID {
+		t.Errorf("get-or-create debía reutilizar autoid=%s, got %s", firstID, secondID)
+	}
+}

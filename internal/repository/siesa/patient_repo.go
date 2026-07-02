@@ -119,7 +119,49 @@ func (r *PatientRepo) FindByID(ctx context.Context, id string) (*domain.Patient,
 	return r.scanPatient(r.db.QueryRowContext(ctx, query, id))
 }
 
+// findAutoIDByHistoryKey busca un paciente por la CLAVE ÚNICA real de sis_paci: (nro_historia, tipo_id),
+// con nro_historia = tipo_id+num_id. Se usa para get-or-create al crear: en datos legacy, nro_historia
+// queda "congelado" en el tipo+num del PRIMER registro y no se reconstruye si luego cambia num_id/tipo_id,
+// así que FindByDocument (por num_id ACTUAL) no encuentra al paciente pero el INSERT choca contra
+// sis_paci_uq. Devuelve "" si no existe.
+func (r *PatientRepo) findAutoIDByHistoryKey(ctx context.Context, docType, doc string) (string, error) {
+	var id sql.NullString
+	err := r.db.QueryRowContext(ctx,
+		`SELECT TOP 1 CAST(autoid AS VARCHAR(20)) FROM sis_paci WITH (NOLOCK)
+		 WHERE nro_historia = @p1 AND tipo_id = @p2`,
+		docType+doc, docType).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if id.Valid {
+		return id.String, nil
+	}
+	return "", nil
+}
+
+func isSisPaciUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "sis_paci_uq") || strings.Contains(msg, "Violation of UNIQUE KEY")
+}
+
 func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInput) (string, error) {
+	// GET-OR-CREATE: si ya existe un paciente con la clave única exacta (nro_historia, tipo_id),
+	// reutilizarlo en vez de intentar un INSERT que chocaría contra sis_paci_uq (ver findAutoIDByHistoryKey).
+	if existingID, err := r.findAutoIDByHistoryKey(ctx, input.DocumentType, input.DocumentNumber); err == nil && existingID != "" {
+		slog.Warn("siesa_patient_reused_existing",
+			"doc_type", input.DocumentType, "doc", utils.MaskDocument(input.DocumentNumber), "autoid", existingID)
+		return existingID, nil
+	}
+	return r.insertPatient(ctx, input)
+}
+
+func (r *PatientRepo) insertPatient(ctx context.Context, input domain.CreatePatientInput) (string, error) {
 	userTypeInt, _ := strconv.Atoi(input.UserType)
 	if userTypeInt == 0 {
 		userTypeInt = 1
@@ -175,6 +217,15 @@ func (r *PatientRepo) Create(ctx context.Context, input domain.CreatePatientInpu
 		barrioArg,
 	).Scan(&newID)
 	if err != nil {
+		// Carrera o drift no cubierto por el pre-check: si el INSERT chocó contra sis_paci_uq,
+		// reutilizar el paciente existente (get-or-create) en vez de fallar y bloquear al paciente.
+		if isSisPaciUniqueViolation(err) {
+			if existingID, e2 := r.findAutoIDByHistoryKey(ctx, input.DocumentType, input.DocumentNumber); e2 == nil && existingID != "" {
+				slog.Warn("siesa_patient_reused_after_uq_violation",
+					"doc_type", input.DocumentType, "doc", utils.MaskDocument(input.DocumentNumber), "autoid", existingID)
+				return existingID, nil
+			}
+		}
 		slog.Error("siesa_create_patient_failed",
 			"doc_type", input.DocumentType,
 			"doc", utils.MaskDocument(input.DocumentNumber),
