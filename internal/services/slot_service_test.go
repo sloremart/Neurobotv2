@@ -44,7 +44,9 @@ func (m *mockProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode str
 	if m.findMedicosForCupsFn != nil {
 		return m.findMedicosForCupsFn(ctx, cupsCode)
 	}
-	return nil, nil
+	// Default: un médico mapeado (pasa el gate estricto de cups_medico). Los tests que prueban el
+	// filtrado por médico o el corte estricto fijan findMedicosForCupsFn explícitamente.
+	return []int{1}, nil
 }
 
 func (m *mockProcedureRepo) FindCupsForDoctorAndAsuntos(_ context.Context, _ int, _ []int) ([]string, error) {
@@ -165,6 +167,32 @@ func TestGetAvailableSlots_CupsMedicoFilter(t *testing.T) {
 		_, _ = NewSlotService(proc, sched).GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "930860", IsSedated: true})
 		if got != nil {
 			t.Errorf("con sedación esperaba allowedDoctors nil, got %v", got)
+		}
+	})
+
+	// Modo estricto: un CUP sin médico en cups_medico → 0 slots y ni siquiera consulta la agenda (el
+	// bot no lo agenda; se enruta a lista de espera/agente). P.ej. PET y 891503 se manejan por agente.
+	t.Run("cups sin médico → estricto, 0 slots", func(t *testing.T) {
+		proc := &mockProcedureRepo{
+			findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 15, nil },
+			findMedicosForCupsFn:     func(_ context.Context, _ string) ([]int, error) { return nil, nil },
+		}
+		called := false
+		sched := &mockScheduleRepo{
+			findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+				called = true
+				return []domain.AvailableSlotRow{{}}, nil
+			},
+		}
+		slots, err := NewSlotService(proc, sched).GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "891503"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(slots) != 0 {
+			t.Errorf("CUP sin médico → esperaba 0 slots, got %d", len(slots))
+		}
+		if called {
+			t.Error("no debía consultar la agenda si el CUP no tiene médico (corte temprano)")
 		}
 	})
 }

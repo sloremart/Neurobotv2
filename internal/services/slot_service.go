@@ -82,9 +82,11 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 
 	// Médicos habilitados para ESTE CUPS (cups_medico). Restringe la agenda a quienes realmente
 	// realizan el procedimiento; cierra el hueco de sis_asuntoMedico (que es a nivel asunto, no CUPS,
-	// y por eso ofrecía a todos los médicos de un asunto compartido). Fail-open: si el CUPS no tiene
-	// médicos configurados, no se restringe. No aplica con sedación: la agenda es de SOPORTE SEDACION
-	// (asunto 17), atendida por otros médicos.
+	// y por eso ofrecía a todos los médicos de un asunto compartido). ESTRICTO: si el CUPS no tiene
+	// médicos configurados NO se ofrece (el bot no lo agenda con un médico arbitrario del asunto); se
+	// devuelven 0 slots y el flujo lo enruta a lista de espera/agente. Solo ante ERROR de lookup se
+	// hace fail-open (no dejar sin agenda por un fallo transitorio de BD). No aplica con sedación: la
+	// agenda es de SOPORTE SEDACION (asunto 17), atendida por otros médicos.
 	var allowedDoctors []int
 	if !query.IsSedated {
 		allowedDoctors, err = s.procedureRepo.FindMedicosForCups(ctx, query.CupsCode)
@@ -93,7 +95,9 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			slog.Warn("cups_medico_lookup_failed_fail_open", "cups_code", query.CupsCode, "error", err)
 			allowedDoctors = nil
 		case len(allowedDoctors) == 0:
-			slog.Debug("cups_medico_empty_fail_open", "cups_code", query.CupsCode)
+			// CUP sin médico mapeado → el bot NO lo agenda (p.ej. PET y 891503 se manejan por agente).
+			slog.Info("cups_medico_empty_strict_no_slots", "cups_code", query.CupsCode)
+			return nil, nil
 		default:
 			slog.Debug("cups_medico_filter_applied", "cups_code", query.CupsCode, "doctors", allowedDoctors)
 		}

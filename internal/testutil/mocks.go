@@ -304,7 +304,9 @@ func (m *MockProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode str
 	if m.FindMedicosForCupsFn != nil {
 		return m.FindMedicosForCupsFn(ctx, cupsCode)
 	}
-	return nil, nil
+	// Default: un médico mapeado, para que el gate estricto de cups_medico (slot_service) no corte los
+	// slots en los tests que no prueban ese gate. Los que sí lo prueban fijan FindMedicosForCupsFn.
+	return []int{1}, nil
 }
 
 // FindCupsForDoctorAndAsuntos mock: devuelve FindCupsForDoctorAndAsuntosFn si está configurado, si no nil.
