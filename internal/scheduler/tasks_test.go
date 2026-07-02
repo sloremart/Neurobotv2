@@ -58,6 +58,10 @@ func (m *mockWaitingListRepo) GetWaitingByCups(ctx context.Context, cupsCode str
 	return nil, nil
 }
 
+func (m *mockWaitingListRepo) GetWaitingByCupsIn(_ context.Context, _ []string, _ int) ([]domain.WaitingListEntry, error) {
+	return nil, nil
+}
+
 func (m *mockWaitingListRepo) UpdateStatus(ctx context.Context, id, status string) error {
 	if m.UpdateStatusFn != nil {
 		return m.UpdateStatusFn(ctx, id, status)
@@ -1069,7 +1073,7 @@ func TestCheckWaitingList_DuplicateFound_UpdateStatus(t *testing.T) {
 	birdClient := bird.NewClientForTest(srv.URL)
 	cfg := testConfig()
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
-	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo)
+	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo, nil, nil)
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,
@@ -1145,7 +1149,7 @@ func TestCheckWaitingList_SlotsAvailable_NotifyAndRegister(t *testing.T) {
 	birdClient := bird.NewClientForTest(countSrv.URL)
 	cfg := testConfig()
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
-	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo)
+	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo, nil, nil)
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,
@@ -1215,7 +1219,7 @@ func TestCheckWaitingList_EmptyTemplateConfig_Skip(t *testing.T) {
 		BirdTemplateWaitingListProjectID: "", // empty → should skip
 	}
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
-	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo)
+	nm.SetWaitingListCheckDeps(slotSvc, apptRepo, wlRepo, nil, nil)
 
 	tasks := &Tasks{
 		WaitingListRepo: wlRepo,

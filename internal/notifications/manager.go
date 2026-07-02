@@ -116,8 +116,23 @@ type FutureAppointmentChecker interface {
 // WaitingListChecker reads and updates waiting list entries for real-time notification.
 type WaitingListChecker interface {
 	GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
+	// GetWaitingByCupsIn returns waiting entries for ANY of the given CUPS, FIFO — el pool de
+	// candidatos de un slot liberado (todos los CUPS elegibles de su médico+asuntos).
+	GetWaitingByCupsIn(ctx context.Context, cupsCodes []string, limit int) ([]domain.WaitingListEntry, error)
 	MarkNotified(ctx context.Context, id string) (bool, error)
 	UpdateStatus(ctx context.Context, id, status string) error
+}
+
+// AgendaAsuntoResolver devuelve los asuntos que atiende una agenda (SIESA), para saber a qué CUPS
+// puede reutilizarse un slot liberado.
+type AgendaAsuntoResolver interface {
+	GetAsuntosByAgenda(ctx context.Context, agendaID int) ([]int, error)
+}
+
+// EligibleCupsResolver devuelve los CUPS que un médico puede realizar dentro de un conjunto de
+// asuntos (cups_medico ∩ asuntos), para armar el pool elegible de un slot liberado.
+type EligibleCupsResolver interface {
+	FindCupsForDoctorAndAsuntos(ctx context.Context, medicoID int, asuntos []int) ([]string, error)
 }
 
 // NotificationManager handles responses to proactive WhatsApp templates.
@@ -138,9 +153,11 @@ type NotificationManager struct {
 	escalations     EscalationRecorder
 
 	// Cambio 13: real-time WL notification on cancellation
-	slotSearcher SlotSearcher
-	apptChecker  FutureAppointmentChecker
-	wlChecker    WaitingListChecker
+	slotSearcher   SlotSearcher
+	apptChecker    FutureAppointmentChecker
+	wlChecker      WaitingListChecker
+	agendaResolver AgendaAsuntoResolver // matching por slot: asuntos de la agenda liberada
+	cupsResolver   EligibleCupsResolver // matching por slot: CUPS elegibles del médico+asuntos
 
 	// phoneLock serializa por-teléfono TODO acceso al estado de notificación (pending/callIDMap),
 	// que es propiedad exclusiva de este manager. Cierra el data race N-17 (campos de
@@ -237,10 +254,14 @@ func (m *NotificationManager) SetEscalationRecorder(e EscalationRecorder) {
 }
 
 // SetWaitingListCheckDeps injects Cambio 13 dependencies for real-time WL notification.
-func (m *NotificationManager) SetWaitingListCheckDeps(ss SlotSearcher, ac FutureAppointmentChecker, wlc WaitingListChecker) {
+// ar/cr habilitan el matching por SLOT (CheckWaitingListForSlot); pueden ser nil y en ese caso solo
+// se usa el matching por CUP (CheckWaitingListForCups).
+func (m *NotificationManager) SetWaitingListCheckDeps(ss SlotSearcher, ac FutureAppointmentChecker, wlc WaitingListChecker, ar AgendaAsuntoResolver, cr EligibleCupsResolver) {
 	m.slotSearcher = ss
 	m.apptChecker = ac
 	m.wlChecker = wlc
+	m.agendaResolver = ar
+	m.cupsResolver = cr
 }
 
 // RegisterPending registers a pending notification with a type-appropriate timeout.

@@ -24,6 +24,34 @@ func NewScheduleRepo(db *sql.DB) *ScheduleRepo {
 	return &ScheduleRepo{db: db}
 }
 
+// GetAsuntosByAgenda returns the distinct SIESA subjects (IdAsunto) that an ACTIVE agenda serves,
+// via its consultorio relation. agendaID = programacion_medico.id (= domain Appointment.AgendaID).
+// Se une por `pmr.id_programacion = pm.id_programacion` (NO `pm.id`) — misma nota de corrección que
+// FindAvailableSlots (id e id_programacion divergen en ~64% de agendas).
+func (r *ScheduleRepo) GetAsuntosByAgenda(ctx context.Context, agendaID int) ([]int, error) {
+	const q = `SELECT DISTINCT pmra.IdAsunto
+FROM programacion_medico pm WITH (NOLOCK)
+JOIN programacion_medico_relacion pmr WITH (NOLOCK)
+    ON pmr.id_programacion = pm.id_programacion
+JOIN programacion_medico_relacion_asunto pmra WITH (NOLOCK)
+    ON pmra.IdProgramacionMedicoRelacion = pmr.Id
+WHERE pm.id = @p1 AND pm.activo = 1`
+	rows, err := r.db.QueryContext(ctx, q, agendaID)
+	if err != nil {
+		return nil, fmt.Errorf("get asuntos by agenda: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	asuntos := make([]int, 0, 4)
+	for rows.Next() {
+		var a int
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		asuntos = append(asuntos, a)
+	}
+	return asuntos, rows.Err()
+}
+
 // FindAvailableSlots returns every free SIESA slot for agendas that serve the given
 // subject (asunto_id), within the 3h..90-day window. Each row is one bookable slot.
 //

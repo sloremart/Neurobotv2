@@ -42,6 +42,10 @@ func (m *mockProcRepo) FindMedicosForCups(_ context.Context, _ string) ([]int, e
 	return nil, nil
 }
 
+func (m *mockProcRepo) FindCupsForDoctorAndAsuntos(_ context.Context, _ int, _ []int) ([]string, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -19,9 +19,32 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
-// CancellationCallback is called after a patient cancels an appointment via the bot.
-// cupsCode is the CUPS code of the freed slot (called once per unique CUPS in the block).
-type CancellationCallback func(ctx context.Context, cupsCode string)
+// CancellationCallback is called after a patient cancels an appointment, once per unique freed slot
+// identified by (codMedi, agendaID). A freed slot belongs to a doctor+agenda (not a CUP): it can be
+// reused by any CUPS the doctor performs within the agenda's subjects, so matching keys on the slot.
+type CancellationCallback func(ctx context.Context, codMedi, agendaID int)
+
+// notifyFreedSlots avisa a la lista de espera por cada (médico, agenda) único liberado en el bloque
+// cancelado. Debe llamarse con las citas ANTES de cancelarlas (para tener cod_medi/agenda). Es
+// fire-and-forget: usa context.WithoutCancel para no abortar si el ctx del handler se cancela (N-32).
+func notifyFreedSlots(ctx context.Context, onCancel CancellationCallback, block []domain.Appointment) {
+	if onCancel == nil {
+		return
+	}
+	seen := make(map[string]bool)
+	for _, appt := range block {
+		cod, _ := strconv.Atoi(appt.DoctorID)
+		if cod <= 0 || appt.AgendaID <= 0 {
+			continue
+		}
+		key := strconv.Itoa(cod) + "-" + strconv.Itoa(appt.AgendaID)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		go onCancel(context.WithoutCancel(ctx), cod, appt.AgendaID)
+	}
+}
 
 // RegisterAppointmentHandlers registra los handlers del flujo de consulta de citas.
 func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
@@ -565,18 +588,28 @@ func confirmCancelNotifHandler(apptSvc *services.AppointmentService, onCancel Ca
 				json.Unmarshal([]byte(allIDsJSON), &allIDs)
 			}
 
-			// Fallback: if no batch IDs, use the single appointment block
-			if len(allIDs) == 0 {
-				apptID := sess.GetContext("notif_appt_id")
-				if apptID == "" {
-					apptID = sess.GetContext("reschedule_appt_id")
-				}
+			// Cargar el bloque (citas) ANTES de cancelar: sirve (a) de fallback para los IDs y (b) para
+			// obtener los (médico, agenda) liberados que se avisan a la lista de espera por slot.
+			// FindBlockByAppointmentID acepta cualquier ID del grupo.
+			apptID := sess.GetContext("notif_appt_id")
+			if apptID == "" {
+				apptID = sess.GetContext("reschedule_appt_id")
+			}
+			if apptID == "" && len(allIDs) > 0 {
+				apptID = allIDs[0]
+			}
+			var freedBlock []domain.Appointment
+			if apptID != "" {
 				appt, block, err := apptSvc.FindBlockByAppointmentID(ctx, apptID)
-				if err != nil || appt == nil {
+				if err == nil && appt != nil {
+					freedBlock = block
+					if len(allIDs) == 0 {
+						for _, a := range block {
+							allIDs = append(allIDs, a.ID)
+						}
+					}
+				} else if len(allIDs) == 0 {
 					return buildAutoCloseResult("No pudimos encontrar tu cita. Por favor contacta a la clínica."), nil
-				}
-				for _, a := range block {
-					allIDs = append(allIDs, a.ID)
 				}
 			}
 
@@ -585,19 +618,8 @@ func confirmCancelNotifHandler(apptSvc *services.AppointmentService, onCancel Ca
 					WithEvent("notification_cancel_error", map[string]interface{}{"error": err.Error()}), nil
 			}
 
-			// Notify waiting list for freed CUPS codes (stored in session context before cancel)
-			if onCancel != nil {
-				cupsJSON := sess.GetContext("notif_cups_codes")
-				if cupsJSON != "" {
-					var cupsCodes []string
-					json.Unmarshal([]byte(cupsJSON), &cupsCodes)
-					for _, code := range cupsCodes {
-						// WithoutCancel: la notificación a lista de espera es fire-and-forget y no
-						// debe abortarse si el ctx del handler se cancela (ruta de overflow) (N-32).
-						go onCancel(context.WithoutCancel(ctx), code)
-					}
-				}
-			}
+			// Notify waiting list for freed slots (keyed by doctor+agenda, not by CUP).
+			notifyFreedSlots(ctx, onCancel, freedBlock)
 
 			return buildAutoCloseResult("Tu cita ha sido cancelada.\n\nSi deseas reprogramar, puedes escribirnos cuando lo necesites.").
 				WithEvent("notification_cancel_confirmed", map[string]interface{}{
@@ -734,18 +756,8 @@ func notifRescheduleFallbackHandler(apptSvc *services.AppointmentService, procRe
 					WithEvent("notif_reschedule_cancel_error", map[string]interface{}{"error": err.Error()}), nil
 			}
 
-			// Notify waiting list for freed CUPS codes
-			if onCancel != nil {
-				seen := make(map[string]bool)
-				for _, a := range block {
-					for _, p := range a.Procedures {
-						if p.CupCode != "" && !seen[p.CupCode] {
-							seen[p.CupCode] = true
-							go onCancel(context.WithoutCancel(ctx), p.CupCode)
-						}
-					}
-				}
-			}
+			// Notify waiting list for freed slots (keyed by doctor+agenda, not by CUP).
+			notifyFreedSlots(ctx, onCancel, block)
 
 			return buildAutoCloseResult("Tu cita ha sido cancelada.\n\nSi deseas reprogramar, puedes escribirnos cuando lo necesites.").
 				WithEvent("notif_reschedule_fallback_cancelled", map[string]interface{}{
@@ -946,18 +958,8 @@ func executeCancelAppointment(ctx context.Context, sess *session.Session, apptSv
 			WithEvent("appointment_cancel_error", map[string]interface{}{"error": err.Error()}), nil
 	}
 
-	// Notify waiting list for freed CUPS codes
-	if onCancel != nil {
-		seen := make(map[string]bool)
-		for _, appt := range block {
-			for _, proc := range appt.Procedures {
-				if proc.CupCode != "" && !seen[proc.CupCode] {
-					seen[proc.CupCode] = true
-					go onCancel(context.WithoutCancel(ctx), proc.CupCode)
-				}
-			}
-		}
-	}
+	// Notify waiting list for freed slots (keyed by doctor+agenda, not by CUP).
+	notifyFreedSlots(ctx, onCancel, block)
 
 	cancelText := "Tu cita ha sido cancelada."
 	if len(block) > 1 {

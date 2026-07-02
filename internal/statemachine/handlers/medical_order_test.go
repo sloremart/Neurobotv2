@@ -66,6 +66,10 @@ func (m *mockProcedureRepo) FindMedicosForCups(_ context.Context, _ string) ([]i
 	return nil, nil
 }
 
+func (m *mockProcedureRepo) FindCupsForDoctorAndAsuntos(_ context.Context, _ int, _ []int) ([]string, error) {
+	return nil, nil
+}
+
 // wrapOpenAIResponse wraps a content string into a full OpenAI API response JSON.
 func wrapOpenAIResponse(content string) string {
 	resp := map[string]interface{}{

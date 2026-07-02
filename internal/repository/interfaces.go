@@ -56,6 +56,10 @@ type ScheduleRepository interface {
 	// CUPS (cups_medico); vacío = sin restricción. Cada fila es un slot agendable. Replaces the old
 	// FindFutureWorkingDays + FindScheduleConfig + FindBookedSlots + in-memory slot generation.
 	FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error)
+	// GetAsuntosByAgenda returns the distinct SIESA subjects (IdAsunto) an ACTIVE agenda serves,
+	// via its consultorio relation. agendaID = programacion_medico.id (= domain Appointment.AgendaID).
+	// Used to know which CUPS a freed slot can be reused for (waiting-list slot matching).
+	GetAsuntosByAgenda(ctx context.Context, agendaID int) ([]int, error)
 	FindByScheduleID(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error)
 	FindWorkingDayException(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
 	UpdateWorkingDayExceptionDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
@@ -83,6 +87,10 @@ type ProcedureRepository interface {
 	// FindMedicosForCups returns the sis_medi codes (cod_medi) authorized to perform a CUPS,
 	// from the cups_medico relation. Empty slice = no restriction configured (callers fail-open).
 	FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error)
+	// FindCupsForDoctorAndAsuntos returns the active CUPS codes a doctor (medicoID = cod_medi) is
+	// authorized to perform (cups_medico) whose asunto is in the given set. Builds the eligible-CUPS
+	// pool of a freed slot (its doctor + the asuntos of its agenda) for waiting-list slot matching.
+	FindCupsForDoctorAndAsuntos(ctx context.Context, medicoID int, asuntos []int) ([]string, error)
 }
 
 // EntityRepository — entidades/EPS activas.

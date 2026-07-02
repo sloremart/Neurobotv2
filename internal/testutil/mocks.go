@@ -230,6 +230,7 @@ func (m *MockAppointmentRepo) WriteCreationAudit(ctx context.Context, appointmen
 // MockScheduleRepo implements repository.ScheduleRepository.
 type MockScheduleRepo struct {
 	FindAvailableSlotsFn            func(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error)
+	GetAsuntosByAgendaFn            func(ctx context.Context, agendaID int) ([]int, error)
 	FindByScheduleIDFn              func(ctx context.Context, scheduleID int, scheduleType string) (*domain.Schedule, error)
 	FindWorkingDayExceptionFn       func(ctx context.Context, agendaID int, doctorDoc, date string) (*domain.WorkingDay, error)
 	UpdateWorkingDayExceptionDateFn func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (bool, error)
@@ -240,6 +241,14 @@ type MockScheduleRepo struct {
 func (m *MockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
 	if m.FindAvailableSlotsFn != nil {
 		return m.FindAvailableSlotsFn(ctx, asuntoID, afterDate, allowedDoctors)
+	}
+	return nil, nil
+}
+
+// GetAsuntosByAgenda mock: devuelve GetAsuntosByAgendaFn si está configurado, si no nil.
+func (m *MockScheduleRepo) GetAsuntosByAgenda(ctx context.Context, agendaID int) ([]int, error) {
+	if m.GetAsuntosByAgendaFn != nil {
+		return m.GetAsuntosByAgendaFn(ctx, agendaID)
 	}
 	return nil, nil
 }
@@ -274,12 +283,13 @@ func (m *MockScheduleRepo) DeleteWorkingDayException(ctx context.Context, agenda
 
 // MockProcedureRepo implements repository.ProcedureRepository.
 type MockProcedureRepo struct {
-	FindByCodeFn             func(ctx context.Context, code string) (*domain.Procedure, error)
-	FindByIDFn               func(ctx context.Context, id int) (*domain.Procedure, error)
-	SearchByNameFn           func(ctx context.Context, name string) ([]domain.Procedure, error)
-	FindAllActiveFn          func(ctx context.Context) ([]domain.Procedure, error)
-	FindSubjectTypeForCupsFn func(ctx context.Context, cupsCode string) (int, error)
-	FindMedicosForCupsFn     func(ctx context.Context, cupsCode string) ([]int, error)
+	FindByCodeFn                  func(ctx context.Context, code string) (*domain.Procedure, error)
+	FindByIDFn                    func(ctx context.Context, id int) (*domain.Procedure, error)
+	SearchByNameFn                func(ctx context.Context, name string) ([]domain.Procedure, error)
+	FindAllActiveFn               func(ctx context.Context) ([]domain.Procedure, error)
+	FindSubjectTypeForCupsFn      func(ctx context.Context, cupsCode string) (int, error)
+	FindMedicosForCupsFn          func(ctx context.Context, cupsCode string) ([]int, error)
+	FindCupsForDoctorAndAsuntosFn func(ctx context.Context, medicoID int, asuntos []int) ([]string, error)
 }
 
 func (m *MockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
@@ -293,6 +303,14 @@ func (m *MockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode
 func (m *MockProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error) {
 	if m.FindMedicosForCupsFn != nil {
 		return m.FindMedicosForCupsFn(ctx, cupsCode)
+	}
+	return nil, nil
+}
+
+// FindCupsForDoctorAndAsuntos mock: devuelve FindCupsForDoctorAndAsuntosFn si está configurado, si no nil.
+func (m *MockProcedureRepo) FindCupsForDoctorAndAsuntos(ctx context.Context, medicoID int, asuntos []int) ([]string, error) {
+	if m.FindCupsForDoctorAndAsuntosFn != nil {
+		return m.FindCupsForDoctorAndAsuntosFn(ctx, medicoID, asuntos)
 	}
 	return nil, nil
 }

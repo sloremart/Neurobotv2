@@ -4,10 +4,71 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 )
+
+// waitingListCols es el orden de columnas compartido por las queries que devuelven entradas completas
+// (GetWaitingByCups / GetWaitingByCupsIn); scanWaitingListRows escanea exactamente en este orden.
+const waitingListCols = `id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity, patient_contract,
+	cups_code, cups_name, is_contrasted, is_sedated, espacios, procedures_json, procedure_type,
+	gfr_creatinine, gfr_height_cm, gfr_weight_kg, gfr_disease_type, gfr_calculated,
+	is_pregnant, baby_weight_cat, preferred_doctor_doc,
+	status, created_at, expires_at`
+
+// scanWaitingListRows escanea filas de waiting_list (en el orden de waitingListCols) al dominio.
+func scanWaitingListRows(rows *sql.Rows) ([]domain.WaitingListEntry, error) {
+	var entries []domain.WaitingListEntry
+	for rows.Next() {
+		var e domain.WaitingListEntry
+		var gfrCreatinine, gfrWeightKg, gfrCalculated sql.NullFloat64
+		var gfrHeightCm sql.NullInt32
+		var gfrDiseaseType, babyWeightCat, preferredDoctorDoc sql.NullString
+		var isPregnant sql.NullBool
+
+		if err := rows.Scan(
+			&e.ID, &e.PhoneNumber, &e.PatientID, &e.PatientDoc,
+			&e.PatientName, &e.PatientAge, &e.PatientGender, &e.PatientEntity, &e.ContractCode,
+			&e.CupsCode, &e.CupsName, &e.IsContrasted, &e.IsSedated,
+			&e.Espacios, &e.ProceduresJSON, &e.ProcedureType,
+			&gfrCreatinine, &gfrHeightCm, &gfrWeightKg, &gfrDiseaseType, &gfrCalculated,
+			&isPregnant, &babyWeightCat, &preferredDoctorDoc,
+			&e.Status, &e.CreatedAt, &e.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan waiting list entry: %w", err)
+		}
+
+		if gfrCreatinine.Valid {
+			e.GfrCreatinine = gfrCreatinine.Float64
+		}
+		if gfrHeightCm.Valid {
+			e.GfrHeightCm = int(gfrHeightCm.Int32)
+		}
+		if gfrWeightKg.Valid {
+			e.GfrWeightKg = gfrWeightKg.Float64
+		}
+		if gfrDiseaseType.Valid {
+			e.GfrDiseaseType = gfrDiseaseType.String
+		}
+		if gfrCalculated.Valid {
+			e.GfrCalculated = gfrCalculated.Float64
+		}
+		if isPregnant.Valid {
+			e.IsPregnant = isPregnant.Bool
+		}
+		if babyWeightCat.Valid {
+			e.BabyWeightCat = babyWeightCat.String
+		}
+		if preferredDoctorDoc.Valid {
+			e.PreferredDoctorDoc = preferredDoctorDoc.String
+		}
+
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
 
 type WaitingListRepo struct {
 	db *sql.DB
@@ -214,11 +275,7 @@ func (r *WaitingListRepo) GetDistinctWaitingCups(ctx context.Context) ([]string,
 
 // GetWaitingByCups returns waiting entries for a CUPS code, ordered FIFO, limited to N.
 func (r *WaitingListRepo) GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error) {
-	query := `SELECT id, phone_number, patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity, patient_contract,
-		cups_code, cups_name, is_contrasted, is_sedated, espacios, procedures_json, procedure_type,
-		gfr_creatinine, gfr_height_cm, gfr_weight_kg, gfr_disease_type, gfr_calculated,
-		is_pregnant, baby_weight_cat, preferred_doctor_doc,
-		status, created_at, expires_at
+	query := `SELECT ` + waitingListCols + `
 		FROM waiting_list
 		WHERE cups_code = ? AND status = 'waiting'
 		ORDER BY created_at ASC
@@ -229,55 +286,36 @@ func (r *WaitingListRepo) GetWaitingByCups(ctx context.Context, cupsCode string,
 		return nil, fmt.Errorf("get waiting by cups: %w", err)
 	}
 	defer rows.Close()
+	return scanWaitingListRows(rows)
+}
 
-	var entries []domain.WaitingListEntry
-	for rows.Next() {
-		var e domain.WaitingListEntry
-		var gfrCreatinine, gfrWeightKg, gfrCalculated sql.NullFloat64
-		var gfrHeightCm sql.NullInt32
-		var gfrDiseaseType, babyWeightCat, preferredDoctorDoc sql.NullString
-		var isPregnant sql.NullBool
-
-		if err := rows.Scan(
-			&e.ID, &e.PhoneNumber, &e.PatientID, &e.PatientDoc,
-			&e.PatientName, &e.PatientAge, &e.PatientGender, &e.PatientEntity, &e.ContractCode,
-			&e.CupsCode, &e.CupsName, &e.IsContrasted, &e.IsSedated,
-			&e.Espacios, &e.ProceduresJSON, &e.ProcedureType,
-			&gfrCreatinine, &gfrHeightCm, &gfrWeightKg, &gfrDiseaseType, &gfrCalculated,
-			&isPregnant, &babyWeightCat, &preferredDoctorDoc,
-			&e.Status, &e.CreatedAt, &e.ExpiresAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan waiting list entry: %w", err)
-		}
-
-		if gfrCreatinine.Valid {
-			e.GfrCreatinine = gfrCreatinine.Float64
-		}
-		if gfrHeightCm.Valid {
-			e.GfrHeightCm = int(gfrHeightCm.Int32)
-		}
-		if gfrWeightKg.Valid {
-			e.GfrWeightKg = gfrWeightKg.Float64
-		}
-		if gfrDiseaseType.Valid {
-			e.GfrDiseaseType = gfrDiseaseType.String
-		}
-		if gfrCalculated.Valid {
-			e.GfrCalculated = gfrCalculated.Float64
-		}
-		if isPregnant.Valid {
-			e.IsPregnant = isPregnant.Bool
-		}
-		if babyWeightCat.Valid {
-			e.BabyWeightCat = babyWeightCat.String
-		}
-		if preferredDoctorDoc.Valid {
-			e.PreferredDoctorDoc = preferredDoctorDoc.String
-		}
-
-		entries = append(entries, e)
+// GetWaitingByCupsIn returns waiting entries whose cups_code is in the given set, ordered FIFO across
+// all of them, limited to N. Es el pool de candidatos de un slot liberado (todos los CUPS elegibles de
+// su médico+asuntos), no un solo CUP. cupsCodes vacío → nil.
+func (r *WaitingListRepo) GetWaitingByCupsIn(ctx context.Context, cupsCodes []string, limit int) ([]domain.WaitingListEntry, error) {
+	if len(cupsCodes) == 0 {
+		return nil, nil
 	}
-	return entries, rows.Err()
+	ph := make([]string, len(cupsCodes))
+	args := make([]interface{}, 0, len(cupsCodes)+1)
+	for i, c := range cupsCodes {
+		ph[i] = "?"
+		args = append(args, c)
+	}
+	args = append(args, limit)
+	//nolint:gosec // G202: ph = placeholders `?` fijos, valores parametrizados; sin input de usuario en el SQL.
+	query := `SELECT ` + waitingListCols + `
+		FROM waiting_list
+		WHERE cups_code IN (` + strings.Join(ph, ",") + `) AND status = 'waiting'
+		ORDER BY created_at ASC
+		LIMIT ?`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get waiting by cups in: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanWaitingListRows(rows)
 }
 
 // UpdateStatus changes the status of a waiting list entry.

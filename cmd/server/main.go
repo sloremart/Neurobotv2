@@ -190,9 +190,9 @@ func main() {
 	// Fase 7: Consulta y Gestión de Citas
 	// Cambio 13: CancellationCallback — notifyManager captured by reference (assigned later, before server accepts requests)
 	var notifyManager *notifications.NotificationManager
-	onCancel := handlers.CancellationCallback(func(ctx context.Context, cupsCode string) {
+	onCancel := handlers.CancellationCallback(func(ctx context.Context, codMedi, agendaID int) {
 		if notifyManager != nil {
-			notifyManager.CheckWaitingListForCups(ctx, cupsCode)
+			notifyManager.CheckWaitingListForSlot(ctx, codMedi, agendaID)
 		}
 	})
 	if appointmentSvc != nil {
@@ -363,7 +363,7 @@ func main() {
 
 	// Cambio 13: Inyectar dependencias para WL check en tiempo real
 	if notifyManager != nil && slotSvc != nil && repos != nil {
-		notifyManager.SetWaitingListCheckDeps(slotSvc, repos.Appointment, waitingListRepo)
+		notifyManager.SetWaitingListCheckDeps(slotSvc, repos.Appointment, waitingListRepo, repos.Schedule, repos.Procedure)
 	}
 
 	var schedulerTasks *scheduler.Tasks

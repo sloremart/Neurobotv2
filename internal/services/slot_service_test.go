@@ -47,6 +47,10 @@ func (m *mockProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode str
 	return nil, nil
 }
 
+func (m *mockProcedureRepo) FindCupsForDoctorAndAsuntos(_ context.Context, _ int, _ []int) ([]string, error) {
+	return nil, nil
+}
+
 type mockScheduleRepo struct {
 	findAvailableSlotsFn func(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error)
 }
@@ -55,6 +59,10 @@ func (m *mockScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int,
 	if m.findAvailableSlotsFn != nil {
 		return m.findAvailableSlotsFn(ctx, asuntoID, afterDate, allowedDoctors)
 	}
+	return nil, nil
+}
+
+func (m *mockScheduleRepo) GetAsuntosByAgenda(_ context.Context, _ int) ([]int, error) {
 	return nil, nil
 }
 

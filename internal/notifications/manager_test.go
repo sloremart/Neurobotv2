@@ -1757,6 +1757,7 @@ func (m *mockFutureApptChecker) HasFutureForCup(ctx context.Context, patientID, 
 type mockWLChecker struct {
 	mu             sync.Mutex
 	getWaitingFn   func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
+	getWaitingInFn func(ctx context.Context, cupsCodes []string, limit int) ([]domain.WaitingListEntry, error)
 	markNotifiedFn func(ctx context.Context, id string) (bool, error)
 	updateStatusFn func(ctx context.Context, id, status string) error
 	notifiedID     string
@@ -1767,6 +1768,13 @@ type mockWLChecker struct {
 func (m *mockWLChecker) GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error) {
 	if m.getWaitingFn != nil {
 		return m.getWaitingFn(ctx, cupsCode, limit)
+	}
+	return nil, nil
+}
+
+func (m *mockWLChecker) GetWaitingByCupsIn(ctx context.Context, cupsCodes []string, limit int) ([]domain.WaitingListEntry, error) {
+	if m.getWaitingInFn != nil {
+		return m.getWaitingInFn(ctx, cupsCodes, limit)
 	}
 	return nil, nil
 }
@@ -1832,7 +1840,7 @@ func TestCheckWaitingListForCups_HappyPath(t *testing.T) {
 		},
 	}
 
-	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker)
+	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker, nil, nil)
 
 	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
 
@@ -1866,7 +1874,7 @@ func TestCheckWaitingListForCups_NoEntries(t *testing.T) {
 	slotSearcher := &mockSlotSearcher{}
 	apptChecker := &mockFutureApptChecker{}
 
-	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker)
+	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker, nil, nil)
 
 	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
 	if count != 0 {
@@ -1895,7 +1903,7 @@ func TestCheckWaitingListForCups_NoSlots(t *testing.T) {
 	}
 	apptChecker := &mockFutureApptChecker{}
 
-	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker)
+	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker, nil, nil)
 
 	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
 	if count != 0 {
@@ -1928,7 +1936,7 @@ func TestCheckWaitingListForCups_DuplicateFound(t *testing.T) {
 		},
 	}
 
-	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker)
+	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker, nil, nil)
 
 	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
 	if count != 0 {
@@ -1955,7 +1963,7 @@ func TestCheckWaitingListForCups_TemplateNotConfigured(t *testing.T) {
 	slotSearcher := &mockSlotSearcher{}
 	apptChecker := &mockFutureApptChecker{}
 
-	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker)
+	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker, nil, nil)
 
 	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
 	if count != 0 {
@@ -1976,6 +1984,121 @@ func TestCheckWaitingListForCups_NilDeps(t *testing.T) {
 	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
 	if count != 0 {
 		t.Errorf("expected 0 when deps nil, got %d", count)
+	}
+}
+
+// === Matching por SLOT (CheckWaitingListForSlot) ===
+
+type mockAgendaResolver struct {
+	fn func(ctx context.Context, agendaID int) ([]int, error)
+}
+
+func (m *mockAgendaResolver) GetAsuntosByAgenda(ctx context.Context, agendaID int) ([]int, error) {
+	if m.fn != nil {
+		return m.fn(ctx, agendaID)
+	}
+	return nil, nil
+}
+
+type mockCupsResolver struct {
+	fn func(ctx context.Context, medicoID int, asuntos []int) ([]string, error)
+}
+
+func (m *mockCupsResolver) FindCupsForDoctorAndAsuntos(ctx context.Context, medicoID int, asuntos []int) ([]string, error) {
+	if m.fn != nil {
+		return m.fn(ctx, medicoID, asuntos)
+	}
+	return nil, nil
+}
+
+// Un slot de resonancia liberado (médico 3, agenda 100) debe alcanzar a una entrada de un CUP DISTINTO
+// del que se canceló, siempre que el médico lo realice y el asunto sea el de la agenda. Es el fix del
+// keyeo por-CUP: el pool de candidatos son TODOS los CUPS elegibles del slot.
+func TestCheckWaitingListForSlot_NotifiesAcrossCups(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	cfg := &config.Config{
+		BirdTemplateWaitingListProjectID: "proj-wl-123",
+		BirdTemplateWaitingListVersionID: "ver-wl-456",
+		BirdTemplateWaitingListLocale:    "es-CO",
+	}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+
+	var gotCups []string
+	wlChecker := &mockWLChecker{
+		getWaitingInFn: func(_ context.Context, cupsCodes []string, _ int) ([]domain.WaitingListEntry, error) {
+			gotCups = cupsCodes
+			return []domain.WaitingListEntry{{
+				ID:          "wl-slot-1",
+				PhoneNumber: "+573005551234",
+				PatientID:   "PAT-1",
+				CupsCode:    "883221", // distinto del representativo; mismo técnico+asunto
+				CupsName:    "RM columna torácica",
+				Espacios:    1,
+			}}, nil
+		},
+	}
+	slotSearcher := &mockSlotSearcher{
+		getSlotsFn: func(_ context.Context, _ services.SlotQuery) ([]services.AvailableSlot, error) {
+			return []services.AvailableSlot{{DoctorSiesaCode: "3", AgendaID: 100, Date: "2026-03-20", TimeSlot: "202603201000"}}, nil
+		},
+	}
+	apptChecker := &mockFutureApptChecker{
+		hasFutureFn: func(_ context.Context, _, _ string) (bool, error) { return false, nil },
+	}
+	agendaResolver := &mockAgendaResolver{
+		fn: func(_ context.Context, _ int) ([]int, error) { return []int{4}, nil },
+	}
+	cupsResolver := &mockCupsResolver{
+		fn: func(_ context.Context, _ int, _ []int) ([]string, error) { return []string{"883101", "883221"}, nil },
+	}
+
+	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker, agendaResolver, cupsResolver)
+
+	count := mgr.CheckWaitingListForSlot(context.Background(), 3, 100)
+	if count != 1 {
+		t.Fatalf("expected 1 notification, got %d", count)
+	}
+	if len(gotCups) != 2 {
+		t.Errorf("esperaba pool de 2 cups elegibles, got %v", gotCups)
+	}
+	wlChecker.mu.Lock()
+	notifiedID := wlChecker.notifiedID
+	wlChecker.mu.Unlock()
+	if notifiedID != "wl-slot-1" {
+		t.Errorf("esperaba notificar wl-slot-1, got %s", notifiedID)
+	}
+}
+
+// Sin CUPS elegibles (médico no realiza ninguno de los asuntos de la agenda) → no notifica (fail-closed).
+func TestCheckWaitingListForSlot_NoEligibleCups(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	cfg := &config.Config{BirdTemplateWaitingListProjectID: "proj-wl-123"}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+
+	agendaResolver := &mockAgendaResolver{fn: func(_ context.Context, _ int) ([]int, error) { return []int{12}, nil }}
+	cupsResolver := &mockCupsResolver{fn: func(_ context.Context, _ int, _ []int) ([]string, error) { return nil, nil }}
+	mgr.SetWaitingListCheckDeps(&mockSlotSearcher{}, &mockFutureApptChecker{}, &mockWLChecker{}, agendaResolver, cupsResolver)
+
+	if count := mgr.CheckWaitingListForSlot(context.Background(), 99, 200); count != 0 {
+		t.Errorf("esperaba 0 sin cups elegibles, got %d", count)
+	}
+}
+
+// Sin los resolvers de matching por slot (nil) → no notifica (el matching por CUP se usa por otras rutas).
+func TestCheckWaitingListForSlot_NilResolvers(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	cfg := &config.Config{BirdTemplateWaitingListProjectID: "proj-wl-123"}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+	mgr.SetWaitingListCheckDeps(&mockSlotSearcher{}, &mockFutureApptChecker{}, &mockWLChecker{}, nil, nil)
+
+	if count := mgr.CheckWaitingListForSlot(context.Background(), 3, 100); count != 0 {
+		t.Errorf("esperaba 0 con resolvers nil, got %d", count)
 	}
 }
 
@@ -2051,7 +2174,7 @@ func TestCheckWaitingListForCups_FIFOSkipByCapacity(t *testing.T) {
 			return []services.AvailableSlot{{}}, nil
 		},
 	}
-	mgr.SetWaitingListCheckDeps(slotSearcher, &mockFutureApptChecker{}, wlChecker)
+	mgr.SetWaitingListCheckDeps(slotSearcher, &mockFutureApptChecker{}, wlChecker, nil, nil)
 
 	count := mgr.CheckWaitingListForCups(context.Background(), "890271")
 	if count != 1 {
@@ -2085,7 +2208,7 @@ func TestCheckWaitingListForCups_ClaimThenSend(t *testing.T) {
 			return []services.AvailableSlot{{}}, nil
 		},
 	}
-	mgr.SetWaitingListCheckDeps(slotSearcher, &mockFutureApptChecker{}, wlChecker)
+	mgr.SetWaitingListCheckDeps(slotSearcher, &mockFutureApptChecker{}, wlChecker, nil, nil)
 
 	if count := mgr.CheckWaitingListForCups(context.Background(), "890271"); count != 0 {
 		t.Errorf("esperaba 0 notificados (ya reclamada), got %d", count)

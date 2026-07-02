@@ -12,6 +12,43 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/testutil"
 )
 
+// notifyFreedSlots debe disparar el callback UNA vez por (médico, agenda) único del bloque cancelado,
+// ignorando duplicados y pares inválidos (cod_medi<=0 o agenda<=0).
+func TestNotifyFreedSlots_DedupsByDoctorAgenda(t *testing.T) {
+	type pair struct{ cod, agenda int }
+	got := make(chan pair, 10)
+	cb := CancellationCallback(func(_ context.Context, codMedi, agendaID int) {
+		got <- pair{codMedi, agendaID}
+	})
+	block := []domain.Appointment{
+		{DoctorID: "3", AgendaID: 100},
+		{DoctorID: "3", AgendaID: 100}, // duplicado → una sola vez
+		{DoctorID: "4", AgendaID: 200},
+		{DoctorID: "0", AgendaID: 100}, // cod_medi inválido → skip
+		{DoctorID: "5", AgendaID: 0},   // agenda inválida → skip
+	}
+	notifyFreedSlots(context.Background(), cb, block)
+
+	seen := map[pair]bool{}
+	timeout := time.After(2 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case p := <-got:
+			seen[p] = true
+		case <-timeout:
+			t.Fatalf("timeout esperando 2 notificaciones, got %v", seen)
+		}
+	}
+	select {
+	case p := <-got:
+		t.Errorf("notificación inesperada: %+v", p)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if !seen[pair{3, 100}] || !seen[pair{4, 200}] {
+		t.Errorf("esperaba {3,100} y {4,200}, got %v", seen)
+	}
+}
+
 func TestFetchAppointments_WithAppts(t *testing.T) {
 	appts := []domain.Appointment{
 		testutil.SampleAppointment(time.Now().AddDate(0, 0, 3)),

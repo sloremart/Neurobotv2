@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
@@ -189,6 +190,41 @@ func (r *ProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode string)
 		return ids, nil
 	}
 	return r.queryMedicoIDs(ctx, q, base)
+}
+
+// FindCupsForDoctorAndAsuntos returns the active CUPS codes that doctor `medicoID` (cod_medi) is
+// authorized to perform (cups_medico) whose asunto_id is in `asuntos`. Es el conjunto elegible de un
+// slot liberado (su médico + los asuntos de su agenda) para el matching de lista de espera por slot.
+func (r *ProcedureRepo) FindCupsForDoctorAndAsuntos(ctx context.Context, medicoID int, asuntos []int) ([]string, error) {
+	if len(asuntos) == 0 {
+		return nil, nil
+	}
+	ph := make([]string, len(asuntos))
+	args := make([]interface{}, 0, len(asuntos)+1)
+	args = append(args, medicoID)
+	for i, a := range asuntos {
+		ph[i] = "?"
+		args = append(args, a)
+	}
+	//nolint:gosec // G202: ph = placeholders `?` fijos, valores parametrizados; sin input de usuario en el SQL.
+	q := `SELECT DISTINCT cp.codigo_cups
+	      FROM cups_procedimientos cp
+	      JOIN cups_medico cm ON cm.cup_id = cp.id AND cm.activo = 1
+	      WHERE cp.activo = 1 AND cm.medico_id = ? AND cp.asunto_id IN (` + strings.Join(ph, ",") + `)`
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	codes := make([]string, 0, 16)
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		codes = append(codes, code)
+	}
+	return codes, rows.Err()
 }
 
 func (r *ProcedureRepo) queryMedicoIDs(ctx context.Context, query, code string) ([]int, error) {

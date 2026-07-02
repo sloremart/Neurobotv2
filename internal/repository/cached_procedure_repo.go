@@ -66,3 +66,9 @@ func (c *CachedProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCo
 func (c *CachedProcedureRepo) FindMedicosForCups(ctx context.Context, cupsCode string) ([]int, error) {
 	return c.inner.FindMedicosForCups(ctx, cupsCode)
 }
+
+// FindCupsForDoctorAndAsuntos delega en el repo interno (sin caché: se usa solo en la ruta de
+// notificación por slot liberado, poco frecuente).
+func (c *CachedProcedureRepo) FindCupsForDoctorAndAsuntos(ctx context.Context, medicoID int, asuntos []int) ([]string, error) {
+	return c.inner.FindCupsForDoctorAndAsuntos(ctx, medicoID, asuntos)
+}
