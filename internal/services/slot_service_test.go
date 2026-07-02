@@ -565,3 +565,64 @@ func TestGetAvailableSlots_FindSlotsError(t *testing.T) {
 		t.Error("expected error to be propagated from FindAvailableSlots")
 	}
 }
+
+func TestIsAbdomenTAC(t *testing.T) {
+	for _, c := range []struct {
+		code string
+		want bool
+	}{
+		{"879410", true},
+		{"879420", true},
+		{"879411", true},
+		{"879420-1", true}, // con sufijo → código base
+		{"879460", false},  // pelvis: NO abdomen (confirmado)
+		{"879421", false},  // cadera: NO
+		{"879111", false},  // TAC cráneo
+		{"883401", false},  // RNM abdomen (no TAC)
+	} {
+		if got := isAbdomenTAC(c.code); got != c.want {
+			t.Errorf("isAbdomenTAC(%q)=%v, quiero %v", c.code, got, c.want)
+		}
+	}
+}
+
+func TestContrastWindowAllows(t *testing.T) {
+	hm := func(h, m int) int { return h*60 + m }
+	for _, c := range []struct {
+		name    string
+		subject int
+		abdomen bool
+		minutes int
+		want    bool
+	}{
+		// TAC no-abdomen
+		{"TAC 07:20 antes", 3, false, hm(7, 20), false},
+		{"TAC 07:40 ok", 3, false, hm(7, 40), true},
+		{"TAC 12:59 ok", 3, false, hm(12, 59), true},
+		{"TAC 13:00 almuerzo", 3, false, hm(13, 0), false},
+		{"TAC 14:00 ok", 3, false, hm(14, 0), true},
+		{"TAC 16:20 ok", 3, false, hm(16, 20), true},
+		{"TAC 16:40 corte", 3, false, hm(16, 40), false},
+		// TAC abdomen: no antes de 10:00
+		{"TAC abd 07:40 no", 3, true, hm(7, 40), false},
+		{"TAC abd 09:59 no", 3, true, hm(9, 59), false},
+		{"TAC abd 10:00 ok", 3, true, hm(10, 0), true},
+		{"TAC abd 14:00 ok", 3, true, hm(14, 0), true},
+		{"TAC abd 16:40 corte", 3, true, hm(16, 40), false},
+		// RNM
+		{"RNM 07:40 ok", 4, false, hm(7, 40), true},
+		{"RNM 11:59 ok", 4, false, hm(11, 59), true},
+		{"RNM 12:00 mediodia", 4, false, hm(12, 0), false},
+		{"RNM 14:00 ok", 4, false, hm(14, 0), true},
+		{"RNM 16:19 ok", 4, false, hm(16, 19), true},
+		{"RNM 16:20 corte", 4, false, hm(16, 20), false},
+		// Otras (RX): regla amplia 07:00-17:00
+		{"RX 06:59 no", 2, false, hm(6, 59), false},
+		{"RX 07:00 ok", 2, false, hm(7, 0), true},
+		{"RX 17:00 corte", 2, false, hm(17, 0), false},
+	} {
+		if got := contrastWindowAllows(c.subject, c.abdomen, c.minutes); got != c.want {
+			t.Errorf("%s: contrastWindowAllows(%d,%v,%d)=%v, quiero %v", c.name, c.subject, c.abdomen, c.minutes, got, c.want)
+		}
+	}
+}

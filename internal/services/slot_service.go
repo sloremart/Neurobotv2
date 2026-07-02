@@ -192,12 +192,13 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 
 		dt, _ := time.Parse("2006-01-02", date)
 
-		// Contrasted: no Saturdays, and only 7AM–5PM.
+		// Contrastados: nunca en sábado (cualquier modalidad), y solo en las franjas permitidas por
+		// modalidad (TAC vs RNM) — el abdomen de TAC no admite contraste antes de las 10:00.
 		if query.IsContrasted {
 			if dt.Weekday() == time.Saturday {
 				continue
 			}
-			if minutes < 7*60 || minutes >= 17*60 {
+			if !contrastWindowAllows(subjectType, isAbdomenTAC(query.CupsCode), minutes) {
 				continue
 			}
 		}
@@ -287,6 +288,41 @@ func gcd(a, b int) int {
 		a, b = b, a%b
 	}
 	return a
+}
+
+// tacAbdomenCups son los ÚNICOS CUPS de TAC que cuentan como "abdomen" para la regla de contraste
+// (no se agenda contrastado antes de las 10:00). Confirmado por la clínica: solo estos tres.
+var tacAbdomenCups = map[string]bool{
+	"879410": true, // TAC ABDOMEN SUPERIOR
+	"879420": true, // TAC ABDOMEN Y PELVIS (ABDOMEN TOTAL)
+	"879411": true, // TAC INTESTINO [ENTEROTC]
+}
+
+// isAbdomenTAC indica si el CUP (por su código base, sin sufijo) es un TAC de abdomen.
+func isAbdomenTAC(cupsCode string) bool {
+	return tacAbdomenCups[strings.SplitN(cupsCode, "-", 2)[0]]
+}
+
+// contrastWindowAllows indica si un slot (minutos desde medianoche) admite un estudio CONTRASTADO,
+// según la modalidad (asunto) y si es abdomen de TAC. Solo aplica L–V (el sábado se filtra aparte).
+// Franjas confirmadas por la clínica (intervalos [inicio, fin) en minutos):
+//   - TAC (asunto 3): [07:40,13:00) ∪ [14:00,16:40); abdomen no antes de 10:00 → [10:00,13:00) ∪ [14:00,16:40).
+//   - RNM (asunto 4): [07:40,12:00) ∪ [14:00,16:20).
+//   - Otras modalidades: RX y demás no tienen estudios contrastados; si aun así llegara uno, se mantiene
+//     la regla amplia previa (07:00–17:00) para no bloquear de más.
+func contrastWindowAllows(subjectType int, abdomen bool, minutes int) bool {
+	switch subjectType {
+	case 3: // TAC
+		start := 7*60 + 40
+		if abdomen {
+			start = 10 * 60
+		}
+		return (minutes >= start && minutes < 13*60) || (minutes >= 14*60 && minutes < 16*60+40)
+	case 4: // RNM
+		return (minutes >= 7*60+40 && minutes < 12*60) || (minutes >= 14*60 && minutes < 16*60+20)
+	default:
+		return minutes >= 7*60 && minutes < 17*60
+	}
 }
 
 // cupTimeRestriction returns the allowed hour window (minHour, maxHour) for CUPS codes
