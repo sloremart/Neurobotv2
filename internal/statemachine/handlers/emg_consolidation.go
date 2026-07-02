@@ -157,17 +157,12 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 			}
 
 			// Fusionar EMG (2ª orden) + dependientes (1ª orden).
-			var depCups []services.CUPSEntry
-			_ = json.Unmarshal([]byte(sess.GetContext("emg_dep_cups_json")), &depCups)
-			merged := make([]services.CUPSEntry, 0, len(ocrResult.Cups)+len(depCups))
-			merged = append(merged, ocrResult.Cups...)
-			merged = append(merged, depCups...)
-			mergedJSON, _ := json.Marshal(merged)
+			mergedJSON, emgN, depN := mergeEmgAndDependentCups(ocrResult.Cups, sess.GetContext("emg_dep_cups_json"))
 
 			return sm.NewResult(sm.StateValidateOCR).
-				WithContext("ocr_cups_json", string(mergedJSON)).
+				WithContext("ocr_cups_json", mergedJSON).
 				WithClearCtx("emg_dep_cups_json").
-				WithEvent("emg_order_merged", map[string]interface{}{"emg_cups": len(ocrResult.Cups), "dep_cups": len(depCups)}), nil
+				WithEvent("emg_order_merged", map[string]interface{}{"emg_cups": emgN, "dep_cups": depN}), nil
 
 		default:
 			if msg.IsPostback && msg.PostbackPayload == "escalate_agent" {
@@ -183,4 +178,19 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 // escalateEmg construye una escalada a agente con mensaje.
 func escalateEmg(text string) *sm.StateResult {
 	return sm.NewResult(sm.StateEscalateToAgent).WithText(text)
+}
+
+// mergeEmgAndDependentCups fusiona los CUPS de la orden EMG (2ª foto, ya extraídos por OCR) con los
+// dependientes guardados de la 1ª orden (emg_dep_cups_json). Devuelve el JSON combinado para
+// ocr_cups_json y los conteos (emg, dependientes). Un depCupsJSON vacío o inválido → solo los EMG.
+func mergeEmgAndDependentCups(emgCups []services.CUPSEntry, depCupsJSON string) (string, int, int) {
+	var depCups []services.CUPSEntry
+	if depCupsJSON != "" {
+		_ = json.Unmarshal([]byte(depCupsJSON), &depCups)
+	}
+	merged := make([]services.CUPSEntry, 0, len(emgCups)+len(depCups))
+	merged = append(merged, emgCups...)
+	merged = append(merged, depCups...)
+	mergedJSON, _ := json.Marshal(merged)
+	return string(mergedJSON), len(emgCups), len(depCups)
 }
