@@ -22,8 +22,10 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
-// RegisterMedicalOrderHandlers registra los handlers de Orden Médica y OCR (Fase 8)
-func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, procedureRepo repository.ProcedureRepository, birdClient *bird.Client, wlRepo WaitingListCreator) {
+// RegisterMedicalOrderHandlers registra los handlers de Orden Médica y OCR (Fase 8).
+// apptSvc habilita la consolidación de órdenes EMG/NC (puede ser nil: en ese caso, ante una orden
+// dependiente-sola, el flujo pide la orden de la EMG en lugar de consolidar).
+func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, procedureRepo repository.ProcedureRepository, birdClient *bird.Client, wlRepo WaitingListCreator, apptSvc *services.AppointmentService) {
 	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(wlRepo))
 	m.Register(sm.StateSelectWaitingList, selectWaitingListHandler(wlRepo))
 	m.Register(sm.StateUploadMedicalOrder, uploadMedicalOrderHandler(ocrSvc, birdClient))
@@ -32,6 +34,12 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	m.Register(sm.StateOCRFailed, ocrFailedHandler(birdClient))
 	m.Register(sm.StateAskManualCups, askManualCupsHandler(procedureRepo))
 	m.Register(sm.StateSelectProcedure, selectProcedureHandler())
+
+	// Consolidación EMG/NC entre órdenes separadas.
+	m.Register(sm.StateCheckEmgConsolidation, checkEmgConsolidationHandler(apptSvc))
+	m.Register(sm.StateConfirmConsolidate, confirmConsolidateHandler(apptSvc))
+	m.Register(sm.StateAskEmgOrder, askEmgOrderHandler())
+	m.Register(sm.StateUploadEmgOrder, uploadEmgOrderHandler(ocrSvc, birdClient))
 }
 
 // ocrRetryButtons builds the retry/escalation buttons for OCR errors.
@@ -423,6 +431,14 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 				return sm.NewResult(sm.StateEscalateToAgent).
 					WithText("No pudimos procesar tu orden. Te voy a comunicar con un agente para que pueda ayudarte.").
 					WithEvent("ocr_parse_error", map[string]interface{}{"error": err.Error()}), nil
+			}
+
+			// Consolidación EMG/NC (Fisiatría): si la orden trae SOLO dependientes/NC (sin EMG), no se
+			// agenda una cita independiente — se intenta consolidar con la cita EMG del paciente o pedir
+			// la orden de la EMG (docs/DISENO-CONSOLIDACION-EMG-CITAS.md).
+			if services.IsFisiatriaDependentOnly(cups) {
+				return sm.NewResult(sm.StateCheckEmgConsolidation).
+					WithEvent("emg_dependent_only_detected", map[string]interface{}{"cups": len(cups)}), nil
 			}
 
 			// Agrupar por servicio usando reglas institucionales desde BD

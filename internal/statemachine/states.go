@@ -97,6 +97,12 @@ const (
 	StateAskManualCups      = "ASK_MANUAL_CUPS"
 	StateManualProcedure    = "MANUAL_PROCEDURE_INPUT"
 	StateSelectProcedure    = "SELECT_PROCEDURE"
+
+	// Consolidación EMG/NC de Fisiatría entre órdenes separadas (docs/DISENO-CONSOLIDACION-EMG-CITAS.md)
+	StateCheckEmgConsolidation = "CHECK_EMG_CONSOLIDATION"
+	StateConfirmConsolidate    = "CONFIRM_CONSOLIDATE"
+	StateAskEmgOrder           = "ASK_EMG_ORDER"
+	StateUploadEmgOrder        = "UPLOAD_EMG_ORDER"
 )
 
 // === Validaciones Médicas ===
@@ -238,6 +244,11 @@ var stateTypes = map[string]StateType{
 	StateAskManualCups:      StateTypeInteractive,
 	StateManualProcedure:    StateTypeInteractive,
 	StateSelectProcedure:    StateTypeInteractive,
+
+	StateCheckEmgConsolidation: StateTypeAutomatic,
+	StateConfirmConsolidate:    StateTypeInteractive,
+	StateAskEmgOrder:           StateTypeInteractive,
+	StateUploadEmgOrder:        StateTypeInteractive,
 
 	// Validaciones Médicas
 	StateCheckSpecialCups:    StateTypeAutomatic,

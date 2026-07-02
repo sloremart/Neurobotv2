@@ -342,6 +342,12 @@ func (s *AppointmentService) SlotCountForAppointment(ctx context.Context, apptID
 	return s.repo.SlotCountForAppointment(ctx, apptID)
 }
 
+// FindPendingEmgAppointment delega en el repo: cita EMG futura pendiente más próxima del paciente
+// (ancla para consolidar órdenes EMG/NC separadas).
+func (s *AppointmentService) FindPendingEmgAppointment(ctx context.Context, patientID string, emgCodes []string) (*domain.Appointment, error) {
+	return s.repo.FindPendingEmgAppointment(ctx, patientID, emgCodes)
+}
+
 // ConsolidateResult describe el resultado de consolidar CUPS en una cita EMG existente.
 type ConsolidateResult struct {
 	AddedCups       []string // CUPS agregados a la cita (camino in-place)
