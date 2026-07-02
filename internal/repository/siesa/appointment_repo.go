@@ -341,6 +341,62 @@ func (r *AppointmentRepo) FindUpcomingByPatient(ctx context.Context, patientID s
 	return r.scanAppointments(ctx, rows)
 }
 
+// FindPendingEmgAppointment devuelve la cita futura PENDIENTE (estado 'P', fecha>=hoy) MÁS PRÓXIMA del
+// paciente cuyos procedimientos (citas_procedimientos) incluyen al menos un CUP de EMG (Grupo 1). Es el
+// ancla para consolidar órdenes EMG/NC separadas en una sola cita. nil si no hay. Los procedimientos y
+// el horario vienen cargados por scanAppointments.
+func (r *AppointmentRepo) FindPendingEmgAppointment(ctx context.Context, patientID string, emgCodes []string) (*domain.Appointment, error) {
+	if patientID == "" || len(emgCodes) == 0 {
+		return nil, nil
+	}
+	ph := make([]string, len(emgCodes))
+	args := make([]interface{}, 0, len(emgCodes)+1)
+	args = append(args, patientID)
+	for i, c := range emgCodes {
+		ph[i] = "@p" + strconv.Itoa(i+2)
+		args = append(args, c)
+	}
+	//nolint:gosec // G202: ph = placeholders @pN fijos, valores parametrizados; sin input de usuario en el SQL.
+	query := `
+	SELECT TOP 1 CAST(c.id AS VARCHAR(20)),
+	       CAST(c.fecha AS DATE),
+	       ISNULL(c.hora,''),
+	       ISNULL(c.meridiano,''),
+	       CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20)),
+	       ISNULL(RTRIM((SELECT TOP 1 sm.nombre FROM sis_medi sm WITH (NOLOCK) WHERE sm.codigo=c.cod_medi)),
+	           CAST(ISNULL(c.cod_medi,0) AS VARCHAR(20))),
+	       ISNULL(CAST((SELECT TOP 1 sm.cedula FROM sis_medi sm WITH (NOLOCK) WHERE sm.codigo=c.cod_medi) AS VARCHAR(20)),''),
+	       CAST(c.autoid AS VARCHAR(20)),
+	       ISNULL(c.contrato,''),
+	       ISNULL(c.id_programacion,0),
+	       ISNULL(c.estado,'P'),
+	       ISNULL(c.observacion,''),
+	       CAST(ISNULL(c.AsistenciaConfirmada,0) AS INT),
+	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
+	               FROM programacion_medico_detalle pmd WITH (NOLOCK) WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1)
+	FROM citas c WITH (NOLOCK)
+	WHERE c.autoid = @p1
+	  AND c.estado = 'P'
+	  AND c.fecha >= CAST(GETDATE() AS DATE)
+	  AND EXISTS (SELECT 1 FROM citas_procedimientos cp WITH (NOLOCK)
+	              WHERE cp.id_cita = c.id AND cp.id_procedimiento IN (` + strings.Join(ph, ",") + `))
+	ORDER BY c.fecha, c.hora`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("siesa FindPendingEmgAppointment: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	appts, err := r.scanAppointments(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(appts) == 0 {
+		return nil, nil
+	}
+	return &appts[0], nil
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // FindByAgendaAndDate
 // ────────────────────────────────────────────────────────────────────────────

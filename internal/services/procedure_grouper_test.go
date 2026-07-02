@@ -74,6 +74,49 @@ func cup(code, name string, qty int) CUPSEntry {
 	return CUPSEntry{Code: code, Name: name, Quantity: qty}
 }
 
+// IsFisiatriaDependentOnly: trigger de consolidación (G2/G3 sin G1).
+func TestIsFisiatriaDependentOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		cups []CUPSEntry
+		want bool
+	}{
+		{"solo NC (891509)", []CUPSEntry{cup("891509", "NC", 4)}, true},
+		{"solo Onda F (891514)", []CUPSEntry{cup("891514", "Onda F", 1)}, true},
+		{"NC + Reflejo H sin EMG", []CUPSEntry{cup("891509", "NC", 8), cup("891515", "Reflejo H", 1)}, true},
+		{"dependiente con sufijo (891509-8)", []CUPSEntry{cup("891509-8", "NC", 1)}, true},
+		{"EMG + NC → NO (hay principal)", []CUPSEntry{cup("930860", "EMG", 2), cup("891509", "NC", 8)}, false},
+		{"solo EMG → NO", []CUPSEntry{cup("930860", "EMG", 2)}, false},
+		{"CUP ajeno al bloque → NO", []CUPSEntry{cup("890274", "Consulta neuro", 1)}, false},
+		{"dependiente + CUP ajeno (igual amarrado)", []CUPSEntry{cup("891514", "Onda F", 1), cup("890274", "Consulta", 1)}, true},
+		{"vacío → NO", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsFisiatriaDependentOnly(tc.cups); got != tc.want {
+				t.Errorf("IsFisiatriaDependentOnly(%v) = %v, want %v", tc.cups, got, tc.want)
+			}
+		})
+	}
+}
+
+// FisiatriaEmgCodes debe incluir el CUP principal 930860 y no estar vacío.
+func TestFisiatriaEmgCodes(t *testing.T) {
+	codes := FisiatriaEmgCodes()
+	if len(codes) == 0 {
+		t.Fatal("FisiatriaEmgCodes vacío")
+	}
+	found := false
+	for _, c := range codes {
+		if c == "930860" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("esperaba 930860 (EMG principal) en %v", codes)
+	}
+}
+
 func findGroup(groups []CUPSGroup, svc string) *CUPSGroup {
 	for i := range groups {
 		if groups[i].ServiceType == svc {

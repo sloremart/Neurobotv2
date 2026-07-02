@@ -36,6 +36,10 @@ func (m *mockApptRepoNotif) FindUpcomingByPatient(ctx context.Context, patientID
 	return nil, nil
 }
 
+func (m *mockApptRepoNotif) FindPendingEmgAppointment(_ context.Context, _ string, _ []string) (*domain.Appointment, error) {
+	return nil, nil
+}
+
 func (m *mockApptRepoNotif) FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error) {
 	return nil, nil
 }

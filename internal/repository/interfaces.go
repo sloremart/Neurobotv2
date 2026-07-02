@@ -23,6 +23,10 @@ type PatientRepository interface {
 type AppointmentRepository interface {
 	FindByID(ctx context.Context, id string) (*domain.Appointment, error)
 	FindUpcomingByPatient(ctx context.Context, patientID string) ([]domain.Appointment, error)
+	// FindPendingEmgAppointment returns the nearest future PENDING (estado 'P') appointment of the
+	// patient whose procedures include an EMG (Group 1) CUP — the anchor for consolidating separate
+	// EMG/NC orders into a single appointment. nil if none. Procedures come loaded.
+	FindPendingEmgAppointment(ctx context.Context, patientID string, emgCodes []string) (*domain.Appointment, error)
 	FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
 	Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
 	CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/repository"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // ── Resonancia Magnética (883xxx) rules ──────────────────────────────────────
@@ -104,6 +105,42 @@ var ncCodes = map[string]bool{
 var emgDependentCodes = map[string]bool{
 	"891514": true, "891515": true,
 	"891503": true, // REFLEJO NEUROLOGICO TRIGEMINO FACIAL
+}
+
+// FisiatriaEmgCodes devuelve los CUPS del Grupo 1 (EMG) — el CUP PRINCIPAL que ancla el bloque EMG/NC.
+// Se usa para buscar la cita EMG previa al consolidar órdenes separadas.
+func FisiatriaEmgCodes() []string {
+	out := make([]string, 0, len(emgCodes))
+	for c := range emgCodes {
+		out = append(out, c)
+	}
+	return out
+}
+
+// classifyFisiatriaBlock indica si el conjunto de CUPS contiene EMG (G1) y/o dependientes (G2 NC / G3).
+// Aplica fallback al código base para CUPS con sufijo (ej. "891509-8" → "891509").
+func classifyFisiatriaBlock(cups []CUPSEntry) (hasEMG, hasDeps bool) {
+	for _, c := range cups {
+		code := c.Code
+		if !emgCodes[code] && !ncCodes[code] && !emgDependentCodes[code] {
+			code = utils.BaseCupCode(c.Code)
+		}
+		switch {
+		case emgCodes[code]:
+			hasEMG = true
+		case ncCodes[code], emgDependentCodes[code]:
+			hasDeps = true
+		}
+	}
+	return hasEMG, hasDeps
+}
+
+// IsFisiatriaDependentOnly es el TRIGGER de consolidación: la orden trae CUPS dependientes/NC del bloque
+// de Fisiatría (G2/G3) pero NINGÚN EMG (G1). Esos CUPS "van amarrados" a una EMG que no vino en la orden;
+// en vez de agendarlos como cita independiente, hay que consolidarlos con la cita EMG del paciente.
+func IsFisiatriaDependentOnly(cups []CUPSEntry) bool {
+	hasEMG, hasDeps := classifyFisiatriaBlock(cups)
+	return hasDeps && !hasEMG
 }
 
 // ── Radiografía (870-873xxx) rules ──────────────────────────────────────────

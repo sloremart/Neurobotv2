@@ -76,6 +76,7 @@ func (m *MockPatientRepo) UpdateContactInfo(ctx context.Context, patientID, phon
 type MockAppointmentRepo struct {
 	FindByIDFn                   func(ctx context.Context, id string) (*domain.Appointment, error)
 	FindUpcomingByPatientFn      func(ctx context.Context, patientID string) ([]domain.Appointment, error)
+	FindPendingEmgAppointmentFn  func(ctx context.Context, patientID string, emgCodes []string) (*domain.Appointment, error)
 	FindByAgendaAndDateFn        func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
 	CreateFn                     func(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
 	CreateAppointmentProcedureFn func(ctx context.Context, input domain.CreateAppointmentProcedureInput) error
@@ -96,6 +97,14 @@ type MockAppointmentRepo struct {
 func (m *MockAppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
 	if m.FindByIDFn != nil {
 		return m.FindByIDFn(ctx, id)
+	}
+	return nil, nil
+}
+
+// FindPendingEmgAppointment mock: devuelve FindPendingEmgAppointmentFn si está configurado, si no nil.
+func (m *MockAppointmentRepo) FindPendingEmgAppointment(ctx context.Context, patientID string, emgCodes []string) (*domain.Appointment, error) {
+	if m.FindPendingEmgAppointmentFn != nil {
+		return m.FindPendingEmgAppointmentFn(ctx, patientID, emgCodes)
 	}
 	return nil, nil
 }

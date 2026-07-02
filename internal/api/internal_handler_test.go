@@ -31,6 +31,10 @@ func (m *mockApptRepoAPI) FindUpcomingByPatient(ctx context.Context, pid string)
 	return nil, nil
 }
 
+func (m *mockApptRepoAPI) FindPendingEmgAppointment(_ context.Context, _ string, _ []string) (*domain.Appointment, error) {
+	return nil, nil
+}
+
 func (m *mockApptRepoAPI) FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error) {
 	if m.findByAgendaAndDateFn != nil {
 		return m.findByAgendaAndDateFn(ctx, agendaID, date)
