@@ -191,6 +191,37 @@ func TestConsolidateIntoAppointment_NCAlreadyPresent(t *testing.T) {
 	}
 }
 
+// Consolidar: la cita almacena la NC con sufijo (891509-8 = 8 unidades); agregar Onda F NO debe
+// duplicar la NC (normalización a código base + cantidad efectiva por sufijo).
+func TestConsolidateIntoAppointment_SuffixNCNotDuplicated(t *testing.T) {
+	var captured []domain.CreateAppointmentProcedureInput
+	repo := &mockAppointmentRepo{
+		slotCountFn: func(_ context.Context, _ string) (int, error) { return 1, nil },
+		createProcBatchFn: func(_ context.Context, in []domain.CreateAppointmentProcedureInput) error {
+			captured = in
+			return nil
+		},
+	}
+	svc := NewAppointmentService(repo, &config.Config{})
+	appt := apptWithProcs("18235", proc("930860", 2), proc("891509-8", 1)) // EMG×2 + NC como 891509-8
+
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891514", "Onda F", 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NeedsReschedule {
+		t.Fatal("no debía reprogramar")
+	}
+	if len(res.AddedCups) != 1 || res.AddedCups[0] != "891514" {
+		t.Errorf("esperaba agregar solo [891514] (NC ya presente como 891509-8), got %v", res.AddedCups)
+	}
+	for _, in := range captured {
+		if in.CupCode == "891509" {
+			t.Errorf("NO debía re-insertar la NC (891509): %+v", captured)
+		}
+	}
+}
+
 // Consolidar: la orden nueva trae EMG y sube el conteo → el bloque crece → reprogramar (no in-place).
 func TestConsolidateIntoAppointment_GrowsToReschedule(t *testing.T) {
 	batchCalled := false

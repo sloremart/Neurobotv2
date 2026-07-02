@@ -372,10 +372,16 @@ func (s *AppointmentService) ConsolidateIntoAppointment(ctx context.Context, app
 		return ConsolidateResult{}, fmt.Errorf("id de cita inválido %q: %w", appt.ID, err)
 	}
 
-	// Recomputar el bloque combinado con la regla de Fisiatría.
+	// Recomputar el bloque combinado con la regla de Fisiatría. Los CUPS de la cita se normalizan al
+	// código BASE con cantidad EFECTIVA (la NC se almacena como "891509-8" = 8; applyFisiatriaRules solo
+	// reconoce la base "891509"). Sin esto la NC no se reconocería y se sintetizaría/duplicaría.
 	combined := make([]CUPSEntry, 0, len(appt.Procedures)+len(newCups))
 	for _, p := range appt.Procedures {
-		combined = append(combined, CUPSEntry{Code: p.CupCode, Name: p.CupName, Quantity: p.Quantity})
+		qty := p.Quantity
+		if sfx := utils.CupQuantity(p.CupCode); sfx > 1 {
+			qty = sfx
+		}
+		combined = append(combined, CUPSEntry{Code: utils.BaseCupCode(p.CupCode), Name: p.CupName, Quantity: qty})
 	}
 	combined = append(combined, newCups...)
 	finalGroup := applyFisiatriaRules(CUPSGroup{ServiceType: "Fisiatria", Cups: combined, Espacios: 1})
@@ -393,15 +399,23 @@ func (s *AppointmentService) ConsolidateIntoAppointment(ctx context.Context, app
 		return ConsolidateResult{NeedsReschedule: true, Espacios: finalGroup.Espacios}, nil
 	}
 
+	// Índice de CUPS ya presentes, normalizado al código BASE con su cantidad EFECTIVA: la cita puede
+	// almacenar la NC con sufijo (ej. "891509-8" = 8 unidades, Cantidad=1), mientras applyFisiatriaRules
+	// produce el código base "891509" con Quantity=8. Sin normalizar se duplicaría la NC.
 	existing := make(map[string]int, len(appt.Procedures))
 	for _, p := range appt.Procedures {
-		existing[p.CupCode] = p.Quantity
+		qty := p.Quantity
+		if sfx := utils.CupQuantity(p.CupCode); sfx > 1 { // el sufijo ES la cantidad
+			qty = sfx
+		}
+		existing[utils.BaseCupCode(p.CupCode)] = qty
 	}
 
 	var toAdd []domain.CreateAppointmentProcedureInput
 	var added []string
 	for _, c := range finalGroup.Cups {
-		prevQty, ok := existing[c.Code]
+		base := utils.BaseCupCode(c.Code)
+		prevQty, ok := existing[base]
 		if ok {
 			// Un CUP ya presente cambiaría de cantidad (p.ej. NC recalculada) → requiere rebuild.
 			if prevQty != c.Quantity {
