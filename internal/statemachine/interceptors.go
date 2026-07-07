@@ -77,8 +77,12 @@ func ImageOutOfContextInterceptor() Interceptor {
 			return nil, false
 		}
 
-		// Imagen/documento SÍ es esperada en UPLOAD_MEDICAL_ORDER
-		if sess.CurrentState == StateUploadMedicalOrder {
+		// Imagen/documento SÍ es esperada en los estados de subida de orden: la 1ª orden
+		// (UPLOAD_MEDICAL_ORDER) y la 2ª orden EMG de la consolidación de Fisiatría
+		// (UPLOAD_EMG_ORDER). Sin este último, el interceptor rechazaba la foto de la 2ª orden
+		// ANTES de llegar a uploadEmgOrderHandler y el paciente quedaba atascado (evento
+		// image_out_of_context{state:UPLOAD_EMG_ORDER} en bucle).
+		if sess.CurrentState == StateUploadMedicalOrder || sess.CurrentState == StateUploadEmgOrder {
 			return nil, false
 		}
 

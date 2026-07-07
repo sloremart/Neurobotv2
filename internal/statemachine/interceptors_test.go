@@ -190,6 +190,22 @@ func TestImageOutOfContext_InUpload(t *testing.T) {
 	}
 }
 
+// TestImageOutOfContext_InEmgUpload: la 2ª orden EMG (consolidación Fisiatría) se sube como foto en
+// UPLOAD_EMG_ORDER. El interceptor NO debe rechazarla (antes lo hacía → paciente atascado, evento
+// image_out_of_context{state:UPLOAD_EMG_ORDER}).
+func TestImageOutOfContext_InEmgUpload(t *testing.T) {
+	interceptor := ImageOutOfContextInterceptor()
+	for _, typ := range []string{"image", "document"} {
+		t.Run(typ, func(t *testing.T) {
+			sess := newSess(StateUploadEmgOrder)
+			_, intercepted := interceptor(context.Background(), sess, typedMsg(typ))
+			if intercepted {
+				t.Errorf("%s en UPLOAD_EMG_ORDER NO debe interceptarse (es la 2ª orden EMG)", typ)
+			}
+		})
+	}
+}
+
 func TestImageOutOfContext_OutsideUpload(t *testing.T) {
 	interceptor := ImageOutOfContextInterceptor()
 	states := []string{StateAskDocument, StateMainMenu, StateConfirmIdentity}
