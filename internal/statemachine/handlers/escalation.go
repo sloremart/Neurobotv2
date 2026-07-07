@@ -76,6 +76,16 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// Resolve team name for display
 		teamName := resolveTeamName(teamID, cfg)
 
+		// Diagnóstico por-capa de la resolución del conversation_id (ciclo 98). Sin esto, el fallo
+		// "empty conversation ID" era una caja negra (attrs:null) y se cerraba "por ausencia". Todo
+		// booleano/enum, sin PII; se adjunta al evento y al log ERROR si el handoff falla, para saber
+		// EXACTAMENTE qué capa cayó en la próxima ocurrencia (webhook/caché/send/fetch/lookup).
+		diagMsgConvID := msg.ConversationID != "" // capa 1: ¿el inbound traía convId?
+		diagCacheHit := false                     // capa 3/4a: ¿la caché lo tenía en algún momento?
+		diagSentOK := false                       // capa 4: ¿el pre-envío devolvió messageID?
+		diagFetchOK := false                      // capa 4b: ¿el GET del mensaje resolvió?
+		diagLookup := "skipped"                   // capa 4c: found | not_found | error | skipped
+
 		// 4. If conversationID is still empty, send patient message first.
 		// The Channels API response contains conversationId which gets cached.
 		patientNotified := false
@@ -89,6 +99,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			)
 			sentMsgID, sendErr := birdClient.SendText(msg.Phone, "", "Te voy a conectar con un agente. Un momento por favor...")
 			patientNotified = true
+			diagSentOK = sentMsgID != ""
 			if sendErr != nil {
 				slog.Error(
 					"escalation_pre_send_failed",
@@ -99,6 +110,9 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 			// Check cache — el webhook de conversación de Bird puede haberla poblado.
 			conversationID = birdClient.GetCachedConversationID(msg.Phone)
+			if conversationID != "" {
+				diagCacheHit = true
+			}
 			// Vía FIABLE: resolver el conversationId directamente del mensaje recién enviado (GET del
 			// mensaje trae conversationId). Es más fiable que el lookup por lista (createdAt paginado),
 			// que fallaba para pacientes recurrentes cuyo hilo queda fuera de las páginas → "empty
@@ -106,6 +120,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			if conversationID == "" && sentMsgID != "" {
 				if resolved := birdClient.FetchMessageConversationID(ctx, sentMsgID); resolved != "" {
 					conversationID = resolved
+					diagFetchOK = true
 					birdClient.CacheConversationID(msg.Phone, resolved)
 					slog.Info("escalation_conv_id_from_message",
 						"phone", utils.MaskPhone(msg.Phone), "conversation_id", resolved)
@@ -113,8 +128,13 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 			// Último recurso: lookup por lista.
 			if conversationID == "" && sendErr == nil {
-				if looked, lookErr := birdClient.LookupConversationByPhone(msg.Phone); lookErr == nil && looked != "" {
+				if looked, lookErr := birdClient.LookupConversationByPhone(msg.Phone); lookErr != nil {
+					diagLookup = "error"
+				} else if looked != "" {
 					conversationID = looked
+					diagLookup = "found"
+				} else {
+					diagLookup = "not_found"
 				}
 			}
 			if conversationID != "" {
@@ -125,6 +145,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// 5. Try to escalate
 		assignedAgentID, assignedAgentName, err := birdClient.EscalateToAgent(ctx, conversationID, msg.Phone, teamID, teamName, sess.PatientName, cfg.BirdTeamFallback)
 		if err != nil {
+			// Diagnóstico por-capa (ciclo 98) + directiva de PICKUP MANUAL. El log ERROR va a Telegram
+			// (AlertHandler) con el trace_id: sin canal Bird para el handoff, el agente NO ve el chat en
+			// el Inbox, así que ops debe ubicar al paciente por session_id/trace en el dashboard y
+			// contactarlo. Los flags dicen qué capa cayó: msg_conv_id/cache_hit=false sostenido ⇒ gap de
+			// webhooks; lookup=error ⇒ API de Bird cae; lookup=not_found ⇒ el hilo no está en la lista.
 			slog.Error(
 				"escalation failed",
 				"error", err,
@@ -132,17 +157,38 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				"team_id", teamID,
 				"conversation_id", conversationID,
 				"session_id", sess.ID,
+				"trace_id", observability.TraceSession(sess.ID),
+				"msg_conv_id", diagMsgConvID,
+				"cache_hit", diagCacheHit,
+				"sent_ok", diagSentOK,
+				"fetch_ok", diagFetchOK,
+				"lookup", diagLookup,
+				"action_required", "PICKUP MANUAL: sin canal Bird; ubicar al paciente por session_id/trace en el dashboard y contactarlo",
 			)
 			// Terminal medible del residual: no se pudo resolver/crear la conversación en Bird para el
 			// handoff (p.ej. recurrente cuyo hilo no aparece en el lookup y el webhook no llegó a tiempo).
 			// Sin esto, el fallo quedaba solo en logs; el funnel lo necesita para medir el residual real.
+			// Se adjunta el diagnóstico por-capa para que la próxima ocurrencia sea demostrable (attrs).
 			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_no_channel",
-				observability.EmitOpts{Phone: msg.Phone, Reason: err.Error()})
-			// Agent unavailable → fallback to restart/end menu
+				observability.EmitOpts{
+					Phone:  msg.Phone,
+					Reason: err.Error(),
+					Attrs: map[string]interface{}{
+						"msg_conv_id": diagMsgConvID,
+						"cache_hit":   diagCacheHit,
+						"sent_ok":     diagSentOK,
+						"fetch_ok":    diagFetchOK,
+						"lookup":      diagLookup,
+					},
+				})
+			// B — No abandonar al paciente: ya se le envió "te voy a conectar…" (patientNotified), así
+			// que en vez de un menú frío de reinicio se le confirma que un asesor lo contactará (el
+			// pickup manual queda disparado por la alerta ERROR de arriba) y se le deja una salida.
 			return sm.NewResult(sm.StateFallbackMenu).
 				WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
 				WithButtons(
-					"No pudimos conectarte con un agente en este momento. ¿Qué deseas hacer?",
+					"Estamos teniendo un inconveniente para conectarte con un asesor en este momento. "+
+						"Un miembro de nuestro equipo te contactará a la brevedad. Mientras tanto, ¿deseas volver al inicio o terminar el chat?",
 					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
 					sm.Button{Text: "Terminar chat", Payload: "action:end"},
 				).

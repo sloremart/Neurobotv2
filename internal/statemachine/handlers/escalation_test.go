@@ -163,6 +163,33 @@ func TestEscalateHandler_EmptyConversationFallback(t *testing.T) {
 	if result.NextState != sm.StateFallbackMenu {
 		t.Errorf("expected FALLBACK_MENU on escalation failure, got %s", result.NextState)
 	}
+
+	// B (ciclo 98) — no abandonar al paciente: el mensaje debe reconocer que un asesor lo contactará,
+	// NO el rebote frío anterior ("No pudimos conectarte..."). Se ofrecen las salidas restart/end.
+	if len(result.Messages) == 0 {
+		t.Fatal("expected a patient-facing message on escalation failure")
+	}
+	bm, ok := result.Messages[0].(*sm.ButtonMessage)
+	if !ok {
+		t.Fatalf("expected *ButtonMessage, got %T", result.Messages[0])
+	}
+	if !strings.Contains(bm.Text, "te contactará") {
+		t.Errorf("expected non-abandonment copy (asesor te contactará), got %q", bm.Text)
+	}
+	if len(bm.Buttons) != 2 || bm.Buttons[0].Payload != "action:restart" || bm.Buttons[1].Payload != "action:end" {
+		t.Errorf("expected restart/end buttons, got %+v", bm.Buttons)
+	}
+
+	// El terminal medible del funnel debe emitirse para no perder el residual.
+	var hasEvent bool
+	for _, e := range result.Events {
+		if e.Type == "escalation_failed" {
+			hasEvent = true
+		}
+	}
+	if !hasEvent {
+		t.Error("expected escalation_failed event to be emitted")
+	}
 }
 
 func TestEscalateHandler_TeamRouting(t *testing.T) {

@@ -722,9 +722,10 @@ func (c *Client) PlaceCall(to string, params map[string]string) (string, error) 
 		}
 		slog.Info("voice call using Bird Flow", "flowId", c.voiceFlowID)
 	} else {
-		// Inline callFlow fallback: greeting + gather.
-		// DTMF result is NOT delivered to the server (Bird API limitation).
-		// Call still plays the reminder and gather prompt to the patient.
+		// Inline callFlow (API directa, sin flujo Bird): SOLO saludo + gather (SIN hangup). El hangup
+		// terminaba la llamada antes de que el gather reportara su resultado. Al dejar el gather como
+		// último paso, Bird emite el evento callCommand.gather.keys (por la suscripción voice.outbound)
+		// que HandleVoiceWebhook procesa. El menú (confirmar/cancelar) va en el say del gather.
 		callFlow := []map[string]interface{}{
 			{
 				"command": "say",
@@ -737,7 +738,7 @@ func (c *Client) PlaceCall(to string, params map[string]string) (string, error) 
 				"options": map[string]interface{}{
 					"maxNumKeys": 1,
 					"timeout":    10,
-					"retries":    4,
+					"retries":    2,
 					"input":      "dtmf",
 					"say": map[string]interface{}{
 						"locale": "es-MX", "voice": "female",
@@ -745,10 +746,9 @@ func (c *Client) PlaceCall(to string, params map[string]string) (string, error) 
 					},
 				},
 			},
-			{"command": "hangup"},
 		}
 		payload["callFlow"] = callFlow
-		slog.Warn("voice call using inline callFlow (no DTMF result) — set BIRD_VOICE_FLOW_ID to enable DTMF webhook")
+		slog.Info("voice call using inline callFlow (say+gather, sin hangup)")
 	}
 
 	if c.voiceWebhookURL != "" {
@@ -1130,22 +1130,25 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 		url := fmt.Sprintf("%s/workspaces/%s/feeds/%s/items/%s",
 			c.conversationsBase(), c.workspaceID, feedID, feedItemID)
 
-		// Conversación REABIERTA: el ticket está cerrado. Reabrirlo (closed:false) Y asignar en el
-		// MISMO PATCH; si no, Bird no permite asignar un feed item cerrado y el handoff fallaba con
-		// "no feed item found after retries". Mismo endpoint/campo que usa CloseFeedItems para cerrar.
-		body := jsonBody
+		// Conversación REABIERTA: el ticket está cerrado. Bird RECHAZA (400/422 "the item is closed or
+		// archived") un PATCH que reabra Y asigne en la MISMA llamada — valida los campos de asignación
+		// (teamId/agentId) contra el estado cerrado actual. Validado contra Bird real (2026-07-07,
+		// ciclo 100 de auditoría): el reopen AISLADO {closed:false} devuelve 200 y deja la conversación
+		// activa; solo entonces se puede asignar. Por eso se hace en DOS PATCH: 1) reabrir, 2) asignar.
+		// (Antes: un solo PATCH combinado → 422 → handoff perdido, el paciente quedaba sin agente.)
 		if closed {
-			reopen := map[string]interface{}{"teamId": teamID, "closed": false}
-			if agentID != "" {
-				reopen["agentId"] = agentID
+			reopenBody, _ := json.Marshal(map[string]interface{}{"closed": false})
+			rResp, rErr := c.doPatchFeedItem(url, reopenBody)
+			if rErr != nil || rResp >= 400 {
+				// Un item ARCHIVED (no solo closed) no se revierte con {closed:false}. El cuerpo del
+				// error de doPatchFeedItem incluye el mensaje de Bird ("closed or archived") para
+				// diagnosticar el caso sin suposición si llegara a aparecer (hasta hoy: archived=false).
+				return fmt.Errorf("assign feed item: reopen failed status=%d feed_item=%s: %w", rResp, feedItemID, rErr)
 			}
-			if b, mErr := json.Marshal(reopen); mErr == nil {
-				body = b
-			}
-			slog.Info("feed_item_reopen_on_assign", "conversation_id", conversationID, "feed_item_id", feedItemID)
+			slog.Info("feed_item_reopened", "conversation_id", conversationID, "feed_item_id", feedItemID)
 		}
 
-		resp, err := c.doPatchFeedItem(url, body)
+		resp, err := c.doPatchFeedItem(url, jsonBody)
 		if err != nil {
 			return fmt.Errorf("assign feed item: %w", err)
 		}

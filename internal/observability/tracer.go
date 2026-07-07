@@ -175,6 +175,10 @@ var allowedAttrKeys = map[string]bool{
 	// Recuperación IA: conteo de tokens/llamadas del LLM (sin PII) para KPIs de costo,
 	// y "state" = estado bloqueado (para el KPI de recuperación por estado).
 	"tokens_in": true, "tokens_out": true, "llm_calls": true, "state": true,
+	// Escalación (ciclo 98): diagnóstico por-capa de la resolución del conversation_id cuando el
+	// handoff falla con "empty conversation ID". Todo booleano/enum, sin PII. Permite saber en la
+	// PRÓXIMA ocurrencia qué capa cayó (webhook/caché/send/fetch/lookup) sin suponer.
+	"msg_conv_id": true, "cache_hit": true, "sent_ok": true, "fetch_ok": true, "lookup": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

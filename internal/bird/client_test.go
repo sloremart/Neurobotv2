@@ -600,11 +600,12 @@ func TestAssignFeedItem_Success(t *testing.T) {
 	}
 }
 
-// TestAssignFeedItem_ReopensClosed (BUG-007): conversación REABIERTA cuyo único feed item está
-// CERRADO. Antes searchFeedItem lo saltaba → "no feed item found after retries". Ahora debe reabrirlo
-// (closed:false) Y asignar en el mismo PATCH.
+// TestAssignFeedItem_ReopensClosed (BUG-007 + ciclo 100): conversación REABIERTA cuyo feed item está
+// CERRADO. Bird rechaza reabrir+asignar en el MISMO PATCH (422 "closed or archived"; validado contra
+// Bird real 2026-07-07). Debe hacerse en DOS PATCH: 1) {closed:false} para reabrir, 2) {teamId,agentId}
+// para asignar. El test verifica el orden y el contenido de ambos.
 func TestAssignFeedItem_ReopensClosed(t *testing.T) {
-	var payload map[string]interface{}
+	var patches []map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case isFeedItemSearch(r):
@@ -613,7 +614,9 @@ func TestAssignFeedItem_ReopensClosed(t *testing.T) {
 			_, _ = w.Write([]byte(`{"results":[{"id":"fi-closed","feedId":"channel:ch-test","closed":true}]}`))
 		case r.Method == "PATCH":
 			body, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(body, &payload)
+			var p map[string]interface{}
+			_ = json.Unmarshal(body, &p)
+			patches = append(patches, p)
 			w.WriteHeader(200)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -626,14 +629,22 @@ func TestAssignFeedItem_ReopensClosed(t *testing.T) {
 	if err := c.AssignFeedItem(context.Background(), "conv-reopen", "team-a", "agent-1"); err != nil {
 		t.Fatalf("expected no error (debe reabrir + asignar), got %v", err)
 	}
-	if payload["closed"] != false {
-		t.Errorf("esperaba closed:false en el PATCH (reabrir), got %v", payload["closed"])
+	if len(patches) != 2 {
+		t.Fatalf("esperaba 2 PATCH (reabrir + asignar), got %d: %+v", len(patches), patches)
 	}
-	if payload["teamId"] != "team-a" {
-		t.Errorf("esperaba team-a, got %v", payload["teamId"])
+	// 1er PATCH: reabrir SOLO (sin campos de asignación, que es lo que Bird rechaza).
+	if patches[0]["closed"] != false {
+		t.Errorf("1er PATCH debe reabrir (closed:false), got %v", patches[0]["closed"])
 	}
-	if payload["agentId"] != "agent-1" {
-		t.Errorf("esperaba agent-1, got %v", payload["agentId"])
+	if _, ok := patches[0]["teamId"]; ok {
+		t.Errorf("1er PATCH NO debe llevar teamId (Bird rechaza asignar item cerrado), got %+v", patches[0])
+	}
+	// 2do PATCH: asignar sobre el item ya abierto.
+	if patches[1]["teamId"] != "team-a" {
+		t.Errorf("2do PATCH esperaba team-a, got %v", patches[1]["teamId"])
+	}
+	if patches[1]["agentId"] != "agent-1" {
+		t.Errorf("2do PATCH esperaba agent-1, got %v", patches[1]["agentId"])
 	}
 }
 
