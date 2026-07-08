@@ -13,10 +13,10 @@ func TestResolveEPSContract(t *testing.T) {
 		{"sanitas mrc acacias contributivo", entitySanitas, "1", "50", "006", "6"},
 		{"sanitas mrc acacias subsidiado", entitySanitas, "2", "50", "006", "5"},
 		{"sanitas mrc san martin contributivo", entitySanitas, "1", "50", "689", "6"},
-		// SANITAS — Evento (Villavicencio 50-001 is NOT MRC)
-		{"sanitas villavicencio contributivo evento", entitySanitas, "1", "50", "001", "4"},
-		{"sanitas villavicencio subsidiado evento", entitySanitas, "2", "50", "001", "7"},
-		// SANITAS — other department → Evento
+		// SANITAS — Villavicencio (50-001) incorporado al MRC 2026-07 → MRC 6/5 (antes Evento 4/7).
+		{"sanitas mrc villavicencio contributivo", entitySanitas, "1", "50", "001", "6"},
+		{"sanitas mrc villavicencio subsidiado", entitySanitas, "2", "50", "001", "5"},
+		// SANITAS — other department → Evento (mismo código "001" pero dep 11 ≠ 50 → NO es MRC)
 		{"sanitas bogota contributivo evento", entitySanitas, "1", "11", "001", "4"},
 		// MRC code but wrong department → Evento
 		{"sanitas mrc-code wrong-dep evento", entitySanitas, "1", "25", "006", "4"},

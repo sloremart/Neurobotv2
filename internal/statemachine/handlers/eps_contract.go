@@ -32,6 +32,7 @@ const particularEntityCode = "PART02"
 // model. Any other municipality maps to the Evento contracts. Verified against
 // sis_muni.
 var sanitasMRCMunis = map[string]bool{
+	"001": true, // Villavicencio (capital del Meta) — incorporado al MRC 2026-07 (antes era Evento)
 	"006": true, // Acacías
 	"110": true, // Barranca de Upía
 	"124": true, // Cabuyaro
