@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 )
 
@@ -85,6 +86,13 @@ func ImageOutOfContextInterceptor() Interceptor {
 		if sess.CurrentState == StateUploadMedicalOrder || sess.CurrentState == StateUploadEmgOrder {
 			return nil, false
 		}
+
+		// Emitir también como flow_event para que el rechazo sea VISIBLE en el funnel de la skill
+		// auditora (el chat_event por sí solo era un punto ciego: ni ERROR ni caída de funnel). El attr
+		// `state` distingue el caso benigno (imagen suelta en un menú) del BUG (rechazo en un estado que
+		// SÍ espera foto, p.ej. un UPLOAD_* nuevo sin whitelistear).
+		observability.Emit(observability.TraceSession(sess.ID), "agendar", "image_out_of_context",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"state": sess.CurrentState}})
 
 		result := NewResult(sess.CurrentState).
 			WithText("No esperaba una imagen en este momento. Si necesitas enviar una orden médica, primero selecciona la opción de agendar cita.").

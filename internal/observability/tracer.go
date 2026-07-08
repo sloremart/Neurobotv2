@@ -85,6 +85,11 @@ var catalog = map[string]stepSpec{
 	"agendar/booking_success":     {LvOutcome, "ok", "cita"},
 	"agendar/booking_failed":      {LvError, "error", ""},
 	"agendar/reschedule_orphan":   {LvError, "error", "cita"}, // M2: vieja sin cancelar tras reagendar
+	// Callejón de UX: el bot rechazó una imagen/documento "fuera de contexto". Se emite como
+	// flow_event (además del chat_event) para que sea VISIBLE en el funnel de la skill auditora; el
+	// attr `state` distingue el caso benigno (imagen suelta en un menú) del BUG (rechazo en un estado
+	// que SÍ espera foto, p.ej. un UPLOAD_* nuevo sin whitelistear). Milestone: no es terminal.
+	"agendar/image_out_of_context": {LvMilestone, "info", ""},
 
 	// Recordatorio / IVR (§3.3 / §3A) — trace notif:<apptID>
 	"notif_recordatorio/reminder_sent": {LvMilestone, "ok", "bird_msg"},
