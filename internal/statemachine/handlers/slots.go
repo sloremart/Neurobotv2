@@ -453,6 +453,7 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 
 			query := services.SlotQuery{
 				CupsCode:        code,
+				GroupCups:       cupsCodesToTry, // todos los CUPS de la cita: médico + franja se validan para TODOS
 				PatientAge:      age,
 				IsContrasted:    isContrasted,
 				IsSedated:       isSedated,
@@ -499,6 +500,7 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				}
 				query := services.SlotQuery{
 					CupsCode:      code,
+					GroupCups:     cupsCodesToTry, // idem: validar médico + franja para todos los CUPS de la cita
 					PatientAge:    age,
 					IsContrasted:  isContrasted,
 					IsSedated:     isSedated,

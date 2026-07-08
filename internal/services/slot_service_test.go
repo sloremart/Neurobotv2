@@ -586,6 +586,151 @@ func TestIsAbdomenTAC(t *testing.T) {
 	}
 }
 
+func TestGroupCupTimeRestriction(t *testing.T) {
+	cases := []struct {
+		name             string
+		cups             []string
+		wantMin, wantMax int
+		wantOK           bool
+	}{
+		{"sin ventana", []string{"879301", "879410"}, 0, 0, false},  // ninguno tiene prep-window
+		{"solo 879420", []string{"879301", "879420"}, 10, 15, true}, // abdomen total impone 10-15
+		{"879420 solo", []string{"879420"}, 10, 15, true},           // CUP único con ventana
+		{"cup único sin ventana", []string{"890271"}, 0, 0, false},  // consulta, sin restricción
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mn, mx, ok := groupCupTimeRestriction(c.cups)
+			if ok != c.wantOK || (ok && (mn != c.wantMin || mx != c.wantMax)) {
+				t.Errorf("groupCupTimeRestriction(%v) = (%d,%d,%v), quiero (%d,%d,%v)",
+					c.cups, mn, mx, ok, c.wantMin, c.wantMax, c.wantOK)
+			}
+		})
+	}
+}
+
+// TestGetAvailableSlots_GroupAbdomenContrastWindow reproduce el bug de la conversación e6b001e2:
+// un grupo TAC tórax (879301) + abdomen y pelvis (879420), ambos contrastados, se agendó a las
+// 07:40 — inválido para la componente abdomen (contraste ≥10:00). Con GroupCups, el flag abdomen
+// aplica a TODO el bloque: los slots <10:00 se descartan aunque el ancla sea el tórax.
+func TestGetAvailableSlots_GroupAbdomenContrastWindow(t *testing.T) {
+	sched := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. Lopera", "S-doc1", "2026-07-09", "07:40", 1, 20), // válido tórax, NO abdomen
+				slotRow("doc1", "Dr. Lopera", "S-doc1", "2026-07-09", "10:00", 1, 20), // válido para ambos
+			}, nil
+		},
+	}
+	proc := &mockProcedureRepo{findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 3, nil }}
+	svc := NewSlotService(proc, sched)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode:     "879301", // ancla = tórax (ventana permisiva ≥07:40)
+		GroupCups:    []string{"879301", "879420"},
+		IsContrasted: true,
+		MaxSlots:     20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202607091000" {
+		t.Errorf("esperaba solo 10:00 (07:40 inválido por abdomen contrastado), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_GroupDoctorIntersection: el médico ofrecido debe poder hacer TODOS los CUPS
+// del grupo. doc 5 hace tórax pero no abdomen → debe excluirse; solo doc 9 (hace ambos) sobrevive.
+func TestGetAvailableSlots_GroupDoctorIntersection(t *testing.T) {
+	proc := &mockProcedureRepo{
+		findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 3, nil },
+		findMedicosForCupsFn: func(_ context.Context, code string) ([]int, error) {
+			switch code {
+			case "879301": // tórax → doc 5 y 9
+				return []int{5, 9}, nil
+			case "879420": // abdomen → solo doc 9
+				return []int{9}, nil
+			}
+			return nil, nil
+		},
+	}
+	var gotDoctors []int
+	sched := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, allowed []int) ([]domain.AvailableSlotRow, error) {
+			gotDoctors = allowed
+			return nil, nil
+		},
+	}
+	_, _ = NewSlotService(proc, sched).GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode:  "879301",
+		GroupCups: []string{"879301", "879420"},
+	})
+	if len(gotDoctors) != 1 || gotDoctors[0] != 9 {
+		t.Errorf("esperaba intersección [9] (único que hace ambos), got %v", gotDoctors)
+	}
+}
+
+// TestGetAvailableSlots_GroupUnmappedSiblingDoesNotZero: un CUP sin médicos (p.ej. NC 891509
+// sintético) NO debe vaciar la intersección; se conserva el set del CUP que sí tiene médicos.
+func TestGetAvailableSlots_GroupUnmappedSiblingDoesNotZero(t *testing.T) {
+	proc := &mockProcedureRepo{
+		findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 15, nil },
+		findMedicosForCupsFn: func(_ context.Context, code string) ([]int, error) {
+			if code == "930810" { // EMG → fisiatras
+				return []int{19, 22}, nil
+			}
+			return nil, nil // 891509 sin mapeo (sintético)
+		},
+	}
+	var gotDoctors []int
+	sched := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, allowed []int) ([]domain.AvailableSlotRow, error) {
+			gotDoctors = allowed
+			return nil, nil
+		},
+	}
+	_, _ = NewSlotService(proc, sched).GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode:  "930810",
+		GroupCups: []string{"930810", "891509"},
+	})
+	if len(gotDoctors) != 2 || gotDoctors[0] != 19 || gotDoctors[1] != 22 {
+		t.Errorf("esperaba [19 22] (el CUP sin mapeo no restringe), got %v", gotDoctors)
+	}
+}
+
+// TestGetAvailableSlots_GroupDisjointDoctorsStrict: si NINGÚN médico hace todos los CUPS del grupo
+// (sets disjuntos), la intersección queda vacía → corte estricto, 0 slots (sin consultar agenda).
+func TestGetAvailableSlots_GroupDisjointDoctorsStrict(t *testing.T) {
+	proc := &mockProcedureRepo{
+		findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 3, nil },
+		findMedicosForCupsFn: func(_ context.Context, code string) ([]int, error) {
+			if code == "879301" {
+				return []int{5}, nil
+			}
+			return []int{9}, nil // abdomen: doc distinto
+		},
+	}
+	called := false
+	sched := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+			called = true
+			return []domain.AvailableSlotRow{{}}, nil
+		},
+	}
+	slots, err := NewSlotService(proc, sched).GetAvailableSlots(context.Background(), SlotQuery{
+		CupsCode:  "879301",
+		GroupCups: []string{"879301", "879420"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slots) != 0 {
+		t.Errorf("sets disjuntos → esperaba 0 slots, got %d", len(slots))
+	}
+	if called {
+		t.Error("no debía consultar la agenda si ningún médico hace todos los CUPS (corte temprano)")
+	}
+}
+
 func TestContrastWindowAllows(t *testing.T) {
 	hm := func(h, m int) int { return h*60 + m }
 	for _, c := range []struct {

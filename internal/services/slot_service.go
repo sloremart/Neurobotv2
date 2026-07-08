@@ -25,6 +25,7 @@ func NewSlotService(procedureRepo repository.ProcedureRepository, scheduleRepo r
 
 type SlotQuery struct {
 	CupsCode        string
+	GroupCups       []string // TODOS los CUPS reales que comparten esta cita (incluye CupsCode)
 	PatientAge      int
 	IsContrasted    bool
 	IsSedated       bool
@@ -66,6 +67,14 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		query.Espacios = 1
 	}
 
+	// CUPS del grupo que comparten esta cita. Las restricciones de médico y de ventana horaria se
+	// aplican sobre TODOS (no solo el ancla): un grupo TAC tórax+abdomen debe ofrecerse en un slot
+	// que sirva para AMBOS (médico que haga los dos, y franja válida para el más restrictivo).
+	groupCups := query.GroupCups
+	if len(groupCups) == 0 {
+		groupCups = []string{query.CupsCode}
+	}
+
 	// 1. Resolve the SIESA subject for this CUPS. Sedation (patient-declared) overrides.
 	subjectType, err := s.procedureRepo.FindSubjectTypeForCups(ctx, query.CupsCode)
 	if err != nil {
@@ -89,17 +98,22 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 	// agenda es de SOPORTE SEDACION (asunto 17), atendida por otros médicos.
 	var allowedDoctors []int
 	if !query.IsSedated {
-		allowedDoctors, err = s.procedureRepo.FindMedicosForCups(ctx, query.CupsCode)
+		// Intersección de médicos habilitados para CADA CUP del grupo: el médico debe poder hacer
+		// TODOS los procedimientos de la cita, no solo el ancla (cerraba el hueco de ofrecer un médico
+		// que hace el tórax pero no el abdomen). CUPS sin mapeo (p.ej. NC sintético) no restringen.
+		allowedDoctors, err = s.allowedDoctorsForGroup(ctx, groupCups)
 		switch {
 		case err != nil:
 			slog.Warn("cups_medico_lookup_failed_fail_open", "cups_code", query.CupsCode, "error", err)
 			allowedDoctors = nil
 		case len(allowedDoctors) == 0:
-			// CUP sin médico mapeado → el bot NO lo agenda (p.ej. PET y 891503 se manejan por agente).
-			slog.Info("cups_medico_empty_strict_no_slots", "cups_code", query.CupsCode)
+			// Ningún médico habilitado para TODOS los CUPS del grupo (o CUP sin médico mapeado) → el
+			// bot NO lo agenda; se enruta a lista de espera/agente (p.ej. PET, 891503, o tórax+abdomen
+			// sin un médico que haga ambos).
+			slog.Info("cups_medico_empty_strict_no_slots", "cups_code", query.CupsCode, "group", groupCups)
 			return nil, nil
 		default:
-			slog.Debug("cups_medico_filter_applied", "cups_code", query.CupsCode, "doctors", allowedDoctors)
+			slog.Debug("cups_medico_filter_applied", "cups_code", query.CupsCode, "group", groupCups, "doctors", allowedDoctors)
 		}
 	}
 
@@ -172,7 +186,17 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		}
 	}
 
-	cupMinHour, cupMaxHour, cupHasWindow := cupTimeRestriction(query.CupsCode)
+	// Ventana de prep = intersección (la más restrictiva) de las de todos los CUPS del grupo.
+	cupMinHour, cupMaxHour, cupHasWindow := groupCupTimeRestriction(groupCups)
+	// Abdomen de TAC: basta con que UN CUP del grupo sea abdomen para exigir la franja ≥10:00 a
+	// TODO el bloque (un tórax+abdomen no puede caer antes de las 10:00 por la componente abdomen).
+	groupHasAbdomenTAC := false
+	for _, c := range groupCups {
+		if isAbdomenTAC(c) {
+			groupHasAbdomenTAC = true
+			break
+		}
+	}
 	monthCache := make(map[string]bool) // "YYYY-MM" → allowed
 
 	var out []AvailableSlot
@@ -198,7 +222,7 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			if dt.Weekday() == time.Saturday {
 				continue
 			}
-			if !contrastWindowAllows(subjectType, isAbdomenTAC(query.CupsCode), minutes) {
+			if !contrastWindowAllows(subjectType, groupHasAbdomenTAC, minutes) {
 				continue
 			}
 		}
@@ -335,4 +359,81 @@ func cupTimeRestriction(cupsCode string) (minHour, maxHour int, ok bool) {
 		return 10, 15, true
 	}
 	return 0, 0, false
+}
+
+// groupCupTimeRestriction devuelve la intersección (la ventana MÁS restrictiva) de las ventanas de
+// prep de todos los CUPS del grupo: [max de los inicios, min de los fines). Así el slot elegido sirve
+// para TODOS los CUPS que comparten la cita. ok=false si NINGÚN CUP del grupo tiene ventana propia.
+func groupCupTimeRestriction(cups []string) (minHour, maxHour int, ok bool) {
+	minHour, maxHour = 0, 24
+	for _, c := range cups {
+		if mn, mx, has := cupTimeRestriction(c); has {
+			ok = true
+			if mn > minHour {
+				minHour = mn
+			}
+			if mx < maxHour {
+				maxHour = mx
+			}
+		}
+	}
+	if !ok {
+		return 0, 0, false
+	}
+	return minHour, maxHour, true
+}
+
+// allowedDoctorsForGroup devuelve la INTERSECCIÓN de médicos habilitados (cups_medico) para TODOS los
+// CUPS del grupo: un médico solo es elegible si puede realizar cada procedimiento de la cita. Cierra
+// el hueco de ofrecer/agendar un médico que hace uno de los CUPS pero no el otro (p.ej. tórax sí,
+// abdomen no). Reglas:
+//   - CUP con error de lookup → se omite (fail-open por CUP; no tumba todo el grupo por un fallo).
+//   - CUP sin médicos mapeados → se omite (no restringe): puede ser un código sintético (NC 891509) o
+//     un CUP no restringido a nivel médico; no debe vaciar la intersección.
+//   - Si NINGÚN CUP tuvo médicos: se replica la semántica de CUP único — si hubo error se propaga
+//     (el caller hace fail-open), si todos vinieron vacíos se devuelve lista vacía (el caller corta
+//     estricto y no agenda). El orden se preserva del primer CUP mapeado (determinismo para tests/UX).
+func (s *SlotService) allowedDoctorsForGroup(ctx context.Context, cups []string) ([]int, error) {
+	var base []int             // lista ordenada del primer CUP con médicos
+	var filters []map[int]bool // sets de los demás CUPS mapeados
+	mapped := 0
+	var lastErr error
+	for _, c := range cups {
+		docs, e := s.procedureRepo.FindMedicosForCups(ctx, c)
+		if e != nil {
+			lastErr = e
+			continue
+		}
+		if len(docs) == 0 {
+			continue
+		}
+		mapped++
+		if base == nil {
+			base = docs
+			continue
+		}
+		set := make(map[int]bool, len(docs))
+		for _, d := range docs {
+			set[d] = true
+		}
+		filters = append(filters, set)
+	}
+	if mapped == 0 {
+		// err → fail-open (caller); todos vacíos sin error → estricto, sin slots (caller).
+		return nil, lastErr
+	}
+	out := make([]int, 0, len(base))
+	for _, d := range base {
+		inAll := true
+		for _, f := range filters {
+			if !f[d] {
+				inAll = false
+				break
+			}
+		}
+		if inAll {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }
