@@ -35,6 +35,9 @@ type AppointmentRepository interface {
 	// FindAgendaAppointmentsPaged lista, paginado y filtrable, las citas próximas no atendidas de una
 	// agenda (o médico). Ordena por fecha+hora del slot. Solo lectura NOLOCK; total vía COUNT(*) OVER().
 	FindAgendaAppointmentsPaged(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error)
+	// FindDoctorAgendasOnDate lista las agendas del médico con slots en `date` (incluye reservas vacías),
+	// con nº de slots totales/libres y rango horario. Para elegir agenda destino de una reprogramación.
+	FindDoctorAgendasOnDate(ctx context.Context, doctorCode, date string) ([]domain.DoctorAgendaOnDate, error)
 	Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
 	CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error
 	CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error

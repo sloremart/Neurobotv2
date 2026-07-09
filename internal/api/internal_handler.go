@@ -565,6 +565,32 @@ func (h *InternalHandler) HandleSiesaAgendas(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"agendas": agendas, "count": len(agendas)})
 }
 
+// HandleSiesaDoctorAgendasOnDate lista las agendas del médico con slots en una fecha (incluye reservas
+// vacías, que no salen en /siesa/agendas), para elegir la agenda destino de una reprogramación. Solo
+// lectura NOLOCK. GET /api/internal/siesa/doctor-agendas-on-date?doctor=<cod_medi>&date=YYYY-MM-DD
+func (h *InternalHandler) HandleSiesaDoctorAgendasOnDate(w http.ResponseWriter, r *http.Request) {
+	doctor := strings.TrimSpace(r.URL.Query().Get("doctor"))
+	date := strings.TrimSpace(r.URL.Query().Get("date"))
+	if doctor == "" || date == "" {
+		http.Error(w, "'doctor' (cod_medi) y 'date' (YYYY-MM-DD) requeridos", http.StatusBadRequest)
+		return
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		http.Error(w, "'date' debe ser YYYY-MM-DD", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	agendas, err := h.appointmentRepo.FindDoctorAgendasOnDate(ctx, doctor, date)
+	if err != nil {
+		slog.Error("siesa doctor-agendas-on-date failed", "doctor", doctor, "date", date, "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+		http.Error(w, "error consultando agendas del médico", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"agendas": agendas, "count": len(agendas)})
+}
+
 // HandleSiesaAgendaAppointments lista, paginado y filtrable, las citas próximas NO atendidas de una
 // agenda (o médico), ordenadas por fecha+hora. Solo lectura NOLOCK, paginación server-side.
 // GET /api/internal/siesa/agenda-appointments?agenda_id=&doctor=&date=&name=&doc=&page=&page_size=
@@ -1435,6 +1461,7 @@ type RescheduleAgendaRequest struct {
 	DestAgendaID   *int   `json:"dest_agenda_id"`  // nil/0 → crear duplicando; >0 → mover a esa agenda existente
 	Reason         string `json:"reason"`          // motivo (para plantilla + auditoría)
 	NotifyPatients bool   `json:"notify_patients"` // enviar plantilla de reprogramación
+	DryRun         bool   `json:"dry_run"`         // solo validar + calcular resumen, sin mutar (vista previa)
 	// DoctorDocument es opcional (compatibilidad): el médico se deriva de la agenda origen.
 	DoctorDocument string `json:"doctor_document"`
 }
@@ -1489,14 +1516,14 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 	req.Reason = truncateReason(req.Reason)
 	ctx := r.Context()
 
-	in := domain.RescheduleDayInput{AgendaID: req.AgendaID, OldDate: req.OldDate, NewDate: req.NewDate}
+	in := domain.RescheduleDayInput{AgendaID: req.AgendaID, OldDate: req.OldDate, NewDate: req.NewDate, DryRun: req.DryRun}
 	if req.DestAgendaID != nil {
 		in.DestAgendaID = *req.DestAgendaID
 	}
 
 	res, err := h.appointmentRepo.RescheduleDayOfAgenda(ctx, in)
 	if err != nil {
-		slog.Error("reschedule day: move", "agenda_id", req.AgendaID, "old_date", req.OldDate, "new_date", req.NewDate, "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+		slog.Error("reschedule day: move", "agenda_id", req.AgendaID, "old_date", req.OldDate, "new_date", req.NewDate, "dry_run", req.DryRun, "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
 		// Reglas de negocio (agenda inexistente, sin citas, destino incompatible, conflicto de horario) →
 		// 409 con el mensaje; fallos de infraestructura (tx/consulta) → 500 genérico.
 		var invalid domain.RescheduleInvalidError
@@ -1505,6 +1532,16 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 		} else {
 			http.Error(w, "error reprogramando la agenda", http.StatusInternalServerError)
 		}
+		return
+	}
+
+	// Vista previa: el repo ya validó y calculó el resumen sin mutar nada → responder y salir (no notificar).
+	if req.DryRun {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok", "dry_run": true,
+			"moved": res.Moved, "dest_agenda_id": res.DestAgendaID, "created_agenda": res.Created,
+		})
 		return
 	}
 

@@ -134,6 +134,20 @@ type RescheduleDayInput struct {
 	OldDate      string // YYYY-MM-DD (day to vacate)
 	NewDate      string // YYYY-MM-DD (destination day)
 	DestAgendaID int    // 0 = create by duplication; >0 = existing destination agenda
+	// DryRun ejecuta toda la validación y calcula el resumen (cuántas citas, agenda destino, si crea)
+	// pero hace ROLLBACK en vez de commit: no muta nada. Para la vista previa del dashboard.
+	DryRun bool
+}
+
+// DoctorAgendaOnDate describe una agenda del médico con slots en una fecha (para elegir destino de
+// reprogramación, incluidas las agendas-reserva vacías que no aparecen en la lista basada en citas).
+type DoctorAgendaOnDate struct {
+	AgendaID    int    `json:"agenda_id"`
+	Consultorio string `json:"consultorio"`
+	Slots       int    `json:"slots"`      // total de slots ese día
+	Free        int    `json:"free"`       // slots libres (IdCita NULL)
+	HoraDesde   string `json:"hora_desde"` // HH:MM del primer slot
+	HoraHasta   string `json:"hora_hasta"` // HH:MM del último slot
 }
 
 // RescheduleDayResult reports the outcome of RescheduleDayOfAgenda.

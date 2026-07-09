@@ -27,6 +27,14 @@ type mockApptRepoAPI struct {
 	findByIDFn              func(ctx context.Context, id string) (*domain.Appointment, error)
 	cancelBatchBlockFn      func(ctx context.Context, ids []string, reason, channel, channelID string) error
 	RescheduleDayOfAgendaFn func(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error)
+	doctorAgendasOnDateFn   func(ctx context.Context, doctor, date string) ([]domain.DoctorAgendaOnDate, error)
+}
+
+func (m *mockApptRepoAPI) FindDoctorAgendasOnDate(ctx context.Context, doctor, date string) ([]domain.DoctorAgendaOnDate, error) {
+	if m.doctorAgendasOnDateFn != nil {
+		return m.doctorAgendasOnDateFn(ctx, doctor, date)
+	}
+	return nil, nil
 }
 
 func (m *mockApptRepoAPI) FindAgendasByDoctor(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error) {

@@ -199,4 +199,51 @@ func TestRescheduleDayOfAgenda(t *testing.T) {
 		}
 		t.Logf("OK MOVE: %d citas movidas a agenda %d, día origen bloqueado", res.Moved, destAgenda)
 	})
+
+	// DryRun: valida + calcula el resumen pero NO muta (rollback). Verifica que la BD quede intacta.
+	t.Run("DRY_RUN_no_muta", func(t *testing.T) {
+		const destAgenda = 711
+		const newDate = "2026-07-16"
+		res, err := repo.RescheduleDayOfAgenda(ctx, domain.RescheduleDayInput{
+			AgendaID: srcAgenda, OldDate: oldDate, NewDate: newDate, DestAgendaID: destAgenda, DryRun: true,
+		})
+		if err != nil {
+			t.Fatalf("dry_run: %v", err)
+		}
+		if res.Moved != 12 || res.DestAgendaID != destAgenda || res.Created {
+			t.Errorf("resumen dry_run inesperado: %+v", res)
+		}
+		// BD intacta: origen sigue ocupado, destino sigue vacío, origen sin bloquear.
+		if occ := countOccupied(t, srcAgenda, oldDate); occ != 12 {
+			t.Errorf("dry_run MUTÓ el origen: ocupados=%d (esperaba 12)", occ)
+		}
+		if occ := countOccupied(t, destAgenda, newDate); occ != 0 {
+			t.Errorf("dry_run MUTÓ el destino: ocupados=%d (esperaba 0)", occ)
+		}
+		if blocked, _ := sourceBlocked(t); blocked != 0 {
+			t.Errorf("dry_run bloqueó el origen: bloqueados=%d (esperaba 0)", blocked)
+		}
+		t.Logf("OK DRY_RUN: resumen moved=%d sin mutar la BD", res.Moved)
+	})
+
+	// FindDoctorAgendasOnDate debe listar las agendas del médico ese día, incluida la reserva vacía 711.
+	t.Run("doctor_agendas_on_date", func(t *testing.T) {
+		ags, err := repo.FindDoctorAgendasOnDate(ctx, "8", "2026-07-16")
+		if err != nil {
+			t.Fatalf("FindDoctorAgendasOnDate: %v", err)
+		}
+		var r711 *domain.DoctorAgendaOnDate
+		for i := range ags {
+			if ags[i].AgendaID == 711 {
+				r711 = &ags[i]
+			}
+		}
+		if r711 == nil {
+			t.Fatalf("no se listó la reserva 711; agendas=%+v", ags)
+		}
+		if r711.Slots == 0 || r711.Free != r711.Slots {
+			t.Errorf("711 debería estar vacía (free==slots): %+v", *r711)
+		}
+		t.Logf("OK agendas destino del médico 8 el 2026-07-16: %+v", ags)
+	})
 }

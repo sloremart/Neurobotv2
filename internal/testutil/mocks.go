@@ -232,6 +232,11 @@ func (m *MockAppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in doma
 	return domain.RescheduleDayResult{}, nil
 }
 
+// FindDoctorAgendasOnDate lista agendas del médico en una fecha (mock).
+func (m *MockAppointmentRepo) FindDoctorAgendasOnDate(_ context.Context, _, _ string) ([]domain.DoctorAgendaOnDate, error) {
+	return nil, nil
+}
+
 // SlotCountForAppointment returns the configured slot count (or 0 by default).
 func (m *MockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
 	if m.SlotCountForAppointmentFn != nil {

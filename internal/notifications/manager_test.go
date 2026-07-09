@@ -124,6 +124,10 @@ func (m *mockApptRepoNotif) RescheduleDayOfAgenda(_ context.Context, _ domain.Re
 	return domain.RescheduleDayResult{}, nil
 }
 
+func (m *mockApptRepoNotif) FindDoctorAgendasOnDate(_ context.Context, _, _ string) ([]domain.DoctorAgendaOnDate, error) {
+	return nil, nil
+}
+
 func (m *mockApptRepoNotif) SlotCountForAppointment(_ context.Context, _ string) (int, error) {
 	return 0, nil
 }

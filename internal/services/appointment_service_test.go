@@ -114,6 +114,10 @@ func (m *mockAppointmentRepo) RescheduleDayOfAgenda(_ context.Context, _ domain.
 	return domain.RescheduleDayResult{}, nil
 }
 
+func (m *mockAppointmentRepo) FindDoctorAgendasOnDate(_ context.Context, _, _ string) ([]domain.DoctorAgendaOnDate, error) {
+	return nil, nil
+}
+
 func (m *mockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
 	if m.slotCountFn != nil {
 		return m.slotCountFn(ctx, apptID)

@@ -1792,6 +1792,15 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 		return res, invalidReschedule("agenda destino incompatible: %d de %d cupos disponibles a la misma hora (grilla distinta)", dstSlots, srcSlots)
 	}
 
+	// DryRun: ya se validó todo y se conocen los contadores → NO commitear. El defer tx.Rollback()
+	// deshace la agenda creada / los cupos reclamados / el movimiento. Devuelve el resumen para la vista
+	// previa del dashboard.
+	if in.DryRun {
+		res.DestAgendaID = destID
+		res.Moved = int(moved)
+		return res, nil
+	}
+
 	// 7. Bloquear los slots del día origen (NO liberar): el día queda cerrado, nadie agenda ahí.
 	if _, err = tx.ExecContext(ctx, `
 	UPDATE programacion_medico_detalle SET IdCita = NULL, Bloqueado = 1
@@ -1806,6 +1815,48 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	res.DestAgendaID = destID
 	res.Moved = int(moved)
 	return res, nil
+}
+
+// FindDoctorAgendasOnDate lista las agendas (programacion_medico) del médico con slots en `date`,
+// con nº de slots totales/libres y el rango horario. Incluye las agendas-RESERVA vacías (que NO tienen
+// citas y por eso no aparecen en FindAgendasByDoctor), para poder elegirlas como destino de una
+// reprogramación. Solo lectura NOLOCK. `doctorCode` = Medico (cod_medi); `date` en YYYY-MM-DD.
+func (r *AppointmentRepo) FindDoctorAgendasOnDate(ctx context.Context, doctorCode, date string) ([]domain.DoctorAgendaOnDate, error) {
+	rows, err := r.db.QueryContext(ctx, `
+	SELECT a.agenda_id, ISNULL(con.nombre,'') AS consultorio, a.total, a.libres, a.desde, a.hasta
+	FROM (
+	    SELECT pmd.IdProgramacionMedico AS agenda_id,
+	           COUNT(*) AS total,
+	           SUM(CASE WHEN pmd.IdCita IS NULL THEN 1 ELSE 0 END) AS libres,
+	           MIN(CONVERT(VARCHAR(5), pmd.Fecha, 108)) AS desde,
+	           MAX(CONVERT(VARCHAR(5), pmd.Fecha, 108)) AS hasta
+	    FROM programacion_medico_detalle pmd WITH (NOLOCK)
+	    WHERE pmd.Medico = @doctor AND CAST(pmd.Fecha AS DATE) = @date AND pmd.SinProgramacion = 0
+	    GROUP BY pmd.IdProgramacionMedico
+	) a
+	OUTER APPLY (
+	    SELECT TOP 1 con.nombre
+	    FROM programacion_medico pm WITH (NOLOCK)
+	    JOIN programacion_medico_relacion pmr WITH (NOLOCK) ON pmr.id_programacion = pm.id_programacion
+	    JOIN consultorios con WITH (NOLOCK) ON con.id = pmr.id_consultorio
+	    WHERE pm.id = a.agenda_id
+	) con
+	ORDER BY a.desde`,
+		sql.Named("doctor", doctorCode), sql.Named("date", date))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.DoctorAgendaOnDate
+	for rows.Next() {
+		var a domain.DoctorAgendaOnDate
+		if err := rows.Scan(&a.AgendaID, &a.Consultorio, &a.Slots, &a.Free, &a.HoraDesde, &a.HoraHasta); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // duplicateAgendaForDayTx crea, dentro de tx, una agenda nueva para NewDate replicando la estructura del
