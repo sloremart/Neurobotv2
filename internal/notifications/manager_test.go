@@ -2436,3 +2436,7 @@ func TestMarkIVRSent_FollowupDisabled_KeepsPendingForDTMF(t *testing.T) {
 		t.Error("con followup deshabilitado, MarkIVRSent debe MANTENER el pending para que el DTMF se procese")
 	}
 }
+
+func (m *mockApptRepoNotif) CancelBatchAndBlockSlots(_ context.Context, _ []string, _, _, _ string) error {
+	return nil
+}

@@ -148,9 +148,11 @@ var catalog = map[string]stepSpec{
 	"scheduler/task_failed":    {LvError, "error", ""},
 
 	// Admin agenda (§3A) — trace agenda:<id>:<date>
-	"admin_agenda/agenda_cancelled":   {LvOutcome, "ok", "agenda"},
-	"admin_agenda/agenda_rescheduled": {LvOutcome, "ok", "agenda"},
-	"admin_agenda/patients_notified":  {LvMilestone, "ok", ""},
+	"admin_agenda/agenda_cancelled":      {LvOutcome, "ok", "agenda"},
+	"admin_agenda/agenda_rescheduled":    {LvOutcome, "ok", "agenda"},
+	"admin_agenda/patients_notified":     {LvMilestone, "ok", ""},
+	"admin_agenda/appointment_cancelled": {LvOutcome, "ok", "appointment"},   // cancelación individual desde el dashboard
+	"admin_agenda/confirmation_sent":     {LvMilestone, "ok", "appointment"}, // envío de confirmación individual
 
 	// Infra / transversal (§3A)
 	"infra/session_abandoned":  {LvOutcome, "info", ""}, // trace sess:<id>

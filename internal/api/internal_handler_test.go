@@ -23,6 +23,8 @@ type mockApptRepoAPI struct {
 	cancelBatchFn          func(ctx context.Context, ids []string, reason, channel, channelID string) error
 	findAgendasByDoctorFn  func(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error)
 	findAgendaApptsPagedFn func(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error)
+	findByIDFn             func(ctx context.Context, id string) (*domain.Appointment, error)
+	cancelBatchBlockFn     func(ctx context.Context, ids []string, reason, channel, channelID string) error
 }
 
 func (m *mockApptRepoAPI) FindAgendasByDoctor(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error) {
@@ -40,6 +42,9 @@ func (m *mockApptRepoAPI) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 }
 
 func (m *mockApptRepoAPI) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
+	if m.findByIDFn != nil {
+		return m.findByIDFn(ctx, id)
+	}
 	return nil, nil
 }
 
@@ -920,5 +925,90 @@ func TestHandleSiesaAgendaAppointments_ParsesFilters(t *testing.T) {
 	}
 	if got.Name != "arroyo" || got.Doc != "1120588384" {
 		t.Errorf("name/doc: %q/%q", got.Name, got.Doc)
+	}
+}
+
+func (m *mockApptRepoAPI) CancelBatchAndBlockSlots(ctx context.Context, ids []string, reason, channel, channelID string) error {
+	if m.cancelBatchBlockFn != nil {
+		return m.cancelBatchBlockFn(ctx, ids, reason, channel, channelID)
+	}
+	return nil
+}
+
+// --- Tests: cancelación individual (Fase 1 módulo Agenda) ---
+
+func apptForCancel(id string, canceled bool) *domain.Appointment {
+	return &domain.Appointment{ID: id, DoctorID: "8", AgendaID: 704, PatientID: "111", Date: time.Now(), TimeSlot: "202607090800", Canceled: canceled}
+}
+
+func TestHandleCancelAppointment_BlocksSlotsWhenNoRelease(t *testing.T) {
+	plain, blocked := false, false
+	repo := &mockApptRepoAPI{
+		findByIDFn:         func(_ context.Context, id string) (*domain.Appointment, error) { return apptForCancel(id, false), nil },
+		cancelBatchFn:      func(_ context.Context, _ []string, _, _, _ string) error { plain = true; return nil },
+		cancelBatchBlockFn: func(_ context.Context, _ []string, _, _, _ string) error { blocked = true; return nil },
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	body := bytes.NewBufferString(`{"notify_patient":false,"release_slots":false}`)
+	req := httptest.NewRequest("POST", "/api/internal/appointment/7285/cancel", body)
+	req.SetPathValue("id", "7285")
+	rec := httptest.NewRecorder()
+	h.HandleCancelAppointment(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperaba 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !blocked || plain {
+		t.Errorf("release_slots=false debe BLOQUEAR (blocked=%v plain=%v)", blocked, plain)
+	}
+}
+
+func TestHandleCancelAppointment_ReleasesSlots(t *testing.T) {
+	plain, blocked := false, false
+	repo := &mockApptRepoAPI{
+		findByIDFn:         func(_ context.Context, id string) (*domain.Appointment, error) { return apptForCancel(id, false), nil },
+		cancelBatchFn:      func(_ context.Context, _ []string, _, _, _ string) error { plain = true; return nil },
+		cancelBatchBlockFn: func(_ context.Context, _ []string, _, _, _ string) error { blocked = true; return nil },
+	}
+	// notifyManager nil → el WL se salta sin panic (guardado).
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	body := bytes.NewBufferString(`{"notify_patient":false,"release_slots":true}`)
+	req := httptest.NewRequest("POST", "/api/internal/appointment/7285/cancel", body)
+	req.SetPathValue("id", "7285")
+	rec := httptest.NewRecorder()
+	h.HandleCancelAppointment(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperaba 200, got %d", rec.Code)
+	}
+	if !plain || blocked {
+		t.Errorf("release_slots=true debe LIBERAR (plain=%v blocked=%v)", plain, blocked)
+	}
+}
+
+func TestHandleCancelAppointment_Idempotent(t *testing.T) {
+	called := false
+	repo := &mockApptRepoAPI{
+		findByIDFn:         func(_ context.Context, id string) (*domain.Appointment, error) { return apptForCancel(id, true), nil }, // ya cancelada
+		cancelBatchFn:      func(_ context.Context, _ []string, _, _, _ string) error { called = true; return nil },
+		cancelBatchBlockFn: func(_ context.Context, _ []string, _, _, _ string) error { called = true; return nil },
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	req := httptest.NewRequest("POST", "/api/internal/appointment/7285/cancel", bytes.NewBufferString(`{}`))
+	req.SetPathValue("id", "7285")
+	rec := httptest.NewRecorder()
+	h.HandleCancelAppointment(rec, req)
+	if rec.Code != http.StatusOK || called {
+		t.Errorf("cita ya cancelada: esperaba 200 sin re-cancelar (code=%d called=%v)", rec.Code, called)
+	}
+}
+
+func TestHandleCancelAppointment_NotFound(t *testing.T) {
+	repo := &mockApptRepoAPI{findByIDFn: func(_ context.Context, _ string) (*domain.Appointment, error) { return nil, nil }}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	req := httptest.NewRequest("POST", "/api/internal/appointment/999/cancel", bytes.NewBufferString(`{}`))
+	req.SetPathValue("id", "999")
+	rec := httptest.NewRecorder()
+	h.HandleCancelAppointment(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("esperaba 404, got %d", rec.Code)
 	}
 }

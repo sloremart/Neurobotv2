@@ -664,3 +664,8 @@ func (m *MockEventRepo) InsertBatch(ctx context.Context, events []local.ChatEven
 func MakeEvent(eventType string) statemachine.Event {
 	return statemachine.Event{Type: eventType}
 }
+
+// CancelBatchAndBlockSlots stub del mock (módulo Agenda).
+func (m *MockAppointmentRepo) CancelBatchAndBlockSlots(_ context.Context, _ []string, _, _, _ string) error {
+	return nil
+}

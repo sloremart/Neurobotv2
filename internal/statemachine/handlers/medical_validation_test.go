@@ -1084,3 +1084,7 @@ func TestAskGestationalWeeks_AgentNumberInRange(t *testing.T) {
 		t.Errorf("agente '12' (en rango 110-136) debe continuar a ASK_CONTRASTED, got %s", result.NextState)
 	}
 }
+
+func (m *mockApptRepo) CancelBatchAndBlockSlots(_ context.Context, _ []string, _, _, _ string) error {
+	return nil
+}

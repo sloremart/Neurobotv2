@@ -420,6 +420,9 @@ func main() {
 		}
 		internalHandler.SetSessionReader(sessionRepo)
 		internalHandler.SetFlowReader(flowRepo)
+		if repos.Patient != nil {
+			internalHandler.SetPatientReader(repos.Patient) // resolver teléfono/nombre al notificar (módulo Agenda)
+		}
 		// Catálogos de referencia de SIESA (médicos, asuntos) para el módulo de catálogo del
 		// dashboard. Solo lectura, cacheados 30 min (casi estáticos) → no golpean SIESA por carga.
 		if externalDB != nil {
@@ -446,6 +449,8 @@ func main() {
 		internalMux := http.NewServeMux()
 		internalMux.HandleFunc("POST /api/internal/cancel-agenda", internalHandler.HandleCancelAgenda)
 		internalMux.HandleFunc("POST /api/internal/reschedule-agenda", internalHandler.HandleRescheduleAgenda)
+		internalMux.HandleFunc("POST /api/internal/appointment/{id}/cancel", internalHandler.HandleCancelAppointment)
+		internalMux.HandleFunc("POST /api/internal/appointment/{id}/notify-confirmation", internalHandler.HandleNotifyConfirmation)
 		internalMux.HandleFunc("POST /api/internal/waiting-list/check", internalHandler.HandleWaitingListCheck)
 		internalMux.HandleFunc("GET /api/internal/waiting-list", internalHandler.HandleWaitingListGet)
 		// (Eliminados los endpoints /api/internal/kpis/* — motor de KPIs duplicado/no consumido; el

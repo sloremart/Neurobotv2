@@ -1194,6 +1194,19 @@ func (r *AppointmentRepo) ConfirmBatch(ctx context.Context, ids []string, channe
 }
 
 func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error {
+	return r.cancelBatchTx(ctx, ids, reason, channelID, false)
+}
+
+// CancelBatchAndBlockSlots cancela las citas y, en la MISMA transacción, además de liberarlas del cupo
+// (IdCita=NULL) BLOQUEA los slots (Bloqueado=1) para que NO queden disponibles para otras citas. Se usa
+// desde el dashboard cuando el operador cancela sin querer liberar el cupo (bandera release_slots=false).
+func (r *AppointmentRepo) CancelBatchAndBlockSlots(ctx context.Context, ids []string, reason, _, channelID string) error {
+	return r.cancelBatchTx(ctx, ids, reason, channelID, true)
+}
+
+// cancelBatchTx cancela N citas y gestiona sus cupos atómicamente. blockSlots=false libera los cupos
+// (IdCita=NULL, disponibles de nuevo); blockSlots=true además los bloquea (Bloqueado=1, no reutilizables).
+func (r *AppointmentRepo) cancelBatchTx(ctx context.Context, ids []string, reason, channelID string, blockSlots bool) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -1227,10 +1240,12 @@ func (r *AppointmentRepo) CancelBatch(ctx context.Context, ids []string, reason,
 		return fmt.Errorf("siesa cancel batch: %w", err)
 	}
 	clause2, idArgs2 := inParamsAsInt(ids, 1)
-	if _, relErr := tx.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita IN (%s)`, clause2),
-		idArgs2...); relErr != nil {
-		return fmt.Errorf("siesa cancel batch liberar cupos: %w", relErr)
+	slotUpdate := `UPDATE programacion_medico_detalle SET IdCita = NULL WHERE IdCita IN (%s)`
+	if blockSlots {
+		slotUpdate = `UPDATE programacion_medico_detalle SET IdCita = NULL, Bloqueado = 1 WHERE IdCita IN (%s)`
+	}
+	if _, relErr := tx.ExecContext(ctx, fmt.Sprintf(slotUpdate, clause2), idArgs2...); relErr != nil {
+		return fmt.Errorf("siesa cancel batch gestionar cupos: %w", relErr)
 	}
 	if err := tx.Commit(); err != nil {
 		return err

@@ -983,3 +983,7 @@ func TestCreateWithConsecutive_Multiple(t *testing.T) {
 		t.Errorf("expected start timeslot preserved, got %q", gotTimeSlot)
 	}
 }
+
+func (m *mockAppointmentRepo) CancelBatchAndBlockSlots(_ context.Context, _ []string, _, _, _ string) error {
+	return nil
+}

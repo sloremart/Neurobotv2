@@ -135,7 +135,17 @@ type InternalHandler struct {
 	siesaRef        SiesaRefReader       // optional: SIESA reference catalogs (médicos, asuntos)
 	siesaAnalytics  SiesaAnalyticsReader // optional: SIESA aggregated KPIs (ocupación, citas, conciliación)
 	cupsMedico      CupsMedicoReader     // optional: cups_medico reader for the conciliación cross
+	patientRepo     PatientReader        // optional: resolver teléfono/nombre del paciente al notificar
 }
+
+// PatientReader resuelve datos del paciente (teléfono/nombre) por su id (autoid), para las
+// notificaciones individuales del módulo Agenda. Lo inyecta SetPatientReader.
+type PatientReader interface {
+	FindByID(ctx context.Context, id string) (*domain.Patient, error)
+}
+
+// SetPatientReader inyecta el lector de pacientes (opcional).
+func (h *InternalHandler) SetPatientReader(p PatientReader) { h.patientRepo = p }
 
 // NewInternalHandler creates a new internal handler.
 func NewInternalHandler(
@@ -1199,6 +1209,219 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 // agendaTrace builds the observability trace_id for an admin agenda action (yyyymmdd, no dashes).
 func agendaTrace(agendaID int, date string) string {
 	return observability.TraceAgenda(strconv.Itoa(agendaID), strings.ReplaceAll(date, "-", ""))
+}
+
+// --- Acciones individuales por cita (módulo Agenda del dashboard) ---
+
+// CancelAppointmentRequest es el body de POST /api/internal/appointment/{id}/cancel.
+type CancelAppointmentRequest struct {
+	Reason        string `json:"reason"`         // opcional; default "Cancelada por operador"
+	NotifyPatient bool   `json:"notify_patient"` // enviar plantilla de cancelación al paciente
+	ReleaseSlots  bool   `json:"release_slots"`  // true: liberar cupos + lista de espera; false: bloquear cupos
+}
+
+// proceduresText une los nombres de los procedimientos de una cita (para la plantilla de confirmación).
+func proceduresText(procs []domain.AppointmentProcedure) string {
+	names := make([]string, 0, len(procs))
+	for _, p := range procs {
+		if p.CupName != "" {
+			names = append(names, p.CupName)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// resolvePatientNamePhone resuelve nombre + teléfono del paciente. FindByID de la cita no los trae, así
+// que se consulta el PatientRepo (autoid). Devuelve phone "" si no hay número válido.
+func (h *InternalHandler) resolvePatientNamePhone(ctx context.Context, appt *domain.Appointment) (name, phone string) {
+	name = appt.PatientName
+	phone = utils.ParseColombianPhone(appt.PatientPhone)
+	if (name == "" || phone == "") && h.patientRepo != nil && appt.PatientID != "" {
+		if p, err := h.patientRepo.FindByID(ctx, appt.PatientID); err == nil && p != nil {
+			if name == "" {
+				name = p.FullName
+			}
+			if phone == "" {
+				phone = utils.ParseColombianPhone(p.Phone)
+			}
+		}
+	}
+	return name, phone
+}
+
+// sendTemplateAndRegister envía una plantilla de WhatsApp y registra el pending para capturar la
+// respuesta del paciente. Devuelve (messageID, enviado). SendTemplate/RegisterPending son APIs sin
+// ctx (heredadas del bot); el envío es best-effort → se suprime contextcheck aquí.
+//
+//nolint:contextcheck
+func (h *InternalHandler) sendTemplateAndRegister(phone string, tmpl bird.TemplateConfig, notifType, apptID string) (string, bool) {
+	msgID, err := h.birdClient.SendTemplate(phone, tmpl)
+	if err != nil {
+		slog.Error("dashboard notif", "type", notifType, "phone", utils.MaskPhone(phone), "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+		return "", false
+	}
+	convID := h.birdClient.GetCachedConversationID(phone)
+	if convID == "" {
+		convID, _ = h.birdClient.LookupConversationByPhone(phone)
+	}
+	h.notifyManager.RegisterPending(notifications.PendingNotification{
+		Type: notifType, Phone: phone, AppointmentID: apptID, BirdMessageID: msgID, ConversationID: convID,
+	})
+	return msgID, true
+}
+
+// sendCancellationTemplate envía la plantilla de cancelación al paciente. Devuelve true si se envió.
+func (h *InternalHandler) sendCancellationTemplate(ctx context.Context, appt *domain.Appointment, reason string) bool {
+	name, phone := h.resolvePatientNamePhone(ctx, appt)
+	if phone == "" {
+		slog.Warn("dashboard cancel: paciente sin teléfono")
+		return false
+	}
+	tmpl := bird.TemplateConfig{
+		ProjectID: h.cfg.BirdTemplateCancellationProjectID,
+		VersionID: h.cfg.BirdTemplateCancellationVersionID,
+		Locale:    h.cfg.BirdTemplateCancellationLocale,
+		Params: []bird.TemplateParam{
+			{Type: "string", Key: "patient_name", Value: name},
+			{Type: "string", Key: "appointment_date", Value: utils.FormatFriendlyDate(appt.Date)},
+			{Type: "string", Key: "appointment_time", Value: services.FormatTimeSlot(appt.TimeSlot)},
+			{Type: "string", Key: "reason", Value: reason},
+		},
+	}
+	_, ok := h.sendTemplateAndRegister(phone, tmpl, "cancellation", appt.ID)
+	return ok
+}
+
+// HandleCancelAppointment cancela UNA cita (y todos sus slots) en SIESA con la lógica existente.
+// Banderas: notify_patient (plantilla de cancelación) y release_slots (liberar cupos + lista de espera
+// vs bloquearlos). POST /api/internal/appointment/{id}/cancel
+func (h *InternalHandler) HandleCancelAppointment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "appointment id requerido", http.StatusBadRequest)
+		return
+	}
+	var req CancelAppointmentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		req.Reason = "Cancelada por operador"
+	}
+	req.Reason = truncateReason(req.Reason)
+
+	ctx := r.Context()
+	appt, err := h.appointmentRepo.FindByID(ctx, id)
+	if err != nil {
+		slog.Error("cancel appt: find", "id", id, "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+		http.Error(w, "error consultando la cita", http.StatusInternalServerError)
+		return
+	}
+	if appt == nil {
+		http.Error(w, "cita no encontrada", http.StatusNotFound)
+		return
+	}
+	if appt.Canceled { // idempotencia
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "already_cancelled": true})
+		return
+	}
+
+	// 1. Cancelar en SIESA (la cita y sus N slots). release_slots decide si además se bloquean los cupos.
+	ids := []string{id}
+	if req.ReleaseSlots {
+		err = h.appointmentRepo.CancelBatch(ctx, ids, req.Reason, "dashboard_cancel", "")
+	} else {
+		err = h.appointmentRepo.CancelBatchAndBlockSlots(ctx, ids, req.Reason, "dashboard_cancel", "")
+	}
+	if err != nil {
+		slog.Error("cancel appt: siesa", "id", id, "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+		http.Error(w, "error cancelando la cita", http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Cupos liberados → lanzar el protocolo de lista de espera (médico+agenda) en background.
+	if req.ReleaseSlots && h.notifyManager != nil {
+		if cod, e := strconv.Atoi(appt.DoctorID); e == nil && cod > 0 && appt.AgendaID > 0 {
+			go h.notifyManager.CheckWaitingListForSlot(context.WithoutCancel(ctx), cod, appt.AgendaID)
+		}
+	}
+
+	// 3. Notificar al paciente (plantilla de cancelación), si corresponde.
+	notified := false
+	if req.NotifyPatient && h.cfg.BirdTemplateCancellationProjectID != "" {
+		notified = h.sendCancellationTemplate(ctx, appt, req.Reason)
+	}
+
+	// 4. Auditoría: flow_event admin_agenda (log_citas ya lo escribió Cancel; + slog).
+	observability.Emit(agendaTrace(appt.AgendaID, appt.Date.Format("2006-01-02")), "admin_agenda", "appointment_cancelled",
+		observability.EmitOpts{
+			Reason:  req.Reason,
+			RefType: "appointment",
+			RefID:   id,
+			Attrs:   map[string]interface{}{"notify_patient": req.NotifyPatient, "release_slots": req.ReleaseSlots, "notified": notified},
+		})
+	slog.Info("appointment cancelled (dashboard)", "id", id, "notify", req.NotifyPatient, "release_slots", req.ReleaseSlots) //nolint:gosec // G706: endpoint admin; slog estructura los valores.
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "ok", "cancelled_id": id, "notified": notified, "slots_released": req.ReleaseSlots,
+	})
+}
+
+// HandleNotifyConfirmation envía al paciente la plantilla de CONFIRMACIÓN de una cita. NO cambia SIESA:
+// el paciente confirma respondiendo (flujo existente del bot, capturado por RegisterPending).
+// POST /api/internal/appointment/{id}/notify-confirmation
+func (h *InternalHandler) HandleNotifyConfirmation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "appointment id requerido", http.StatusBadRequest)
+		return
+	}
+	if h.cfg.BirdTemplateConfirmProjectID == "" {
+		http.Error(w, "plantilla de confirmación no configurada", http.StatusServiceUnavailable)
+		return
+	}
+	ctx := r.Context()
+	appt, err := h.appointmentRepo.FindByID(ctx, id)
+	if err != nil {
+		slog.Error("notify confirm: find", "id", id, "error", err) //nolint:gosec // G706: endpoint admin; slog estructura los valores.
+		http.Error(w, "error consultando la cita", http.StatusInternalServerError)
+		return
+	}
+	if appt == nil || appt.Canceled {
+		http.Error(w, "cita no encontrada o cancelada", http.StatusNotFound)
+		return
+	}
+	name, phone := h.resolvePatientNamePhone(ctx, appt)
+	if phone == "" {
+		http.Error(w, "paciente sin teléfono válido", http.StatusUnprocessableEntity)
+		return
+	}
+	tmpl := bird.TemplateConfig{
+		ProjectID: h.cfg.BirdTemplateConfirmProjectID,
+		VersionID: h.cfg.BirdTemplateConfirmVersionID,
+		Locale:    h.cfg.BirdTemplateConfirmLocale,
+		Params: []bird.TemplateParam{
+			{Type: "string", Key: "patient_name", Value: name},
+			{Type: "string", Key: "clinic_name", Value: h.cfg.CenterName},
+			{Type: "string", Key: "appointment_date", Value: utils.FormatFriendlyDate(appt.Date)},
+			{Type: "string", Key: "appointment_time", Value: services.FormatTimeSlot(appt.TimeSlot)},
+			{Type: "string", Key: "procedures", Value: proceduresText(appt.Procedures)},
+		},
+	}
+	msgID, ok := h.sendTemplateAndRegister(phone, tmpl, "confirmation", appt.ID)
+	if !ok {
+		http.Error(w, "error enviando la confirmación", http.StatusBadGateway)
+		return
+	}
+	observability.Emit(agendaTrace(appt.AgendaID, appt.Date.Format("2006-01-02")), "admin_agenda", "confirmation_sent",
+		observability.EmitOpts{Phone: phone, RefType: "appointment", RefID: id})
+	slog.Info("confirmation sent (dashboard)", "id", id) //nolint:gosec // G706: endpoint admin; slog estructura los valores.
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "notified": true, "message_id": msgID})
 }
 
 // --- Reschedule Agenda ---

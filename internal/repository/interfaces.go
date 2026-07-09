@@ -42,6 +42,9 @@ type AppointmentRepository interface {
 	Cancel(ctx context.Context, id string, reason, channel, channelID string) error
 	ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error
 	CancelBatch(ctx context.Context, ids []string, reason, channel, channelID string) error
+	// CancelBatchAndBlockSlots cancela las citas y BLOQUEA sus cupos (Bloqueado=1) para que no queden
+	// disponibles (dashboard: cancelar sin liberar el cupo). Misma transacción que CancelBatch.
+	CancelBatchAndBlockSlots(ctx context.Context, ids []string, reason, channel, channelID string) error
 	DeleteBatch(ctx context.Context, ids []string) error
 	HasFutureForCup(ctx context.Context, patientID, cupCode string) (bool, error)
 	FindLastDoctorForCups(ctx context.Context, patientID string, cups []string) (string, error)
