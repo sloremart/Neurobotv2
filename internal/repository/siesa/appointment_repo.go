@@ -1541,8 +1541,10 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 		args = append(args, sql.Named("name", "%"+f.Name+"%"))
 	}
 	if f.Doc != "" {
-		conds = append(conds, "p.num_id = @doc")
-		args = append(args, sql.Named("doc", f.Doc))
+		// Prefijo: filtra a medida que el operador teclea la cédula (las cédulas empiezan por los
+		// dígitos escritos). Sargable y acotado por el filtro de agenda.
+		conds = append(conds, "p.num_id LIKE @doc")
+		args = append(args, sql.Named("doc", f.Doc+"%"))
 	}
 	args = append(args, sql.Named("off", offset), sql.Named("size", size))
 

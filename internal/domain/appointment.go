@@ -74,7 +74,7 @@ type AgendaAppointmentsFilter struct {
 	DoctorCode string // alterno (cod_medi); "" = no filtrar
 	Date       string // sub-filtro dentro de una agenda multi-día; "" = todas
 	Name       string // LIKE prefijo sobre el nombre del paciente
-	Doc        string // = sobre sis_paci.num_id
+	Doc        string // prefijo LIKE sobre sis_paci.num_id (filtra al teclear)
 	Page       int    // 1-based
 	PageSize   int    // acotado por el repo (máx 100)
 }
