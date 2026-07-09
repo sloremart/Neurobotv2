@@ -1457,7 +1457,8 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 		http.Error(w, "agenda_id, old_date and new_date are required", http.StatusBadRequest)
 		return
 	}
-	if _, err := time.Parse("2006-01-02", req.OldDate); err != nil {
+	oldDate, err := time.Parse("2006-01-02", req.OldDate)
+	if err != nil {
 		http.Error(w, "old_date must be YYYY-MM-DD format", http.StatusBadRequest)
 		return
 	}
@@ -1473,6 +1474,13 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 	// #30 (auditoría): comparar contra HOY en hora de Colombia (UTC-5, sin DST).
 	bogota := time.FixedZone("America/Bogota", -5*3600)
 	todayCO, _ := time.Parse("2006-01-02", time.Now().In(bogota).Format("2006-01-02"))
+	// old_date solo puede ser HOY o posterior: no se reprograman días ya pasados. NO se validan las horas
+	// del día en curso a propósito — ante una cancelación imprevista hay que poder mover TODAS las citas
+	// del día de hoy, incluidas las de horas ya transcurridas.
+	if oldDate.Before(todayCO) {
+		http.Error(w, "old_date no puede ser un día ya pasado (solo hoy o posterior)", http.StatusBadRequest)
+		return
+	}
 	if newDate.Before(todayCO) {
 		http.Error(w, "new_date must be today or later", http.StatusBadRequest)
 		return

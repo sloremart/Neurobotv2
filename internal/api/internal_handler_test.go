@@ -850,7 +850,8 @@ func TestRescheduleDay_Validations(t *testing.T) {
 		{"old_date mal formato", `{"agenda_id":1,"old_date":"01-01-2027","new_date":"2027-01-02"}`, http.StatusBadRequest},
 		{"new_date mal formato", `{"agenda_id":1,"old_date":"2027-01-01","new_date":"nope"}`, http.StatusBadRequest},
 		{"misma fecha misma agenda", `{"agenda_id":1,"old_date":"2027-01-01","new_date":"2027-01-01"}`, http.StatusBadRequest},
-		{"fecha en el pasado", `{"agenda_id":1,"old_date":"2020-01-01","new_date":"2020-01-02"}`, http.StatusBadRequest},
+		{"new_date en el pasado", `{"agenda_id":1,"old_date":"2020-01-01","new_date":"2020-01-02"}`, http.StatusBadRequest},
+		{"old_date día pasado", `{"agenda_id":1,"old_date":"2020-01-01","new_date":"2099-01-02"}`, http.StatusBadRequest},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
