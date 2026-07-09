@@ -54,7 +54,8 @@ type AgendaSummary struct {
 // al notificar) → menos PII.
 type AgendaAppointmentRow struct {
 	ID          string `json:"id"`
-	Hora        string `json:"hora"` // HH:MM del slot
+	Date        string `json:"fecha"` // YYYY-MM-DD (orden asc por fecha, luego hora)
+	Hora        string `json:"hora"`  // HH:MM del slot
 	PatientName string `json:"patient_name"`
 	PatientDoc  string `json:"patient_doc"` // sis_paci.num_id
 }

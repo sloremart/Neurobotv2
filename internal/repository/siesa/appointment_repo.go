@@ -1552,6 +1552,7 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 	//nolint:gosec // G202: las condiciones son literales fijos; los valores del usuario van por sql.Named.
 	query := `
 	SELECT CAST(c.id AS VARCHAR(20)),
+	       CONVERT(VARCHAR(10), c.fecha, 23) AS fecha,
 	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
 	               FROM programacion_medico_detalle pmd WITH (NOLOCK) WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1) AS hhmm,
 	       ISNULL(c.hora,'') AS hora_cita,
@@ -1562,7 +1563,10 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 	FROM citas c WITH (NOLOCK)
 	INNER JOIN sis_paci p WITH (NOLOCK) ON p.autoid = c.autoid
 	WHERE ` + strings.Join(conds, " AND ") + `
-	ORDER BY c.fecha, c.hora
+	ORDER BY c.fecha ASC,
+	         (SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
+	          FROM programacion_medico_detalle pmd WITH (NOLOCK) WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha) ASC,
+	         c.hora
 	OFFSET @off ROWS FETCH NEXT @size ROWS ONLY`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -1577,7 +1581,7 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 		var it domain.AgendaAppointmentRow
 		var hhmm24, totalRows int
 		var horaCita string
-		if err := rows.Scan(&it.ID, &hhmm24, &horaCita, &it.PatientName, &it.PatientDoc, &totalRows); err != nil {
+		if err := rows.Scan(&it.ID, &it.Date, &hhmm24, &horaCita, &it.PatientName, &it.PatientDoc, &totalRows); err != nil {
 			return nil, err
 		}
 		total = totalRows
