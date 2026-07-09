@@ -1140,9 +1140,18 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 			reopenBody, _ := json.Marshal(map[string]interface{}{"closed": false})
 			rResp, rErr := c.doPatchFeedItem(url, reopenBody)
 			if rErr != nil || rResp >= 400 {
-				// Un item ARCHIVED (no solo closed) no se revierte con {closed:false}. El cuerpo del
-				// error de doPatchFeedItem incluye el mensaje de Bird ("closed or archived") para
-				// diagnosticar el caso sin suposición si llegara a aparecer (hasta hoy: archived=false).
+				// Se registra SIEMPRE el body de Bird (via rErr) para diagnosticar el motivo sin
+				// suposición (hoy el reason del flow-event lo pierde).
+				slog.Warn("feed_item_reopen_failed", "status", rResp, "conversation_id", conversationID,
+					"feed_item_id", feedItemID, "attempt", attempt, "error", rErr)
+				// 409 Conflict = el estado del feed item cambió entre el searchFeedItem y el PATCH
+				// (concurrencia: pacientes con muchas conversaciones reabren/cierran el hilo en paralelo,
+				// verificado en auditoría — el mismo contacto acumula decenas de tickets). Reintentar el
+				// ciclo con un searchFeedItem FRESCO: si el item ya quedó abierto, se asigna directo. Solo
+				// se reintenta el 409 (transitorio); un ARCHIVED/400/422 es persistente y se propaga ya.
+				if rResp == 409 && attempt < 3 {
+					continue
+				}
 				return fmt.Errorf("assign feed item: reopen failed status=%d feed_item=%s: %w", rResp, feedItemID, rErr)
 			}
 			slog.Info("feed_item_reopened", "conversation_id", conversationID, "feed_item_id", feedItemID)

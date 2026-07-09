@@ -648,6 +648,54 @@ func TestAssignFeedItem_ReopensClosed(t *testing.T) {
 	}
 }
 
+// TestAssignFeedItem_ReopenConflictRetries verifica el fix del 409: si el reopen {closed:false}
+// devuelve 409 (el estado del feed item cambió por concurrencia entre el search y el PATCH), el
+// handoff NO se aborta — se reintenta el ciclo con un searchFeedItem fresco y en el 2º intento el
+// reopen (ya sin conflicto) + la asignación completan. Antes, un 409 en el reopen abortaba y el
+// paciente quedaba sin agente (auditoría ciclo 106: 5 casos reopen 409).
+func TestAssignFeedItem_ReopenConflictRetries(t *testing.T) {
+	var reopenCount, assignCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case isFeedItemSearch(r):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"fi-closed","feedId":"channel:ch-test","closed":true}]}`))
+		case r.Method == "PATCH":
+			body, _ := io.ReadAll(r.Body)
+			var p map[string]interface{}
+			_ = json.Unmarshal(body, &p)
+			if _, isAssign := p["teamId"]; isAssign {
+				assignCount++
+				w.WriteHeader(200)
+				return
+			}
+			// reopen (closed:false, sin teamId): 409 en el 1er intento, 200 en el 2º.
+			reopenCount++
+			if reopenCount == 1 {
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"code":"Conflict","message":"the item state changed"}`))
+				return
+			}
+			w.WriteHeader(200)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	if err := c.AssignFeedItem(context.Background(), "conv-conflict", "team-a", "agent-1"); err != nil {
+		t.Fatalf("esperaba éxito tras reintentar el 409, got %v", err)
+	}
+	if reopenCount != 2 {
+		t.Errorf("esperaba 2 reopen (409 luego 200), got %d", reopenCount)
+	}
+	if assignCount != 1 {
+		t.Errorf("esperaba 1 asignación tras el reopen exitoso, got %d", assignCount)
+	}
+}
+
 func TestAssignFeedItem_EmptyConversation(t *testing.T) {
 	c := NewClientForTest("http://localhost")
 	err := c.AssignFeedItem(context.Background(), "", "team-a", "agent-1")

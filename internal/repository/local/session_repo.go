@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +16,16 @@ import (
 
 // mysqlErrDupEntry es el código de error de MySQL para violación de clave única (1062).
 const mysqlErrDupEntry = 1062
+
+// mysqlErrDeadlock (1213, SQLSTATE 40001) = InnoDB abortó la transacción por un ciclo de locks. El
+// propio MySQL recomienda reintentar ("try restarting transaction"): es transitorio por diseño.
+const mysqlErrDeadlock = 1213
+
+// isDeadlock indica si err es un deadlock de MySQL (1213) reintenable.
+func isDeadlock(err error) bool {
+	var myErr *mysql.MySQLError
+	return errors.As(err, &myErr) && myErr.Number == mysqlErrDeadlock
+}
 
 type SessionRepo struct {
 	db *sql.DB
@@ -350,8 +361,42 @@ func (r *SessionRepo) SetContext(ctx context.Context, sessionID, key, value stri
 	return nil
 }
 
-// SetContextBatch guarda múltiples pares clave-valor en una transacción
+// SetContextBatch guarda múltiples pares clave-valor en una transacción.
+//
+// Las claves se ordenan ANTES de escribir para que toda transacción tome los locks de fila en el
+// MISMO orden: dos batches concurrentes que tocan las mismas filas ya no pueden formar el ciclo de
+// espera que provoca el deadlock 1213 (antes se iteraba el map en orden aleatorio → orden de locks
+// distinto entre goroutines → deadlock). Además, ante un deadlock residual se reintenta la
+// transacción completa con backoff corto (es idempotente: INSERT ... ON DUPLICATE KEY UPDATE).
 func (r *SessionRepo) SetContextBatch(ctx context.Context, sessionID string, kvs map[string]string) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(kvs))
+	for k := range kvs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // orden de locks estable entre transacciones concurrentes
+
+	const maxAttempts = 3
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err = r.setContextBatchOnce(ctx, sessionID, keys, kvs)
+		if err == nil || !isDeadlock(err) {
+			return err
+		}
+		// Deadlock transitorio: reintentar con backoff creciente (10ms, 20ms).
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt) * 10 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("set context batch tras %d intentos: %w", maxAttempts, err)
+}
+
+func (r *SessionRepo) setContextBatchOnce(ctx context.Context, sessionID string, keys []string, kvs map[string]string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -366,8 +411,8 @@ func (r *SessionRepo) SetContextBatch(ctx context.Context, sessionID string, kvs
 	}
 	defer stmt.Close()
 
-	for k, v := range kvs {
-		if _, err := stmt.ExecContext(ctx, sessionID, k, v); err != nil {
+	for _, k := range keys {
+		if _, err := stmt.ExecContext(ctx, sessionID, k, kvs[k]); err != nil {
 			return fmt.Errorf("set context batch %s: %w", k, err)
 		}
 	}
