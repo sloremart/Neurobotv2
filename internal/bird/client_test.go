@@ -244,6 +244,24 @@ func TestFetchMessageConversationID(t *testing.T) {
 	}
 }
 
+// TestFetchMessageConversationID_FromContextID valida el fix de la causa raíz del "empty conversation
+// ID" crónico: la Channels API de Bird NO devuelve conversationId top-level; lo entrega en context.id
+// con el formato "{conversationId}:{messageId}:{contactId}". El fetch debe extraer el primer segmento.
+// Verificado contra Bird real (canal prod 61a8f3cc: el GET del mensaje trae context.id, no conversationId).
+func TestFetchMessageConversationID_FromContextID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"de35d664-msg","channelId":"61a8f3cc","context":{"type":"conversation_message","id":"cf9f624e-conv:de35d664-msg:66695e6b-contact"}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.apiKeyWA = "test-key"
+	if got := c.FetchMessageConversationID(context.Background(), "de35d664-msg"); got != "cf9f624e-conv" {
+		t.Errorf("esperaba el conversationId del primer segmento de context.id, got %q", got)
+	}
+}
+
 func TestMessagesURL_UsesApiURL(t *testing.T) {
 	c := &Client{apiURL: "https://custom.api.com", workspaceID: "ws1", channelID: "ch1"}
 	url := c.messagesURL()

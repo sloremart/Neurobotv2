@@ -415,11 +415,28 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 		}
 		var result struct {
 			ConversationID string `json:"conversationId"`
+			Context        struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			} `json:"context"`
 		}
 		derr := json.NewDecoder(resp.Body).Decode(&result)
 		_ = resp.Body.Close()
-		if derr == nil && result.ConversationID != "" {
+		if derr != nil {
+			continue
+		}
+		if result.ConversationID != "" {
 			return result.ConversationID
+		}
+		// La Channels API de Bird NO expone conversationId top-level; lo entrega en context.id con el
+		// formato "{conversationId}:{messageId}:{contactId}" (context.type = conversation_message).
+		// Validado contra Bird real (canal prod 61a8f3cc): el primer segmento ES la conversación del
+		// paciente. Este parseo cierra la capa fetch, que era la causa raíz del "empty conversation ID"
+		// crónico (fetch_ok=false SIEMPRE porque se leía el campo equivocado).
+		if result.Context.ID != "" {
+			if conv, _, found := strings.Cut(result.Context.ID, ":"); found && conv != "" {
+				return conv
+			}
 		}
 	}
 	return ""
