@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,13 +19,14 @@ import (
 // --- local mock for AppointmentRepository ---
 
 type mockApptRepoAPI struct {
-	findByAgendaAndDateFn  func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
-	cancelFn               func(ctx context.Context, id, reason, channel, channelID string) error
-	cancelBatchFn          func(ctx context.Context, ids []string, reason, channel, channelID string) error
-	findAgendasByDoctorFn  func(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error)
-	findAgendaApptsPagedFn func(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error)
-	findByIDFn             func(ctx context.Context, id string) (*domain.Appointment, error)
-	cancelBatchBlockFn     func(ctx context.Context, ids []string, reason, channel, channelID string) error
+	findByAgendaAndDateFn   func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
+	cancelFn                func(ctx context.Context, id, reason, channel, channelID string) error
+	cancelBatchFn           func(ctx context.Context, ids []string, reason, channel, channelID string) error
+	findAgendasByDoctorFn   func(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error)
+	findAgendaApptsPagedFn  func(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error)
+	findByIDFn              func(ctx context.Context, id string) (*domain.Appointment, error)
+	cancelBatchBlockFn      func(ctx context.Context, ids []string, reason, channel, channelID string) error
+	RescheduleDayOfAgendaFn func(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error)
 }
 
 func (m *mockApptRepoAPI) FindAgendasByDoctor(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error) {
@@ -113,8 +115,11 @@ func (m *mockApptRepoAPI) FindPendingByDate(ctx context.Context, date string) ([
 	return nil, nil
 }
 
-func (m *mockApptRepoAPI) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
-	return 0, nil
+func (m *mockApptRepoAPI) RescheduleDayOfAgenda(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+	if m.RescheduleDayOfAgendaFn != nil {
+		return m.RescheduleDayOfAgendaFn(ctx, in)
+	}
+	return domain.RescheduleDayResult{}, nil
 }
 
 func (m *mockApptRepoAPI) SlotCountForAppointment(_ context.Context, _ string) (int, error) {
@@ -825,27 +830,129 @@ func assertNum(t *testing.T, res map[string]interface{}, key string, want float6
 	}
 }
 
-// H3 (auditoría): reagendar a nueva agenda debe retornar 500 si CancelBatch falla (no borrar la
-// excepción de día ni responder ok con citas aún activas). scheduleRepo nil → se omite la validación
-// de la nueva agenda y se ejercita directamente el path de cancelación.
-func TestRescheduleNewAgenda_CancelBatchFails_Returns500(t *testing.T) {
+// --- Tests: HandleRescheduleAgenda (mover un día de agenda) ---
+
+func postReschedule(t *testing.T, h *InternalHandler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/internal/agenda/reschedule", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	h.HandleRescheduleAgenda(rec, req)
+	return rec
+}
+
+func TestRescheduleDay_Validations(t *testing.T) {
+	h := &InternalHandler{appointmentRepo: &mockApptRepoAPI{}, cfg: &config.Config{}}
+	cases := []struct {
+		name, body string
+		want       int
+	}{
+		{"faltan campos", `{"agenda_id":0,"old_date":"","new_date":""}`, http.StatusBadRequest},
+		{"old_date mal formato", `{"agenda_id":1,"old_date":"01-01-2027","new_date":"2027-01-02"}`, http.StatusBadRequest},
+		{"new_date mal formato", `{"agenda_id":1,"old_date":"2027-01-01","new_date":"nope"}`, http.StatusBadRequest},
+		{"misma fecha misma agenda", `{"agenda_id":1,"old_date":"2027-01-01","new_date":"2027-01-01"}`, http.StatusBadRequest},
+		{"fecha en el pasado", `{"agenda_id":1,"old_date":"2020-01-01","new_date":"2020-01-02"}`, http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if rec := postReschedule(t, h, c.body); rec.Code != c.want {
+				t.Errorf("%s: want %d, got %d (%s)", c.name, c.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// Error de NEGOCIO del repo (destino incompatible, sin citas, etc.) → 409 con el mensaje.
+func TestRescheduleDay_BusinessError_Returns409(t *testing.T) {
 	repo := &mockApptRepoAPI{
-		findByAgendaAndDateFn: func(_ context.Context, _ int, _ string) ([]domain.Appointment, error) {
-			return []domain.Appointment{{ID: "A1", DoctorID: "DOC1"}}, nil
-		},
-		cancelBatchFn: func(_ context.Context, _ []string, _, _, _ string) error {
-			return errors.New("siesa tx failed")
+		RescheduleDayOfAgendaFn: func(_ context.Context, _ domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+			return domain.RescheduleDayResult{}, domain.RescheduleInvalidError{Msg: "agenda destino incompatible"}
 		},
 	}
 	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	body := `{"agenda_id":705,"old_date":"2027-01-01","new_date":"2027-01-08","dest_agenda_id":711}`
+	rec := postReschedule(t, h, body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "incompatible") {
+		t.Errorf("esperaba el mensaje de negocio, got %q", rec.Body.String())
+	}
+}
 
-	body := `{"agenda_id":1,"doctor_document":"DOC1","old_date":"2027-01-01","new_date":"2027-01-02","new_agenda_id":2,"notify_patients":false}`
-	req := httptest.NewRequest("POST", "/api/internal/reschedule-agenda", bytes.NewBufferString(body))
-	rec := httptest.NewRecorder()
-	h.HandleRescheduleAgenda(rec, req)
-
+// Error de INFRAESTRUCTURA (tx/consulta) → 500 genérico (no 409, no filtra detalle).
+func TestRescheduleDay_InfraError_Returns500(t *testing.T) {
+	repo := &mockApptRepoAPI{
+		RescheduleDayOfAgendaFn: func(_ context.Context, _ domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+			return domain.RescheduleDayResult{}, errors.New("siesa tx failed")
+		},
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	body := `{"agenda_id":705,"old_date":"2027-01-01","new_date":"2027-01-08","dest_agenda_id":711}`
+	rec := postReschedule(t, h, body)
 	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500 when CancelBatch fails, got %d", rec.Code)
+		t.Fatalf("want 500, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "tx failed") {
+		t.Errorf("no debe filtrar el error interno: %q", rec.Body.String())
+	}
+}
+
+// Éxito (crear duplicando): pasa DestAgendaID=0 al repo, responde 200 con moved + dest_agenda_id + created.
+func TestRescheduleDay_Success_Create(t *testing.T) {
+	var gotIn domain.RescheduleDayInput
+	repo := &mockApptRepoAPI{
+		RescheduleDayOfAgendaFn: func(_ context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+			gotIn = in
+			return domain.RescheduleDayResult{DestAgendaID: 999, Created: true, Moved: 12, MovedIDs: []string{"1", "2"}}, nil
+		},
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	body := `{"agenda_id":705,"old_date":"2027-01-07","new_date":"2027-01-14","notify_patients":false}`
+	rec := postReschedule(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if gotIn.AgendaID != 705 || gotIn.DestAgendaID != 0 || gotIn.OldDate != "2027-01-07" || gotIn.NewDate != "2027-01-14" {
+		t.Errorf("input al repo incorrecto: %+v", gotIn)
+	}
+	var res map[string]interface{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res["moved"].(float64) != 12 || res["dest_agenda_id"].(float64) != 999 || res["created_agenda"] != true {
+		t.Errorf("respuesta inesperada: %v", res)
+	}
+}
+
+// Éxito (mover a existente): dest_agenda_id se propaga al repo.
+func TestRescheduleDay_Success_ExistingDest(t *testing.T) {
+	var gotIn domain.RescheduleDayInput
+	repo := &mockApptRepoAPI{
+		RescheduleDayOfAgendaFn: func(_ context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+			gotIn = in
+			return domain.RescheduleDayResult{DestAgendaID: 711, Created: false, Moved: 12}, nil
+		},
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	body := `{"agenda_id":705,"old_date":"2027-01-07","new_date":"2027-01-14","dest_agenda_id":711}`
+	rec := postReschedule(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if gotIn.DestAgendaID != 711 {
+		t.Errorf("dest_agenda_id no se propagó: %+v", gotIn)
+	}
+}
+
+// movedAppointmentsForNotify filtra las citas de (dest,newDate) a solo las movidas (por id).
+func TestMovedAppointmentsForNotify_FiltersByMovedIDs(t *testing.T) {
+	repo := &mockApptRepoAPI{
+		findByAgendaAndDateFn: func(_ context.Context, _ int, _ string) ([]domain.Appointment, error) {
+			return []domain.Appointment{{ID: "A1"}, {ID: "A2"}, {ID: "A3"}}, nil
+		},
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{BirdTemplateRescheduleProjectID: "proj"}}
+	got := h.movedAppointmentsForNotify(context.Background(), 711, "2027-01-14", []string{"A1", "A3"})
+	if len(got) != 2 || got[0].ID != "A1" || got[1].ID != "A3" {
+		t.Errorf("esperaba [A1 A3], got %+v", got)
 	}
 }
 

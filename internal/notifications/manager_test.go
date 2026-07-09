@@ -120,8 +120,8 @@ func (m *mockApptRepoNotif) FindPendingByDate(ctx context.Context, date string) 
 	return nil, nil
 }
 
-func (m *mockApptRepoNotif) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
-	return 0, nil
+func (m *mockApptRepoNotif) RescheduleDayOfAgenda(_ context.Context, _ domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+	return domain.RescheduleDayResult{}, nil
 }
 
 func (m *mockApptRepoNotif) SlotCountForAppointment(_ context.Context, _ string) (int, error) {

@@ -50,7 +50,10 @@ type AppointmentRepository interface {
 	FindLastDoctorForCups(ctx context.Context, patientID string, cups []string) (string, error)
 	CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error)
 	FindPendingByDate(ctx context.Context, date string) ([]domain.Appointment, error)
-	RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
+	// RescheduleDayOfAgenda mueve TODAS las citas de UN día de una agenda a otra fecha (crea la agenda
+	// destino duplicando, o la mueve a una existente del mismo médico), en UNA transacción; multi-slot
+	// seguro; los slots del día origen quedan BLOQUEADOS (no liberados). Ver domain.RescheduleDayInput.
+	RescheduleDayOfAgenda(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error)
 	// SlotCountForAppointment devuelve cuántos slots de programacion_medico_detalle
 	// están asociados a la cita (IdCita = apptID). Es la fuente de verdad del número
 	// de espacios que ocupa una cita multi-slot (1 cita / N slots).

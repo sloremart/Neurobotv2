@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1426,20 +1427,25 @@ func (h *InternalHandler) HandleNotifyConfirmation(w http.ResponseWriter, r *htt
 
 // --- Reschedule Agenda ---
 
-// RescheduleAgendaRequest is the request body for rescheduling an agenda.
+// RescheduleAgendaRequest is the request body for moving ONE day of an agenda to another date.
 type RescheduleAgendaRequest struct {
 	AgendaID       int    `json:"agenda_id"`
+	OldDate        string `json:"old_date"`        // YYYY-MM-DD (día a vaciar)
+	NewDate        string `json:"new_date"`        // YYYY-MM-DD (día destino)
+	DestAgendaID   *int   `json:"dest_agenda_id"`  // nil/0 → crear duplicando; >0 → mover a esa agenda existente
+	Reason         string `json:"reason"`          // motivo (para plantilla + auditoría)
+	NotifyPatients bool   `json:"notify_patients"` // enviar plantilla de reprogramación
+	// DoctorDocument es opcional (compatibilidad): el médico se deriva de la agenda origen.
 	DoctorDocument string `json:"doctor_document"`
-	OldDate        string `json:"old_date"`      // YYYY-MM-DD
-	NewDate        string `json:"new_date"`      // YYYY-MM-DD
-	NewAgendaID    *int   `json:"new_agenda_id"` // nullable: if set → different-agenda reschedule
-	Reason         string `json:"reason"`
-	NotifyPatients bool   `json:"notify_patients"`
 }
 
-// HandleRescheduleAgenda handles rescheduling of an agenda with two scenarios:
-// Scenario A (new_agenda_id provided): Cancel appointments + delete old working day exception.
-// Scenario B (same agenda): Move appointments to new date + update working day exception.
+// HandleRescheduleAgenda mueve TODAS las citas de UN día (old_date) de una agenda a otra fecha (new_date),
+// en una sola transacción en SIESA. Dos escenarios (los distingue dest_agenda_id):
+//   - dest_agenda_id ausente/0 → crea la agenda destino DUPLICANDO la grilla del día origen sobre new_date.
+//   - dest_agenda_id > 0        → mueve a esa agenda existente (mismo médico, misma grilla libre).
+//
+// Los slots del día origen quedan BLOQUEADOS (no liberados): el día queda cerrado. Si notify_patients,
+// envía la plantilla de reprogramación a los pacientes movidos. POST /api/internal/reschedule-agenda
 func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.Request) {
 	var req RescheduleAgendaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1447,23 +1453,24 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if req.AgendaID == 0 || req.DoctorDocument == "" || req.OldDate == "" || req.NewDate == "" {
-		http.Error(w, "agenda_id, doctor_document, old_date and new_date are required", http.StatusBadRequest)
+	if req.AgendaID == 0 || req.OldDate == "" || req.NewDate == "" {
+		http.Error(w, "agenda_id, old_date and new_date are required", http.StatusBadRequest)
 		return
 	}
-
 	if _, err := time.Parse("2006-01-02", req.OldDate); err != nil {
 		http.Error(w, "old_date must be YYYY-MM-DD format", http.StatusBadRequest)
 		return
 	}
-
 	newDate, err := time.Parse("2006-01-02", req.NewDate)
 	if err != nil {
 		http.Error(w, "new_date must be YYYY-MM-DD format", http.StatusBadRequest)
 		return
 	}
-	// #30 (auditoría): comparar contra HOY en hora de Colombia (UTC-5, sin DST). Truncate(24h) usa
-	// medianoche UTC, así que de tarde/noche en Colombia daba "mañana" y rechazaba un new_date de hoy.
+	if req.OldDate == req.NewDate && (req.DestAgendaID == nil || *req.DestAgendaID == req.AgendaID) {
+		http.Error(w, "new_date debe diferir de old_date (o indicar otra agenda destino)", http.StatusBadRequest)
+		return
+	}
+	// #30 (auditoría): comparar contra HOY en hora de Colombia (UTC-5, sin DST).
 	bogota := time.FixedZone("America/Bogota", -5*3600)
 	todayCO, _ := time.Parse("2006-01-02", time.Now().In(bogota).Format("2006-01-02"))
 	if newDate.Before(todayCO) {
@@ -1472,202 +1479,89 @@ func (h *InternalHandler) HandleRescheduleAgenda(w http.ResponseWriter, r *http.
 	}
 
 	req.Reason = truncateReason(req.Reason)
-
 	ctx := r.Context()
 
-	if req.NewAgendaID != nil && *req.NewAgendaID != req.AgendaID {
-		h.handleRescheduleWithNewAgenda(ctx, w, req)
-	} else {
-		h.handleRescheduleSameAgenda(ctx, w, req)
-	}
-}
-
-// handleRescheduleWithNewAgenda — Scenario A: cancels appointments and deletes old working day exception.
-func (h *InternalHandler) handleRescheduleWithNewAgenda(ctx context.Context, w http.ResponseWriter, req RescheduleAgendaRequest) {
-	// 1. Validate new agenda exists
-	if h.scheduleRepo != nil {
-		newAgenda, err := h.scheduleRepo.FindByScheduleID(ctx, *req.NewAgendaID, "")
-		if err != nil || newAgenda == nil {
-			http.Error(w, "nueva agenda no encontrada", http.StatusNotFound)
-			return
-		}
-
-		// Validate working day exception exists for new agenda+doctor+new date
-		wdNew, err := h.scheduleRepo.FindWorkingDayException(ctx, *req.NewAgendaID, req.DoctorDocument, req.NewDate)
-		if err != nil || wdNew == nil {
-			http.Error(w, "no existe disponibilidad para ese doctor en la nueva agenda en la fecha nueva", http.StatusNotFound)
-			return
-		}
+	in := domain.RescheduleDayInput{AgendaID: req.AgendaID, OldDate: req.OldDate, NewDate: req.NewDate}
+	if req.DestAgendaID != nil {
+		in.DestAgendaID = *req.DestAgendaID
 	}
 
-	// 2. Get affected appointments (for patient info/notifications)
-	appointments, err := h.appointmentRepo.FindByAgendaAndDate(ctx, req.AgendaID, req.OldDate)
+	res, err := h.appointmentRepo.RescheduleDayOfAgenda(ctx, in)
 	if err != nil {
-		slog.Error("reschedule new agenda: find appointments", "error", err)
-		http.Error(w, "error finding appointments", http.StatusInternalServerError)
+		slog.Error("reschedule day: move", "agenda_id", req.AgendaID, "old_date", req.OldDate, "new_date", req.NewDate, "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+		// Reglas de negocio (agenda inexistente, sin citas, destino incompatible, conflicto de horario) →
+		// 409 con el mensaje; fallos de infraestructura (tx/consulta) → 500 genérico.
+		var invalid domain.RescheduleInvalidError
+		if errors.As(err, &invalid) {
+			http.Error(w, invalid.Msg, http.StatusConflict)
+		} else {
+			http.Error(w, "error reprogramando la agenda", http.StatusInternalServerError)
+		}
 		return
 	}
 
-	// Filter by doctor
-	var doctorAppts []domain.Appointment
-	for _, a := range appointments {
-		if a.DoctorID == req.DoctorDocument {
-			doctorAppts = append(doctorAppts, a)
-		}
+	// Notificar SOLO a los pacientes movidos (no a los que ya estaban en la agenda destino).
+	toNotify := 0
+	if req.NotifyPatients && len(res.MovedIDs) > 0 {
+		moved := h.movedAppointmentsForNotify(ctx, res.DestAgendaID, req.NewDate, res.MovedIDs)
+		toNotify = h.sendRescheduleNotifications(moved, req) //nolint:contextcheck // envío en background con su propio timeout (patrón existente)
 	}
-
-	// 3. Cancel appointments in batch (1 transaction)
-	reason := req.Reason
-	if reason == "" {
-		reason = "Reagendamiento de agenda"
-	}
-	cancelIDs := make([]string, len(doctorAppts))
-	for i, a := range doctorAppts {
-		cancelIDs[i] = a.ID
-	}
-	cancelled := len(cancelIDs)
-	if len(cancelIDs) > 0 {
-		if err := h.appointmentRepo.CancelBatch(ctx, cancelIDs, reason, "admin_reschedule_agenda", ""); err != nil {
-			// H3 (igual que M1 en HandleCancelAgenda): si la cancelación falló, NO continuar a borrar la
-			// excepción de día ni notificar. Antes se tragaba el error (cancelled=0, sin return), borraba
-			// la disponibilidad del día y respondía status:ok → citas activas + día "libre" = doble reserva.
-			slog.Error("cancel batch in reschedule", "agenda_id", req.AgendaID, "old_date", req.OldDate, "error", err)
-			http.Error(w, "error cancelling appointments — none cancelled, day availability not modified", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// 4. Delete working day exception for old agenda+doctor+old date. Solo se llega aquí si la
-	// cancelación tuvo éxito (o no había citas que cancelar).
-	wdDeleted := false
-	if h.scheduleRepo != nil {
-		var derr error
-		wdDeleted, derr = h.scheduleRepo.DeleteWorkingDayException(ctx, req.AgendaID, req.DoctorDocument, req.OldDate)
-		if derr != nil {
-			slog.Error("reschedule new agenda: delete working day exception", "agenda_id", req.AgendaID, "old_date", req.OldDate, "error", derr)
-		}
-	}
-
-	// 5. Notify patients — query from NEW agenda/date (like Laravel).
-	//    If no appointments exist on the new agenda/date, no notifications are sent.
-	var newAppts []domain.Appointment
-	if req.NotifyPatients {
-		allNew, _ := h.appointmentRepo.FindByAgendaAndDate(ctx, *req.NewAgendaID, req.NewDate)
-		for _, a := range allNew {
-			if a.DoctorID == req.DoctorDocument {
-				newAppts = append(newAppts, a)
-			}
-		}
-	}
-	toNotify := h.sendRescheduleNotifications(newAppts, req)
 
 	if h.tracker != nil {
 		h.tracker.LogEvent(ctx, "", "", "admin_reschedule_agenda", map[string]interface{}{
-			"agenda_id":              req.AgendaID,
-			"old_date":               req.OldDate,
-			"new_date":               req.NewDate,
-			"scenario":               "new_agenda",
-			"new_agenda_id":          *req.NewAgendaID,
-			"appointments_cancelled": cancelled,
-			"patients_to_notify":     toNotify,
+			"agenda_id":          req.AgendaID,
+			"old_date":           req.OldDate,
+			"new_date":           req.NewDate,
+			"dest_agenda_id":     res.DestAgendaID,
+			"created_agenda":     res.Created,
+			"appointments_moved": res.Moved,
+			"patients_to_notify": toNotify,
 		})
 	}
 
-	slog.Info("agenda rescheduled (new agenda)", "old_agenda", req.AgendaID, "new_agenda", *req.NewAgendaID,
-		"old_date", req.OldDate, "new_date", req.NewDate, "cancelled", cancelled,
-		"wd_deleted", wdDeleted, "to_notify", toNotify)
+	slog.Info("agenda day rescheduled", "agenda_id", req.AgendaID, "dest_agenda_id", res.DestAgendaID,
+		"created", res.Created, "old_date", req.OldDate, "new_date", req.NewDate, "moved", res.Moved, "to_notify", toNotify)
 
 	observability.Emit(agendaTrace(req.AgendaID, req.NewDate), "admin_agenda", "agenda_rescheduled",
 		observability.EmitOpts{
 			Reason:  req.Reason,
 			RefType: "agenda",
 			RefID:   strconv.Itoa(req.AgendaID),
-			Attrs:   map[string]interface{}{"n": cancelled, "count": toNotify},
+			Attrs:   map[string]interface{}{"n": res.Moved, "count": toNotify, "dest_agenda_id": res.DestAgendaID, "created": res.Created},
 		})
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "ok",
-		"cancelled": cancelled,
-		"to_notify": toNotify,
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         "ok",
+		"moved":          res.Moved,
+		"dest_agenda_id": res.DestAgendaID,
+		"created_agenda": res.Created,
+		"to_notify":      toNotify,
 	})
 }
 
-// handleRescheduleSameAgenda — Scenario B: moves appointments to new date and updates working day exception.
-func (h *InternalHandler) handleRescheduleSameAgenda(ctx context.Context, w http.ResponseWriter, req RescheduleAgendaRequest) {
-	// 1. Validate working day exception exists for current date
-	if h.scheduleRepo != nil {
-		wd, err := h.scheduleRepo.FindWorkingDayException(ctx, req.AgendaID, req.DoctorDocument, req.OldDate)
-		if err != nil || wd == nil {
-			http.Error(w, "no existe registro de excepcion de dias para esa agenda, doctor y fecha", http.StatusNotFound)
-			return
-		}
+// movedAppointmentsForNotify devuelve, de las citas ahora en (destAgenda,newDate), solo las cuyo id está
+// en movedIDs (las que efectivamente se movieron), para notificar únicamente a esos pacientes.
+func (h *InternalHandler) movedAppointmentsForNotify(ctx context.Context, destAgenda int, newDate string, movedIDs []string) []domain.Appointment {
+	if h.cfg.BirdTemplateRescheduleProjectID == "" {
+		return nil
 	}
-
-	// M7 (auditoría): mover las CITAS primero. Antes se actualizaba la excepción de día ANTES de mover
-	// las citas (e ignorando su error): si el movimiento fallaba, la excepción quedaba en la fecha nueva
-	// con las citas aún en la vieja (estado inconsistente). Ahora, si el movimiento falla, no se tocó
-	// nada (return 500); la excepción se actualiza solo tras confirmar el movimiento.
-	updated, err := h.appointmentRepo.RescheduleDate(ctx, req.AgendaID, req.DoctorDocument, req.OldDate, req.NewDate)
+	all, err := h.appointmentRepo.FindByAgendaAndDate(ctx, destAgenda, newDate)
 	if err != nil {
-		slog.Error("reschedule same agenda: move appointments", "error", err)
-		http.Error(w, "error moving appointments", http.StatusInternalServerError)
-		return
+		slog.Error("reschedule day: fetch moved for notify", "dest_agenda_id", destAgenda, "error", err) //nolint:gosec // G706: endpoint admin; slog estructura los valores.
+		return nil
 	}
-
-	// Actualizar la excepción de día (metadato de disponibilidad) solo tras mover las citas. Si esto
-	// falla, las citas YA quedaron correctas en la fecha nueva; se registra el error (sin un tx cross-repo
-	// no se puede revertir, pero la inconsistencia es de metadato, no de citas activas).
-	wdUpdated := false
-	if h.scheduleRepo != nil {
-		var werr error
-		wdUpdated, werr = h.scheduleRepo.UpdateWorkingDayExceptionDate(ctx, req.AgendaID, req.DoctorDocument, req.OldDate, req.NewDate)
-		if werr != nil {
-			slog.Error("reschedule same agenda: update working day exception (citas ya movidas)", "agenda_id", req.AgendaID, "error", werr)
+	want := make(map[string]struct{}, len(movedIDs))
+	for _, id := range movedIDs {
+		want[id] = struct{}{}
+	}
+	var out []domain.Appointment
+	for _, a := range all {
+		if _, ok := want[a.ID]; ok {
+			out = append(out, a)
 		}
 	}
-
-	// 4. Get affected appointments for notifications (now on new date)
-	appointments, _ := h.appointmentRepo.FindByAgendaAndDate(ctx, req.AgendaID, req.NewDate)
-	var doctorAppts []domain.Appointment
-	for _, a := range appointments {
-		if a.DoctorID == req.DoctorDocument {
-			doctorAppts = append(doctorAppts, a)
-		}
-	}
-
-	// 5. Notify patients
-	toNotify := h.sendRescheduleNotifications(doctorAppts, req)
-
-	if h.tracker != nil {
-		h.tracker.LogEvent(ctx, "", "", "admin_reschedule_agenda", map[string]interface{}{
-			"agenda_id":            req.AgendaID,
-			"old_date":             req.OldDate,
-			"new_date":             req.NewDate,
-			"scenario":             "same_agenda",
-			"appointments_updated": updated,
-			"patients_to_notify":   toNotify,
-		})
-	}
-
-	slog.Info("agenda rescheduled (same agenda)", "agenda_id", req.AgendaID,
-		"old_date", req.OldDate, "new_date", req.NewDate, "updated", updated,
-		"wd_updated", wdUpdated, "to_notify", toNotify)
-
-	observability.Emit(agendaTrace(req.AgendaID, req.NewDate), "admin_agenda", "agenda_rescheduled",
-		observability.EmitOpts{
-			Reason:  req.Reason,
-			RefType: "agenda",
-			RefID:   strconv.Itoa(req.AgendaID),
-			Attrs:   map[string]interface{}{"n": updated, "count": toNotify},
-		})
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "ok",
-		"updated":   updated,
-		"to_notify": toNotify,
-	})
+	return out
 }
 
 // sendRescheduleNotifications sends reschedule WhatsApp templates to affected patients in the background.

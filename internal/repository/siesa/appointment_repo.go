@@ -247,7 +247,7 @@ func lookupContract(ctx context.Context, db *sql.DB, entityInput, patientContrac
 			entityInput,
 		).Scan(&company, &contractCode, &regime)
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return entityInput, entityInput, 1, nil
 	}
 	return
@@ -290,7 +290,7 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 		&appt.DoctorID, &appt.DoctorName, &appt.DoctorDocument, &appt.PatientID, &appt.Entity, &appt.AgendaID,
 		&estado, &appt.Observations, &asistenciaConfirmada, &hhmm24,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -1314,7 +1314,7 @@ func (r *AppointmentRepo) HasFutureForCup(ctx context.Context, patientID, cupCod
 	if err == nil {
 		return true, nil
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	return false, err
@@ -1338,7 +1338,7 @@ func (r *AppointmentRepo) FindLastDoctorForCups(ctx context.Context, patientID s
 	WHERE c.autoid = @p1 AND cp.id_procedimiento IN (%s) AND c.estado != 'C'
 	ORDER BY c.fecha DESC`, clause), allArgs...,
 	).Scan(&doc)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return doc, err
@@ -1603,71 +1603,285 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 	return &domain.AgendaAppointmentsPage{Items: items, Total: total, Page: page, Pages: pages}, nil
 }
 
-// RescheduleDate moves all non-cancelled appointments of an agenda+doctor from oldDate to
-// newDate. INTEG-03: this must also manage slots, atomically — otherwise the old slot stays
-// "occupied" forever (phantom) and the new slot is never claimed (another booking can take it).
-// All three steps run in one transaction: release old slots → move citas → claim new slots.
-// The new-slot claim is best-effort (matches by time on newDate); if no slot exists/is free,
-// the citas still move, consistent with the prior behaviour.
+// weekdayBits mapea un time.Weekday a los 7 bits lun..dom de programacion_medico (1 el día, 0 el resto).
+func weekdayBits(w time.Weekday) (lun, mar, mie, jue, vie, sab, dom int) {
+	switch w {
+	case time.Monday:
+		lun = 1
+	case time.Tuesday:
+		mar = 1
+	case time.Wednesday:
+		mie = 1
+	case time.Thursday:
+		jue = 1
+	case time.Friday:
+		vie = 1
+	case time.Saturday:
+		sab = 1
+	case time.Sunday:
+		dom = 1
+	}
+	return
+}
+
+// invalidReschedule construye un error de REGLA DE NEGOCIO (→ 409 en el API), distinto de un fallo de
+// infraestructura (tx/consulta, que se envuelve con %w → 500).
+func invalidReschedule(format string, a ...interface{}) error {
+	return domain.RescheduleInvalidError{Msg: fmt.Sprintf(format, a...)}
+}
+
+// RescheduleDayOfAgenda mueve TODAS las citas no canceladas de UN día (OldDate) de una agenda a otra
+// fecha (NewDate), en UNA transacción. Dos escenarios (ver domain.RescheduleDayInput):
+//   - DestAgendaID==0 → crea la agenda destino DUPLICANDO la grilla del día origen sobre NewDate
+//     (solo si el médico no tiene slots a esas horas en NewDate; la PK (Fecha,Medico) lo impide si sí).
+//   - DestAgendaID>0  → mueve a esa agenda existente (mismo médico + slots libres a la misma HH:MM).
 //
-// CÓDIGO MUERTO (PR multi-slot): el único call-site (handleRescheduleSameAgenda) retorna 404
-// antes de invocar esta función porque FindWorkingDayException es un stub que siempre devuelve
-// (nil, nil). Además es INCOMPATIBLE con el modelo multi-slot: el paso 3 reclama solo el slot
-// cuyo HH:MM coincide con citas.hora (el inicial), liberando los N-1 restantes de una cita
-// multi-slot. Si esta vía administrativa se reactiva, el paso 3 debe reclamar TODOS los slots
-// que la cita ocupaba en oldDate (conteo previo vía SlotCountForAppointment), no solo el inicial.
-func (r *AppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
+// Reclama los cupos destino por HH:MM desde los slots ocupados del origen (multi-slot seguro: cada slot
+// que la cita ocupaba → su slot destino a la misma hora). Verifica que #cupos_destino == #cupos_origen
+// (si no, la grilla es incompatible → rollback). Los slots del día origen NO se liberan: se BLOQUEAN
+// (Bloqueado=1) para que el día quede cerrado y nadie agende ahí.
+func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+	var res domain.RescheduleDayResult
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("siesa RescheduleDate begin tx: %w", err)
+		return res, fmt.Errorf("siesa RescheduleDayOfAgenda begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck // rollback best-effort tras commit
 
-	// 1. Release the old slots (identified by IdCita = the appointments being moved).
-	if _, err = tx.ExecContext(ctx, `
-	UPDATE programacion_medico_detalle SET IdCita = NULL
-	WHERE IdCita IN (
-	    SELECT id FROM citas
-	    WHERE id_programacion = @p1 AND CAST(cod_medi AS VARCHAR(20)) = @p2
-	      AND fecha = @p3 AND estado <> 'C')`,
-		agendaID, doctorDoc, oldDate); err != nil {
-		return 0, fmt.Errorf("siesa RescheduleDate release old slots: %w", err)
+	// 1. Agenda origen: existe/activa + su id_programacion (para copiar relación al duplicar).
+	var srcIDProg int
+	err = tx.QueryRowContext(ctx,
+		`SELECT id_programacion FROM programacion_medico WHERE id = @p1 AND activo = 1`,
+		in.AgendaID).Scan(&srcIDProg)
+	if errors.Is(err, sql.ErrNoRows) {
+		return res, invalidReschedule("agenda origen %d no existe o está inactiva", in.AgendaID)
 	}
-
-	// 2. Move the appointments to the new date.
-	result, err := tx.ExecContext(ctx, `
-	UPDATE citas SET fecha = @p1, estado = 'P'
-	WHERE id_programacion = @p2 AND CAST(cod_medi AS VARCHAR(20)) = @p3
-	  AND fecha = @p4 AND estado <> 'C'`,
-		newDate, agendaID, doctorDoc, oldDate)
 	if err != nil {
-		return 0, fmt.Errorf("siesa RescheduleDate move citas: %w", err)
+		return res, fmt.Errorf("siesa reschedule: cargar agenda origen: %w", err)
 	}
-	n, _ := result.RowsAffected()
 
-	// 3. Claim the new slots on newDate, matched to each moved appointment's time.
+	// Médico dueño del día origen (los slots llevan Medico; pm.id_medico puede ser NULL).
+	var medico int
+	err = tx.QueryRowContext(ctx,
+		`SELECT TOP 1 Medico FROM programacion_medico_detalle
+		 WHERE IdProgramacionMedico = @p1 AND CAST(Fecha AS DATE) = @p2`,
+		in.AgendaID, in.OldDate).Scan(&medico)
+	if errors.Is(err, sql.ErrNoRows) {
+		return res, invalidReschedule("la agenda %d no tiene slots el %s", in.AgendaID, in.OldDate)
+	}
+	if err != nil {
+		return res, fmt.Errorf("siesa reschedule: médico del día origen: %w", err)
+	}
+
+	// 2. IDs de las citas a mover (no canceladas) del día origen. En un closure para cerrar rows con
+	//    defer ANTES de la siguiente consulta de la misma tx (una tx solo admite una consulta activa).
+	res.MovedIDs, err = func() ([]string, error) {
+		rows, qerr := tx.QueryContext(ctx,
+			`SELECT CAST(id AS VARCHAR(20)) FROM citas
+			 WHERE id_programacion = @p1 AND CAST(fecha AS DATE) = @p2 AND estado <> 'C'`,
+			in.AgendaID, in.OldDate)
+		if qerr != nil {
+			return nil, qerr
+		}
+		defer func() { _ = rows.Close() }()
+		var ids []string
+		for rows.Next() {
+			var id string
+			if serr := rows.Scan(&id); serr != nil {
+				return nil, serr
+			}
+			ids = append(ids, id)
+		}
+		return ids, rows.Err()
+	}()
+	if err != nil {
+		return res, fmt.Errorf("siesa reschedule: listar citas origen: %w", err)
+	}
+	if len(res.MovedIDs) == 0 {
+		return res, invalidReschedule("no hay citas para mover en la agenda %d el %s", in.AgendaID, in.OldDate)
+	}
+
+	// 3. Resolver agenda destino.
+	destID := in.DestAgendaID
+	if destID > 0 {
+		// Existente: mismo médico + con slots en NewDate.
+		var destMedico int
+		err = tx.QueryRowContext(ctx,
+			`SELECT TOP 1 Medico FROM programacion_medico_detalle
+			 WHERE IdProgramacionMedico = @p1 AND CAST(Fecha AS DATE) = @p2`,
+			destID, in.NewDate).Scan(&destMedico)
+		if errors.Is(err, sql.ErrNoRows) {
+			return res, invalidReschedule("la agenda destino %d no tiene slots el %s", destID, in.NewDate)
+		}
+		if err != nil {
+			return res, fmt.Errorf("siesa reschedule: validar agenda destino: %w", err)
+		}
+		if destMedico != medico {
+			return res, invalidReschedule("la agenda destino es de otro médico (%d≠%d)", destMedico, medico)
+		}
+	} else {
+		// Crear duplicando: el médico NO debe tener slots a esas horas en NewDate (PK Fecha,Medico).
+		var conflict int
+		err = tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM programacion_medico_detalle d
+		JOIN programacion_medico_detalle s
+		  ON CONVERT(VARCHAR(5), d.Fecha, 108) = CONVERT(VARCHAR(5), s.Fecha, 108)
+		WHERE s.IdProgramacionMedico = @src AND CAST(s.Fecha AS DATE) = @old
+		  AND d.Medico = @med AND CAST(d.Fecha AS DATE) = @new`,
+			sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate),
+			sql.Named("med", medico), sql.Named("new", in.NewDate)).Scan(&conflict)
+		if err != nil {
+			return res, fmt.Errorf("siesa reschedule: detectar conflicto de horario: %w", err)
+		}
+		if conflict > 0 {
+			return res, invalidReschedule("el médico ya tiene agenda el %s a esas horas; indique dest_agenda_id para mover a ella", in.NewDate)
+		}
+		newID, derr := r.duplicateAgendaForDayTx(ctx, tx, in.AgendaID, srcIDProg, in.OldDate, in.NewDate)
+		if derr != nil {
+			return res, derr
+		}
+		destID = newID
+		res.Created = true
+	}
+
+	// 4. Reclamar cupos destino por HH:MM desde los slots ocupados del origen (multi-slot seguro). El
+	//    destino suele ser la agenda-reserva pre-generada del médico (mismos horarios, Bloqueado=1): al
+	//    recibir el día se ACTIVA (Bloqueado=0). No se exige Bloqueado=0 previo, solo cupo libre y no-fantasma.
 	if _, err = tx.ExecContext(ctx, `
-	UPDATE pmd SET IdCita = c.id
-	FROM programacion_medico_detalle pmd
-	JOIN citas c ON c.id_programacion = pmd.IdProgramacionMedico
-	    -- N6: c.hora está en 12h ('07:15') y pmd.Fecha en 24h. Reconstruir la hora 24h
-	    -- desde c.hora + c.meridiano para que el match no falle en horarios PM.
-	    AND CONVERT(VARCHAR(5), pmd.Fecha, 108) =
-	        RIGHT('0' + CONVERT(VARCHAR(2),
-	            CASE WHEN c.meridiano = 'pm' AND CONVERT(INT, LEFT(c.hora, 2)) <> 12 THEN CONVERT(INT, LEFT(c.hora, 2)) + 12
-	                 WHEN c.meridiano = 'am' AND CONVERT(INT, LEFT(c.hora, 2)) = 12 THEN 0
-	                 ELSE CONVERT(INT, LEFT(c.hora, 2)) END), 2) + ':' + RIGHT(c.hora, 2)
-	WHERE c.id_programacion = @p1 AND CAST(c.cod_medi AS VARCHAR(20)) = @p2
-	  AND c.fecha = @p3 AND c.estado <> 'C'
-	  AND pmd.Fecha >= @p3 AND pmd.Fecha < DATEADD(DAY, 1, @p3) AND pmd.IdCita IS NULL`,
-		agendaID, doctorDoc, newDate); err != nil {
-		return 0, fmt.Errorf("siesa RescheduleDate claim new slots: %w", err)
+	UPDATE dst SET IdCita = src.IdCita, Bloqueado = 0
+	FROM programacion_medico_detalle dst
+	JOIN programacion_medico_detalle src
+	  ON CONVERT(VARCHAR(5), dst.Fecha, 108) = CONVERT(VARCHAR(5), src.Fecha, 108)
+	WHERE src.IdProgramacionMedico = @src AND CAST(src.Fecha AS DATE) = @old AND src.IdCita IS NOT NULL
+	  AND dst.IdProgramacionMedico = @dst AND CAST(dst.Fecha AS DATE) = @new
+	  AND dst.IdCita IS NULL AND dst.SinProgramacion = 0`,
+		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate),
+		sql.Named("dst", destID), sql.Named("new", in.NewDate)); err != nil {
+		return res, fmt.Errorf("siesa reschedule: reclamar cupos destino: %w", err)
+	}
+
+	// 5. Mover las citas (id_programacion + fecha; vuelven a 'P' → el paciente reconfirma).
+	result, err := tx.ExecContext(ctx, `
+	UPDATE citas SET id_programacion = @dst, fecha = @new, estado = 'P'
+	WHERE id_programacion = @src AND CAST(fecha AS DATE) = @old AND estado <> 'C'`,
+		sql.Named("dst", destID), sql.Named("new", in.NewDate),
+		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate))
+	if err != nil {
+		return res, fmt.Errorf("siesa reschedule: mover citas: %w", err)
+	}
+	moved, _ := result.RowsAffected()
+
+	// 6. Integridad: #cupos reclamados en destino == #cupos que ocupaban en origen (multi-slot). Si el
+	//    destino no tenía un cupo libre a alguna hora (grilla incompatible), no cuadra → rollback.
+	var srcSlots, dstSlots int
+	err = tx.QueryRowContext(ctx, `
+	SELECT
+	  (SELECT COUNT(*) FROM programacion_medico_detalle d
+	   WHERE d.IdProgramacionMedico = @src AND CAST(d.Fecha AS DATE) = @old
+	     AND d.IdCita IN (SELECT id FROM citas WHERE id_programacion = @dst AND CAST(fecha AS DATE) = @new AND estado <> 'C')),
+	  (SELECT COUNT(*) FROM programacion_medico_detalle d
+	   WHERE d.IdProgramacionMedico = @dst AND CAST(d.Fecha AS DATE) = @new
+	     AND d.IdCita IN (SELECT id FROM citas WHERE id_programacion = @dst AND CAST(fecha AS DATE) = @new AND estado <> 'C'))`,
+		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate),
+		sql.Named("dst", destID), sql.Named("new", in.NewDate)).Scan(&srcSlots, &dstSlots)
+	if err != nil {
+		return res, fmt.Errorf("siesa reschedule: verificar integridad de cupos: %w", err)
+	}
+	if dstSlots == 0 || dstSlots != srcSlots {
+		return res, invalidReschedule("agenda destino incompatible: %d de %d cupos disponibles a la misma hora (grilla distinta)", dstSlots, srcSlots)
+	}
+
+	// 7. Bloquear los slots del día origen (NO liberar): el día queda cerrado, nadie agenda ahí.
+	if _, err = tx.ExecContext(ctx, `
+	UPDATE programacion_medico_detalle SET IdCita = NULL, Bloqueado = 1
+	WHERE IdProgramacionMedico = @src AND CAST(Fecha AS DATE) = @old`,
+		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate)); err != nil {
+		return res, fmt.Errorf("siesa reschedule: bloquear día origen: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {
-		return 0, fmt.Errorf("siesa RescheduleDate commit: %w", err)
+		return res, fmt.Errorf("siesa reschedule: commit: %w", err)
 	}
-	return int(n), nil
+	res.DestAgendaID = destID
+	res.Moved = int(moved)
+	return res, nil
+}
+
+// duplicateAgendaForDayTx crea, dentro de tx, una agenda nueva para NewDate replicando la estructura del
+// día origen: programacion_medico (fechainicio=fechafin=NewDate, bits de día según NewDate, id_programacion
+// = su propio id nuevo → agenda autoconsistente) + relación(es) + asuntos + detalle (misma grilla HH:MM,
+// IdCita=NULL). Devuelve el id de la agenda nueva. Los cupos los reclama luego el llamador por HH:MM.
+func (r *AppointmentRepo) duplicateAgendaForDayTx(ctx context.Context, tx *sql.Tx, srcAgendaID, srcIDProg int, oldDate, newDate string) (int, error) {
+	nd, err := time.Parse("2006-01-02", newDate)
+	if err != nil {
+		return 0, fmt.Errorf("siesa duplicate agenda: fecha nueva inválida: %w", err)
+	}
+	lun, mar, mie, jue, vie, sab, dom := weekdayBits(nd.Weekday())
+
+	// 1. programacion_medico (id IDENTITY; id_programacion placeholder 0 → se ajusta a su propio id).
+	var newID int
+	err = tx.QueryRowContext(ctx, `
+	INSERT INTO programacion_medico
+	  (fechainicio,fechafin,horainicio,meridianoi,horafinal,meridianof,horainactiva,meridianoinactivo,
+	   intervalo,id_programacion,numMaxPacte,id_sede,lun,mar,mie,jue,vie,sab,dom,activo,
+	   txtLun,txtMar,txtMie,txtJue,txtVie,txtSab,txtDom,id_medico)
+	OUTPUT INSERTED.id
+	SELECT @new,@new,horainicio,meridianoi,horafinal,meridianof,horainactiva,meridianoinactivo,
+	       intervalo,0,numMaxPacte,id_sede,@lun,@mar,@mie,@jue,@vie,@sab,@dom,activo,
+	       txtLun,txtMar,txtMie,txtJue,txtVie,txtSab,txtDom,id_medico
+	FROM programacion_medico WHERE id = @src`,
+		sql.Named("new", newDate), sql.Named("src", srcAgendaID),
+		sql.Named("lun", lun), sql.Named("mar", mar), sql.Named("mie", mie), sql.Named("jue", jue),
+		sql.Named("vie", vie), sql.Named("sab", sab), sql.Named("dom", dom)).Scan(&newID)
+	if err != nil {
+		return 0, fmt.Errorf("siesa duplicate agenda: insertar programacion_medico: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE programacion_medico SET id_programacion = @id WHERE id = @id`,
+		sql.Named("id", newID)); err != nil {
+		return 0, fmt.Errorf("siesa duplicate agenda: fijar id_programacion: %w", err)
+	}
+
+	// 2. Relación(es) consultorio/asunto (se enlazan por id_programacion = srcIDProg del origen).
+	if _, err = tx.ExecContext(ctx, `
+	INSERT INTO programacion_medico_relacion (id_programacion,codMedico,id_sede,id_consultorio,tipo_empresa,id_asunto)
+	SELECT @new,codMedico,id_sede,id_consultorio,tipo_empresa,id_asunto
+	FROM programacion_medico_relacion WHERE id_programacion = @srcprog`,
+		sql.Named("new", newID), sql.Named("srcprog", srcIDProg)); err != nil {
+		return 0, fmt.Errorf("siesa duplicate agenda: insertar relación: %w", err)
+	}
+
+	// 3. Asuntos de cada relación nueva (pareando nueva↔origen por sus atributos, soporta N relaciones).
+	if _, err = tx.ExecContext(ctx, `
+	INSERT INTO programacion_medico_relacion_asunto (IdProgramacionMedicoRelacion, IdAsunto)
+	SELECT nr.Id, sa.IdAsunto
+	FROM programacion_medico_relacion sr
+	JOIN programacion_medico_relacion_asunto sa ON sa.IdProgramacionMedicoRelacion = sr.Id
+	JOIN programacion_medico_relacion nr
+	  ON nr.id_programacion = @new
+	 AND ISNULL(nr.codMedico,-1)      = ISNULL(sr.codMedico,-1)
+	 AND ISNULL(nr.id_consultorio,-1) = ISNULL(sr.id_consultorio,-1)
+	 AND ISNULL(nr.tipo_empresa,'')   = ISNULL(sr.tipo_empresa,'')
+	WHERE sr.id_programacion = @srcprog`,
+		sql.Named("new", newID), sql.Named("srcprog", srcIDProg)); err != nil {
+		return 0, fmt.Errorf("siesa duplicate agenda: insertar asuntos: %w", err)
+	}
+
+	// 4. Detalle: grilla del día origen desplazada a NewDate, IdCita=NULL (cupos vacíos, a reclamar luego).
+	if _, err = tx.ExecContext(ctx, `
+	INSERT INTO programacion_medico_detalle
+	  (Fecha,IdProgramacionMedico,IdProgramacion,Medico,Bloqueado,Adicional,PuntoAtencion,IdCita,
+	   Reservada,DescripcionReserva,EsCitaGrupal,MaximoPacientes,SinProgramacion,CodMotivoBloqueo,intervalo)
+	SELECT DATEADD(DAY, DATEDIFF(DAY,@old,@newdate), Fecha),@newid,@newid,Medico,Bloqueado,Adicional,PuntoAtencion,NULL,
+	       Reservada,DescripcionReserva,EsCitaGrupal,MaximoPacientes,SinProgramacion,CodMotivoBloqueo,intervalo
+	FROM programacion_medico_detalle
+	WHERE IdProgramacionMedico = @src AND CAST(Fecha AS DATE) = @old`,
+		sql.Named("old", oldDate), sql.Named("newdate", newDate), sql.Named("newid", newID), sql.Named("src", srcAgendaID)); err != nil {
+		return 0, fmt.Errorf("siesa duplicate agenda: insertar detalle: %w", err)
+	}
+
+	return newID, nil
 }
 
 // ────────────────────────────────────────────────────────────────────────────

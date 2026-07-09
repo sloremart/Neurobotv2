@@ -89,7 +89,7 @@ type MockAppointmentRepo struct {
 	FindLastDoctorForCupsFn      func(ctx context.Context, patientID string, cups []string) (string, error)
 	CountMonthlyByGroupFn        func(ctx context.Context, cupsCodes []string, year, month int) (int, error)
 	FindPendingByDateFn          func(ctx context.Context, date string) ([]domain.Appointment, error)
-	RescheduleDateFn             func(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error)
+	RescheduleDayOfAgendaFn      func(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error)
 	SlotCountForAppointmentFn    func(ctx context.Context, apptID string) (int, error)
 	WriteCreationAuditFn         func(ctx context.Context, appointmentID, observations string)
 }
@@ -224,11 +224,12 @@ func (m *MockAppointmentRepo) FindPendingByDate(ctx context.Context, date string
 	return nil, nil
 }
 
-func (m *MockAppointmentRepo) RescheduleDate(ctx context.Context, agendaID int, doctorDoc, oldDate, newDate string) (int, error) {
-	if m.RescheduleDateFn != nil {
-		return m.RescheduleDateFn(ctx, agendaID, doctorDoc, oldDate, newDate)
+// RescheduleDayOfAgenda mueve un día de agenda (mock).
+func (m *MockAppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error) {
+	if m.RescheduleDayOfAgendaFn != nil {
+		return m.RescheduleDayOfAgendaFn(ctx, in)
 	}
-	return 0, nil
+	return domain.RescheduleDayResult{}, nil
 }
 
 // SlotCountForAppointment returns the configured slot count (or 0 by default).

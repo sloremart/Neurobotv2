@@ -122,3 +122,31 @@ type CreateProcedureInput struct {
 	UnitValue float64
 	ServiceID int
 }
+
+// RescheduleDayInput describes moving ALL the appointments of ONE day of an agenda to another date.
+// The source agenda may be single- or multi-day: only the citas on OldDate move.
+//   - DestAgendaID == 0  → create the destination agenda by duplicating the source day's slot grid on
+//     NewDate (only possible if the doctor has no slots at those times on NewDate).
+//   - DestAgendaID  > 0  → move into that existing agenda (must be the same doctor and have free slots at
+//     the same HH:MM on NewDate). May equal the source agenda (multi-day: move a day within it).
+type RescheduleDayInput struct {
+	AgendaID     int    // source programacion_medico.id
+	OldDate      string // YYYY-MM-DD (day to vacate)
+	NewDate      string // YYYY-MM-DD (destination day)
+	DestAgendaID int    // 0 = create by duplication; >0 = existing destination agenda
+}
+
+// RescheduleDayResult reports the outcome of RescheduleDayOfAgenda.
+type RescheduleDayResult struct {
+	DestAgendaID int      // agenda the citas now belong to (new one if Created)
+	Created      bool     // true when a new agenda was created by duplication
+	Moved        int      // number of citas moved
+	MovedIDs     []string // ids of the moved citas (for targeted notifications)
+}
+
+// RescheduleInvalidError marca un fallo de REGLA DE NEGOCIO de RescheduleDayOfAgenda (agenda inexistente,
+// sin citas, destino incompatible, conflicto de horario, otro médico). El API lo mapea a 409. Los errores
+// de infraestructura (tx/consulta) NO usan este tipo → el API los mapea a 500.
+type RescheduleInvalidError struct{ Msg string }
+
+func (e RescheduleInvalidError) Error() string { return e.Msg }
