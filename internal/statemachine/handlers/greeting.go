@@ -23,13 +23,20 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 	m.Register(sm.StateGreeting, greetingHandler(cfg))
 	m.RegisterWithConfig(sm.StateMainMenu, sm.HandlerConfig{
 		InputType: sm.InputButton,
-		Options:   []string{"pet_ct", "agendar", "consultar", "resultados", "ubicacion", "ayuda"},
+		Options:   []string{"pet_ct", "medicamentos", "agendar", "consultar", "resultados", "ubicacion", "ayuda"},
 		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
 			list := buildMainMenuList()
 			list.Body = "Por favor selecciona una opción del menú.\n\n" + list.Body
 			result.Messages = append(result.Messages, list)
 		},
 		Handler: mainMenuHandler(),
+	})
+	m.RegisterWithConfig(sm.StateMedicationCheckSanitas, sm.HandlerConfig{
+		InputType:   sm.InputButton,
+		Options:     []string{"med_sanitas_si", "med_sanitas_no"},
+		ErrorMsg:    "Por favor selecciona una de las opciones.",
+		RetryPrompt: func(_ *session.Session, result *sm.StateResult) { medicationSanitasQuestion(result) },
+		Handler:     medicationCheckSanitasHandler(),
 	})
 	m.Register(sm.StateShowHelp, showHelpHandler())
 }
@@ -223,6 +230,10 @@ func mainMenuHandler() sm.StateHandler {
 				WithText(text).
 				WithContext("escalation_reason", "pet_ct").
 				WithEvent("menu_selected", map[string]interface{}{"option": "pet_ct"}), nil
+		case "medicamentos":
+			// Validar SANITAS antes de escalar (por ahora el servicio es solo para SANITAS Evento).
+			return medicationSanitasQuestion(sm.NewResult(sm.StateMedicationCheckSanitas)).
+				WithEvent("menu_selected", map[string]interface{}{"option": "medicamentos"}), nil
 		case "consultar":
 			return sm.NewResult(sm.StateAskDocumentType).
 				WithContext("menu_option", "consultar").
@@ -253,7 +264,50 @@ func mainMenuHandler() sm.StateHandler {
 	}
 }
 
-// buildMainMenuList creates the main menu list message with 6 options.
+// medicationSanitasQuestion añade al resultado la pregunta de elegibilidad SANITAS (botones Sí/No).
+// Se usa tanto al entrar al flujo (desde el menú) como en el RetryPrompt del estado.
+func medicationSanitasQuestion(r *sm.StateResult) *sm.StateResult {
+	return r.WithButtons(
+		"Con gusto te ayudamos con el servicio de *Aplicación de medicamentos* 💉.\n\n"+
+			"Por ahora este servicio está disponible únicamente para afiliados a *SANITAS* (plan Evento).\n\n"+
+			"¿Eres afiliado a SANITAS?",
+		sm.Button{Text: "Sí, soy SANITAS", Payload: "med_sanitas_si"},
+		sm.Button{Text: "No / otra EPS", Payload: "med_sanitas_no"},
+	)
+}
+
+// MEDICATION_CHECK_SANITAS (interactivo) — valida elegibilidad SANITAS del servicio Aplicación de
+// medicamentos. Si el paciente es SANITAS, se le indican los documentos a enviar y se escala a un
+// agente (igual que PET-CT: no se agenda por el bot). Si no, se le informa y vuelve al menú principal.
+func medicationCheckSanitasHandler() sm.StateHandler {
+	return func(ctx context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		selected := sm.ValidatedPayload(ctx)
+
+		switch selected {
+		case "med_sanitas_si":
+			text := "Perfecto ✅. Para gestionar tu solicitud de *Aplicación de medicamentos*, por favor ten a la mano y envía los siguientes documentos:\n\n" +
+				"• Historia clínica\n" +
+				"• Orden médica\n" +
+				"• Autorización vigente\n\n" +
+				"En un momento te conecto con un agente que continuará con tu solicitud. 😊"
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText(text).
+				WithContext("escalation_reason", "medicamentos").
+				WithEvent("medication_sanitas_confirmed", nil), nil
+		case "med_sanitas_no":
+			list := buildMainMenuList()
+			list.Body = "Por ahora el servicio de *Aplicación de medicamentos* solo está disponible para afiliados a *SANITAS* (plan Evento).\n\n" + list.Body
+			r := sm.NewResult(sm.StateMainMenu).
+				WithEvent("medication_sanitas_declined", nil)
+			r.Messages = append(r.Messages, list)
+			return r, nil
+		}
+
+		return nil, fmt.Errorf("unreachable: selected=%s", selected)
+	}
+}
+
+// buildMainMenuList creates the main menu list message with 7 options.
 func buildMainMenuList() *sm.ListMessage {
 	return &sm.ListMessage{
 		Body:  "¿En qué puedo ayudarte hoy?",
@@ -262,6 +316,7 @@ func buildMainMenuList() *sm.ListMessage {
 			Title: "Menú principal",
 			Rows: []sm.ListRow{
 				{ID: "pet_ct", Title: "☢️ Agendar cita PET-CT", Description: "Tomografía por emisión de positrones FDG F-18 / PSMA"},
+				{ID: "medicamentos", Title: "💉 Aplicación de medicamentos", Description: "Atención personalizada con un agente (SANITAS)"},
 				{ID: "agendar", Title: "Agendar cita", Description: "Si buscas una cita como particular o cuentas con una orden de tu IPS"},
 				{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
 				{ID: "resultados", Title: "Consultar Resultados", Description: "Si quieres descargar resultados de tus consultas"},

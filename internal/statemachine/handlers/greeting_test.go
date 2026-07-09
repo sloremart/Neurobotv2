@@ -280,3 +280,77 @@ func TestMainMenu_InvalidInput(t *testing.T) {
 		t.Errorf("expected MAIN_MENU (retry), got %s", result.NextState)
 	}
 }
+
+// TestMainMenu_Medicamentos: seleccionar "medicamentos" en el menú lleva al gate de SANITAS
+// (estado interactivo), NO directo a escalación (a diferencia de PET-CT).
+func TestMainMenu_Medicamentos(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, sampleConfig(), nil)
+
+	sess := testSess(sm.StateMainMenu)
+	result, err := m.Process(context.Background(), sess, postbackM("medicamentos"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateMedicationCheckSanitas {
+		t.Errorf("expected MEDICATION_CHECK_SANITAS, got %s", result.NextState)
+	}
+	if len(result.Messages) < 1 {
+		t.Error("expected la pregunta de SANITAS (botones)")
+	}
+}
+
+// TestMedicationCheckSanitas_Si: si es SANITAS, se escala a agente con reason=medicamentos
+// (mismo patrón que PET-CT: no se agenda por el bot).
+func TestMedicationCheckSanitas_Si(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, sampleConfig(), nil)
+
+	sess := testSess(sm.StateMedicationCheckSanitas)
+	result, err := m.Process(context.Background(), sess, postbackM("med_sanitas_si"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateEscalateToAgent {
+		t.Errorf("expected ESCALATE_TO_AGENT, got %s", result.NextState)
+	}
+	if result.UpdateCtx["escalation_reason"] != "medicamentos" {
+		t.Errorf("expected escalation_reason=medicamentos, got %s", result.UpdateCtx["escalation_reason"])
+	}
+	if len(result.Messages) < 1 {
+		t.Error("expected el mensaje con los documentos a enviar")
+	}
+}
+
+// TestMedicationCheckSanitas_No: si NO es SANITAS, se informa y vuelve al menú principal (no escala).
+func TestMedicationCheckSanitas_No(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, sampleConfig(), nil)
+
+	sess := testSess(sm.StateMedicationCheckSanitas)
+	result, err := m.Process(context.Background(), sess, postbackM("med_sanitas_no"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateMainMenu {
+		t.Errorf("expected MAIN_MENU, got %s", result.NextState)
+	}
+	if len(result.Messages) < 1 {
+		t.Error("expected el mensaje de no-disponible + menú")
+	}
+}
+
+// TestMedicationCheckSanitas_Invalid: input inválido en el gate → retry en el mismo estado.
+func TestMedicationCheckSanitas_Invalid(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, sampleConfig(), nil)
+
+	sess := testSess(sm.StateMedicationCheckSanitas)
+	result, err := m.Process(context.Background(), sess, textM("cualquier cosa"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateMedicationCheckSanitas {
+		t.Errorf("expected MEDICATION_CHECK_SANITAS (retry), got %s", result.NextState)
+	}
+}

@@ -17,6 +17,8 @@ const (
 	StateShowResults        = "SHOW_RESULTS"
 	StateShowLocations      = "SHOW_LOCATIONS"
 	StateShowHelp           = "SHOW_HELP"
+	// Aplicación de medicamentos: servicio del menú inicial que valida SANITAS y escala a agente.
+	StateMedicationCheckSanitas = "MEDICATION_CHECK_SANITAS"
 )
 
 // === Entity Management ===
@@ -164,21 +166,22 @@ const (
 // stateTypes define el tipo de cada estado
 var stateTypes = map[string]StateType{
 	// Saludo e Identificación
-	StateCheckBusinessHours: StateTypeAutomatic,
-	StateGreeting:           StateTypeAutomatic,
-	StateMainMenu:           StateTypeInteractive,
-	StateAskDocumentType:    StateTypeInteractive,
-	StateAskDocument:        StateTypeInteractive,
-	StatePatientLookup:      StateTypeAutomatic,
-	StateConfirmIdentity:    StateTypeInteractive,
-	StateShowContactInfo:    StateTypeAutomatic,
-	StateConfirmContactInfo: StateTypeInteractive,
-	StateAskUpdatePhone:     StateTypeInteractive,
-	StateAskUpdateEmail:     StateTypeInteractive,
-	StateUpdateContactInfo:  StateTypeAutomatic,
-	StateShowResults:        StateTypeAutomatic,
-	StateShowLocations:      StateTypeAutomatic,
-	StateShowHelp:           StateTypeAutomatic,
+	StateCheckBusinessHours:     StateTypeAutomatic,
+	StateGreeting:               StateTypeAutomatic,
+	StateMainMenu:               StateTypeInteractive,
+	StateAskDocumentType:        StateTypeInteractive,
+	StateAskDocument:            StateTypeInteractive,
+	StatePatientLookup:          StateTypeAutomatic,
+	StateConfirmIdentity:        StateTypeInteractive,
+	StateShowContactInfo:        StateTypeAutomatic,
+	StateConfirmContactInfo:     StateTypeInteractive,
+	StateAskUpdatePhone:         StateTypeInteractive,
+	StateAskUpdateEmail:         StateTypeInteractive,
+	StateUpdateContactInfo:      StateTypeAutomatic,
+	StateShowResults:            StateTypeAutomatic,
+	StateShowLocations:          StateTypeAutomatic,
+	StateShowHelp:               StateTypeAutomatic,
+	StateMedicationCheckSanitas: StateTypeInteractive,
 
 	// Entity Management
 	StateCheckEntity:         StateTypeAutomatic,
