@@ -44,6 +44,14 @@ func (m *mockApptRepoNotif) FindByAgendaAndDate(ctx context.Context, agendaID in
 	return nil, nil
 }
 
+func (m *mockApptRepoNotif) FindAgendasByDoctor(_ context.Context, _, _ string) ([]domain.AgendaSummary, error) {
+	return nil, nil
+}
+
+func (m *mockApptRepoNotif) FindAgendaAppointmentsPaged(_ context.Context, _ domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error) {
+	return &domain.AgendaAppointmentsPage{}, nil
+}
+
 func (m *mockApptRepoNotif) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	return nil, nil
 }

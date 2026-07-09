@@ -18,9 +18,25 @@ import (
 // --- local mock for AppointmentRepository ---
 
 type mockApptRepoAPI struct {
-	findByAgendaAndDateFn func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
-	cancelFn              func(ctx context.Context, id, reason, channel, channelID string) error
-	cancelBatchFn         func(ctx context.Context, ids []string, reason, channel, channelID string) error
+	findByAgendaAndDateFn  func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
+	cancelFn               func(ctx context.Context, id, reason, channel, channelID string) error
+	cancelBatchFn          func(ctx context.Context, ids []string, reason, channel, channelID string) error
+	findAgendasByDoctorFn  func(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error)
+	findAgendaApptsPagedFn func(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error)
+}
+
+func (m *mockApptRepoAPI) FindAgendasByDoctor(ctx context.Context, doctor, from string) ([]domain.AgendaSummary, error) {
+	if m.findAgendasByDoctorFn != nil {
+		return m.findAgendasByDoctorFn(ctx, doctor, from)
+	}
+	return nil, nil
+}
+
+func (m *mockApptRepoAPI) FindAgendaAppointmentsPaged(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error) {
+	if m.findAgendaApptsPagedFn != nil {
+		return m.findAgendaApptsPagedFn(ctx, f)
+	}
+	return &domain.AgendaAppointmentsPage{}, nil
 }
 
 func (m *mockApptRepoAPI) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -825,5 +841,84 @@ func TestRescheduleNewAgenda_CancelBatchFails_Returns500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 when CancelBatch fails, got %d", rec.Code)
+	}
+}
+
+// --- Tests: SIESA agendas / agenda-appointments (Fase 0 módulo Agenda) ---
+
+func TestHandleSiesaAgendas_RequiresDoctor(t *testing.T) {
+	h := &InternalHandler{appointmentRepo: &mockApptRepoAPI{}, cfg: &config.Config{}}
+	req := httptest.NewRequest("GET", "/api/internal/siesa/agendas", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSiesaAgendas(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("esperaba 400 sin doctor, got %d", rec.Code)
+	}
+}
+
+func TestHandleSiesaAgendas_OK(t *testing.T) {
+	repo := &mockApptRepoAPI{
+		findAgendasByDoctorFn: func(_ context.Context, doctor, _ string) ([]domain.AgendaSummary, error) {
+			if doctor != "8" {
+				t.Errorf("doctor esperado 8, got %s", doctor)
+			}
+			return []domain.AgendaSummary{{AgendaID: 704, Consultorio: "FISIATRIA 03", Citas: 14}}, nil
+		},
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	req := httptest.NewRequest("GET", "/api/internal/siesa/agendas?doctor=8", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSiesaAgendas(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperaba 200, got %d", rec.Code)
+	}
+	var resp struct {
+		Agendas []domain.AgendaSummary `json:"agendas"`
+		Count   int                    `json:"count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 1 || len(resp.Agendas) != 1 || resp.Agendas[0].AgendaID != 704 {
+		t.Errorf("respuesta inesperada: %+v", resp)
+	}
+}
+
+func TestHandleSiesaAgendaAppointments_RequiresAgendaOrDoctor(t *testing.T) {
+	h := &InternalHandler{appointmentRepo: &mockApptRepoAPI{}, cfg: &config.Config{}}
+	req := httptest.NewRequest("GET", "/api/internal/siesa/agenda-appointments", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSiesaAgendaAppointments(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("esperaba 400 sin agenda ni doctor, got %d", rec.Code)
+	}
+}
+
+func TestHandleSiesaAgendaAppointments_ParsesFilters(t *testing.T) {
+	var got domain.AgendaAppointmentsFilter
+	repo := &mockApptRepoAPI{
+		findAgendaApptsPagedFn: func(_ context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error) {
+			got = f
+			return &domain.AgendaAppointmentsPage{
+				Items: []domain.AgendaAppointmentRow{{ID: "1", Hora: "08:00", PatientName: "X", PatientDoc: "123"}},
+				Total: 1, Page: f.Page, Pages: 1,
+			}, nil
+		},
+	}
+	h := &InternalHandler{appointmentRepo: repo, cfg: &config.Config{}}
+	req := httptest.NewRequest("GET", "/api/internal/siesa/agenda-appointments?agenda_id=704&page=2&page_size=10&name=arroyo&doc=1120588384", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSiesaAgendaAppointments(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperaba 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got.AgendaID == nil || *got.AgendaID != 704 {
+		t.Errorf("agenda_id no parseado: %v", got.AgendaID)
+	}
+	if got.Page != 2 || got.PageSize != 10 {
+		t.Errorf("page/size: %d/%d", got.Page, got.PageSize)
+	}
+	if got.Name != "arroyo" || got.Doc != "1120588384" {
+		t.Errorf("name/doc: %q/%q", got.Name, got.Doc)
 	}
 }

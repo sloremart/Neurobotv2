@@ -533,6 +533,67 @@ func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.R
 	})
 }
 
+// HandleSiesaAgendas lista las agendas próximas (con citas no atendidas) de un médico, para el
+// selector del dashboard. Solo lectura NOLOCK. GET /api/internal/siesa/agendas?doctor=<cod_medi>&from=YYYY-MM-DD
+func (h *InternalHandler) HandleSiesaAgendas(w http.ResponseWriter, r *http.Request) {
+	doctor := strings.TrimSpace(r.URL.Query().Get("doctor"))
+	if doctor == "" {
+		http.Error(w, "'doctor' (cod_medi) requerido", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	agendas, err := h.appointmentRepo.FindAgendasByDoctor(ctx, doctor, strings.TrimSpace(r.URL.Query().Get("from")))
+	if err != nil {
+		//nolint:gosec // G706: 'doctor' es un parámetro de un endpoint admin (tras API key), no input público.
+		slog.Error("siesa agendas failed", "doctor", doctor, "error", err)
+		http.Error(w, "error consultando agendas", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"agendas": agendas, "count": len(agendas)})
+}
+
+// HandleSiesaAgendaAppointments lista, paginado y filtrable, las citas próximas NO atendidas de una
+// agenda (o médico), ordenadas por fecha+hora. Solo lectura NOLOCK, paginación server-side.
+// GET /api/internal/siesa/agenda-appointments?agenda_id=&doctor=&date=&name=&doc=&page=&page_size=
+func (h *InternalHandler) HandleSiesaAgendaAppointments(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := domain.AgendaAppointmentsFilter{
+		DoctorCode: strings.TrimSpace(q.Get("doctor")),
+		Date:       strings.TrimSpace(q.Get("date")),
+		Name:       strings.TrimSpace(q.Get("name")),
+		Doc:        strings.TrimSpace(q.Get("doc")),
+		Page:       1,
+		PageSize:   20,
+	}
+	if n, err := strconv.Atoi(q.Get("page")); err == nil && n > 0 {
+		f.Page = n
+	}
+	if n, err := strconv.Atoi(q.Get("page_size")); err == nil && n > 0 {
+		f.PageSize = n
+	}
+	if a := strings.TrimSpace(q.Get("agenda_id")); a != "" {
+		if n, err := strconv.Atoi(a); err == nil {
+			f.AgendaID = &n
+		}
+	}
+	if f.AgendaID == nil && f.DoctorCode == "" {
+		http.Error(w, "requiere 'agenda_id' o 'doctor'", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	pageData, err := h.appointmentRepo.FindAgendaAppointmentsPaged(ctx, f)
+	if err != nil {
+		slog.Error("siesa agenda-appointments failed", "error", err)
+		http.Error(w, "error consultando citas", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(pageData)
+}
+
 // HandleSiesaMedicos devuelve la lista de médicos de SIESA (sis_medi) para el selector del
 // dashboard. Solo lectura, cacheada. GET /api/internal/siesa/medicos
 func (h *InternalHandler) HandleSiesaMedicos(w http.ResponseWriter, r *http.Request) {

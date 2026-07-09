@@ -28,6 +28,13 @@ type AppointmentRepository interface {
 	// EMG/NC orders into a single appointment. nil if none. Procedures come loaded.
 	FindPendingEmgAppointment(ctx context.Context, patientID string, emgCodes []string) (*domain.Appointment, error)
 	FindByAgendaAndDate(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
+	// FindAgendasByDoctor lista las agendas (programacion_medico) del médico con citas próximas no
+	// atendidas (estado NOT IN ('C','A'), fecha >= from), para el selector del dashboard. Solo lectura
+	// NOLOCK. `from` en YYYY-MM-DD ("" = hoy).
+	FindAgendasByDoctor(ctx context.Context, doctorCode, from string) ([]domain.AgendaSummary, error)
+	// FindAgendaAppointmentsPaged lista, paginado y filtrable, las citas próximas no atendidas de una
+	// agenda (o médico). Ordena por fecha+hora del slot. Solo lectura NOLOCK; total vía COUNT(*) OVER().
+	FindAgendaAppointmentsPaged(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error)
 	Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error)
 	CreateAppointmentProcedure(ctx context.Context, input domain.CreateAppointmentProcedureInput) error
 	CreateAppointmentProcedureBatch(ctx context.Context, inputs []domain.CreateAppointmentProcedureInput) error

@@ -123,6 +123,16 @@ func (m *MockAppointmentRepo) FindByAgendaAndDate(ctx context.Context, agendaID 
 	return nil, nil
 }
 
+// FindAgendasByDoctor stub del mock (módulo Agenda).
+func (m *MockAppointmentRepo) FindAgendasByDoctor(_ context.Context, _, _ string) ([]domain.AgendaSummary, error) {
+	return nil, nil
+}
+
+// FindAgendaAppointmentsPaged stub del mock (módulo Agenda).
+func (m *MockAppointmentRepo) FindAgendaAppointmentsPaged(_ context.Context, _ domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error) {
+	return &domain.AgendaAppointmentsPage{}, nil
+}
+
 func (m *MockAppointmentRepo) Create(ctx context.Context, input domain.CreateAppointmentInput) (*domain.Appointment, error) {
 	if m.CreateFn != nil {
 		return m.CreateFn(ctx, input)

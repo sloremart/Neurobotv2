@@ -1440,6 +1440,148 @@ func (r *AppointmentRepo) FindPendingByDate(ctx context.Context, date string) ([
 	return appointments, nil
 }
 
+// FindAgendasByDoctor lista las agendas del médico con citas próximas no atendidas, para el selector
+// del dashboard. Solo lectura con NOLOCK (no bloquea la UI de SIESA). `doctorCode` = cod_medi.
+func (r *AppointmentRepo) FindAgendasByDoctor(ctx context.Context, doctorCode, from string) ([]domain.AgendaSummary, error) {
+	if from == "" {
+		from = time.Now().Format("2006-01-02")
+	}
+	rows, err := r.db.QueryContext(ctx, `
+	SELECT a.id_programacion,
+	       ISNULL(con.nombre, '') AS consultorio,
+	       a.primera, a.ultima, a.fechas, a.citas
+	FROM (
+	    SELECT c.id_programacion,
+	           MIN(CONVERT(VARCHAR(10), c.fecha, 23)) AS primera,
+	           MAX(CONVERT(VARCHAR(10), c.fecha, 23)) AS ultima,
+	           COUNT(DISTINCT c.fecha) AS fechas,
+	           COUNT(*) AS citas
+	    FROM citas c WITH (NOLOCK)
+	    WHERE c.cod_medi = @doctor
+	      AND c.estado NOT IN ('C','A')
+	      AND c.fecha >= @from
+	    GROUP BY c.id_programacion
+	) a
+	OUTER APPLY (
+	    SELECT TOP 1 con.nombre
+	    FROM programacion_medico_relacion pmr WITH (NOLOCK)
+	    JOIN consultorios con WITH (NOLOCK) ON con.id = pmr.id_consultorio
+	    WHERE pmr.id_programacion = a.id_programacion
+	) con
+	ORDER BY a.primera`,
+		sql.Named("doctor", doctorCode), sql.Named("from", from))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.AgendaSummary
+	for rows.Next() {
+		var a domain.AgendaSummary
+		if err := rows.Scan(&a.AgendaID, &a.Consultorio, &a.FirstDate, &a.LastDate, &a.Dates, &a.Citas); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// FindAgendaAppointmentsPaged lista, paginado y filtrable, las citas próximas NO atendidas de una
+// agenda (o médico), ordenadas por fecha+hora del slot. Eficiencia/no-bloqueo de SIESA:
+//   - NOLOCK en todas las tablas (no toma locks compartidos → no bloquea la UI de SIESA).
+//   - Paginación real OFFSET/FETCH; page_size acotado a 100.
+//   - Total en la MISMA query con COUNT(*) OVER() (un solo plan, sin segundo scan).
+//   - Predicados sargables (id_programacion/cod_medi/fecha/estado). El filtro de agenda acota el set
+//     antes del LIKE de nombre.
+func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f domain.AgendaAppointmentsFilter) (*domain.AgendaAppointmentsPage, error) {
+	page := f.Page
+	if page < 1 {
+		page = 1
+	}
+	size := f.PageSize
+	if size <= 0 {
+		size = 20
+	}
+	if size > 100 {
+		size = 100
+	}
+	offset := (page - 1) * size
+
+	conds := []string{"c.estado NOT IN ('C','A')", "c.fecha >= CAST(GETDATE() AS DATE)"}
+	args := []interface{}{}
+	if f.AgendaID != nil {
+		conds = append(conds, "c.id_programacion = @agenda")
+		args = append(args, sql.Named("agenda", *f.AgendaID))
+	}
+	if f.DoctorCode != "" {
+		conds = append(conds, "c.cod_medi = @doctor")
+		args = append(args, sql.Named("doctor", f.DoctorCode))
+	}
+	if f.Date != "" {
+		conds = append(conds, "c.fecha = @date")
+		args = append(args, sql.Named("date", f.Date))
+	}
+	if f.Name != "" {
+		conds = append(conds, `LTRIM(RTRIM(CONCAT(p.primer_nom,' ',ISNULL(p.segundo_nom,''),' ',p.primer_ape,' ',ISNULL(p.segundo_ape,'')))) LIKE @name`)
+		args = append(args, sql.Named("name", "%"+f.Name+"%"))
+	}
+	if f.Doc != "" {
+		conds = append(conds, "p.num_id = @doc")
+		args = append(args, sql.Named("doc", f.Doc))
+	}
+	args = append(args, sql.Named("off", offset), sql.Named("size", size))
+
+	// Solo columnas visibles (hora del slot + nombre + cédula) + id (para acciones) + total (COUNT OVER).
+	//nolint:gosec // G202: las condiciones son literales fijos; los valores del usuario van por sql.Named.
+	query := `
+	SELECT CAST(c.id AS VARCHAR(20)),
+	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
+	               FROM programacion_medico_detalle pmd WITH (NOLOCK) WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1) AS hhmm,
+	       ISNULL(c.hora,'') AS hora_cita,
+	       ISNULL(LTRIM(RTRIM(CONCAT(p.primer_nom,' ',ISNULL(p.segundo_nom,''),' ',
+	           p.primer_ape,' ',ISNULL(p.segundo_ape,'')))),'') AS nombre_paciente,
+	       ISNULL(p.num_id,'') AS doc_paciente,
+	       COUNT(*) OVER() AS total_rows
+	FROM citas c WITH (NOLOCK)
+	INNER JOIN sis_paci p WITH (NOLOCK) ON p.autoid = c.autoid
+	WHERE ` + strings.Join(conds, " AND ") + `
+	ORDER BY c.fecha, c.hora
+	OFFSET @off ROWS FETCH NEXT @size ROWS ONLY`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var items []domain.AgendaAppointmentRow
+	total := 0
+	for rows.Next() {
+		var it domain.AgendaAppointmentRow
+		var hhmm24, totalRows int
+		var horaCita string
+		if err := rows.Scan(&it.ID, &hhmm24, &horaCita, &it.PatientName, &it.PatientDoc, &totalRows); err != nil {
+			return nil, err
+		}
+		total = totalRows
+		if hhmm24 >= 0 {
+			it.Hora = fmt.Sprintf("%02d:%02d", hhmm24/100, hhmm24%100)
+		} else {
+			it.Hora = horaCita // fallback: la hora almacenada en la cita
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	pages := 0
+	if total > 0 {
+		pages = (total + size - 1) / size
+	}
+	return &domain.AgendaAppointmentsPage{Items: items, Total: total, Page: page, Pages: pages}, nil
+}
+
 // RescheduleDate moves all non-cancelled appointments of an agenda+doctor from oldDate to
 // newDate. INTEG-03: this must also manage slots, atomically — otherwise the old slot stays
 // "occupied" forever (phantom) and the new slot is never claimed (another booking can take it).

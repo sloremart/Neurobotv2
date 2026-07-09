@@ -35,6 +35,50 @@ type Appointment struct {
 	Procedures            []AppointmentProcedure
 }
 
+// AgendaSummary describe una agenda (programacion_medico) con citas próximas no atendidas, para el
+// selector del dashboard. Un médico puede tener varias agendas (incluso el mismo día) y una agenda
+// puede abarcar varias fechas — por eso la agenda (no la fecha) es la entidad de selección.
+type AgendaSummary struct {
+	AgendaID    int    `json:"agenda_id"`
+	Consultorio string `json:"consultorio"`
+	FirstDate   string `json:"primera_fecha"` // YYYY-MM-DD
+	LastDate    string `json:"ultima_fecha"`  // YYYY-MM-DD
+	Dates       int    `json:"fechas"`        // fechas distintas con citas
+	Citas       int    `json:"citas"`
+}
+
+// AgendaAppointmentRow es una fila del listado paginado de citas por agenda (vista de gestión del
+// dashboard). Solo trae citas próximas no atendidas (estado NOT IN ('C','A'), fecha >= hoy) y solo
+// las columnas visibles: hora del slot + nombre + cédula del paciente. El `ID` no se muestra pero es
+// necesario para las acciones (cancelar/confirmar). El teléfono NO se expone (se resuelve en el bot
+// al notificar) → menos PII.
+type AgendaAppointmentRow struct {
+	ID          string `json:"id"`
+	Hora        string `json:"hora"` // HH:MM del slot
+	PatientName string `json:"patient_name"`
+	PatientDoc  string `json:"patient_doc"` // sis_paci.num_id
+}
+
+// AgendaAppointmentsPage es la respuesta paginada del listado.
+type AgendaAppointmentsPage struct {
+	Items []AgendaAppointmentRow `json:"items"`
+	Total int                    `json:"total"`
+	Page  int                    `json:"page"`
+	Pages int                    `json:"pages"`
+}
+
+// AgendaAppointmentsFilter parametriza el listado paginado. AgendaID/DoctorCode: al menos uno debe
+// venir (AgendaID es el principal). Date/Name/Doc son opcionales ("" = sin filtro).
+type AgendaAppointmentsFilter struct {
+	AgendaID   *int   // nil = no filtrar por agenda (0 es una agenda válida, por eso puntero)
+	DoctorCode string // alterno (cod_medi); "" = no filtrar
+	Date       string // sub-filtro dentro de una agenda multi-día; "" = todas
+	Name       string // LIKE prefijo sobre el nombre del paciente
+	Doc        string // = sobre sis_paci.num_id
+	Page       int    // 1-based
+	PageSize   int    // acotado por el repo (máx 100)
+}
+
 type AppointmentProcedure struct {
 	ID            string
 	AppointmentID string
