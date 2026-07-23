@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -207,6 +208,25 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			maxCount = 999
 		}
 
+		// §8.1 #5: botón de un mensaje ANTERIOR (regimen_2, ct_4… ~190/mes) o disparador interno
+		// (__resume__ al volver del agente, 73/mes) → NO es culpa del paciente: re-mostrar la lista
+		// SIN gastar reintento. Solo si tenemos los nombres guardados; si no, flujo actual.
+		if namesCtx := sess.GetContext("entity_list_names"); namesCtx != "" {
+			_, numErr := strconv.Atoi(input)
+			stalePayload := stalePayloadRe.MatchString(input) || (msg.IsPostback && numErr != nil)
+			if sm.IsReservedKeyword(input) {
+				return sm.NewResult(sess.CurrentState).
+					WithText("Continuemos 👍. Escribe el *número* o el *nombre* de tu entidad:\n\n" +
+						entityListText(strings.Split(namesCtx, "|"))), nil
+			}
+			if stalePayload {
+				return sm.NewResult(sess.CurrentState).
+					WithText("Ese botón es de un paso anterior 👆. Elige tu entidad de esta lista:\n\n"+
+						entityListText(strings.Split(namesCtx, "|"))).
+					WithEvent("stale_payload_redirected", map[string]interface{}{"input": input}), nil
+			}
+		}
+
 		matchedByName := false
 		index, err := strconv.Atoi(input)
 		if err != nil || index < 1 || index > maxCount {
@@ -286,6 +306,21 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 
 		return r, nil
 	}
+}
+
+// stalePayloadRe reconoce payloads de botones de OTROS pasos que llegan como texto (el paciente tocó
+// un botón de un mensaje anterior): ct_N (tipo de entidad), regimen_N (régimen). Un paciente no
+// escribe eso a mano.
+var stalePayloadRe = regexp.MustCompile(`^(ct|regimen)_\d+$`)
+
+// entityListText re-arma la lista numerada mostrada (desde entity_list_names), para re-preguntarla
+// sin queries cuando llega un botón viejo o un __resume__.
+func entityListText(names []string) string {
+	var sb strings.Builder
+	for i, n := range names {
+		fmt.Fprintf(&sb, "%d - %s\n", i+1, n)
+	}
+	return sb.String()
 }
 
 // normalizeEntityInput prepara un texto para matching de entidad: minúsculas, sin tildes/ñ, sin

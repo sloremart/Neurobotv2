@@ -87,3 +87,44 @@ func TestAskEntityNumber_NumericUnchanged(t *testing.T) {
 		t.Errorf("ruta numérica cambió: next=%s code=%q", res.NextState, res.UpdateCtx["selected_entity_code"])
 	}
 }
+
+// §8.1 #5: un botón de un paso anterior re-muestra la lista SIN gastar reintento.
+func TestAskEntityNumber_StalePayloadNoRetryBurn(t *testing.T) {
+	h := askEntityNumberHandler(nil)
+	for _, in := range []string{"regimen_2", "ct_4"} {
+		sess := testSess(sm.StateAskEntityNumber)
+		sess.SetContext("entity_list_count", "2")
+		sess.SetContext("entity_list_codes", "EPS001,EPS002")
+		sess.SetContext("entity_list_names", "SANITAS|FOMAG")
+		sess.RetryCount = 1
+
+		res, err := h(context.Background(), sess, textM(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.NextState != sm.StateAskEntityNumber {
+			t.Errorf("%s: debía quedarse re-mostrando la lista; got %s", in, res.NextState)
+		}
+		if sess.RetryCount != 1 {
+			t.Errorf("%s: NO debía gastar reintento; RetryCount=%d", in, sess.RetryCount)
+		}
+	}
+}
+
+// __resume__ (agente devuelve al bot) re-muestra la lista sin error ni reintento.
+func TestAskEntityNumber_ResumeReshowsList(t *testing.T) {
+	h := askEntityNumberHandler(nil)
+	sess := testSess(sm.StateAskEntityNumber)
+	sess.SetContext("entity_list_count", "2")
+	sess.SetContext("entity_list_codes", "EPS001,EPS002")
+	sess.SetContext("entity_list_names", "SANITAS|FOMAG")
+	sess.RetryCount = 2
+
+	res, err := h(context.Background(), sess, textM("__resume__"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateAskEntityNumber || sess.RetryCount != 2 {
+		t.Errorf("resume debía re-mostrar la lista sin gastar reintento; next=%s retry=%d", res.NextState, sess.RetryCount)
+	}
+}
