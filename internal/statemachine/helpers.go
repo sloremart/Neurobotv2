@@ -97,14 +97,23 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 		}
 	}
 
-	// Input no válido → retry
+	// Input no válido → retry. Registrar SIEMPRE el texto (enmascarado por estado): es la materia
+	// prima del análisis de fricción (§8.2 — el 70% de invalid_input llegaba sin texto porque los
+	// estados de botones no lo guardaban). Si fue postback, se registra el payload.
+	loggedInput := input
+	if loggedInput == "" && msg.IsPostback {
+		loggedInput = msg.PostbackPayload
+	}
+	loggedInput = maskInputForLog(sess.CurrentState, loggedInput)
+
 	sess.RetryCount++
 	if sess.RetryCount >= maxRetries {
 		sess.RetryCount = 0
 		// Escalate to agent first; if agent unavailable, escalation handler falls back to FALLBACK_MENU
 		return NewResult(StateEscalateToAgent).
 			WithEvent("max_retries_reached", map[string]interface{}{
-				"state": sess.CurrentState,
+				"state":      sess.CurrentState,
+				"last_input": loggedInput,
 			}), ""
 	}
 
@@ -113,6 +122,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 		WithEvent("invalid_input", map[string]interface{}{
 			"state": sess.CurrentState,
 			"retry": sess.RetryCount,
+			"input": loggedInput,
 		}), ""
 }
 

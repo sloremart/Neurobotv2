@@ -675,6 +675,10 @@ func (m *mockSiesaAnalyticsReader) NoShowByDay(_ context.Context, _, _ string) (
 	return nil, nil
 }
 
+func (m *mockSiesaAnalyticsReader) NoShowByLeadTime(_ context.Context, _, _ string) ([]domain.NoShowLeadRow, error) {
+	return nil, nil
+}
+
 func (m *mockSiesaAnalyticsReader) BotCreatedByDay(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error) {
 	if m.botCreatedFn != nil {
 		return m.botCreatedFn(ctx, botCedula, from, to)

@@ -106,6 +106,7 @@ type SiesaAnalyticsReader interface {
 	Occupancy(ctx context.Context, windowDays int) ([]domain.OccupancyRow, error)
 	AppointmentsByState(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error)
 	NoShowByDay(ctx context.Context, from, to string) ([]domain.NoShowRow, error)
+	NoShowByLeadTime(ctx context.Context, from, to string) ([]domain.NoShowLeadRow, error)
 	BotCreatedByDay(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
 	CreatedByDay(ctx context.Context, from, to string) ([]domain.BotCreatedRow, error)
 	BotAppointmentsWithCups(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
@@ -294,10 +295,17 @@ func (h *InternalHandler) HandleSiesaNoShow(w http.ResponseWriter, r *http.Reque
 	if esperadas > 0 {
 		pct = float64(noShow) / float64(esperadas) * 100
 	}
+	// KPI de vigilancia del hallazgo 8.1 #2 (no-show por antelacion). Best-effort: si falla, el
+	// resto del payload sale igual.
+	leadRows, leadErr := h.siesaAnalytics.NoShowByLeadTime(r.Context(), from, to)
+	if leadErr != nil {
+		slog.Warn("siesa no-show lead failed", "error", leadErr)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"rows": rows, "esperadas": esperadas, "atendidas": atendidas,
 		"sin_cerrar": sinCerrar, "no_show": noShow, "no_show_pct": pct,
+		"by_lead_time": leadRows,
 	})
 }
 

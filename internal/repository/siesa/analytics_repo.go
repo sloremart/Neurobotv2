@@ -206,6 +206,55 @@ func (r *AnalyticsRepo) NoShowByDay(ctx context.Context, from, to string) ([]dom
 	return out, nil
 }
 
+// NoShowByLeadTime agrupa el no-show puro por ANTELACION de agendamiento (misma definicion de
+// no-show que NoShowByDay). Solo lectura con NOLOCK.
+func (r *AnalyticsRepo) NoShowByLeadTime(ctx context.Context, from, to string) ([]domain.NoShowLeadRow, error) {
+	if from == "" || to == "" {
+		now := time.Now()
+		from = now.AddDate(0, 0, -30).Format("2006-01-02")
+		to = now.AddDate(0, 0, 1).Format("2006-01-02")
+	}
+	key := "noshowlead:" + from + "|" + to
+	if v, ok := r.cached(key); ok {
+		return v.([]domain.NoShowLeadRow), nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT CASE WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 1 THEN '0-1d'
+		            WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 3 THEN '2-3d'
+		            WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 7 THEN '4-7d'
+		            WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 15 THEN '8-15d'
+		            ELSE '>15d' END AS bucket,
+		       COUNT(*) AS esperadas,
+		       SUM(CASE WHEN ISNULL(estado,'') NOT IN ('C','A')
+		                 AND NOT (ISNULL(AsistenciaConfirmada,0) = 1 OR estado = 'CC') THEN 1 ELSE 0 END) AS no_show
+		FROM citas WITH (NOLOCK)
+		WHERE fecha >= @p1 AND fecha < @p2 AND fecha < CAST(GETDATE() AS DATE)
+		  AND ISNULL(estado,'') <> 'C' AND fecha_solicitud IS NOT NULL
+		GROUP BY CASE WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 1 THEN '0-1d'
+		            WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 3 THEN '2-3d'
+		            WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 7 THEN '4-7d'
+		            WHEN DATEDIFF(DAY, fecha_solicitud, fecha) <= 15 THEN '8-15d'
+		            ELSE '>15d' END
+		OPTION (MAXDOP 1)`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("siesa no-show lead: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]domain.NoShowLeadRow, 0, 5)
+	for rows.Next() {
+		var n domain.NoShowLeadRow
+		if err := rows.Scan(&n.Bucket, &n.Esperadas, &n.NoShow); err != nil {
+			return nil, fmt.Errorf("scan no-show lead: %w", err)
+		}
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	r.store(key, out)
+	return out, nil
+}
+
 // BotCreatedByDay cuenta las citas REALES creadas por el bot en SIESA por día (cod_user_asigna_cita
 // = botCedula, sobre fecha_solicitud) en [from, to) (YYYY-MM-DD, to exclusivo). Es la verdad de
 // negocio para la conversión real bot→SIESA. Filtrado por usuario del bot + ventana acotada → pocas

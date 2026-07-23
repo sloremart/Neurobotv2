@@ -346,3 +346,22 @@ func TestValidateSearchCount_TooManyEscalates(t *testing.T) {
 		t.Errorf("expected ESCALATE_TO_AGENT, got %s", result.NextState)
 	}
 }
+
+// §8.2: invalid_input de estados de BOTONES debe registrar el texto/payload (antes 70% llegaba vacío).
+func TestValidateButtonResponse_LogsInput(t *testing.T) {
+	sess := &session.Session{CurrentState: "MAIN_MENU", Context: map[string]string{}}
+	res, _ := ValidateButtonResponse(sess, bird.InboundMessage{MessageType: "text", Text: "quiero cita"}, "opt_a")
+	if res == nil {
+		t.Fatal("esperaba retry result")
+	}
+	ev := res.Events[0]
+	if ev.Data["input"] != "quiero cita" {
+		t.Errorf("invalid_input sin el texto: %v", ev.Data)
+	}
+	// Postback inválido → registra el payload.
+	sess2 := &session.Session{CurrentState: "MAIN_MENU", Context: map[string]string{}}
+	res2, _ := ValidateButtonResponse(sess2, bird.InboundMessage{MessageType: "text", IsPostback: true, PostbackPayload: "regimen_2"}, "opt_a")
+	if res2.Events[0].Data["input"] != "regimen_2" {
+		t.Errorf("invalid_input sin payload: %v", res2.Events[0].Data)
+	}
+}

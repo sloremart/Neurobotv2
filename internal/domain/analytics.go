@@ -36,6 +36,15 @@ type NoShowRow struct {
 	NoShow    int    `json:"no_show"`    // no-show PURO: pasada, no cancelada, no atendida y NO confirmada
 }
 
+// NoShowLeadRow agrupa el no-show por ANTELACION (dias entre solicitud y cita). Hallazgo 8.1 #2:
+// el bucket 0-1d concentraba 25,6% de no-show (56% del total) por quedar fuera del recordatorio
+// de las 07:00 - este KPI vigila que el recordatorio de corta antelacion lo haga caer.
+type NoShowLeadRow struct {
+	Bucket    string `json:"bucket"` // 0-1d | 2-3d | 4-7d | 8-15d | >15d
+	Esperadas int    `json:"esperadas"`
+	NoShow    int    `json:"no_show"`
+}
+
 // BotCreatedRow es el conteo de citas REALES creadas por el bot en SIESA por día (por
 // cod_user_asigna_cita = cédula del bot, sobre fecha_solicitud). Es la verdad de negocio que se cruza
 // con las sesiones del bot para medir la conversión real (no el evento appointment_created, que es
