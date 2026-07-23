@@ -412,3 +412,38 @@ Si corre en bucle dentro de una sesión abierta, basta el disco local.
 por backpressure, "no entra ningún webhook", whitelist filtrando a todos) se envían además a un **chat de
 Telegram APARTE** (no el de errores del bot, para no mezclar) vía
 `https://api.telegram.org/bot<TOKEN>/sendMessage`.
+
+## 16. Comportamientos desplegados jul-2026 (2ª tanda) — eventos nuevos y qué cazar
+
+Cuatro sub-flujos nuevos dentro de `agendar`/`notif_recordatorio`. Sus steps aparecen solos en el
+funnel de flow-stats; esto define el ciclo SANO y el hallazgo a cazar.
+
+### A) Recordatorio de CORTA ANTELACIÓN (scheduler horario 06–16, flujo notif_recordatorio)
+Cubre citas de HOY agendadas después de la corrida de las 07:00 (nunca les llegaba recordatorio).
+- SANO: `same_day_reminder_sent` → respuesta del paciente (confirmed/cancel/reschedule) O
+  `same_day_no_response` (vencimiento SILENCIOSO: sin followups ni escalación — es TERMINAL VÁLIDO,
+  NO es flujo incompleto).
+- CAZAR: [BUG] followups/escalación después de un `same_day_reminder_sent` (el pending SameDay debe
+  morir en silencio) · [BUG] `same_day_reminder_sent` duplicado para la misma cita (falló el dedup
+  WasAppointmentNotified) · logs "fail-closed" sostenidos (NotifHistory caído = tarea muda).
+- `escalation_no_conversation` (flujo día-antes): escalación sin ConversationID → el agente NO se
+  enteró; si crece, hay hueco de conversaciones Bird.
+
+### B) STASH de la orden (foto como primer mensaje / en menú, flujo agendar)
+- SANO: `photo_first_message` (o `photo_intent_scheduling`) → …identificación… →
+  `stashed_order_used` (OCR directo, sin re-pedir foto) O `stashed_order_failed` (fallback: pide foto normal).
+- CAZAR: [FLUJO-INCOMPLETO] sesión con `photo_first_message`/`photo_intent_scheduling` que llega a
+  ASK_MEDICAL_ORDER SIN `stashed_order_used` NI `stashed_order_failed` = stash perdido.
+
+### C) PÁGINAS ADICIONALES en confirmación OCR (flujo agendar)
+Imagen durante CONFIRM_OCR_RESULT = página extra: fusión de CUPS (dedupe) y re-VALIDATE_OCR.
+- SANO: `ocr_page_appended{added}` → re-muestra "¿Es correcto?". `ocr_append_failed` = no se pudo
+  leer la página (reintento, no terminal). Tope 3 páginas.
+- CAZAR: [BUG] `ocr_page_appended` con CUPS duplicados en la cita final · bucles de `ocr_append_failed`
+  (>3 en la misma sesión = paciente atorado mandando fotos ilegibles).
+
+### D) EPS por NOMBRE (flujo entidad)
+`entity_matched_by_name` (chat_event) = selección rescatada por nombre; el funnel `entity_selected` no cambia.
+- CAZAR: [BUG] `entity_matched_by_name` con código de entidad que NO estaba en `entity_list_codes`
+  de esa sesión (matching eligió fuera de la lista mostrada). Estadística: invalid_input/escalaciones
+  de ASK_ENTITY_NUMBER deben CAER tras el deploy.

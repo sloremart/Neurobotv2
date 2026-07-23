@@ -179,15 +179,19 @@ func showEntityListHandler(entityRepo repository.EntityRepository) sm.StateHandl
 		// Build numbered list and store ordered codes so ASK_ENTITY_NUMBER can resolve
 		// by display index (independent of DB ordering).
 		codes := make([]string, len(entities))
+		names := make([]string, len(entities))
 		var sb strings.Builder
 		for i, e := range entities {
 			codes[i] = e.Code
+			names[i] = e.DisplayName()
 			sb.WriteString(fmt.Sprintf("%d - %s\n", i+1, e.DisplayName()))
 		}
 
 		return sm.NewResult(sm.StateAskEntityNumber).
 			WithContext("entity_list_count", fmt.Sprintf("%d", len(entities))).
 			WithContext("entity_list_codes", strings.Join(codes, ",")).
+			// Nombres EXACTAMENTE como se mostraron, para poder matchear por nombre (§8.1 #4).
+			WithContext("entity_list_names", strings.Join(names, "|")).
 			WithText(fmt.Sprintf("Escribe el *número* de tu entidad de la siguiente lista:\n\n%s", sb.String())).
 			WithEvent("entity_list_shown", map[string]interface{}{"count": len(entities), "category": category}), nil
 	}
@@ -203,13 +207,25 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			maxCount = 999
 		}
 
+		matchedByName := false
 		index, err := strconv.Atoi(input)
 		if err != nil || index < 1 || index > maxCount {
-			retryResult := sm.ValidateWithRetry(sess, input, func(s string) bool {
-				n, e := strconv.Atoi(s)
-				return e == nil && n >= 1 && n <= maxCount
-			}, fmt.Sprintf("Escribe un número válido entre 1 y %d.", maxCount))
-			return retryResult, nil
+			// §8.1 #4: el paciente suele escribir el NOMBRE de su EPS ("fomag", "capital salud",
+			// "4 sanitas" — 100+/mes medidos). Antes de gastar un reintento, matchear contra los
+			// nombres que se le mostraron. Solo con candidato ÚNICO; en ambigüedad, reintento normal.
+			if namesCtx := sess.GetContext("entity_list_names"); namesCtx != "" {
+				if m := matchEntityByName(input, strings.Split(namesCtx, "|")); m >= 1 && m <= maxCount {
+					index = m
+					matchedByName = true
+				}
+			}
+			if !matchedByName {
+				retryResult := sm.ValidateWithRetry(sess, input, func(s string) bool {
+					n, e := strconv.Atoi(s)
+					return e == nil && n >= 1 && n <= maxCount
+				}, fmt.Sprintf("Escribe el *número* (1 a %d) o el *nombre* de tu entidad.", maxCount))
+				return retryResult, nil
+			}
 		}
 
 		category := sess.GetContext("entity_category")
@@ -263,9 +279,68 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			WithEvent("entity_number_selected", map[string]interface{}{"index": index, "code": entityCode}).
 			WithContext("selected_entity_code", entityCode).
 			WithContext("selected_entity_name", entityName)
+		if matchedByName {
+			// Medible en dashboard: cuántas selecciones se rescatan por nombre (antes eran invalid_input).
+			r.WithEvent("entity_matched_by_name", map[string]interface{}{"input": input, "index": index})
+		}
 
 		return r, nil
 	}
+}
+
+// normalizeEntityInput prepara un texto para matching de entidad: minúsculas, sin tildes/ñ, sin
+// dígitos ni puntuación ("4 Sanitas." → "sanitas"), espacios colapsados.
+func normalizeEntityInput(s string) string {
+	repl := strings.NewReplacer("á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u", "ñ", "n")
+	s = repl.Replace(strings.ToLower(s))
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteRune(' ')
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// matchEntityByName busca la entidad que el paciente escribió por NOMBRE contra los nombres mostrados
+// (§8.1 #4). Devuelve el índice 1-based, o 0 si no hay candidato ÚNICO (0 matches o ambigüedad — en
+// ese caso NUNCA adivina: elegir la EPS equivocada afecta contrato y tarifa). Niveles: igualdad exacta
+// → prefijo (en cualquier dirección) → contención; gana el primer nivel con exactamente 1 candidato.
+func matchEntityByName(input string, names []string) int {
+	in := normalizeEntityInput(input)
+	if len(in) < 3 {
+		return 0
+	}
+	norm := make([]string, len(names))
+	for i, n := range names {
+		norm[i] = normalizeEntityInput(n)
+	}
+	// Dos niveles: igualdad exacta → contención. NO hay nivel de prefijo: "salud" haría prefijo único
+	// con SALUD TOTAL aunque CAPITAL SALUD también la contiene — eso sería adivinar en ambigüedad.
+	tiers := []func(name string) bool{
+		func(name string) bool { return name == in },
+		func(name string) bool { return strings.Contains(name, in) },
+	}
+	for _, match := range tiers {
+		found := 0
+		idx := 0
+		for i, name := range norm {
+			if name != "" && match(name) {
+				found++
+				idx = i + 1
+			}
+		}
+		if found == 1 {
+			return idx
+		}
+		if found > 1 {
+			return 0 // ambiguo en este nivel → no adivinar
+		}
+	}
+	return 0
 }
 
 // --- Legacy handlers (kept for existing patient entity check/change flow) ---

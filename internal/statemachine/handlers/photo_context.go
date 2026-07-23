@@ -101,6 +101,8 @@ func PhotoAppendInterceptor(ocrSvc *services.OCRService) sm.Interceptor {
 
 		res, err := ocrSvc.AnalyzeDocument(ctx, url)
 		if err != nil || res == nil || !res.Success || len(res.Cups) == 0 {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_append_failed",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return sm.NewResult(sess.CurrentState).
 				WithButtons("No pude leer esta imagen adicional. Si es otra página de tu orden, envíala más nítida.\n\n¿Es correcto lo detectado hasta ahora?",
 					ocrConfirmButtons()...).
