@@ -12,10 +12,15 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// maxOCRPages acota cuántas páginas de un PDF multipágina se mandan a Vision en el fallback (costo/tamaño).
+const maxOCRPages = 10
 
 type OCRService struct {
 	apiKey        string
@@ -411,7 +416,8 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 		return s.AnalyzeImage(ctx, dataURI)
 	}
 
-	// 3. If PDF, convert first page to JPEG with Ghostscript (300 DPI)
+	// 3. If PDF: página 1 primero (cubre la orden de 1 hoja, la mayoría) y solo si no trae CUP se
+	// analizan todas las páginas (órdenes multipágina: historia clínica primero, orden al final).
 	if mimeType != "application/pdf" {
 		return &OCRResult{Success: false, Error: "formato_no_soportado"}, nil
 	}
@@ -428,29 +434,113 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	}
 	pdfFile.Close()
 
-	jpegPath := pdfFile.Name() + ".jpg"
-	defer os.Remove(jpegPath)
+	// Página 1: flujo normal, SIN costo/latencia extra para la orden de 1 hoja.
+	page1URIs, err := s.pdfPagesToDataURIs(ctx, pdfFile.Name(), 1, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(page1URIs) == 0 {
+		return nil, fmt.Errorf("pdf sin páginas convertidas")
+	}
+	res, err := s.AnalyzeImage(ctx, page1URIs[0])
+	if err != nil {
+		return nil, err
+	}
+	if hasValidCUP(res) {
+		return res, nil // la 1ª hoja ya trae el CUP → sin cambios respecto al comportamiento previo
+	}
 
-	cmd := exec.CommandContext(ctx, "gs",
-		"-dSAFER", "-dBATCH", "-dNOPAUSE",
-		"-sDEVICE=jpeg", "-r300",
-		"-dFirstPage=1", "-dLastPage=1",
-		"-sOutputFile="+jpegPath,
-		pdfFile.Name(),
-	)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	// Fallback multipágina: convertir TODAS las páginas (acotado) y mandarlas juntas en UNA llamada.
+	allURIs, err := s.pdfPagesToDataURIs(ctx, pdfFile.Name(), 1, maxOCRPages)
+	if err != nil {
+		slog.Warn("ocr multipágina: conversión falló; se usa el resultado de la página 1", "error", err)
+		return res, nil
+	}
+	if len(allURIs) <= 1 {
+		return res, nil // documento de una sola página: nada más que intentar
+	}
+	slog.Info("ocr multipágina: página 1 sin CUP, analizando todas las páginas", "pages", len(allURIs))
+	multi, err := s.AnalyzeImages(ctx, allURIs)
+	if err != nil {
+		return res, nil // fail-safe: si el multipágina falla, devolver lo de la página 1
+	}
+	return multi, nil
+}
+
+// pdfPagesToDataURIs convierte las páginas [first,last] del PDF a JPEG (300 DPI) con Ghostscript y las
+// devuelve como data URIs base64 en orden de página. last<=0 = hasta el final.
+func (s *OCRService) pdfPagesToDataURIs(ctx context.Context, pdfPath string, first, last int) ([]string, error) {
+	outPattern := pdfPath + "-p%d.jpg"
+	args := []string{"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=jpeg", "-r300"}
+	if first > 0 {
+		args = append(args, fmt.Sprintf("-dFirstPage=%d", first))
+	}
+	if last > 0 {
+		args = append(args, fmt.Sprintf("-dLastPage=%d", last))
+	}
+	args = append(args, "-sOutputFile="+outPattern, pdfPath)
+	if output, err := exec.CommandContext(ctx, "gs", args...).CombinedOutput(); err != nil {
 		slog.Error("ghostscript conversion failed", "error", err, "output", string(output))
 		return nil, fmt.Errorf("pdf to image conversion failed: %w", err)
 	}
-
-	// 4. Read JPEG and encode as base64 data URI
-	jpegData, err := os.ReadFile(jpegPath)
-	if err != nil {
-		return nil, fmt.Errorf("read converted image: %w", err)
+	matches, _ := filepath.Glob(pdfPath + "-p*.jpg")
+	sort.Slice(matches, func(i, j int) bool { return pdfPageNum(matches[i]) < pdfPageNum(matches[j]) })
+	uris := make([]string, 0, len(matches))
+	for _, m := range matches {
+		defer func(p string) { _ = os.Remove(p) }(m)
+		data, rerr := os.ReadFile(m) //nolint:gosec // JPEG temporal propio (glob derivado de pdfPath), no input externo
+		if rerr != nil {
+			continue
+		}
+		uris = append(uris, "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(data))
 	}
+	return uris, nil
+}
 
-	dataURI := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpegData)
-	return s.AnalyzeImage(ctx, dataURI)
+// pdfPageNum extrae el número de página del nombre "<pdf>-p<N>.jpg" (para ordenar las páginas).
+func pdfPageNum(path string) int {
+	base := filepath.Base(path)
+	i := strings.LastIndex(base, "-p")
+	if i < 0 {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSuffix(base[i+2:], ".jpg"))
+	return n
+}
+
+// hasValidCUP indica si el OCR extrajo al menos un CUP con código NO vacío (el código es la fuente
+// autoritativa para cobertura/tarifa). Un resultado sin código válido NO debe tratarse como "sin
+// convenio": dispara el fallback multipágina y, si aun así no hay código, la guarda del handler escala.
+func hasValidCUP(res *OCRResult) bool {
+	if res == nil {
+		return false
+	}
+	for _, c := range res.Cups {
+		if strings.TrimSpace(c.Code) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// AnalyzeImages envía VARIAS páginas de un PDF en UNA sola llamada a Vision (fallback multipágina). El
+// documento puede mezclar historia clínica y hojas de orden; el prompt refuerza extraer CUPS SOLO de
+// las hojas de FORMULACIÓN/orden e ignorar la historia clínica, e incluir todas las órdenes si hay varias.
+func (s *OCRService) AnalyzeImages(ctx context.Context, imageURLs []string) (*OCRResult, error) {
+	content := []map[string]interface{}{
+		{"type": "text", "text": "Este documento tiene VARIAS páginas y puede incluir HISTORIA CLÍNICA además de la(s) hoja(s) de FORMULACIÓN/orden. Extrae los CUPS SOLO de las hojas de orden/formulación (las que traen la tabla de procedimientos con su código). IGNORA la historia clínica. Si hay órdenes en varias páginas, inclúyelas todas."},
+	}
+	for _, u := range imageURLs {
+		content = append(content, map[string]interface{}{
+			"type":      "image_url",
+			"image_url": map[string]string{"url": u},
+		})
+	}
+	messages := []map[string]interface{}{
+		{"role": "system", "content": s.buildSystemPrompt()},
+		{"role": "user", "content": content},
+	}
+	return s.callOpenAI(ctx, messages)
 }
 
 // AnalyzeText processes a text description of a medical order (from agent)

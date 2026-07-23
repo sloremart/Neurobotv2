@@ -282,6 +282,26 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 					WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil
 			}
 
+			// GUARDA (el CÓDIGO CUPS es prioridad para agendar): quedarse solo con los CUPS que traen
+			// código. Un CUP sin código NO debe llegar al gate de cobertura, que lo interpretaría como
+			// "sin convenio" y mandaría a particular (bug reportado: orden multipágina cuyo código quedó
+			// vacío al leer solo la 1ª hoja). Si tras el fallback multipágina NINGÚN CUP trae código,
+			// escalar a un agente (que sí puede leer la orden) en vez de mandar a particular.
+			validCups := make([]services.CUPSEntry, 0, len(ocrResult.Cups))
+			for _, c := range ocrResult.Cups {
+				if strings.TrimSpace(c.Code) != "" {
+					validCups = append(validCups, c)
+				}
+			}
+			if len(validCups) == 0 {
+				observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_no_cups_code",
+					observability.EmitOpts{Phone: sess.PhoneNumber})
+				return sm.NewResult(sm.StateEscalateToAgent).
+					WithText("No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita.").
+					WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)}), nil
+			}
+			ocrResult.Cups = validCups
+
 			// OCR exitoso — guardar CUPS en contexto
 			cupsJSON, _ := json.Marshal(ocrResult.Cups)
 
