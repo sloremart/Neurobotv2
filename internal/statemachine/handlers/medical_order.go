@@ -54,6 +54,23 @@ func ocrRetryButtons(birdClient *bird.Client) []sm.Button {
 	return buttons
 }
 
+// ocrFailureMessage devuelve un mensaje ACCIONABLE según la causa del fallo del OCR (§5e.2). El OCR
+// reporta la causa en OCRResult.Error (imagen_borrosa / no_table_detected / formato_no_soportado); para
+// esas se da una instrucción concreta. La mayoría de fallos llegan con causa vacía → mensaje genérico
+// pero con consejos (buena luz, enfoque, que se vea la tabla de códigos) para subir la tasa de reintento útil.
+func ocrFailureMessage(errReason string) string {
+	switch errReason {
+	case "imagen_borrosa":
+		return "La foto se ve *borrosa* 📷. Tómala de nuevo con buena luz y enfoque, que el texto se lea claro.\n\n¿Qué deseas hacer?"
+	case "no_table_detected":
+		return "No encontré la *tabla de procedimientos* en la imagen. Fotografía la parte de la orden donde están los *códigos/CUPS*.\n\n¿Qué deseas hacer?"
+	case "formato_no_soportado":
+		return "Ese formato no puedo leerlo. Envía una *foto (JPG)* o un *PDF* de tu orden médica.\n\n¿Qué deseas hacer?"
+	default:
+		return "No pudimos leer los procedimientos de tu orden.\n\nConsejo: toma la foto con *buena luz*, *enfocada* y que se vea la *tabla de códigos* completa.\n\n¿Qué deseas hacer?"
+	}
+}
+
 // ASK_MEDICAL_ORDER (automático) — pide foto de la orden y transiciona a UPLOAD.
 // Para pacientes PARTICULAR: primero pregunta si tienen orden médica.
 // Si sí → sube foto y flujo normal. Si no → escala a agente y registra en lista de espera.
@@ -276,7 +293,7 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 			if !ocrResult.Success || len(ocrResult.Cups) == 0 {
 				return sm.NewResult(sess.CurrentState).
 					WithButtons(
-						"No pudimos leer procedimientos en esta imagen.\n\n¿Qué deseas hacer?",
+						ocrFailureMessage(ocrResult.Error),
 						ocrRetryButtons(birdClient)...,
 					).
 					WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil

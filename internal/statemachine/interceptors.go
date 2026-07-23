@@ -95,6 +95,13 @@ func ImageOutOfContextInterceptor() Interceptor {
 			return nil, false
 		}
 
+		// MAIN_MENU: una foto/documento aquí = intención de agendar (el paciente ya está identificado y
+		// suele mandar la orden directo). Se deja pasar para que PhotoIntentInterceptor (registrado
+		// después) arranque el flujo de agendar en vez del dead-end "No esperaba una imagen".
+		if sess.CurrentState == StateMainMenu {
+			return nil, false
+		}
+
 		// Emitir también como flow_event para que el rechazo sea VISIBLE en el funnel de la skill
 		// auditora (el chat_event por sí solo era un punto ciego: ni ERROR ni caída de funnel). El attr
 		// `state` distingue el caso benigno (imagen suelta en un menú) del BUG (rechazo en un estado que

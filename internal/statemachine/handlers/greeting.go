@@ -241,13 +241,7 @@ func mainMenuHandler() sm.StateHandler {
 				WithEvent("menu_selected", map[string]interface{}{"option": "consultar"}), nil
 		case "agendar":
 			// Bird V2: entity type selection BEFORE document entry
-			return sm.NewResult(sm.StateAskClientType).
-				WithContext("menu_option", "agendar").
-				WithList("Selecciona el tipo de entidad a la que perteneces", "Tipo de entidad",
-					sm.ListSection{
-						Title: "Tipos de entidad",
-						Rows:  buildEntityTypeRows(),
-					}).
+			return startAgendarFlow(sm.NewResult(sm.StateAskClientType)).
 				WithEvent("menu_selected", map[string]interface{}{"option": "agendar"}), nil
 		case "resultados":
 			return sm.NewResult(sm.StateShowResults).
@@ -262,6 +256,18 @@ func mainMenuHandler() sm.StateHandler {
 
 		return nil, fmt.Errorf("unreachable: selected=%s", selected)
 	}
+}
+
+// startAgendarFlow adjunta el primer paso del flujo de agendar (selección de tipo de entidad). Se reutiliza
+// desde el menú (opción "agendar") y desde PhotoIntentInterceptor (una foto en el menú = intención de agendar).
+func startAgendarFlow(r *sm.StateResult) *sm.StateResult {
+	return r.
+		WithContext("menu_option", "agendar").
+		WithList("Selecciona el tipo de entidad a la que perteneces", "Tipo de entidad",
+			sm.ListSection{
+				Title: "Tipos de entidad",
+				Rows:  buildEntityTypeRows(),
+			})
 }
 
 // medicationSanitasQuestion añade al resultado la pregunta de elegibilidad SANITAS (botones Sí/No).

@@ -46,7 +46,7 @@ func RegisterRegistrationHandlers(
 	m.Register(sm.StateRegFirstSurname, withCorrectionRedirect(regFieldHandler("reg_first_surname", "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondSurname, "Si tienes *segundo apellido*, escríbelo. Si no, responde *NA*:")))
 	m.Register(sm.StateRegSecondSurname, regOptionalFieldHandler("reg_second_surname", "Si tienes segundo apellido, escríbelo. Si no, responde *NA*:", sm.StateRegFirstName, "Por favor escribe tu *primer nombre* (solo letras, sin números ni símbolos):"))
 	m.Register(sm.StateRegFirstName, withCorrectionRedirect(regFieldHandler("reg_first_name", "Por favor escribe tu primer nombre (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondName, "Si tienes *segundo nombre*, escríbelo. Si no, responde *NA*:")))
-	m.Register(sm.StateRegSecondName, regOptionalFieldHandler("reg_second_name", "Si tienes segundo nombre, escríbelo. Si no, responde *NA*:", sm.StateRegBirthDate, "Ingresa tu *fecha de nacimiento* en formato *AAAA-MM-DD* (ejemplo: 1992-04-17):"))
+	m.Register(sm.StateRegSecondName, regOptionalFieldHandler("reg_second_name", "Si tienes segundo nombre, escríbelo. Si no, responde *NA*:", sm.StateRegBirthDate, "Ingresa tu *fecha de nacimiento*, por ejemplo *17/04/1992* (día/mes/año):"))
 	m.Register(sm.StateRegBirthDate, withCorrectionRedirect(regBirthDateHandler()))
 	m.RegisterWithConfig(sm.StateRegGender, sm.HandlerConfig{
 		InputType: sm.InputButton,
@@ -406,36 +406,42 @@ func regDocumentTypeHandler() sm.StateHandler {
 	}
 }
 
-// REG_BIRTH_DATE (interactivo) — fecha de nacimiento AAAA-MM-DD
+// REG_BIRTH_DATE (interactivo) — fecha de nacimiento. Acepta el formato NATURAL colombiano DD/MM/AAAA
+// (lo que la gente escribe) además del ISO AAAA-MM-DD. Antes solo aceptaba ISO y ~59 pacientes/mes fallaban
+// (los rescataba la capa de IA); aceptar más formatos PREVIENE el fallo en la raíz (§5g).
+func parseBirthDate(input string) (time.Time, bool) {
+	// Orden: ISO primero (año-primero, sin ambigüedad), luego día-primero (DD/MM/AAAA, DD-MM-AAAA). No se
+	// mezclan porque ISO tiene 4 dígitos al inicio y el natural 2 → cada string matchea a lo sumo un formato.
+	formats := []string{"2006-01-02", "2006/01/02", "02/01/2006", "02-01-2006"}
+	for _, f := range formats {
+		if d, err := time.Parse(f, input); err == nil {
+			return d, true
+		}
+	}
+	return time.Time{}, false
+}
+
 func regBirthDateHandler() sm.StateHandler {
-	formats := []string{"2006-01-02", "2006/01/02"}
+	const dateHelp = "Ingresa tu *fecha de nacimiento*, por ejemplo *17/04/1992* (día/mes/año)."
 
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 
-		var parsedDate time.Time
-		var parseErr error
-		for _, format := range formats {
-			parsedDate, parseErr = time.Parse(format, input)
-			if parseErr == nil {
-				break
-			}
-		}
-
-		if parseErr != nil {
+		parsedDate, ok := parseBirthDate(input)
+		if !ok {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
-				"Formato de fecha no válido. Ingresa tu fecha de nacimiento en formato *AAAA-MM-DD* (ejemplo: 1992-04-17).")
+				"No entendí la fecha. "+dateHelp)
 			return retryResult, nil
 		}
 
 		now := time.Now()
 		if parsedDate.After(now) {
 			return sm.NewResult(sess.CurrentState).
-				WithText("La fecha no puede ser en el futuro. Ingresa tu fecha de nacimiento real en formato *AAAA-MM-DD*:"), nil
+				WithText("La fecha no puede ser en el futuro. " + dateHelp), nil
 		}
 		if parsedDate.Year() < 1900 {
 			return sm.NewResult(sess.CurrentState).
-				WithText("Fecha no válida. Ingresa tu fecha de nacimiento en formato *AAAA-MM-DD*:"), nil
+				WithText("Fecha no válida. " + dateHelp), nil
 		}
 
 		age := services.CalculateAge(parsedDate)

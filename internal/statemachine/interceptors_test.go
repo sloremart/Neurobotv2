@@ -208,7 +208,9 @@ func TestImageOutOfContext_InEmgUpload(t *testing.T) {
 
 func TestImageOutOfContext_OutsideUpload(t *testing.T) {
 	interceptor := ImageOutOfContextInterceptor()
-	states := []string{StateAskDocument, StateMainMenu, StateConfirmIdentity}
+	// MAIN_MENU se excluye a propósito: una foto ahí = intención de agendar, la maneja
+	// PhotoIntentInterceptor (ver TestImageOutOfContext_MainMenuPassesThrough).
+	states := []string{StateAskDocument, StateConfirmIdentity}
 	for _, state := range states {
 		t.Run(state, func(t *testing.T) {
 			sess := newSess(state)
@@ -218,6 +220,20 @@ func TestImageOutOfContext_OutsideUpload(t *testing.T) {
 			}
 			if result.NextState != state {
 				t.Errorf("expected state to stay %s, got %s", state, result.NextState)
+			}
+		})
+	}
+}
+
+// MAIN_MENU debe DEJARSE PASAR por ImageOutOfContext (para que PhotoIntentInterceptor arranque el flujo
+// de agendar en vez del dead-end "No esperaba una imagen"). Ver §3.6.
+func TestImageOutOfContext_MainMenuPassesThrough(t *testing.T) {
+	interceptor := ImageOutOfContextInterceptor()
+	for _, typ := range []string{"image", "document"} {
+		t.Run(typ, func(t *testing.T) {
+			sess := newSess(StateMainMenu)
+			if _, intercepted := interceptor(context.Background(), sess, typedMsg(typ)); intercepted {
+				t.Errorf("%s en MAIN_MENU NO debe interceptarse por ImageOutOfContext (lo maneja PhotoIntent)", typ)
 			}
 		})
 	}

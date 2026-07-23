@@ -173,6 +173,11 @@ func main() {
 		slog.Info("address mapper loaded", "locations", len(locations))
 	}
 
+	// Interceptor de intención por foto en el menú (paquete handlers: necesita construir la lista de
+	// entidades). Se añade DESPUÉS de RegisterInterceptors para que corra tras ImageOutOfContext, que ya
+	// deja pasar MAIN_MENU. Convierte "foto en el menú" en el arranque del flujo de agendar (§3.6).
+	machine.AddInterceptor(handlers.PhotoIntentInterceptor())
+
 	// Fase 5: Saludo e Identificación + Results/Locations
 	handlers.RegisterGreetingHandlers(machine, cfg, locationRepo)
 	handlers.RegisterResultsAndLocationHandlers(machine, cfg, locationRepo)
