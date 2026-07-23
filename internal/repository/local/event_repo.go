@@ -30,6 +30,34 @@ func NewEventRepo(db *sql.DB) *EventRepo {
 	return &EventRepo{db: db}
 }
 
+// PhonesForMorningReengage devuelve telefonos que rebotaron FUERA DE HORARIO ayer desde las 17:00
+// (ventana de 24h de WhatsApp aun abierta a las 07:05) y que NO han vuelto hoy (par.8.1 #9). Solo lectura.
+func (r *EventRepo) PhonesForMorningReengage(ctx context.Context) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT phone_number FROM chat_events
+		 WHERE event_type = 'out_of_hours'
+		   AND created_at >= CONCAT(CURDATE() - INTERVAL 1 DAY, ' 17:00:00')
+		   AND created_at < CURDATE()
+		   AND phone_number IS NOT NULL AND phone_number <> ''
+		   AND phone_number NOT IN (
+			SELECT DISTINCT phone_number FROM chat_events
+			WHERE event_type = 'session_started' AND created_at >= CURDATE())
+		 LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var phones []string
+	for rows.Next() {
+		var ph string
+		if err := rows.Scan(&ph); err != nil {
+			return nil, err
+		}
+		phones = append(phones, ph)
+	}
+	return phones, rows.Err()
+}
+
 // WasAppointmentNotified informa si la cita ya recibió un recordatorio (evento notification_sent con
 // ese appointment_id en los últimos 3 días). Lo usa el recordatorio de corta antelación para NO
 // duplicar el de las 07:00 ni una corrida horaria previa. Solo lectura.

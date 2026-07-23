@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -365,19 +366,69 @@ func looksLikeDocNumber(s string) bool {
 	return true
 }
 
-// parseDocType resolves a user reply (a 1..N number where N=len(documentTypeCatalog)=12, or the code itself) to a catalog code,
-// or "" when invalid.
-func parseDocType(input string) string {
-	s := strings.ToUpper(strings.TrimSpace(input))
-	if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= len(documentTypeCatalog) {
-		return documentTypeCatalog[n-1].Code
+// docNorm normaliza la respuesta del tipo de documento: minúsculas, sin tildes, puntuación→espacio.
+func docNorm(s string) string {
+	repl := strings.NewReplacer("á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u", "ñ", "n",
+		".", " ", ",", " ", "-", " ", ")", " ", "(", " ")
+	return strings.Join(strings.Fields(repl.Replace(strings.ToLower(strings.TrimSpace(s)))), " ")
+}
+
+var docLeadNumRe = regexp.MustCompile(`^([0-9]{1,2})\s*(.*)$`)
+
+// docTypeByText resuelve un TEXTO a un código del catálogo: código exacto ("cc"), etiqueta exacta
+// ("cedula de ciudadania"), "cedula" a secas → CC (coherente con la heurística que asume CC), o
+// contención ÚNICA en las etiquetas. "" si nada o ambiguo.
+func docTypeByText(t string) string {
+	if t == "" {
+		return ""
 	}
+	if t == "cedula" {
+		return "CC"
+	}
+	found, code := 0, ""
 	for _, d := range documentTypeCatalog {
-		if d.Code == s {
+		dn, dl := docNorm(d.Code), docNorm(d.Label)
+		if t == dn || t == dl {
 			return d.Code
 		}
+		if strings.Contains(dl, t) {
+			found++
+			code = d.Code
+		}
+	}
+	if found == 1 {
+		return code
 	}
 	return ""
+}
+
+// parseDocType resuelve la respuesta a un código del catálogo: número de opción (1..N), el código
+// ("CC"), o variantes reales que antes fallaban (§8.1 #7, 400 inválidos/mes): "1 cc", "1.", "1cc",
+// "cédula de ciudadanía". Si el número y el texto resuelven a tipos DISTINTOS ("1 tarjeta de
+// identidad") → "" (no adivinar). Un número largo (cédula) NO es opción (lo maneja looksLikeDocNumber).
+func parseDocType(input string) string {
+	s := docNorm(input)
+	if s == "" {
+		return ""
+	}
+	numCode, rest := "", s
+	if m := docLeadNumRe.FindStringSubmatch(s); m != nil {
+		digitsRest := m[2] != "" && strings.Trim(m[2], "0123456789") == ""
+		if !digitsRest { // "121947913" NO es "opción 12": número largo se deja a looksLikeDocNumber
+			if n, _ := strconv.Atoi(m[1]); n >= 1 && n <= len(documentTypeCatalog) {
+				numCode = documentTypeCatalog[n-1].Code
+				rest = strings.TrimSpace(m[2])
+			}
+		}
+	}
+	textCode := docTypeByText(rest)
+	switch {
+	case numCode != "" && textCode != "" && numCode != textCode:
+		return "" // conflicto número-vs-texto: no adivinar
+	case numCode != "":
+		return numCode
+	}
+	return textCode
 }
 
 // REG_DOCUMENT_TYPE — menú de texto numerado (12 tipos del catálogo SIESA).

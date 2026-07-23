@@ -97,6 +97,12 @@ func askDocumentTypeHandler() sm.StateHandler {
 		// Asumir CC (la gran mayoría) y seguir DIRECTO al lookup con ese número, avisando — en vez de
 		// rechazar y terminar escalando por reintentos. Si no fuera CC, el "no encontrado" lo encamina a
 		// registro (donde elige el tipo correcto).
+		// §8.1 #10: saludo o palabra de intención a mitad de flujo → re-mostrar el menú sin gastar reintento.
+		if isGreetingOrIntent(input) {
+			return sm.NewResult(sess.CurrentState).
+				WithText("¡Hola! 👍 Vamos en eso.\n\n"+docTypeMenuText()).
+				WithEvent("greeting_midflow_redirected", map[string]interface{}{"input": input}), nil
+		}
 		if parseDocType(input) == "" && looksLikeDocNumber(input) {
 			sess.RetryCount = 0
 			return sm.NewResult(sm.StatePatientLookup).

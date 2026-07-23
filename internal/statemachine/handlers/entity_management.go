@@ -219,6 +219,12 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 					WithText("Continuemos 👍. Escribe el *número* o el *nombre* de tu entidad:\n\n" +
 						entityListText(strings.Split(namesCtx, "|"))), nil
 			}
+			if isGreetingOrIntent(input) {
+				return sm.NewResult(sess.CurrentState).
+					WithText("¡Hola! 👍 Vamos en eso — elige tu entidad de esta lista:\n\n"+
+						entityListText(strings.Split(namesCtx, "|"))).
+					WithEvent("greeting_midflow_redirected", map[string]interface{}{"input": input}), nil
+			}
 			if stalePayload {
 				return sm.NewResult(sess.CurrentState).
 					WithText("Ese botón es de un paso anterior 👆. Elige tu entidad de esta lista:\n\n"+
@@ -306,6 +312,14 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 
 		return r, nil
 	}
+}
+
+// greetingIntentRe: saludos y palabras de intención tecleados A MITAD de flujo (§8.1 #10) — el
+// paciente ya está en el flujo; se re-muestra la pregunta sin gastar reintento.
+var greetingIntentRe = regexp.MustCompile(`^(hola+|buen(os|as)( (dias|tardes|noches))?|gracias|agendar|cita|quiero( una)? cita|quiero agendar)$`)
+
+func isGreetingOrIntent(input string) bool {
+	return greetingIntentRe.MatchString(normalizeEntityInput(input))
 }
 
 // stalePayloadRe reconoce payloads de botones de OTROS pasos que llegan como texto (el paciente tocó

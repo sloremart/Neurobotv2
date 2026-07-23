@@ -142,8 +142,8 @@ func TestRegisterAll_RegistersFourTasks(t *testing.T) {
 	tasks.RegisterAll(s)
 	// 4 originales (data_cleanup, whatsapp_reminders, waiting_list_check_06, voice_reminders)
 	// + 11 corridas horarias del recordatorio de corta antelación (06:00–16:00).
-	if len(s.tasks) != 15 {
-		t.Fatalf("expected 15 tasks (4 + 11 same-day), got %d", len(s.tasks))
+	if len(s.tasks) != 16 {
+		t.Fatalf("expected 16 tasks (4 + 11 same-day + reengage), got %d", len(s.tasks))
 	}
 }
 
@@ -161,6 +161,7 @@ func TestRegisterAll_TaskNames(t *testing.T) {
 	for h := 6; h <= 16; h++ {
 		expected[fmt.Sprintf("same_day_reminders_%02d", h)] = false
 	}
+	expected["morning_reengage"] = false
 
 	for _, task := range s.tasks {
 		if _, ok := expected[task.Name]; !ok {

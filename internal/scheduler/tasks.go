@@ -44,6 +44,11 @@ type NotificationHistory interface {
 	WasAppointmentNotified(ctx context.Context, appointmentID string) (bool, error)
 }
 
+// ReengageSource entrega los telefonos candidatos al re-enganche matutino (par.8.1 #9).
+type ReengageSource interface {
+	PhonesForMorningReengage(ctx context.Context) ([]string, error)
+}
+
 // FlowMaintainer hace el rollup diario y la purga de la traza de flujos (Fase 3 observabilidad).
 type FlowMaintainer interface {
 	RollupDay(ctx context.Context, day time.Time) (int64, error)
@@ -64,6 +69,7 @@ type Tasks struct {
 	InboxRepo       InboxCleaner              // WAL cleanup (optional)
 	Reconciler      *observability.Reconciler // reconciliación de invariantes (Fase 2, optional)
 	FlowMaint       FlowMaintainer            // rollup + purga de flow_events (Fase 3, optional)
+	ReengageSource  ReengageSource            // re-enganche matutino (optional; nil = tarea muda)
 	NotifHistory    NotificationHistory       // dedup del recordatorio de corta antelación (optional; sin él la tarea NO envía — fail-closed)
 }
 
@@ -88,6 +94,19 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 		},
 		Fn:      t.sendWhatsAppReminders,
 		Catchup: CatchupDaytime, // L14: WA solo se recupera en horario diurno
+	})
+
+	// 07:05 - re-enganche matutino (par.8.1 #9): quienes rebotaron fuera de horario ayer >=17h
+	// (picos 18-19h) reciben un "ya estamos disponibles" dentro de su ventana de 24h de WhatsApp.
+	s.AddTask(ScheduledTask{
+		Name: "morning_reengage",
+		Hour: 7, Minute: 5,
+		Weekdays: []time.Weekday{
+			time.Monday, time.Tuesday, time.Wednesday,
+			time.Thursday, time.Friday, time.Saturday,
+		},
+		Fn:      t.sendMorningReengagement,
+		Catchup: CatchupNever,
 	})
 
 	// 06:00 — Waiting list check
@@ -253,6 +272,9 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 		observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "reminder_sent",
 			observability.EmitOpts{Phone: phone, RefID: msgID})
 
+		// par.8.1 #8: preparacion del examen (si el catalogo la tiene) como texto aparte.
+		t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+
 		sent++
 
 		// Rate limiting: 2 seconds between sends (respeta cancelación)
@@ -403,6 +425,8 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "same_day_reminder_sent",
 			observability.EmitOpts{Phone: phone, RefID: msgID})
 
+		t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+
 		sent++
 		if err := sleepWithContext(ctx, 2*time.Second); err != nil {
 			break
@@ -412,6 +436,92 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 	slog.Info("same-day reminders complete", "sent", sent, "skipped", skipped)
 	// Corte por ctx cancelado (apagado) es salida limpia, no fallo — mismo patrón que sendWhatsAppReminders.
 	return nil //nolint:nilerr
+}
+
+// prepTextForGroup arma el texto de PREPARACION de los procedimientos de la cita (par.8.1 #8:
+// suenio/EEG/RX tienen 15-20% de no-show; recordar la preparacion reduce inasistencia y estudios
+// fallidos). Toma la preparacion del catalogo local; "" si ninguno la tiene. Tope rune-safe.
+func prepTextForGroup(ctx context.Context, group []domain.Appointment, procRepo repository.ProcedureRepository) string {
+	if procRepo == nil {
+		return ""
+	}
+	seen := map[string]bool{}
+	var parts []string
+	for _, a := range group {
+		for _, p := range a.Procedures {
+			if p.CupCode == "" || seen[p.CupCode] {
+				continue
+			}
+			seen[p.CupCode] = true
+			proc, err := procRepo.FindByCode(ctx, p.CupCode)
+			if err == nil && proc != nil && strings.TrimSpace(proc.Preparation) != "" {
+				parts = append(parts, strings.TrimSpace(proc.Preparation))
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	txt := "📋 *Preparacion para tu examen:*\n" + strings.Join(parts, "\n")
+	if r := []rune(txt); len(r) > 900 {
+		txt = string(r[:900]) + "..."
+	}
+	return txt
+}
+
+// sendReminderPrep envia la preparacion como texto aparte tras la plantilla (la plantilla es fija).
+func (t *Tasks) sendReminderPrep(ctx context.Context, phone, convID, apptID string, group []domain.Appointment) {
+	prep := prepTextForGroup(ctx, group, t.ProcedureRepo)
+	if prep == "" {
+		return
+	}
+	if _, err := t.BirdClient.SendText(phone, convID, prep); err != nil { //nolint:contextcheck // cliente Bird sin ctx (patron existente)
+		slog.Warn("reminder prep send failed", "phone", utils.MaskPhone(phone), "error", err)
+		return
+	}
+	if t.Tracker != nil {
+		t.Tracker.LogEvent(ctx, "", phone, "reminder_prep_sent", map[string]interface{}{"appointment_id": apptID})
+	}
+}
+
+// sendMorningReengagement (par.8.1 #9): un mensaje a quienes rebotaron fuera de horario ayer tarde.
+func (t *Tasks) sendMorningReengagement(ctx context.Context) error {
+	if t.Cfg != nil && (!t.Cfg.WhatsAppNotificationsEnabled || !t.Cfg.MorningReengageEnabled) {
+		return nil
+	}
+	if t.ReengageSource == nil {
+		return nil
+	}
+	phones, err := t.ReengageSource.PhonesForMorningReengage(ctx)
+	if err != nil {
+		return fmt.Errorf("reengage phones: %w", err)
+	}
+	sent := 0
+	for _, phone := range phones {
+		if ctx.Err() != nil {
+			break
+		}
+		ph := utils.ParseColombianPhone(phone)
+		if ph == "" || !t.Cfg.IsPhoneWhitelisted(ph) {
+			continue
+		}
+		convID := t.BirdClient.GetCachedConversationID(ph)
+		//nolint:contextcheck // cliente Bird sin ctx (patron existente)
+		if _, err := t.BirdClient.SendText(ph, convID,
+			"¡Buenos dias! 😊 Ya estamos disponibles. ¿Te ayudo a agendar tu cita? Escribeme *hola* para comenzar."); err != nil {
+			slog.Warn("morning reengage send failed", "phone", utils.MaskPhone(ph), "error", err)
+			continue
+		}
+		if t.Tracker != nil {
+			t.Tracker.LogEvent(ctx, "", ph, "reengagement_sent", nil)
+		}
+		sent++
+		if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+			break
+		}
+	}
+	slog.Info("morning reengagement complete", "candidates", len(phones), "sent", sent)
+	return nil //nolint:nilerr // corte por ctx cancelado = salida limpia
 }
 
 // === Task 15:00: Voice Reminders (IVR) ===

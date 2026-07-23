@@ -107,6 +107,8 @@ type Config struct {
 	// corrida de las 07:00, que nunca reciben el recordatorio del día antes; 25,6% de no-show medido).
 	// Requiere también WhatsAppNotificationsEnabled. Apagarlo NO afecta el flujo de las 07:00.
 	SameDayRemindersEnabled bool
+	// MORNING_REENGAGE_ENABLED - re-enganche 07:05 a quienes rebotaron fuera de horario ayer >=17h (par.8.1 #9).
+	MorningReengageEnabled bool
 
 	// Session
 	SessionTimeoutMinutes int
@@ -259,6 +261,7 @@ func Load() *Config {
 		WhatsAppNotificationsEnabled: getEnvBool("WHATSAPP_NOTIFICATIONS_ENABLED", true),
 		IVRNotificationsEnabled:      getEnvBool("IVR_NOTIFICATIONS_ENABLED", true),
 		SameDayRemindersEnabled:      getEnvBool("SAME_DAY_REMINDERS_ENABLED", true),
+		MorningReengageEnabled:       getEnvBool("MORNING_REENGAGE_ENABLED", true),
 
 		// Session
 		SessionTimeoutMinutes: getEnvInt("SESSION_TIMEOUT_MINUTES", 120),

@@ -453,3 +453,12 @@ Imagen durante CONFIRM_OCR_RESULT = página extra: fusión de CUPS (dedupe) y re
 agente NO ha respondido; fail-quiet ante cualquier duda).
 - CAZAR: [BUG] más de un `ack_sent` por escalación · [BUG] un `ack_sent` DESPUÉS de actividad del
   agente (first_agent_msg_at anterior al ack) — el bot se metió en una conversación humana.
+
+### F) 3ª tanda jul-2026 (variantes de entrada + proactivos nuevos)
+- `entidad/greeting_midflow_redirected` y tipo-doc: saludo/intención a mitad de flujo re-muestra la
+  pregunta SIN gastar reintento (no es invalid_input). `parseDocType` acepta "1 cc"/"cédula de
+  ciudadanía"; CAZAR: caída de invalid_input en ASK_DOCUMENT_TYPE tras el deploy.
+- `reminder_prep_sent`: preparación del examen como texto tras la plantilla (solo CUPS con
+  preparación en catálogo). CAZAR: prep enviada sin plantilla previa (huérfana).
+- `reengagement_sent` (07:05): re-enganche a rebotados fuera-de-horario de ayer >=17h, UNO por
+  teléfono. CAZAR: más de 1 al mismo teléfono el mismo día, o envíos sin out_of_hours previo.
