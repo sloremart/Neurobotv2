@@ -269,6 +269,45 @@ func (h *InternalHandler) HandleSiesaCitasEstado(w http.ResponseWriter, r *http.
 
 // HandleSiesaNoShow devuelve la inasistencia (no-show) real por día (verdad de SIESA): de las citas
 // pasadas no canceladas, cuántas se atendieron vs cuántas quedaron sin finalizar. Agregado y cacheado.
+// HandleBirdAgents expone las métricas DIRECTAS de Bird por agente (estado/actividad, carga actual de
+// conversaciones asignadas, equipos) para el informe unificado de agentes del dashboard (F3 §9).
+// Solo lectura contra la API de Bird; sin Bird configurado responde 503.
+// GET /api/internal/agents/bird
+func (h *InternalHandler) HandleBirdAgents(w http.ResponseWriter, _ *http.Request) {
+	if h.birdClient == nil {
+		http.Error(w, "bird client not available", http.StatusServiceUnavailable)
+		return
+	}
+	agents, err := h.birdClient.ListAllAgents()
+	if err != nil {
+		slog.Error("bird agents list failed", "error", err)
+		http.Error(w, "failed to list bird agents", http.StatusBadGateway)
+		return
+	}
+	type agentOut struct {
+		ID        string   `json:"id"`
+		Name      string   `json:"name"`
+		Status    string   `json:"status"`
+		Activity  string   `json:"activity"`
+		OpenItems int      `json:"open_items"`
+		Teams     []string `json:"teams"`
+	}
+	out := make([]agentOut, 0, len(agents))
+	for _, a := range agents {
+		teams := make([]string, 0, len(a.Teams))
+		for _, t := range a.Teams {
+			teams = append(teams, t.Name)
+		}
+		out = append(out, agentOut{
+			ID: a.ID, Name: a.DisplayName,
+			Status: a.Availability.Status, Activity: a.Availability.Activity,
+			OpenItems: a.RootItemAssignedCount, Teams: teams,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"agents": out})
+}
+
 // GET /api/internal/siesa/no-show?from=YYYY-MM-DD&to=YYYY-MM-DD
 func (h *InternalHandler) HandleSiesaNoShow(w http.ResponseWriter, r *http.Request) {
 	if h.siesaAnalytics == nil {

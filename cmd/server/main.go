@@ -396,7 +396,8 @@ func main() {
 			Cfg:             cfg,
 			Tracker:         tracker,
 			InboxRepo:       inboxRepo,
-			NotifHistory:    eventRepo, // dedup del recordatorio de corta antelación (fail-closed si nil)
+			NotifHistory:    eventRepo,
+			ReengageSource:  eventRepo, // re-enganche matutino (par.8.1 #9) // dedup del recordatorio de corta antelación (fail-closed si nil)
 		}
 		// Reconciliación de invariantes (Fase 2 observabilidad): checks locales + SIESA (bot-filtered).
 		reconciler := observability.NewReconciler()
@@ -490,6 +491,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/siesa/ocupacion", internalHandler.HandleSiesaOcupacion)
 		internalMux.HandleFunc("GET /api/internal/siesa/citas-estado", internalHandler.HandleSiesaCitasEstado)
 		internalMux.HandleFunc("GET /api/internal/siesa/no-show", internalHandler.HandleSiesaNoShow)
+		internalMux.HandleFunc("GET /api/internal/agents/bird", internalHandler.HandleBirdAgents)
 		internalMux.HandleFunc("GET /api/internal/siesa/conversion", internalHandler.HandleSiesaConversion)
 		internalMux.HandleFunc("GET /api/internal/siesa/bot-share", internalHandler.HandleSiesaBotShare)
 		internalMux.HandleFunc("GET /api/internal/siesa/conciliacion", internalHandler.HandleSiesaConciliacion)
