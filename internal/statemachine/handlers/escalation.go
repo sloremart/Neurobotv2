@@ -84,7 +84,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		diagCacheHit := false                     // capa 3/4a: ¿la caché lo tenía en algún momento?
 		diagSentOK := false                       // capa 4: ¿el pre-envío devolvió messageID?
 		diagFetchOK := false                      // capa 4b: ¿el GET del mensaje resolvió?
-		diagLookup := "skipped"                   // capa 4c: found | not_found | error | skipped
+		diagLookup := "skipped"                   // capa 4c/4d: found | not_found | error | skipped | created
 
 		// 4. If conversationID is still empty, send patient message first.
 		// The Channels API response contains conversationId which gets cached.
@@ -135,6 +135,23 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 					diagLookup = "found"
 				} else {
 					diagLookup = "not_found"
+				}
+			}
+			// Capa 4d — último recurso ABSOLUTO (auditoría 2026-07-23): crear la conversación
+			// explícitamente (schema validado en vivo contra Bird). Los casos residuales son contactos
+			// recurrentes cuyo hilo no aparece en el lookup (10 páginas) y sin webhooks; el mensaje SÍ
+			// le llegó al paciente (sent_ok) pero el handoff caía a PICKUP MANUAL por no tener canal.
+			if conversationID == "" && sendErr == nil {
+				if created, cerr := birdClient.CreateConversationForPhone(ctx, msg.Phone); cerr != nil {
+					slog.Warn(
+						"escalation_create_conversation_failed",
+						"phone", utils.MaskPhone(msg.Phone),
+						"session_id", sess.ID,
+						"error", cerr,
+					)
+				} else if created != "" {
+					conversationID = created
+					diagLookup = "created"
 				}
 			}
 			if conversationID != "" {

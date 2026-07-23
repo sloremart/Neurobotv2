@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,10 @@ var ErrConversationNotActive = errors.New("conversation not active")
 var (
 	convCachePollTries    = 6
 	convCachePollInterval = 1 * time.Second
+	// Intentos del GET del mensaje enviado (FetchMessageConversationID). Bird asocia la conversación
+	// de forma asíncrona; la ventana original de 4 intentos (~3s) quedaba corta en los casos
+	// residuales de "empty conversation ID" (auditoría 2026-07-23).
+	fetchMsgConvTries = 8
 )
 
 // ErrWhatsAppNotificationsDisabled / ErrIVRNotificationsDisabled se devuelven cuando el canal
@@ -397,9 +402,13 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 		return ""
 	}
 	url := fmt.Sprintf("%s/%s", c.messagesURL(), messageID)
-	for attempt := 0; attempt < 4; attempt++ {
+	lastStatus := 0
+	lastBody := ""
+	for attempt := 0; attempt < fetchMsgConvTries; attempt++ {
 		if attempt > 0 {
-			if err := sleepWithContext(ctx, convCachePollInterval); err != nil {
+			// Backoff creciente (1s,1s,2s,2s,2s,3s,3s con el intervalo por defecto): la asociación
+			// mensaje→conversación en Bird puede tardar más que un sondeo plano de ~3s.
+			if err := sleepWithContext(ctx, convCachePollInterval*time.Duration(1+attempt/3)); err != nil {
 				return ""
 			}
 		}
@@ -413,6 +422,18 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 			slog.Warn("fetch_message_conv_failed", "error", err, "message_id", messageID)
 			continue
 		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		lastStatus = resp.StatusCode
+		lastBody = string(body)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			// Fallo permanente (key sin permiso de lectura de mensajes): reintentar no ayuda.
+			break
+		}
+		if resp.StatusCode >= 400 {
+			// Un 404 puede ser consistencia eventual (mensaje aún no materializado): reintentar.
+			continue
+		}
 		var result struct {
 			ConversationID string `json:"conversationId"`
 			Context        struct {
@@ -420,9 +441,7 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 				ID   string `json:"id"`
 			} `json:"context"`
 		}
-		derr := json.NewDecoder(resp.Body).Decode(&result)
-		_ = resp.Body.Close()
-		if derr != nil {
+		if err := json.Unmarshal(body, &result); err != nil {
 			continue
 		}
 		if result.ConversationID != "" {
@@ -439,7 +458,84 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 			}
 		}
 	}
+	// Sin esto, la capa fetch fallaba SIEMPRE en silencio (auditoría 2026-07-23: cero logs de éxito y
+	// cero de error en todo el histórico) y el "empty conversation ID" quedaba sin evidencia. El último
+	// status+body dicen exactamente por qué no se resolvió (4xx, body sin context.id, o timing).
+	slog.Warn("fetch_message_conv_empty",
+		"message_id", messageID,
+		"attempts", fetchMsgConvTries,
+		"last_status", lastStatus,
+		"last_body", maskDigitRuns(truncateForLog(lastBody, 400)),
+	)
 	return ""
+}
+
+// digitRunRe captura secuencias de 6+ dígitos (teléfonos/cédulas) que podrían venir embebidas en un
+// body externo de Bird (p.ej. el identifierValue del receptor) antes de loguearlo.
+var digitRunRe = regexp.MustCompile(`\d{6,}`)
+
+func maskDigitRuns(s string) string { return digitRunRe.ReplaceAllString(s, "***") }
+
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// CreateConversationForPhone crea explícitamente una conversación para el contacto del teléfono en el
+// canal de WhatsApp del bot. Último recurso del handoff de escalación (auditoría 2026-07-23): hay
+// contactos recurrentes cuyo hilo no aparece en el list-lookup (10 páginas) y cuyos webhooks no llegan
+// a la caché, así que TODAS las capas de resolución fallan y el handoff caía a PICKUP MANUAL aunque el
+// mensaje sí llegó al paciente. Crear la conversación garantiza un canal asignable al agente.
+func (c *Client) CreateConversationForPhone(ctx context.Context, phone string) (string, error) {
+	if phone == "" {
+		return "", fmt.Errorf("empty phone")
+	}
+	url := fmt.Sprintf("%s/workspaces/%s/conversations", c.conversationsBase(), c.workspaceID)
+	// Schema validado contra Bird REAL (2026-07-23, canal testing dacc4070, contacto +573***3616):
+	// "name" es OBLIGATORIO (422 InvalidPayload {"name is missing"} sin él); con él responde 201 con
+	// el "id" top-level, incluso si el contacto ya tiene otras conversaciones (no hay 409 aquí). El
+	// nombre es provisional: MarkConversationEscalated lo sobreescribe con equipo/paciente al asignar.
+	payload, _ := json.Marshal(map[string]interface{}{
+		"name":      "Neuro-Bot escalación",
+		"channelId": c.channelID,
+		"participants": []map[string]interface{}{
+			{
+				"type":            "contact",
+				"identifierKey":   "phonenumber",
+				"identifierValue": phone,
+			},
+		},
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("create conversation request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "AccessKey "+c.accessKeyID)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("create conversation: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("create conversation: status %d, body: %s",
+			resp.StatusCode, maskDigitRuns(truncateForLog(string(body), 400)))
+	}
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil || result.ID == "" {
+		return "", fmt.Errorf("create conversation: parse response (status %d): %s",
+			resp.StatusCode, maskDigitRuns(truncateForLog(string(body), 400)))
+	}
+	c.CacheConversationID(phone, result.ID)
+	slog.Info("conversation_created_for_escalation",
+		"phone", utils.MaskPhone(phone), "conversation_id", result.ID)
+	return result.ID, nil
 }
 
 // trySendToConversation attempts to send via Conversations API.

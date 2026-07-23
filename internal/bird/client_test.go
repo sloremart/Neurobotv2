@@ -262,6 +262,124 @@ func TestFetchMessageConversationID_FromContextID(t *testing.T) {
 	}
 }
 
+// TestFetchMessageConversationID_RetriesOn404 valida la instrumentación del residual "empty
+// conversation ID" (auditoría 2026-07-23): un 4xx transitorio (p.ej. mensaje aún no materializado)
+// se REINTENTA los fetchMsgConvTries intentos y termina en "" (el WARN final lleva status+body).
+func TestFetchMessageConversationID_RetriesOn404(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"code":"NotFound","message":"message not found"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.apiKeyWA = "test-key"
+	if got := c.FetchMessageConversationID(context.Background(), "msg-404"); got != "" {
+		t.Errorf("esperaba \"\" en 404 persistente, got %q", got)
+	}
+	if calls != fetchMsgConvTries {
+		t.Errorf("esperaba %d intentos en 404 (consistencia eventual), got %d", fetchMsgConvTries, calls)
+	}
+}
+
+// TestFetchMessageConversationID_AuthErrorNoRetry: 401/403 es permanente (key sin permiso de
+// lectura) → corta al primer intento en vez de quemar la ventana completa.
+func TestFetchMessageConversationID_AuthErrorNoRetry(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte(`{"code":"Unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.apiKeyWA = "test-key"
+	if got := c.FetchMessageConversationID(context.Background(), "msg-401"); got != "" {
+		t.Errorf("esperaba \"\" en 401, got %q", got)
+	}
+	if calls != 1 {
+		t.Errorf("esperaba 1 solo intento en 401 (permanente), got %d", calls)
+	}
+}
+
+// TestCreateConversationForPhone valida la capa 4d del handoff (auditoría 2026-07-23): cuando fetch y
+// lookup fallan, se crea la conversación explícitamente vía Conversations API (accessKeyID) y se
+// cachea el ID para las capas siguientes.
+func TestCreateConversationForPhone(t *testing.T) {
+	var gotPath, gotAuth string
+	var gotPayload map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotPayload)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"conv-created-1"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.accessKeyID = "conv-key"
+	id, err := c.CreateConversationForPhone(context.Background(), "+573001234567")
+	if err != nil {
+		t.Fatalf("no esperaba error: %v", err)
+	}
+	if id != "conv-created-1" {
+		t.Errorf("esperaba conv-created-1, got %q", id)
+	}
+	if gotPath != "/workspaces/ws-test/conversations" {
+		t.Errorf("path inesperado: %s", gotPath)
+	}
+	if gotAuth != "AccessKey conv-key" {
+		t.Errorf("esperaba accessKeyID (Conversations API), got %q", gotAuth)
+	}
+	if gotPayload["channelId"] != "ch-test" {
+		t.Errorf("payload sin channelId del canal: %v", gotPayload)
+	}
+	parts, _ := gotPayload["participants"].([]interface{})
+	if len(parts) != 1 {
+		t.Fatalf("esperaba 1 participante, got %v", gotPayload["participants"])
+	}
+	p, _ := parts[0].(map[string]interface{})
+	if p["identifierKey"] != "phonenumber" || p["identifierValue"] != "+573001234567" {
+		t.Errorf("participante inesperado: %v", p)
+	}
+	if cached := c.GetCachedConversationID("+573001234567"); cached != "conv-created-1" {
+		t.Errorf("esperaba el ID creado en cache, got %q", cached)
+	}
+}
+
+// TestCreateConversationForPhone_Conflict: si Bird responde 409 (ResourceAlreadyExists) u otro 4xx,
+// se devuelve error con status+body (enmascarado) para diagnóstico y NO se cachea nada.
+func TestCreateConversationForPhone_Conflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"code":"ResourceAlreadyExists","message":"another active conversation exists for contact +573001234567"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.accessKeyID = "conv-key"
+	id, err := c.CreateConversationForPhone(context.Background(), "+573001234567")
+	if err == nil || id != "" {
+		t.Fatalf("esperaba error en 409, got id=%q err=%v", id, err)
+	}
+	if !strings.Contains(err.Error(), "status 409") {
+		t.Errorf("el error debe incluir el status: %v", err)
+	}
+	if strings.Contains(err.Error(), "573001234567") {
+		t.Errorf("el body del error debe enmascarar el teléfono: %v", err)
+	}
+	if cached := c.GetCachedConversationID("+573001234567"); cached != "" {
+		t.Errorf("no debe cachear en error, got %q", cached)
+	}
+}
+
 func TestMessagesURL_UsesApiURL(t *testing.T) {
 	c := &Client{apiURL: "https://custom.api.com", workspaceID: "ws1", channelID: "ch1"}
 	url := c.messagesURL()
