@@ -87,6 +87,14 @@ func ImageOutOfContextInterceptor() Interceptor {
 			return nil, false
 		}
 
+		// En el paso de confirmación de cita, un archivo/foto NO debe chocar con "no esperaba una
+		// imagen": el paciente suele reenviar la orden creyendo que falta algo. Se deja pasar para que
+		// el RetryPrompt de CONFIRM_BOOKING le recuerde que la cita AÚN no está agendada y debe tocar
+		// "Confirmar cita" (igual en RECONFIRM_BOOKING, usado en reprogramación).
+		if sess.CurrentState == StateConfirmBooking || sess.CurrentState == StateReconfirmBooking {
+			return nil, false
+		}
+
 		// Emitir también como flow_event para que el rechazo sea VISIBLE en el funnel de la skill
 		// auditora (el chat_event por sí solo era un punto ciego: ni ERROR ni caída de funnel). El attr
 		// `state` distingue el caso benigno (imagen suelta en un menú) del BUG (rechazo en un estado que

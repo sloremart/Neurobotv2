@@ -10,3 +10,7 @@ vendor/
 .vscode/
 *.log
 backups/
+*.sql
+*.sql.gz
+*.bak
+docker-compose.override.yml

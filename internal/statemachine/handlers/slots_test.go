@@ -230,9 +230,31 @@ func TestConfirmBooking_Confirm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Now goes to RECONFIRM_BOOKING instead of CREATE_APPOINTMENT
+	// Cita NUEVA: un solo toque "Confirmar cita" → crea directo (sin doble confirmación).
+	if result.NextState != sm.StateCreateAppointment {
+		t.Errorf("expected CREATE_APPOINTMENT, got %s", result.NextState)
+	}
+}
+
+func TestConfirmBooking_Confirm_Reschedule_KeepsDoubleConfirm(t *testing.T) {
+	slots := sampleSlots()
+
+	m := sm.NewMachine()
+	registerConfirmBookingConfig(m)
+
+	sess := testSess(sm.StateConfirmBooking)
+	sess.Context["available_slots_json"] = slotsJSON(slots)
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
+	sess.Context["cups_name"] = "EMG"
+	sess.Context["reschedule_appt_id"] = "7285" // reprogramación → confirmar CANCELA la cita vigente
+
+	result, err := m.Process(context.Background(), sess, postbackM("booking_confirm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reprogramación: se conserva la segunda confirmación por la consecuencia destructiva.
 	if result.NextState != sm.StateReconfirmBooking {
-		t.Errorf("expected RECONFIRM_BOOKING, got %s", result.NextState)
+		t.Errorf("expected RECONFIRM_BOOKING for reschedule, got %s", result.NextState)
 	}
 }
 

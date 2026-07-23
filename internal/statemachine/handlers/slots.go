@@ -273,7 +273,9 @@ func RegisterSlotHandlers(
 				result.ClearCtx = append(result.ClearCtx, "selected_slot_id", "available_slots_json")
 				return
 			}
-			summary := buildBookingSummary(sess, slot, addrMapper)
+			// El paciente escribió/envió algo que no es un botón (otro tema, un texto o un archivo).
+			// Se le recuerda explícitamente que la cita NO está agendada y debe tocar "Confirmar cita".
+			summary := "Para tomar tu cita debes tocar uno de los botones 👇\n\n" + buildBookingSummary(sess, slot, addrMapper)
 			result.Messages = append(result.Messages, &sm.ButtonMessage{
 				Text: summary,
 				Buttons: []sm.Button{
@@ -697,30 +699,8 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 		// Get selected slot (convert 1-based to 0-based index)
 		selected := slots[optionNum-1]
 
-		// Valid selection → show confirmation
-		dateDisplay := selected.Date
-		if dt, err := time.Parse("2006-01-02", selected.Date); err == nil {
-			dateDisplay = utils.FormatFriendlyDate(dt)
-		}
-
-		summary := fmt.Sprintf("*Resumen de tu cita:*\n\n"+
-			"Procedimiento: %s\n"+
-			"Doctor: Dr. %s\n"+
-			"Fecha: %s\n"+
-			"Hora: %s",
-			sess.GetContext("cups_name"),
-			selected.DoctorName,
-			dateDisplay,
-			selected.TimeDisplay)
-
-		if selected.ClinicAddress != "" {
-			if addrMapper != nil {
-				summary += "\n" + addrMapper.FormatAddress(selected.ClinicAddress, sess.GetContext("cups_maps_url"))
-			} else {
-				summary += fmt.Sprintf("\nDirección: %s", selected.ClinicAddress)
-			}
-		}
-		summary += "\n\n¿Confirmas esta cita?"
+		// Valid selection → mostrar confirmación (fuente única del copy: buildBookingSummary).
+		summary := buildBookingSummary(sess, &selected, addrMapper)
 
 		return sm.NewResult(sm.StateConfirmBooking).
 			WithContext("selected_slot_id", slotKey(&selected)).
@@ -1047,17 +1027,21 @@ func confirmBookingHandler() sm.StateHandler {
 
 		switch selected {
 		case "booking_confirm":
-			confirmMsg := "¿Estás seguro de *confirmar* esta cita?"
+			// Reprogramación: se mantiene la SEGUNDA confirmación, porque al confirmar se CANCELA la
+			// cita vigente (consecuencia destructiva → el aviso extra se justifica).
 			if sess.GetContext("reschedule_appt_id") != "" {
-				confirmMsg = "⚠️ Al confirmar, tu cita actual será *cancelada* y se asignará este nuevo horario.\n\n¿Deseas continuar con la reprogramación?"
+				return sm.NewResult(sm.StateReconfirmBooking).
+					WithButtons(
+						"⚠️ Al confirmar, tu cita actual será *cancelada* y se asignará este nuevo horario.\n\n¿Deseas continuar con la reprogramación?",
+						sm.Button{Text: "Sí, confirmar", Payload: "reconfirm_yes"},
+						sm.Button{Text: "No, volver", Payload: "reconfirm_no"},
+					).
+					WithEvent("booking_reconfirm_requested", nil), nil
 			}
-			return sm.NewResult(sm.StateReconfirmBooking).
-				WithButtons(
-					confirmMsg,
-					sm.Button{Text: "Sí, confirmar", Payload: "reconfirm_yes"},
-					sm.Button{Text: "No, volver", Payload: "reconfirm_no"},
-				).
-				WithEvent("booking_reconfirm_requested", nil), nil
+			// Cita NUEVA: un solo toque "Confirmar cita" → crear directamente. La doble confirmación
+			// añadía fricción y un punto extra de abandono. Se conserva el evento booking_confirmed.
+			return sm.NewResult(sm.StateCreateAppointment).
+				WithEvent("booking_confirmed", nil), nil
 
 		case "booking_change":
 			return sm.NewResult(sm.StateSearchSlots).
@@ -1676,35 +1660,22 @@ func buildBookingSummary(sess *session.Session, slot *services.AvailableSlot, ad
 		dateDisplay = utils.FormatFriendlyDate(dt)
 	}
 
-	summary := fmt.Sprintf("*Resumen de tu cita:*\n\n"+
-		"Procedimiento: %s\n"+
-		"Doctor: Dr. %s\n"+
-		"Fecha: %s\n"+
-		"Hora: %s",
+	// El resumen PREVIO deja claro que la cita está PENDIENTE y NO muestra dirección/mapa ni
+	// preparación: eso aparece en booking_success (cuando la cita YA quedó). Mostrarlo aquí hacía
+	// que el resumen pareciera una cita hecha y el paciente no tocaba "Confirmar cita" → quedaba sin
+	// agendar (≈5,5% de quienes elegían horario). addrMapper se conserva en la firma por compatibilidad.
+	_ = addrMapper
+	summary := fmt.Sprintf("⚠️ *Tu cita AÚN NO está agendada*\n\n"+
+		"Revisa los datos y toca *Confirmar cita* para reservarla:\n\n"+
+		"🔹 Procedimiento: %s\n"+
+		"🔹 Doctor: Dr. %s\n"+
+		"🔹 Fecha: %s\n"+
+		"🔹 Hora: %s\n\n"+
+		"❗ Si no tocas *Confirmar cita*, el horario NO queda reservado.",
 		sess.GetContext("cups_name"),
 		slot.DoctorName,
 		dateDisplay,
 		slot.TimeDisplay)
-
-	if slot.ClinicAddress != "" {
-		if addrMapper != nil {
-			summary += "\n" + addrMapper.FormatAddress(slot.ClinicAddress, sess.GetContext("cups_maps_url"))
-		} else {
-			summary += fmt.Sprintf("\nDirección: %s", slot.ClinicAddress)
-		}
-	}
-
-	if prep := sess.GetContext("cups_preparation"); prep != "" {
-		summary += fmt.Sprintf("\n\n📋 *Preparación:*\n%s", prep)
-	}
-	if videoURL := sess.GetContext("cups_video_url"); videoURL != "" {
-		summary += fmt.Sprintf("\n\n🎥 *Video:* %s", videoURL)
-	}
-	if audioURL := sess.GetContext("cups_audio_url"); audioURL != "" {
-		summary += fmt.Sprintf("\n\n🎵 *Audio:* %s", audioURL)
-	}
-
-	summary += "\n\n¿Confirmas esta cita?"
 
 	return summary
 }
