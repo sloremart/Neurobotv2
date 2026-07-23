@@ -37,6 +37,13 @@ type InboxCleaner interface {
 	DeleteOlderThan(ctx context.Context, hours int) (int64, error)
 }
 
+// NotificationHistory consulta si una cita ya recibió un recordatorio (evento notification_sent en
+// chat_events). Lo usa el recordatorio de corta antelación para NO duplicar el de las 07:00: quien ya
+// fue notificado ayer no recibe un segundo mensaje.
+type NotificationHistory interface {
+	WasAppointmentNotified(ctx context.Context, appointmentID string) (bool, error)
+}
+
 // FlowMaintainer hace el rollup diario y la purga de la traza de flujos (Fase 3 observabilidad).
 type FlowMaintainer interface {
 	RollupDay(ctx context.Context, day time.Time) (int64, error)
@@ -57,9 +64,11 @@ type Tasks struct {
 	InboxRepo       InboxCleaner              // WAL cleanup (optional)
 	Reconciler      *observability.Reconciler // reconciliación de invariantes (Fase 2, optional)
 	FlowMaint       FlowMaintainer            // rollup + purga de flow_events (Fase 3, optional)
+	NotifHistory    NotificationHistory       // dedup del recordatorio de corta antelación (optional; sin él la tarea NO envía — fail-closed)
 }
 
-// RegisterAll registers the 4 scheduled tasks.
+// RegisterAll registers the scheduled tasks: the 4 originales (cleanup, recordatorios 07:00, lista de
+// espera 06:00, IVR 13:00) + las corridas horarias del recordatorio de corta antelación (06–16h).
 func (t *Tasks) RegisterAll(s *Scheduler) {
 	// 02:00 — Data cleanup
 	s.AddTask(ScheduledTask{
@@ -106,6 +115,25 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 		Fn:      t.sendVoiceReminders,
 		Catchup: CatchupNever, // L14: el IVR NO se recupera — solo corre a su hora tras el WA matutino
 	})
+
+	// 06:00–16:00 cada hora — recordatorio de CORTA ANTELACIÓN (§8.1 #2): citas de HOY agendadas
+	// después de la corrida de las 07:00 de ayer, que por diseño nunca reciben el recordatorio del
+	// día antes (25,6% de no-show medido en ese bucket). ADITIVO: no toca whatsapp_reminders.
+	// Cada corrida capta las citas cuya hora cae en [ahora+1h, ahora+2h) — una sola vez por cita.
+	// CatchupNever: una corrida perdida no se recupera (su ventana ya pasó); la siguiente cubre la suya.
+	// Lun–Sáb (la clínica no opera domingo).
+	for h := 6; h <= 16; h++ {
+		s.AddTask(ScheduledTask{
+			Name: fmt.Sprintf("same_day_reminders_%02d", h),
+			Hour: h, Minute: 0,
+			Weekdays: []time.Weekday{
+				time.Monday, time.Tuesday, time.Wednesday,
+				time.Thursday, time.Friday, time.Saturday,
+			},
+			Fn:      t.sendSameDayReminders,
+			Catchup: CatchupNever,
+		})
+	}
 }
 
 // === Task 07:00: WhatsApp Reminders ===
@@ -235,6 +263,155 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 	slog.Info("whatsapp reminders complete", "sent", sent, "skipped", skipped)
 	return nil
+}
+
+// === Task horaria: recordatorio de CORTA ANTELACIÓN (§8.1 #2) ===
+
+// sameDayWindowCandidates filtra las citas de HOY cuya hora cae en [now+1h, now+2h): cada corrida
+// horaria capta así cada cita exactamente una vez, ~1-2h antes de su hora. Excluye canceladas, ya
+// confirmadas y TimeSlot no parseable (formato YYYYMMDDHHmm). Función pura para testear la ventana.
+func sameDayWindowCandidates(now time.Time, appts []domain.Appointment) []domain.Appointment {
+	lo := now.Add(1 * time.Hour)
+	hi := now.Add(2 * time.Hour)
+	var out []domain.Appointment
+	for _, a := range appts {
+		if a.Canceled || a.Confirmed {
+			continue
+		}
+		slot, err := time.ParseInLocation("200601021504", a.TimeSlot, now.Location())
+		if err != nil {
+			continue
+		}
+		if !slot.Before(lo) && slot.Before(hi) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// sendSameDayReminders envía el recordatorio a citas de HOY que nunca recibieron el del día antes
+// (agendadas después de la corrida de las 07:00). Es ADITIVO al flujo existente: misma plantilla,
+// mismo mecanismo de respuesta (RegisterPending), pero de un solo disparo (SameDay=true → al vencer
+// el timer se limpia en silencio, sin followups ni escalación; ver handleConfirmationTimeout).
+// Dedup fail-closed: sin NotifHistory (o si falla la consulta) NO se envía — jamás un doble recordatorio.
+func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
+	if t.Cfg != nil && (!t.Cfg.WhatsAppNotificationsEnabled || !t.Cfg.SameDayRemindersEnabled) {
+		slog.Debug("same-day reminders skipped — disabled by config")
+		return nil
+	}
+	if t.NotifHistory == nil {
+		slog.Warn("same-day reminders skipped — NotifHistory not wired (fail-closed, no dedup possible)")
+		return nil
+	}
+
+	now := time.Now()
+	today := now.Format("2006-01-02")
+
+	appointments, err := t.AppointmentRepo.FindPendingByDate(ctx, today)
+	if err != nil {
+		return fmt.Errorf("fetch today appointments: %w", err)
+	}
+
+	candidates := sameDayWindowCandidates(now, appointments)
+	if len(candidates) == 0 {
+		return nil
+	}
+	patientGroups := groupAppointmentsByPatient(candidates)
+	slog.Info("same-day reminders", "date", today, "window_slots", len(candidates), "patients", len(patientGroups))
+
+	sent := 0
+	skipped := 0
+
+	for _, group := range patientGroups {
+		if ctx.Err() != nil {
+			break
+		}
+		firstAppt := group[0]
+
+		phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
+		if phone == "" {
+			skipped++
+			continue
+		}
+		if !t.Cfg.IsPhoneWhitelisted(phone) {
+			skipped++
+			continue
+		}
+		// Ya hay un pending vivo para este teléfono (p.ej. otro recordatorio en curso) → no duplicar.
+		if t.NotifyManager != nil && t.NotifyManager.HasPending(phone) {
+			skipped++
+			continue
+		}
+		// Dedup contra el recordatorio de las 07:00 (o una corrida horaria previa): si la cita ya fue
+		// notificada, no se reenvía. Ante error de consulta, fail-closed (mejor no molestar).
+		notified, err := t.NotifHistory.WasAppointmentNotified(ctx, firstAppt.ID)
+		if err != nil {
+			skipped++
+			slog.Warn("same-day reminder skipped - dedup check failed (fail-closed)",
+				"appointment_id", firstAppt.ID, "error", err)
+			continue
+		}
+		if notified {
+			skipped++
+			continue
+		}
+
+		proceduresText := buildReminderProcedures(ctx, group, t.ProcedureRepo)
+		tmpl := bird.TemplateConfig{
+			ProjectID: t.Cfg.BirdTemplateConfirmProjectID,
+			VersionID: t.Cfg.BirdTemplateConfirmVersionID,
+			Locale:    t.Cfg.BirdTemplateConfirmLocale,
+			Params: []bird.TemplateParam{
+				{Type: "string", Key: "patient_name", Value: firstAppt.PatientName},
+				{Type: "string", Key: "clinic_name", Value: t.Cfg.CenterName},
+				{Type: "string", Key: "appointment_date", Value: utils.FormatFriendlyDate(firstAppt.Date)},
+				{Type: "string", Key: "appointment_time", Value: services.FormatTimeSlot(firstAppt.TimeSlot)},
+				{Type: "string", Key: "procedures", Value: proceduresText},
+			},
+		}
+
+		msgID, err := t.BirdClient.SendTemplate(phone, tmpl) //nolint:contextcheck // SendTemplate no toma ctx (cliente Bird; mismo patrón que sendWhatsAppReminders)
+		if err != nil {
+			slog.Error("same-day reminder send failed", "phone", utils.MaskPhone(phone), "error", err)
+			continue
+		}
+
+		convID := t.BirdClient.GetCachedConversationID(phone)
+		if convID == "" {
+			convID, _ = t.BirdClient.LookupConversationByPhone(phone)
+		}
+
+		//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado; mismo patrón que waiting_list_check)
+		t.NotifyManager.RegisterPending(notifications.PendingNotification{
+			Type:           "confirmation",
+			Phone:          phone,
+			AppointmentID:  firstAppt.ID,
+			BirdMessageID:  msgID,
+			ConversationID: convID,
+			SameDay:        true,
+		})
+
+		if t.Tracker != nil {
+			t.Tracker.LogEvent(ctx, "", phone, "notification_sent",
+				map[string]interface{}{
+					"type":            "confirmation_same_day",
+					"appointment_id":  firstAppt.ID,
+					"bird_msg_id":     msgID,
+					"conversation_id": convID,
+				})
+		}
+		observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "same_day_reminder_sent",
+			observability.EmitOpts{Phone: phone, RefID: msgID})
+
+		sent++
+		if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+			break
+		}
+	}
+
+	slog.Info("same-day reminders complete", "sent", sent, "skipped", skipped)
+	// Corte por ctx cancelado (apagado) es salida limpia, no fallo — mismo patrón que sendWhatsAppReminders.
+	return nil //nolint:nilerr
 }
 
 // === Task 15:00: Voice Reminders (IVR) ===

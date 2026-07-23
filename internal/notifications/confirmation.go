@@ -18,6 +18,31 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
+// followupDayWord devuelve la palabra del día de la cita en los followups: "mañana" para el flujo
+// preexistente del recordatorio del día antes (SameDay=false, default) y "hoy" para el recordatorio de
+// corta antelación. Con false los textos quedan EXACTAMENTE como siempre (garantizado por test).
+func followupDayWord(sameDay bool) string {
+	if sameDay {
+		return "hoy"
+	}
+	return "mañana"
+}
+
+// buildNoResponseNote arma la nota interna (solo agentes, Bird Inbox) de la escalación por
+// no-respuesta, con ACCIÓN explícita y el teléfono para llamar de una (los agentes salen a las 18:00;
+// la nota debe ser accionable de un vistazo). ASCII deliberado (sin tildes) como el resto de la nota.
+func buildNoResponseNote(sameDay bool, phone, apptInfo string) string {
+	dayNote := "manana"
+	if sameDay {
+		dayNote = "hoy"
+	}
+	return "Paciente NO confirmo cita de " + dayNote + ".\n" +
+		"No respondio a: mensajes WhatsApp + llamada IVR.\n" +
+		">> ACCION: LLAMAR al paciente para confirmar o liberar el cupo.\n" +
+		">> Tel: " + phone + "\n" +
+		apptInfo
+}
+
 // handleConfirmation processes responses to the daily confirmation template.
 // NOTE: Caller (HandleResponse) already removed pending from sync.Map and DB via LoadAndDelete.
 func (m *NotificationManager) handleConfirmation(phone, action string, pending *PendingNotification) {
@@ -181,11 +206,26 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 			"phone", utils.MaskPhone(pending.Phone))
 		return
 	}
+	// Recordatorio de corta antelación (D1, §8.1 #2): es de UN solo disparo. Si el paciente no
+	// respondió al vencer el timer, se limpia EN SILENCIO — sin followups ni escalación (la cita ya
+	// ocurrió o está por ocurrir; los followups del flujo normal asumen que la cita es mañana).
+	// Solo se emite el evento para medirlo. El flujo preexistente (SameDay=false) nunca entra aquí.
+	if pending.SameDay {
+		observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "same_day_no_response",
+			observability.EmitOpts{Phone: pending.Phone})
+		slog.Info("same-day reminder expired without response, silently cleaned up",
+			"phone", utils.MaskPhone(pending.Phone), "appointment_id", pending.AppointmentID)
+		return
+	}
+	// Palabra del día de la cita: "mañana" en todo el flujo preexistente (SameDay=false ⇒ textos
+	// idénticos a los de siempre); "hoy" solo para el recordatorio de corta antelación.
+	day := followupDayWord(pending.SameDay)
+
 	switch pending.RetryCount {
 	case 0:
 		// Step 1: Follow-up #1 — friendly text, NO agent assignment
 		if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
-			"¡Hola! Aún no recibimos tu respuesta sobre tu cita de mañana. "+
+			"¡Hola! Aún no recibimos tu respuesta sobre tu cita de "+day+". "+
 				"Por favor confirma, cancela o reprograma para que podamos gestionar tu espacio."); err != nil {
 			slog.Error("followup1_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
 		}
@@ -209,7 +249,7 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 	case 1:
 		// Step 2: Follow-up #2 — direct text, NO agent assignment
 		if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
-			"Recordatorio: Tu cita de mañana aún no ha sido confirmada. "+
+			"Recordatorio: Tu cita de "+day+" aún no ha sido confirmada. "+
 				"Si no recibimos respuesta, te llamaremos para confirmar."); err != nil {
 			slog.Error("followup2_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
 		}
@@ -274,19 +314,26 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		note = "⚠️ El paciente CONFIRMÓ su cita vía WhatsApp, pero la persistencia en SIESA FALLÓ.\n" +
 			"Revisar y confirmar la cita manualmente en el sistema (NO re-pedir confirmación al paciente).\n" + apptInfo
 	default: // escalationNoResponse
-		note = "Paciente NO confirmo cita de manana.\nNo respondio a: mensajes WhatsApp + llamada IVR.\n" + apptInfo
+		note = buildNoResponseNote(pending.SameDay, pending.Phone, apptInfo)
 	}
 
 	// 2. Internal note — visible ONLY in Bird Inbox (patient doesn't see it on WhatsApp)
 	if pending.ConversationID != "" {
 		m.birdClient.SendInternalText(pending.ConversationID, note)
+	} else {
+		// Sin ConversationID no hay nota NI asignación (paso 4): el agente jamás se entera. Emitir el
+		// hueco para que el auditor/dashboard lo cuenten en vez de perderse en silencio.
+		observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "escalation_no_conversation",
+			observability.EmitOpts{Phone: pending.Phone})
+		slog.Warn("notif escalation without conversation_id - agent will NOT be notified",
+			"phone", utils.MaskPhone(pending.Phone), "appointment_id", pending.AppointmentID)
 	}
 
 	// 3. Message to patient — solo en el caso de no-respuesta. En el fallo de sistema el paciente
 	// ya recibió "Tuvimos un inconveniente..." y NO se le debe pedir confirmar lo ya confirmado.
 	if reason == escalationNoResponse {
 		_, _ = m.birdClient.SendText(pending.Phone, pending.ConversationID,
-			"Un asistente del centro se comunicará contigo para confirmar tu cita de mañana.")
+			"Un asistente del centro se comunicará contigo para confirmar tu cita de "+followupDayWord(pending.SameDay)+".")
 	}
 
 	// 4. Assign to best available agent

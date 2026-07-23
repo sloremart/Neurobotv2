@@ -389,6 +389,7 @@ func main() {
 			Cfg:             cfg,
 			Tracker:         tracker,
 			InboxRepo:       inboxRepo,
+			NotifHistory:    eventRepo, // dedup del recordatorio de corta antelación (fail-closed si nil)
 		}
 		// Reconciliación de invariantes (Fase 2 observabilidad): checks locales + SIESA (bot-filtered).
 		reconciler := observability.NewReconciler()

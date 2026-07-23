@@ -31,10 +31,14 @@ type PendingNotification struct {
 	BirdMessageID  string
 	ConversationID string
 	CallID         string // Bird IVR call ID (set after PlaceCall, persisted for restart recovery)
-	Timer          *time.Timer
-	RetryCount     int
-	InvalidInputs  int // free-text messages received while waiting for button press
-	CreatedAt      time.Time
+	// SameDay: la cita es HOY (recordatorio de corta antelación). Solo cambia la PALABRA "mañana"→"hoy"
+	// en los textos de followup; con false (default y todo el flujo preexistente) los textos son
+	// EXACTAMENTE los de siempre. No se persiste: tras un reinicio un followup diría "mañana" (edge menor).
+	SameDay       bool
+	Timer         *time.Timer
+	RetryCount    int
+	InvalidInputs int // free-text messages received while waiting for button press
+	CreatedAt     time.Time
 	// ExpiresAt es el instante de vencimiento de la entrada vigente. N-19: handleTimeout lo
 	// re-valida antes de actuar, para no procesar como "vencida" una entrada que fue re-armada
 	// (p.ej. el timer post-IVR de MarkIVRSent) cuando la dispara un trigger viejo.

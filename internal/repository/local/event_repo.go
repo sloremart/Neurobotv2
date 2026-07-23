@@ -30,6 +30,23 @@ func NewEventRepo(db *sql.DB) *EventRepo {
 	return &EventRepo{db: db}
 }
 
+// WasAppointmentNotified informa si la cita ya recibió un recordatorio (evento notification_sent con
+// ese appointment_id en los últimos 3 días). Lo usa el recordatorio de corta antelación para NO
+// duplicar el de las 07:00 ni una corrida horaria previa. Solo lectura.
+func (r *EventRepo) WasAppointmentNotified(ctx context.Context, appointmentID string) (bool, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM chat_events
+		 WHERE event_type = 'notification_sent'
+		   AND created_at >= NOW() - INTERVAL 3 DAY
+		   AND JSON_UNQUOTE(JSON_EXTRACT(event_data, '$.appointment_id')) = ?`,
+		appointmentID).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // Insert persists a single chat event.
 func (r *EventRepo) Insert(ctx context.Context, event *ChatEvent) error {
 	dataJSON, err := json.Marshal(event.EventData)

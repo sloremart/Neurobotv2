@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,10 +140,10 @@ func TestRegisterAll_RegistersFourTasks(t *testing.T) {
 	tasks := &Tasks{}
 	s := NewScheduler(time.UTC)
 	tasks.RegisterAll(s)
-	// data_cleanup, whatsapp_reminders, waiting_list_check_06, voice_reminders.
-	// The waiting-list check was consolidated to a single 06:00 run (commit d5ea233).
-	if len(s.tasks) != 4 {
-		t.Fatalf("expected 4 tasks, got %d", len(s.tasks))
+	// 4 originales (data_cleanup, whatsapp_reminders, waiting_list_check_06, voice_reminders)
+	// + 11 corridas horarias del recordatorio de corta antelación (06:00–16:00).
+	if len(s.tasks) != 15 {
+		t.Fatalf("expected 15 tasks (4 + 11 same-day), got %d", len(s.tasks))
 	}
 }
 
@@ -156,6 +157,9 @@ func TestRegisterAll_TaskNames(t *testing.T) {
 		"whatsapp_reminders":    false,
 		"waiting_list_check_06": false,
 		"voice_reminders":       false,
+	}
+	for h := 6; h <= 16; h++ {
+		expected[fmt.Sprintf("same_day_reminders_%02d", h)] = false
 	}
 
 	for _, task := range s.tasks {
@@ -1392,5 +1396,183 @@ func TestRegisterAll_CatchupModes(t *testing.T) {
 		if w, ok := want[task.Name]; ok && task.Catchup != w {
 			t.Errorf("%s: Catchup = %d, want %d", task.Name, task.Catchup, w)
 		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Same-day reminders (recordatorio de corta antelación, §8.1 #2)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Las corridas horarias quedan registradas 06:00–16:00, minuto 0, lun–sáb, sin catch-up.
+func TestRegisterAll_SameDayReminders_Schedule(t *testing.T) {
+	tasks := &Tasks{}
+	s := NewScheduler(time.UTC)
+	tasks.RegisterAll(s)
+
+	found := 0
+	for _, task := range s.tasks {
+		if !strings.HasPrefix(task.Name, "same_day_reminders_") {
+			continue
+		}
+		found++
+		if task.Hour < 6 || task.Hour > 16 || task.Minute != 0 {
+			t.Errorf("%s: horario %02d:%02d fuera de 06:00–16:00", task.Name, task.Hour, task.Minute)
+		}
+		if len(task.Weekdays) != 6 {
+			t.Errorf("%s: esperaba 6 días (lun–sáb), got %d", task.Name, len(task.Weekdays))
+		}
+		for _, wd := range task.Weekdays {
+			if wd == time.Sunday {
+				t.Errorf("%s: no debe correr domingo", task.Name)
+			}
+		}
+		if task.Catchup != CatchupNever {
+			t.Errorf("%s: Catchup debe ser CatchupNever (ventana perdida no se recupera)", task.Name)
+		}
+		if task.Fn == nil {
+			t.Errorf("%s: Fn nil", task.Name)
+		}
+	}
+	if found != 11 {
+		t.Fatalf("esperaba 11 corridas same_day, got %d", found)
+	}
+}
+
+// La ventana [now+1h, now+2h) capta cada cita exactamente una vez y excluye canceladas/confirmadas.
+func TestSameDayWindowCandidates(t *testing.T) {
+	now := time.Date(2026, 7, 23, 9, 0, 0, 0, time.UTC)
+	ts := func(tt time.Time) string { return tt.Format("200601021504") }
+
+	appts := []domain.Appointment{
+		{ID: "in-90m", TimeSlot: ts(now.Add(90 * time.Minute))},                     // dentro
+		{ID: "lower-bound", TimeSlot: ts(now.Add(1 * time.Hour))},                   // límite inferior: INCLUIDO
+		{ID: "upper-bound", TimeSlot: ts(now.Add(2 * time.Hour))},                   // límite superior: EXCLUIDO (lo capta la corrida siguiente)
+		{ID: "too-soon", TimeSlot: ts(now.Add(30 * time.Minute))},                   // muy encima: fuera
+		{ID: "too-far", TimeSlot: ts(now.Add(3 * time.Hour))},                       // lejos: fuera
+		{ID: "canceled", TimeSlot: ts(now.Add(90 * time.Minute)), Canceled: true},   // cancelada: fuera
+		{ID: "confirmed", TimeSlot: ts(now.Add(90 * time.Minute)), Confirmed: true}, // ya confirmada: fuera
+		{ID: "bad-slot", TimeSlot: "no-parseable"},                                  // malformada: fuera
+	}
+
+	got := sameDayWindowCandidates(now, appts)
+	ids := map[string]bool{}
+	for _, a := range got {
+		ids[a.ID] = true
+	}
+	if len(got) != 2 || !ids["in-90m"] || !ids["lower-bound"] {
+		t.Fatalf("esperaba exactamente [in-90m, lower-bound], got %v", ids)
+	}
+}
+
+type mockNotifHistory struct {
+	notified bool
+	err      error
+	calls    atomic.Int32
+}
+
+func (m *mockNotifHistory) WasAppointmentNotified(_ context.Context, _ string) (bool, error) {
+	m.calls.Add(1)
+	return m.notified, m.err
+}
+
+// Con el flag apagado la tarea corta de entrada: ni consulta citas ni envía.
+func TestSendSameDayReminders_DisabledByFlag_SkipsTask(t *testing.T) {
+	repoCalled := false
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			repoCalled = true
+			return nil, nil
+		},
+	}
+	cfg := testConfig()
+	cfg.SameDayRemindersEnabled = false
+
+	tasks := &Tasks{AppointmentRepo: mockRepo, Cfg: cfg, NotifHistory: &mockNotifHistory{}}
+	if err := tasks.sendSameDayReminders(context.Background()); err != nil {
+		t.Fatalf("no esperaba error, got %v", err)
+	}
+	if repoCalled {
+		t.Error("con el flag apagado NO debe consultar citas")
+	}
+}
+
+// Sin NotifHistory cableado la tarea NO envía (fail-closed: sin dedup no hay envío seguro).
+func TestSendSameDayReminders_FailClosedWithoutHistory(t *testing.T) {
+	repoCalled := false
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			repoCalled = true
+			return nil, nil
+		},
+	}
+	cfg := testConfig()
+	cfg.SameDayRemindersEnabled = true
+
+	tasks := &Tasks{AppointmentRepo: mockRepo, Cfg: cfg} // NotifHistory nil a propósito
+	if err := tasks.sendSameDayReminders(context.Background()); err != nil {
+		t.Fatalf("no esperaba error, got %v", err)
+	}
+	if repoCalled {
+		t.Error("sin NotifHistory NO debe consultar citas (fail-closed)")
+	}
+}
+
+// Flujo completo: una cita HOY en ventana → 1 envío cuando no fue notificada antes; 0 cuando ya lo fue.
+func TestSendSameDayReminders_SendsAndDedups(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		alreadySent   bool
+		expectedSends int32
+	}{
+		{"nueva sin notificar → envía", false, 1},
+		{"ya notificada a las 07:00 → dedup, no envía", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sendCount atomic.Int32
+			countSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					sendCount.Add(1)
+				}
+				w.WriteHeader(200)
+				_, _ = w.Write([]byte(`{"id":"msg-sd-1"}`))
+			}))
+			defer countSrv.Close()
+
+			birdClient := bird.NewClientForTest(countSrv.URL)
+			cfg := testConfig()
+			cfg.SameDayRemindersEnabled = true
+			nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+
+			now := time.Now()
+			appt := domain.Appointment{
+				ID: "apt-today", PatientID: "P010", PatientName: "Ana Ruiz",
+				PatientPhone: "3001112233", DoctorName: "Dr. Garcia",
+				Date: now, TimeSlot: now.Add(90 * time.Minute).Format("200601021504"),
+				Procedures: []domain.AppointmentProcedure{{CupCode: "890274", CupName: "Consulta Neurologia", Quantity: 1}},
+			}
+			mockRepo := &testutil.MockAppointmentRepo{
+				FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+					return []domain.Appointment{appt}, nil
+				},
+			}
+			history := &mockNotifHistory{notified: tc.alreadySent}
+
+			tasks := &Tasks{
+				AppointmentRepo: mockRepo,
+				BirdClient:      birdClient,
+				NotifyManager:   nm,
+				Cfg:             cfg,
+				NotifHistory:    history,
+			}
+			if err := tasks.sendSameDayReminders(context.Background()); err != nil {
+				t.Fatalf("no esperaba error, got %v", err)
+			}
+			if sendCount.Load() != tc.expectedSends {
+				t.Errorf("envíos = %d, esperaba %d", sendCount.Load(), tc.expectedSends)
+			}
+			if history.calls.Load() != 1 {
+				t.Errorf("el dedup debe consultarse exactamente 1 vez, got %d", history.calls.Load())
+			}
+		})
 	}
 }

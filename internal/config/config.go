@@ -103,6 +103,10 @@ type Config struct {
 	// espera, cancelación/reagendamiento admin, cadena de followup).
 	WhatsAppNotificationsEnabled bool // WHATSAPP_NOTIFICATIONS_ENABLED — gatea SendTemplate (WA)
 	IVRNotificationsEnabled      bool // IVR_NOTIFICATIONS_ENABLED — gatea PlaceCall (llamadas IVR)
+	// SAME_DAY_REMINDERS_ENABLED — recordatorio para citas de corta antelación (agendadas después de la
+	// corrida de las 07:00, que nunca reciben el recordatorio del día antes; 25,6% de no-show medido).
+	// Requiere también WhatsAppNotificationsEnabled. Apagarlo NO afecta el flujo de las 07:00.
+	SameDayRemindersEnabled bool
 
 	// Session
 	SessionTimeoutMinutes int
@@ -254,6 +258,7 @@ func Load() *Config {
 		BotEnabled:                   getEnvBool("BOT_ENABLED", true),
 		WhatsAppNotificationsEnabled: getEnvBool("WHATSAPP_NOTIFICATIONS_ENABLED", true),
 		IVRNotificationsEnabled:      getEnvBool("IVR_NOTIFICATIONS_ENABLED", true),
+		SameDayRemindersEnabled:      getEnvBool("SAME_DAY_REMINDERS_ENABLED", true),
 
 		// Session
 		SessionTimeoutMinutes: getEnvInt("SESSION_TIMEOUT_MINUTES", 120),
