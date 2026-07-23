@@ -94,7 +94,7 @@ func TestAskMedicalOrder_ShowsWaitingList(t *testing.T) {
 	}
 	sess := testSess(sm.StateAskMedicalOrder)
 	sess.SetContext("patient_id", "123")
-	res, err := askMedicalOrderHandler(repo)(context.Background(), sess, textM("x"))
+	res, err := askMedicalOrderHandler(repo, nil, nil)(context.Background(), sess, textM("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestAskMedicalOrder_NoWaitingList_Proceeds(t *testing.T) {
 	}
 	sess := testSess(sm.StateAskMedicalOrder)
 	sess.SetContext("patient_id", "123")
-	res, err := askMedicalOrderHandler(repo)(context.Background(), sess, textM("x"))
+	res, err := askMedicalOrderHandler(repo, nil, nil)(context.Background(), sess, textM("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestAskMedicalOrder_SkipsWhenOfferDone(t *testing.T) {
 	sess := testSess(sm.StateAskMedicalOrder)
 	sess.SetContext("patient_id", "123")
 	sess.SetContext("wl_offer_done", "1") // ya se ofreció (eligió "nueva")
-	res, err := askMedicalOrderHandler(repo)(context.Background(), sess, textM("x"))
+	res, err := askMedicalOrderHandler(repo, nil, nil)(context.Background(), sess, textM("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestSelectWaitingList_New_GoesToAskOrder(t *testing.T) {
 
 func TestAskMedicalOrder_Automatic(t *testing.T) {
 	m := sm.NewMachine()
-	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(nil))
+	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(nil, nil, nil))
 
 	sess := testSess(sm.StateAskMedicalOrder)
 	result, err := m.Process(context.Background(), sess, textM("any"))

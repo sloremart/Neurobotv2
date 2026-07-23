@@ -35,7 +35,11 @@ func PhotoIntentInterceptor() sm.Interceptor {
 
 		sess.RetryCount = 0
 		r := sm.NewResult(sm.StateAskClientType).
-			WithText("Veo que enviaste una imagen 📷. Vamos a agendar tu cita: primero necesito un par de datos y enseguida me reenvías tu orden médica.")
+			WithText("Veo que enviaste tu orden 📷. Vamos a agendar tu cita: te pido un par de datos y la uso enseguida — no necesitas reenviarla.")
+		// Stash: guardar la orden para usarla al llegar al paso de la orden (askMedicalOrderHandler).
+		if u := mediaURLOf(msg); u != "" {
+			r.WithContext("stashed_order_url", u)
+		}
 		return startAgendarFlow(r).
 			WithEvent("photo_intent_scheduling", map[string]interface{}{"from_state": sess.CurrentState}), true
 	}

@@ -26,7 +26,7 @@ import (
 // apptSvc habilita la consolidación de órdenes EMG/NC (puede ser nil: en ese caso, ante una orden
 // dependiente-sola, el flujo pide la orden de la EMG en lugar de consolidar).
 func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, procedureRepo repository.ProcedureRepository, birdClient *bird.Client, wlRepo WaitingListCreator, apptSvc *services.AppointmentService) {
-	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(wlRepo))
+	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(wlRepo, ocrSvc, birdClient))
 	m.Register(sm.StateSelectWaitingList, selectWaitingListHandler(wlRepo))
 	m.Register(sm.StateUploadMedicalOrder, uploadMedicalOrderHandler(ocrSvc, birdClient))
 	m.Register(sm.StateValidateOCR, validateOCRHandler(procedureRepo))
@@ -74,7 +74,7 @@ func ocrFailureMessage(errReason string) string {
 // ASK_MEDICAL_ORDER (automático) — pide foto de la orden y transiciona a UPLOAD.
 // Para pacientes PARTICULAR: primero pregunta si tienen orden médica.
 // Si sí → sube foto y flujo normal. Si no → escala a agente y registra en lista de espera.
-func askMedicalOrderHandler(wlRepo WaitingListCreator) sm.StateHandler {
+func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRService, birdClient *bird.Client) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		// Antes de pedir la orden: si el paciente ya tiene citas ACTIVAS en lista de espera, ofrecerle
 		// elegir una de ellas (retoma en la búsqueda de slots con los datos guardados) o seguir como
@@ -83,6 +83,23 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator) sm.StateHandler {
 			if entries, err := wlRepo.GetActiveByPatient(ctx, sess.GetContext("patient_id")); err == nil && len(entries) > 0 {
 				return buildWaitingListSelection(entries), nil
 			}
+		}
+
+		// Orden GUARDADA del primer mensaje (stash, §8.1 #1): usarla directamente, sin re-pedir la foto.
+		// Un solo intento: el stash se limpia SIEMPRE; si el OCR falla se cae al flujo normal (pedir foto).
+		if u := sess.GetContext("stashed_order_url"); u != "" && ocrSvc != nil {
+			res, err := processOrderMedia(ctx, sess, ocrSvc, birdClient, u)
+			if err == nil && res != nil && (res.NextState == sm.StateValidateOCR || res.NextState == sm.StateEscalateToAgent) {
+				res.ClearCtx = append(res.ClearCtx, "stashed_order_url")
+				res.WithEvent("stashed_order_used", nil)
+				observability.Emit(observability.TraceSession(sess.ID), "agendar", "stashed_order_used",
+					observability.EmitOpts{Phone: sess.PhoneNumber})
+				return res, nil
+			}
+			// No se pudo leer la orden guardada → limpiar y pedirla como siempre (flujo actual intacto).
+			sess.SetContext("stashed_order_url", "")
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "stashed_order_failed",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
 		}
 
 		// Pacientes PARTICULAR: preguntar si tienen orden antes de pedir foto
@@ -274,93 +291,106 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 				return sm.NewResult(sess.CurrentState).
 					WithText("No pudimos obtener el archivo. Por favor envía otra foto o PDF."), nil
 			}
-
-			ocrResult, err := ocrSvc.AnalyzeDocument(ctx, mediaURL)
-			if err != nil {
-				msg := "No pudimos procesar la imagen. ¿Qué deseas hacer?"
-				eventType := "ocr_error"
-				if errors.Is(err, context.DeadlineExceeded) {
-					msg = "El análisis de la imagen tardó demasiado. ¿Qué deseas hacer?"
-					eventType = "ocr_timeout"
-				}
-				observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_failed",
-					observability.EmitOpts{Phone: sess.PhoneNumber, Reason: eventType})
-				return sm.NewResult(sess.CurrentState).
-					WithButtons(msg, ocrRetryButtons(birdClient)...).
-					WithEvent(eventType, map[string]interface{}{"error": err.Error()}), nil
-			}
-
-			if !ocrResult.Success || len(ocrResult.Cups) == 0 {
-				return sm.NewResult(sess.CurrentState).
-					WithButtons(
-						ocrFailureMessage(ocrResult.Error),
-						ocrRetryButtons(birdClient)...,
-					).
-					WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil
-			}
-
-			// GUARDA (el CÓDIGO CUPS es prioridad para agendar): quedarse solo con los CUPS que traen
-			// código. Un CUP sin código NO debe llegar al gate de cobertura, que lo interpretaría como
-			// "sin convenio" y mandaría a particular (bug reportado: orden multipágina cuyo código quedó
-			// vacío al leer solo la 1ª hoja). Si tras el fallback multipágina NINGÚN CUP trae código,
-			// escalar a un agente (que sí puede leer la orden) en vez de mandar a particular.
-			validCups := make([]services.CUPSEntry, 0, len(ocrResult.Cups))
-			for _, c := range ocrResult.Cups {
-				if strings.TrimSpace(c.Code) != "" {
-					validCups = append(validCups, c)
-				}
-			}
-			if len(validCups) == 0 {
-				observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_no_cups_code",
-					observability.EmitOpts{Phone: sess.PhoneNumber})
-				return sm.NewResult(sm.StateEscalateToAgent).
-					WithText("No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita.").
-					WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)}), nil
-			}
-			ocrResult.Cups = validCups
-
-			// OCR exitoso — guardar CUPS en contexto
-			cupsJSON, _ := json.Marshal(ocrResult.Cups)
-
-			r := sm.NewResult(sm.StateValidateOCR).
-				WithContext("ocr_cups_json", string(cupsJSON)).
-				WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
-			observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
-				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})
-
-			// Guardar documento extraído para verificación posterior
-			if ocrResult.Document != "" {
-				r.WithContext("ocr_document", ocrResult.Document)
-			}
-
-			return r, nil
+			return processOrderMedia(ctx, sess, ocrSvc, birdClient, mediaURL)
 
 		default:
-			// Texto u otro tipo de mensaje
-			if msg.IsPostback {
-				switch msg.PostbackPayload {
-				case "retry_photo":
-					return sm.NewResult(sess.CurrentState).
-						WithText("Envía otra foto o PDF de tu orden médica."), nil
-				case "escalate_agent":
-					// Re-check agent availability (button may have been shown before agents went offline)
-					if birdClient != nil && !birdClient.HasAvailableAgents() {
-						return sm.NewResult(sess.CurrentState).
-							WithButtons(
-								"En este momento no hay agentes disponibles. ¿Qué deseas hacer?",
-								sm.Button{Text: "Enviar de nuevo", Payload: "retry_photo"},
-							).
-							WithEvent("agent_unavailable_at_escalation", nil), nil
-					}
-					return sm.NewResult(sm.StateEscalateToAgent).
-						WithText("Te voy a comunicar con uno de nuestros agentes para que pueda ayudarte con tu orden médica.").
-						WithEvent("ocr_escalate_to_agent", nil), nil
-				}
-			}
-
-			return sm.RetryOrEscalate(sess, "Estoy esperando una *foto o PDF* de tu orden médica. Por favor envía el archivo."), nil
+			// (el resto del switch sigue abajo)
+			return uploadNonMedia(sess, birdClient, msg)
 		}
 	}
+}
+
+// processOrderMedia corre el OCR sobre una imagen/PDF de orden médica y decide el siguiente paso.
+// Extraído de uploadMedicalOrderHandler SIN cambios de lógica para poder reutilizarlo con la orden
+// GUARDADA del primer mensaje (stash, §8.1 #1): mismo código para foto recién enviada o guardada.
+func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *services.OCRService, birdClient *bird.Client, mediaURL string) (*sm.StateResult, error) {
+	ocrResult, err := ocrSvc.AnalyzeDocument(ctx, mediaURL)
+	if err != nil {
+		msg := "No pudimos procesar la imagen. ¿Qué deseas hacer?"
+		eventType := "ocr_error"
+		if errors.Is(err, context.DeadlineExceeded) {
+			msg = "El análisis de la imagen tardó demasiado. ¿Qué deseas hacer?"
+			eventType = "ocr_timeout"
+		}
+		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_failed",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: eventType})
+		return sm.NewResult(sess.CurrentState).
+			WithButtons(msg, ocrRetryButtons(birdClient)...).
+			WithEvent(eventType, map[string]interface{}{"error": err.Error()}), nil
+	}
+
+	if !ocrResult.Success || len(ocrResult.Cups) == 0 {
+		return sm.NewResult(sess.CurrentState).
+			WithButtons(
+				ocrFailureMessage(ocrResult.Error),
+				ocrRetryButtons(birdClient)...,
+			).
+			WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil
+	}
+
+	// GUARDA (el CÓDIGO CUPS es prioridad para agendar): quedarse solo con los CUPS que traen
+	// código. Un CUP sin código NO debe llegar al gate de cobertura, que lo interpretaría como
+	// "sin convenio" y mandaría a particular (bug reportado: orden multipágina cuyo código quedó
+	// vacío al leer solo la 1ª hoja). Si tras el fallback multipágina NINGÚN CUP trae código,
+	// escalar a un agente (que sí puede leer la orden) en vez de mandar a particular.
+	validCups := make([]services.CUPSEntry, 0, len(ocrResult.Cups))
+	for _, c := range ocrResult.Cups {
+		if strings.TrimSpace(c.Code) != "" {
+			validCups = append(validCups, c)
+		}
+	}
+	if len(validCups) == 0 {
+		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_no_cups_code",
+			observability.EmitOpts{Phone: sess.PhoneNumber})
+		return sm.NewResult(sm.StateEscalateToAgent).
+			WithText("No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita.").
+			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)}), nil
+	}
+	ocrResult.Cups = validCups
+
+	// OCR exitoso — guardar CUPS en contexto
+	cupsJSON, _ := json.Marshal(ocrResult.Cups)
+
+	r := sm.NewResult(sm.StateValidateOCR).
+		WithContext("ocr_cups_json", string(cupsJSON)).
+		WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
+	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
+		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})
+
+	// Guardar documento extraído para verificación posterior
+	if ocrResult.Document != "" {
+		r.WithContext("ocr_document", ocrResult.Document)
+	}
+
+	return r, nil
+}
+
+// uploadNonMedia maneja texto/postbacks en UPLOAD_MEDICAL_ORDER (extraído del default del switch,
+// sin cambios de lógica).
+func uploadNonMedia(sess *session.Session, birdClient *bird.Client, msg bird.InboundMessage) (*sm.StateResult, error) {
+	// Texto u otro tipo de mensaje
+	if msg.IsPostback {
+		switch msg.PostbackPayload {
+		case "retry_photo":
+			return sm.NewResult(sess.CurrentState).
+				WithText("Envía otra foto o PDF de tu orden médica."), nil
+		case "escalate_agent":
+			// Re-check agent availability (button may have been shown before agents went offline)
+			if birdClient != nil && !birdClient.HasAvailableAgents() {
+				return sm.NewResult(sess.CurrentState).
+					WithButtons(
+						"En este momento no hay agentes disponibles. ¿Qué deseas hacer?",
+						sm.Button{Text: "Enviar de nuevo", Payload: "retry_photo"},
+					).
+					WithEvent("agent_unavailable_at_escalation", nil), nil
+			}
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText("Te voy a comunicar con uno de nuestros agentes para que pueda ayudarte con tu orden médica.").
+				WithEvent("ocr_escalate_to_agent", nil), nil
+		}
+	}
+
+	return sm.RetryOrEscalate(sess, "Estoy esperando una *foto o PDF* de tu orden médica. Por favor envía el archivo."), nil
 }
 
 // VALIDATE_OCR (automático) — muestra resultados del OCR con verificación de documento

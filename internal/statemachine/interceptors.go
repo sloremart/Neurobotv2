@@ -102,6 +102,13 @@ func ImageOutOfContextInterceptor() Interceptor {
 			return nil, false
 		}
 
+		// Primer mensaje de la sesión (CHECK_BUSINESS_HOURS): la orden llega como primer mensaje →
+		// PhotoStartInterceptor la guarda (stash) y arranca el flujo normal. CONFIRM_OCR_RESULT: una
+		// imagen aquí es una PÁGINA ADICIONAL de la orden → PhotoAppendInterceptor la fusiona.
+		if sess.CurrentState == StateCheckBusinessHours || sess.CurrentState == StateConfirmOCRResult {
+			return nil, false
+		}
+
 		// Emitir también como flow_event para que el rechazo sea VISIBLE en el funnel de la skill
 		// auditora (el chat_event por sí solo era un punto ciego: ni ERROR ni caída de funnel). El attr
 		// `state` distingue el caso benigno (imagen suelta en un menú) del BUG (rechazo en un estado que

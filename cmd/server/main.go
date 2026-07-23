@@ -177,6 +177,12 @@ func main() {
 	// entidades). Se añade DESPUÉS de RegisterInterceptors para que corra tras ImageOutOfContext, que ya
 	// deja pasar MAIN_MENU. Convierte "foto en el menú" en el arranque del flujo de agendar (§3.6).
 	machine.AddInterceptor(handlers.PhotoIntentInterceptor())
+	// Orden como PRIMER mensaje → stash + arranque normal (§8.1 #1). Página ADICIONAL durante
+	// "¿Es correcto?" → fusión de CUPS (§8.1 #3). Ambos tras ImageOutOfContext (que ya los deja pasar).
+	machine.AddInterceptor(handlers.PhotoStartInterceptor(cfg))
+	if ocrSvc != nil {
+		machine.AddInterceptor(handlers.PhotoAppendInterceptor(ocrSvc))
+	}
 
 	// Fase 5: Saludo e Identificación + Results/Locations
 	handlers.RegisterGreetingHandlers(machine, cfg, locationRepo)
