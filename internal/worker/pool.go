@@ -63,6 +63,27 @@ type SessionManagement interface {
 	SetContext(ctx context.Context, sess *session.Session, key, value string) error
 }
 
+// AgentActivityChecker consulta si el agente ya respondió la escalación abierta (solo lectura).
+// Lo usa el acuse de recibo durante escalación (§8.1 #6).
+type AgentActivityChecker interface {
+	HasAgentResponded(ctx context.Context, phone string) (bool, error)
+}
+
+// shouldSendEscalationAck decide si enviar el acuse ÚNICO al paciente que espera agente (§8.1 #6):
+// solo su primer mensaje (sin flag previo), con checker cableado y con certeza de que el agente NO ha
+// respondido. Ante error o checker ausente: fail-quiet (silencio = comportamiento previo; jamás
+// interrumpir una conversación humana en curso).
+func shouldSendEscalationAck(ctx context.Context, checker AgentActivityChecker, ackAlreadySent bool, phone string) bool {
+	if ackAlreadySent || checker == nil {
+		return false
+	}
+	responded, err := checker.HasAgentResponded(ctx, phone)
+	if err != nil || responded {
+		return false
+	}
+	return true
+}
+
 // MessageSender abstracts outbound message sending and conversation cache for testability.
 type MessageSender interface {
 	SendText(phone, conversationID, text string) (string, error)
@@ -120,6 +141,7 @@ type MessageWorkerPool struct {
 	// Dependencias (inyectadas después de creación)
 	sessionManager  SessionManagement
 	birdClient      MessageSender
+	agentChecker    AgentActivityChecker // acuse durante escalación (§8.1 #6); nil = fail-quiet
 	machine         MessageProcessor
 	tracker         *tracking.EventTracker
 	ocrService      OCRAnalyzer
@@ -150,6 +172,11 @@ func (p *MessageWorkerPool) SetDependencies(sm SessionManagement, bc MessageSend
 }
 
 // SetTracker sets the event tracker for persisting events to the database.
+// SetAgentActivityChecker cablea el chequeo "¿el agente ya respondió?" para el acuse de escalación.
+func (p *MessageWorkerPool) SetAgentActivityChecker(c AgentActivityChecker) {
+	p.agentChecker = c
+}
+
 func (p *MessageWorkerPool) SetTracker(t *tracking.EventTracker) {
 	p.tracker = t
 }
@@ -543,6 +570,23 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		// escribe y reinicia la ventana de recordatorios al agente (el paciente sí está respondiendo).
 		if err := p.sessionManager.TouchPatientActivity(parentCtx, sess); err != nil {
 			slog.Error("touch patient activity (escalated) error", "phone", utils.MaskPhone(msg.Phone), "session_id", sess.ID, "error", err)
+		}
+		// §8.1 #6: acuse ÚNICO al paciente que espera agente (2.061 ses/mes hablándole al vacío).
+		// Solo su primer mensaje y solo si el agente NO ha respondido; fail-quiet en cualquier duda.
+		if shouldSendEscalationAck(parentCtx, p.agentChecker, sess.GetContext("escalation_ack_sent") != "", msg.Phone) {
+			if _, err := p.birdClient.SendText(msg.Phone, sess.ConversationID,
+				"🙋 Seguimos aquí. Un asesor te responderá tan pronto esté disponible — tus mensajes quedan registrados para él."); err != nil {
+				slog.Warn("escalation ack send failed", "phone", utils.MaskPhone(msg.Phone), "error", err)
+			} else {
+				if err := p.sessionManager.SetContext(parentCtx, sess, "escalation_ack_sent", "1"); err != nil {
+					slog.Warn("escalation ack flag persist failed", "phone", utils.MaskPhone(msg.Phone), "error", err)
+				}
+				if p.tracker != nil {
+					p.tracker.LogEvent(parentCtx, sess.ID, msg.Phone, "escalation_ack_sent", nil)
+				}
+				observability.Emit(observability.TraceSession(sess.ID), "escalacion", "ack_sent",
+					observability.EmitOpts{Phone: msg.Phone})
+			}
 		}
 		if p.tracker != nil {
 			p.tracker.LogEvent(parentCtx, sess.ID, msg.Phone, "msg_during_escalation", map[string]interface{}{

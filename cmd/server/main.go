@@ -287,6 +287,7 @@ func main() {
 	workerPool := worker.NewMessageWorkerPool(cfg.WorkerPoolSize, cfg.WorkerQueueSize)
 	workerPool.SetDependencies(sessionManager, birdClient, machine)
 	workerPool.SetTracker(tracker)
+	workerPool.SetAgentActivityChecker(escalationRepo) // acuse durante escalación (§8.1 #6)
 	workerPool.SetOCRService(ocrSvc)
 	workerPool.SetInboxRepo(inboxRepo)
 	workerPool.SetBotEnabled(cfg.BotEnabled)

@@ -1609,3 +1609,39 @@ func TestEnqueue_DropsOverflowWhenClosing(t *testing.T) {
 		t.Fatal("el claim de dedup debió liberarse al descartar (para re-encolar por WAL)")
 	}
 }
+
+// ─── Acuse durante escalación (§8.1 #6) ───────────────────────────────────────
+
+var errTest = errors.New("boom")
+
+type fakeAgentChecker struct {
+	responded bool
+	err       error
+}
+
+func (f *fakeAgentChecker) HasAgentResponded(_ context.Context, _ string) (bool, error) {
+	return f.responded, f.err
+}
+
+// El acuse se envía SOLO en el primer mensaje, con checker sano y agente sin responder;
+// en cualquier otra condición (flag puesto, agente ya respondió, error, sin checker) = silencio.
+func TestShouldSendEscalationAck(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		checker AgentActivityChecker
+		ackSent bool
+		want    bool
+	}{
+		{"primer mensaje, agente sin responder → envía", &fakeAgentChecker{responded: false}, false, true},
+		{"flag ya puesto → silencio", &fakeAgentChecker{responded: false}, true, false},
+		{"agente YA respondió → silencio absoluto", &fakeAgentChecker{responded: true}, false, false},
+		{"error del chequeo → fail-quiet", &fakeAgentChecker{err: errTest}, false, false},
+		{"sin checker cableado → fail-quiet", nil, false, false},
+	}
+	for _, c := range cases {
+		if got := shouldSendEscalationAck(ctx, c.checker, c.ackSent, "+573001112233"); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}

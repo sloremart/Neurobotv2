@@ -45,6 +45,23 @@ func (r *EscalationRepo) TouchAgent(ctx context.Context, phone string) error {
 	return nil
 }
 
+// HasAgentResponded informa si el AGENTE ya respondió en la escalación ABIERTA más reciente del
+// teléfono (first_agent_msg_at, sellado por TouchAgent). Solo lectura; lo usa el acuse de recibo
+// durante escalación (§8.1 #6) para JAMÁS meterse en una conversación humana en curso.
+func (r *EscalationRepo) HasAgentResponded(ctx context.Context, phone string) (bool, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM (
+			SELECT first_agent_msg_at FROM escalations
+			WHERE phone_number = ? AND outcome IS NULL
+			ORDER BY escalated_at DESC LIMIT 1
+		) t WHERE t.first_agent_msg_at IS NOT NULL`, phone).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // Resume marca la escalación abierta como devuelta al bot (resume).
 func (r *EscalationRepo) Resume(ctx context.Context, phone string) error {
 	_, err := r.db.ExecContext(ctx,

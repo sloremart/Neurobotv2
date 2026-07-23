@@ -447,3 +447,9 @@ Imagen durante CONFIRM_OCR_RESULT = página extra: fusión de CUPS (dedupe) y re
 - CAZAR: [BUG] `entity_matched_by_name` con código de entidad que NO estaba en `entity_list_codes`
   de esa sesión (matching eligió fuera de la lista mostrada). Estadística: invalid_input/escalaciones
   de ASK_ENTITY_NUMBER deben CAER tras el deploy.
+
+### E) Acuse durante escalación (flujo escalacion)
+`escalacion/ack_sent` = acuse ÚNICO al paciente que espera agente (solo su primer mensaje y solo si el
+agente NO ha respondido; fail-quiet ante cualquier duda).
+- CAZAR: [BUG] más de un `ack_sent` por escalación · [BUG] un `ack_sent` DESPUÉS de actividad del
+  agente (first_agent_msg_at anterior al ack) — el bot se metió en una conversación humana.
