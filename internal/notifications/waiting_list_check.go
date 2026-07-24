@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strconv"
 
@@ -228,6 +229,13 @@ func (m *NotificationManager) entrySlotQuery(ctx context.Context, entry domain.W
 		Espacios:     entry.Espacios,
 		MaxSlots:     1,
 	}
+	// PARIDAD CON EL AGENDAMIENTO: validar la franja de contraste (incluida la regla de abdomen TAC,
+	// que depende de TODOS los CUPS del grupo, no solo el representativo) y la intersección de médicos
+	// sobre la cita completa. Sin esto, una cita en espera multi-CUP (p.ej. TAC tórax+abdomen
+	// contrastado) podría ofrecerse un slot que el flujo de reserva rechazaría.
+	if gc := groupCupsFromEntry(entry); len(gc) > 0 {
+		q.GroupCups = gc
+	}
 	if entry.PreferredDoctorDoc != "" {
 		q.PreferredDoctor = entry.PreferredDoctorDoc
 	}
@@ -244,6 +252,27 @@ func (m *NotificationManager) entrySlotQuery(ctx context.Context, entry domain.W
 		}
 	}
 	return q
+}
+
+// groupCupsFromEntry reconstruye el conjunto de CUPS de la cita en espera desde ProceduresJSON (un
+// []services.CUPSGroup, igual que persiste el agendamiento). Devuelve nil si el JSON está vacío o es
+// de datos viejos, en cuyo caso GetAvailableSlots cae al CupsCode representativo (retrocompatible).
+func groupCupsFromEntry(entry domain.WaitingListEntry) []string {
+	var groups []services.CUPSGroup
+	if err := json.Unmarshal([]byte(entry.ProceduresJSON), &groups); err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, g := range groups {
+		for _, c := range g.Cups {
+			if c.Code != "" && !seen[c.Code] {
+				seen[c.Code] = true
+				out = append(out, c.Code)
+			}
+		}
+	}
+	return out
 }
 
 // sendWaitingNotification envía el template de lista de espera, registra el pending y loguea el

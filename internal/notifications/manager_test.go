@@ -938,6 +938,60 @@ func sampleWaitingListEntry() *domain.WaitingListEntry {
 	}
 }
 
+// TestEntrySlotQuery_PropagatesContrastAndGroup verifica que la búsqueda de slots de la lista de
+// espera hereda las reglas de la cita: contraste, sedación, espacios (para el tope de finalización) y
+// el grupo COMPLETO de CUPS (para la franja de contraste con abdomen y la intersección de médicos).
+func TestEntrySlotQuery_PropagatesContrastAndGroup(t *testing.T) {
+	m := &NotificationManager{}
+	entry := domain.WaitingListEntry{
+		CupsCode:           "879301", // TAC tórax (no abdomen)
+		PatientAge:         40,
+		IsContrasted:       true,
+		IsSedated:          false,
+		Espacios:           2,
+		ContractCode:       "4", // no MRC → no toca apptSvc
+		PreferredDoctorDoc: "111",
+		// Grupo multi-CUP: tórax + abdomen. El abdomen (879410) impone "no contraste antes de 10:00".
+		ProceduresJSON: `[{"service":"5","cups":[{"cups_code":"879301"},{"cups_code":"879410"}],"espacios":2}]`,
+	}
+
+	q := m.entrySlotQuery(context.Background(), entry)
+
+	if !q.IsContrasted {
+		t.Error("IsContrasted no se propagó a la búsqueda de slots")
+	}
+	if q.Espacios != 2 {
+		t.Errorf("Espacios=%d, quiero 2 (tope de finalización cuenta duración×slots)", q.Espacios)
+	}
+	if q.PatientAge != 40 {
+		t.Errorf("PatientAge=%d, quiero 40", q.PatientAge)
+	}
+	if q.PreferredDoctor != "111" {
+		t.Errorf("PreferredDoctor=%q, quiero 111", q.PreferredDoctor)
+	}
+	has := map[string]bool{}
+	for _, c := range q.GroupCups {
+		has[c] = true
+	}
+	if len(q.GroupCups) != 2 || !has["879301"] || !has["879410"] {
+		t.Errorf("GroupCups debe incluir TODOS los CUPS del grupo (incl. abdomen 879410), got %v", q.GroupCups)
+	}
+}
+
+// TestEntrySlotQuery_OldDataFallsBackToCupsCode: entradas viejas sin ProceduresJSON usable no rompen;
+// GroupCups queda vacío y GetAvailableSlots cae al CupsCode representativo.
+func TestEntrySlotQuery_OldDataFallsBackToCupsCode(t *testing.T) {
+	m := &NotificationManager{}
+	entry := domain.WaitingListEntry{CupsCode: "883210", IsContrasted: true, Espacios: 1, ContractCode: "4", ProceduresJSON: "[]"}
+	q := m.entrySlotQuery(context.Background(), entry)
+	if len(q.GroupCups) != 0 {
+		t.Errorf("esperaba GroupCups vacío para datos viejos, got %v", q.GroupCups)
+	}
+	if q.CupsCode != "883210" || !q.IsContrasted {
+		t.Errorf("debía conservar CupsCode/IsContrasted, got %+v", q)
+	}
+}
+
 // === Waiting list tests ===
 
 func TestSetWaitingListDeps(t *testing.T) {
