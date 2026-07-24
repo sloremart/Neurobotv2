@@ -322,7 +322,7 @@ func buildMainMenuList() *sm.ListMessage {
 			Title: "Menú principal",
 			Rows: []sm.ListRow{
 				{ID: "pet_ct", Title: "☢️ Agendar cita PET-CT", Description: "Tomografía por emisión de positrones FDG F-18 / PSMA"},
-				{ID: "medicamentos", Title: "💉 Aplicación de medicamentos", Description: "Atención personalizada con un agente (SANITAS)"},
+				{ID: "medicamentos", Title: "💉 Aplicar medicamentos", Description: "Atención personalizada con un agente (SANITAS)"},
 				{ID: "agendar", Title: "Agendar cita", Description: "Si buscas una cita como particular o cuentas con una orden de tu IPS"},
 				{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
 				{ID: "resultados", Title: "Consultar Resultados", Description: "Si quieres descargar resultados de tus consultas"},

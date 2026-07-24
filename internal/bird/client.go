@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -22,6 +23,32 @@ import (
 // ErrConversationNotActive is returned when the Conversations API rejects a
 // request because the conversation is closed/inactive (HTTP 422).
 var ErrConversationNotActive = errors.New("conversation not active")
+
+// Límites duros de WhatsApp para listas interactivas (error 131009 si se exceden). WhatsApp mide la
+// longitud en UNIDADES UTF-16 (como la Graph API de Facebook), no en runas: un emoji fuera del BMP
+// (💉 = 2 unidades) cuenta doble. Truncamos por eso para nunca romper el envío, aunque el título venga
+// de datos dinámicos (nombres de EPS, catálogo de documentos, etc.).
+const (
+	waRowTitleMax    = 24
+	waSectionTitle   = 24
+	waRowDescMax     = 72
+	waButtonLabelMax = 20
+)
+
+// truncateWhatsApp corta s a `max` UNIDADES UTF-16 sin partir un par sustituto (emoji). Igual conteo
+// que WhatsApp, así que un valor válido aquí nunca dispara 131009.
+func truncateWhatsApp(s string, limit int) string {
+	units := utf16.Encode([]rune(s))
+	if len(units) <= limit {
+		return s
+	}
+	cut := limit
+	// No cortar entre el high y low surrogate de un emoji.
+	if cut > 0 && units[cut-1] >= 0xD800 && units[cut-1] <= 0xDBFF {
+		cut--
+	}
+	return strings.TrimSpace(string(utf16.Decode(units[:cut])))
+}
 
 // Sondeo de caché de conversation_id en la escalación (ver EscalateToAgent). La caché la puebla el
 // webhook outbound de Bird del mensaje que la escalación acaba de enviar; tarda unos segundos. Se
@@ -575,8 +602,42 @@ func (c *Client) trySendToConversation(phone, conversationID string, body interf
 		}
 	}
 
-	slog.Warn("conversations_api_fallback", "error", err, "phone", utils.MaskPhone(phone))
+	// Un error de CONTENIDO de WhatsApp (mensaje mal formado: título/etiqueta demasiado largo,
+	// parámetro inválido) NO es transitorio: es un bug del bot que rompe el envío para TODOS los
+	// pacientes. Se eleva a ERROR (dispara la alerta de Telegram) y es cazable por la auditoría; el
+	// resto sigue en WARN + fallback silencioso como antes (conversación cerrada, número sin WhatsApp).
+	if code, isContent := whatsAppContentError(err); isContent {
+		slog.Error("wa_content_error", "code", code, "phone", utils.MaskPhone(phone), "detail", err.Error())
+	} else {
+		slog.Warn("conversations_api_fallback", "error", err, "phone", utils.MaskPhone(phone))
+	}
 	return "", err, false
+}
+
+// waContentCodeRe extrae el código de error numérico de WhatsApp del cuerpo (formatos "code: 131009",
+// `"code":131009` y "(#131009)").
+var waContentCodeRe = regexp.MustCompile(`(?:code"?\s*:\s*"?|#)(\d{3,6})`)
+
+// waContentErrorCodes: códigos de WhatsApp que indican MENSAJE MAL FORMADO (bug de contenido del bot),
+// no un fallo transitorio del canal. 131009=parámetro inválido, 131008=parámetro requerido faltante,
+// 100=parámetro inválido genérico.
+var waContentErrorCodes = map[string]bool{"131009": true, "131008": true, "100": true}
+
+// whatsAppContentError decide si err es un error de CONTENIDO de WhatsApp (bug del bot que afecta a
+// todos) y devuelve su código. Reconoce por código o por frases inequívocas de la Graph API.
+func whatsAppContentError(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := err.Error()
+	if m := waContentCodeRe.FindStringSubmatch(msg); m != nil && waContentErrorCodes[m[1]] {
+		return m[1], true
+	}
+	low := strings.ToLower(msg)
+	if strings.Contains(low, "is too long") || strings.Contains(low, "value is not valid") {
+		return "content", true
+	}
+	return "", false
 }
 
 // SendText envía un mensaje de texto simple.
@@ -650,20 +711,28 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 	}
 	slog.Debug("send_list_building", "phone", utils.MaskPhone(to), "sections", len(sections), "total_rows", totalRows, "button", buttonLabel)
 
+	// Guarda dura contra WhatsApp 131009 ("Row title is too long. Max length is 24"): truncar TODO
+	// título/etiqueta al límite de WhatsApp ANTES de enviar. Aplica a listas estáticas y a las que se
+	// arman con datos dinámicos (EPS, catálogo de documentos). Si algún título excedía, se avisa una vez.
+	button := truncateWhatsApp(buttonLabel, waButtonLabelMax)
 	items := make([]map[string]interface{}, len(sections))
 	for i, section := range sections {
 		actions := make([]map[string]interface{}, len(section.Rows))
 		for j, row := range section.Rows {
+			title := truncateWhatsApp(row.Title, waRowTitleMax)
+			if title != row.Title {
+				slog.Warn("wa_list_row_title_truncated", "original", row.Title, "sent", title, "payload", row.ID)
+			}
 			actions[j] = map[string]interface{}{
 				"type": "postback",
 				"postback": map[string]string{
-					"text":    row.Title,
+					"text":    title,
 					"payload": row.ID,
 				},
 			}
 		}
 		items[i] = map[string]interface{}{
-			"title":   section.Title,
+			"title":   truncateWhatsApp(section.Title, waSectionTitle),
 			"actions": actions,
 		}
 	}
@@ -672,10 +741,10 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 		"type": "list",
 		"list": map[string]interface{}{
 			"text":  body,
-			"title": buttonLabel,
+			"title": button,
 			"items": items,
 			"metadata": map[string]interface{}{
-				"button": map[string]string{"label": buttonLabel},
+				"button": map[string]string{"label": button},
 			},
 		},
 	}

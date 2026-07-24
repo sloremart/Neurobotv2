@@ -462,3 +462,19 @@ agente NO ha respondido; fail-quiet ante cualquier duda).
   preparación en catálogo). CAZAR: prep enviada sin plantilla previa (huérfana).
 - `reengagement_sent` (07:05): re-enganche a rebotados fuera-de-horario de ayer >=17h, UNO por
   teléfono. CAZAR: más de 1 al mismo teléfono el mismo día, o envíos sin out_of_hours previo.
+
+### G) Envíos de WhatsApp rechazados por CONTENIDO (bloqueante silencioso, jul-2026)
+Clase de fallo que ANTES no se veía: WhatsApp rechaza un mensaje mal formado (p.ej. 131009 "Row
+title is too long. Max length is 24") — es un bug del bot que rompe el envío para TODOS los pacientes,
+pero se logueaba como WARN y caía a un fallback de texto, así que ni Telegram ni la auditoría lo
+cazaban. Caso real: el título "Aplicación de medicamentos" (26 chars) en el menú principal.
+- Ahora se emite `slog.Error("wa_content_error", code=...)` → dispara la alerta de Telegram y es
+  visible en `/logs?level=error` y `/anomalies`. Códigos de contenido: 131009 (parámetro inválido),
+  131008 (parámetro requerido faltante), 100 (genérico) — NO los transitorios (131026 "undeliverable"
+  = número sin WhatsApp).
+- CAZAR: [BUG-alta] cualquier `wa_content_error` sostenido — un mensaje del bot está mal formado
+  (título/etiqueta que excede el límite de WhatsApp, o parámetro inválido). Revisar el `code` y el
+  `detail`. Defensa activa: SendList trunca todo título a 24 unidades UTF-16, así que un título largo
+  ya no rompe; si aparece `wa_content_error` es OTRO tipo de contenido inválido y hay que corregirlo.
+- El `wa_list_row_title_truncated` (WARN) avisa que un título se recortó al enviar: no es fallo, pero
+  si es frecuente conviene acortar el texto en origen para que no se vea cortado.

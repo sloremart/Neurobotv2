@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -269,6 +270,172 @@ func (h *InternalHandler) HandleSiesaCitasEstado(w http.ResponseWriter, r *http.
 
 // HandleSiesaNoShow devuelve la inasistencia (no-show) real por día (verdad de SIESA): de las citas
 // pasadas no canceladas, cuántas se atendieron vs cuántas quedaron sin finalizar. Agregado y cacheado.
+// AgentCallStats son las metricas de LLAMADAS de un agente en la ventana (F3): la pierna del agente
+// es la unidad (no se doble-cuenta la llamada puenteada). "Ofrecida" = pierna hacia el agente
+// (to=client:uuid); no-answer ahi = EL AGENTE no contesto.
+type AgentCallStats struct {
+	Made         int `json:"made"`          // el agente llamo (from=client)
+	Offered      int `json:"offered"`       // llamadas ofrecidas al agente (to=client)
+	Answered     int `json:"answered"`      // ofrecidas completadas
+	NoAnswer     int `json:"no_answer"`     // ofrecidas que NO contesto
+	Cancelled    int `json:"cancelled"`     // ofrecidas colgadas antes de contestar
+	TotalSeconds int `json:"total_seconds"` // segundos en llamada (piernas completadas, made+answered)
+}
+
+// aggregateAgentCalls agrega las piernas de llamada por agente dentro de [from, to] (pura, testeable).
+// Excluye ongoing/ringing de los tiempos. Devuelve tambien si alguna fila quedo dentro de la ventana
+// (para saber cuando dejar de paginar: el listado viene de mas reciente a mas antiguo).
+func aggregateAgentCalls(calls []bird.CallRecord, from, to time.Time) (map[string]*AgentCallStats, bool) {
+	out := map[string]*AgentCallStats{}
+	anyInWindow := false
+	get := func(id string) *AgentCallStats {
+		if out[id] == nil {
+			out[id] = &AgentCallStats{}
+		}
+		return out[id]
+	}
+	for _, c := range calls {
+		ts, err := time.Parse(time.RFC3339, c.CreatedAt)
+		if err != nil || ts.Before(from) || ts.After(to) {
+			continue
+		}
+		anyInWindow = true
+		terminal := c.Status == "completed" || c.Status == "no-answer" || c.Status == "cancelled"
+		if !terminal {
+			continue
+		}
+		if strings.HasPrefix(c.From, "client:") {
+			a := get(strings.TrimPrefix(c.From, "client:"))
+			a.Made++
+			if c.Status == "completed" {
+				a.TotalSeconds += c.Duration
+			}
+			continue
+		}
+		if strings.HasPrefix(c.To, "client:") {
+			a := get(strings.TrimPrefix(c.To, "client:"))
+			a.Offered++
+			switch c.Status {
+			case "completed":
+				a.Answered++
+				a.TotalSeconds += c.Duration
+			case "no-answer":
+				a.NoAnswer++
+			case "cancelled":
+				a.Cancelled++
+			}
+		}
+	}
+	return out, anyInWindow
+}
+
+// HandleBirdAgentCalls agrega las metricas de llamadas por agente en la ventana [from, to]
+// (fechas YYYY-MM-DD en hora local). Pagina el listado de Bird (mas reciente primero) hasta salir
+// de la ventana o tocar el tope de seguridad. Best-effort: 503/502 si Bird no esta disponible.
+// GET /api/internal/agents/bird-calls?from=YYYY-MM-DD&to=YYYY-MM-DD
+func (h *InternalHandler) HandleBirdAgentCalls(w http.ResponseWriter, r *http.Request) {
+	if h.birdClient == nil {
+		http.Error(w, "bird client not available", http.StatusServiceUnavailable)
+		return
+	}
+	fromS, toS := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	from, err1 := time.ParseInLocation("2006-01-02", fromS, time.Local)
+	toD, err2 := time.ParseInLocation("2006-01-02", toS, time.Local)
+	if err1 != nil || err2 != nil {
+		http.Error(w, "from/to requeridos (YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+	to := toD.Add(24*time.Hour - time.Second)
+
+	// Cache en memoria (TTL corto): el informe pide la misma ventana varias veces (general +
+	// detalle actual y anterior) y el paginado contra Bird es lento (~100 piernas/pagina).
+	cacheKey := fromS + "|" + toS
+	if v, ok := agentCallsCache.get(cacheKey); ok {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(v)
+		return
+	}
+
+	const maxPages = 80 // tope de seguridad (~8.000 piernas)
+	totals := map[string]*AgentCallStats{}
+	truncated := false
+	pageToken := ""
+	for page := 0; page < maxPages; page++ {
+		pg, err := h.birdClient.ListCalls(pageToken)
+		if err != nil {
+			// Un reintento ante fallos transitorios de Bird (504 GATEWAY_TIMEOUT observado).
+			time.Sleep(700 * time.Millisecond)
+			pg, err = h.birdClient.ListCalls(pageToken)
+		}
+		if err != nil {
+			slog.Error("bird calls list failed", "error", err)
+			http.Error(w, "failed to list bird calls", http.StatusBadGateway)
+			return
+		}
+		agg, anyIn := aggregateAgentCalls(pg.Results, from, to)
+		for id, a := range agg {
+			t := totals[id]
+			if t == nil {
+				totals[id] = a
+				continue
+			}
+			t.Made += a.Made
+			t.Offered += a.Offered
+			t.Answered += a.Answered
+			t.NoAnswer += a.NoAnswer
+			t.Cancelled += a.Cancelled
+			t.TotalSeconds += a.TotalSeconds
+		}
+		// Parar cuando la pagina ya quedo TODA por debajo de la ventana (listado descendente).
+		olderThanWindow := len(pg.Results) > 0 && !anyIn
+		if olderThanWindow {
+			if ts, err := time.Parse(time.RFC3339, pg.Results[len(pg.Results)-1].CreatedAt); err == nil && ts.Before(from) {
+				break
+			}
+		}
+		if pg.NextPageToken == "" {
+			break
+		}
+		pageToken = pg.NextPageToken
+		if page == maxPages-1 {
+			truncated = true
+		}
+	}
+	payload, _ := json.Marshal(map[string]interface{}{"agents": totals, "truncated": truncated})
+	agentCallsCache.set(cacheKey, payload)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(payload)
+}
+
+// agentCallsCache: cache simple con TTL para las metricas de llamadas (ver arriba).
+var agentCallsCache = callsCache{entries: map[string]callsCacheEntry{}}
+
+type callsCacheEntry struct {
+	data   []byte
+	expiry time.Time
+}
+
+type callsCache struct {
+	mu      sync.Mutex
+	entries map[string]callsCacheEntry
+}
+
+func (c *callsCache) get(key string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok || time.Now().After(e.expiry) {
+		return nil, false
+	}
+	return e.data, true
+}
+
+func (c *callsCache) set(key string, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = callsCacheEntry{data: data, expiry: time.Now().Add(10 * time.Minute)}
+}
+
 // HandleBirdAgents expone las métricas DIRECTAS de Bird por agente (estado/actividad, carga actual de
 // conversaciones asignadas, equipos) para el informe unificado de agentes del dashboard (F3 §9).
 // Solo lectura contra la API de Bird; sin Bird configurado responde 503.
