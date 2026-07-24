@@ -666,10 +666,16 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) (string, error) {
 	actions := make([]map[string]interface{}, len(buttons))
 	for i, btn := range buttons {
+		// Misma guarda dura que en SendList: WhatsApp rechaza (131009) un título de botón > 20.
+		// Los botones estáticos actuales caben, pero cualquiera dinámico/futuro quedaría protegido.
+		title := truncateWhatsApp(btn.Text, waButtonLabelMax)
+		if title != btn.Text {
+			slog.Warn("wa_button_title_truncated", "original", btn.Text, "sent", title, "payload", btn.Payload)
+		}
 		actions[i] = map[string]interface{}{
 			"type": "postback",
 			"postback": map[string]string{
-				"text":    btn.Text,
+				"text":    title,
 				"payload": btn.Payload,
 			},
 		}

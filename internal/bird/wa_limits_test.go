@@ -17,7 +17,8 @@ func TestTruncateWhatsApp(t *testing.T) {
 		{"Aplicación de medicamentos", 24}, // 26 code units → recorta
 		{"💉 Aplicación de medicamentos", 24},
 		{"☢️ Agendar cita PET-CT", 24},
-		{"AAAAAAAAAAAAAAAAAAAAAAAA💉", 24}, // 24 letras + emoji (2) = 26 → recorta, sin partir el emoji
+		{"AAAAAAAAAAAAAAAAAAAAAAAA💉", 24},                  // 24 letras + emoji (2) = 26 → recorta, sin partir el emoji
+		{"Confirmar y reprogramar cita", waButtonLabelMax}, // título de botón > 20 → recorta al límite de botón
 	}
 	for _, c := range cases {
 		got := truncateWhatsApp(c.in, c.max)
