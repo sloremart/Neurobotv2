@@ -372,6 +372,49 @@ func TestAskSedation_Yes(t *testing.T) {
 	}
 }
 
+// TestAskSedation_OCRForcesSedationPath (simétrico al M5 de contraste): si el cups_code NO es
+// sedatable por prefijo (p.ej. TAC pediátrica 879111, no 883) pero el OCR marcó la orden como
+// sedada, NO se debe saltar: debe auto-detectar is_sedated=1 para rutear a SOPORTE SEDACIÓN.
+func TestAskSedation_OCRForcesSedationPath(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskSedation, askSedationHandler())
+
+	sess := testSess(sm.StateAskSedation)
+	sess.Context["cups_code"] = "879111" // TAC de cráneo simple: NO sedatable por prefijo
+	sess.Context["ocr_is_sedated"] = "1"
+
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UpdateCtx["is_sedated"] != "1" {
+		t.Errorf("esperaba is_sedated=1 (OCR), got %v", result.UpdateCtx)
+	}
+	if result.NextState != sm.StateCheckExisting {
+		t.Errorf("esperaba pasar a CHECK_EXISTING con sedación, got %s", result.NextState)
+	}
+}
+
+// TestAskSedation_NonSedatableNoOCR_Skips: sin señal de OCR, un CUPS no sedatable sí salta con is_sedated=0.
+func TestAskSedation_NonSedatableNoOCR_Skips(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskSedation, askSedationHandler())
+
+	sess := testSess(sm.StateAskSedation)
+	sess.Context["cups_code"] = "879111" // no sedatable y sin ocr_is_sedated
+
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateCheckExisting {
+		t.Errorf("esperaba saltar a CHECK_EXISTING, got %s", result.NextState)
+	}
+	if result.UpdateCtx["is_sedated"] != "0" {
+		t.Errorf("esperaba is_sedated=0, got %v", result.UpdateCtx)
+	}
+}
+
 // ==================== CheckExisting ====================
 
 func TestCheckExisting_NoExisting(t *testing.T) {

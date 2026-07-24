@@ -463,10 +463,14 @@ func askSedationHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsCode := sess.GetContext("cups_code")
 
-		// CUPS no sedatable → saltar (auto-chain continues)
-		if !isSedatable(cupsCode) {
+		// CUPS no sedatable → saltar SOLO si el OCR tampoco marcó sedación (simétrico al fix M5 de
+		// contraste). Antes se salía solo por el prefijo del cups_code, descartando ocr_is_sedated=1:
+		// una TAC pediátrica "bajo sedación" (879xxx, no 883) perdía el flag y NO se ruteaba a
+		// SOPORTE SEDACIÓN (asunto 17); se agendaba en la agenda normal del estudio.
+		if !isSedatable(cupsCode) && sess.GetContext("ocr_is_sedated") != "1" {
 			return sm.NewResult(sm.StateCheckExisting).
 				WithContext("is_sedated", "0").
+				WithClearCtx("ocr_is_sedated").
 				WithEvent("sedation_skipped", map[string]interface{}{"cups_code": cupsCode}), nil
 		}
 

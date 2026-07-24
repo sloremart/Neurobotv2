@@ -140,12 +140,21 @@ DATOS POR PROCEDIMIENTO:
   - "NEUROCONDUCCIÓN (#16) / 4 EXTREMIDADES" → quantity=16 (del #16). Son 4 nervios × 4 extremidades = 16 estudios.
   NUNCA uses el número de extremidades como quantity cuando haya un (#N) en la misma fila.
 - observations: texto adicional o marcadores del procedimiento como "AMB", "SUPERIORES", "BILATERAL", lateralidad, etc. Aplica corrección OCR mínima (ej: "CIN"→"SIN"). Si no hay observaciones, usa "".
-- is_sedated: busca en descripción y observaciones del procedimiento:
-  "sedación", "sedacion", "bajo sedación", "bajo anestesia", "con anestesia", "anestesia general", "sedado", "sedada", "anestesiado", "anestesiada"
-  Si encuentra alguna: true para ESE procedimiento. Si no: false.
-- is_contrasted: busca en descripción y observaciones del procedimiento:
-  "contraste", "contrastado", "contrastada", "con medio de contraste", "con contraste", "medio de contraste", "gadolinio", "yodo"
-  Si encuentra alguna: true para ESE procedimiento. Si no: false.
+- is_sedated: indica si ESE procedimiento se realiza BAJO SEDACIÓN/ANESTESIA. Decide en este orden:
+  1) NEGACIÓN primero: si dice "SIN sedación", "SIN anestesia", "NO requiere sedación", "no sedado/sedada"
+     (o equivalente) para ese procedimiento → false, AUNQUE luego aparezca la palabra suelta.
+  2) Señales afirmativas en descripción u observaciones: "sedación", "sedacion", "bajo sedación",
+     "bajo anestesia", "con anestesia", "anestesia general", "sedado", "sedada", "anestesiado", "anestesiada" → true.
+  3) Si no hay ninguna señal → false.
+- is_contrasted: indica si ESE examen usa MEDIO DE CONTRASTE. Decide en este orden (lo de arriba manda):
+  1) POR NOMBRE DEL PROCEDIMIENTO (lo más confiable):
+     - Contiene "CON CONTRASTE" o "SIMPLE Y CON CONTRASTE" → true (el estudio ya es contrastado por definición).
+     - Contiene "SIMPLE" (sin "CON CONTRASTE"), o "SIN contraste", "SIN medio de contraste", "NO contrastado" → false.
+  2) Si el nombre no lo define, busca señales de contraste en descripción u observaciones:
+     "contraste", "contrastado", "contrastada", "con medio de contraste", "medio de contraste",
+     "c/ contraste", "c/medio", "medio de contraste EV", "medio de contraste IV", "gadolinio", "gadolinio EV",
+     "yodo", "yodado", "con gd" → true. Pero si vienen NEGADAS ("SIN contraste", "NO requiere contraste") → false.
+  3) Si no hay ninguna señal → false.
 
 DETECCIÓN DE ENTIDAD:
 - Extraer del logo o texto el nombre de la EPS/entidad.
