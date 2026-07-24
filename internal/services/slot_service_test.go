@@ -443,6 +443,126 @@ func TestGetAvailableSlots_CupWindowConsecutive(t *testing.T) {
 	}
 }
 
+// tacRepo/rnmRepo fijan el asunto (3=TAC, 4=RNM) para aislar la franja de contraste por modalidad.
+func tacRepo() *mockProcedureRepo {
+	return &mockProcedureRepo{findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 3, nil }}
+}
+
+func rnmRepo() *mockProcedureRepo {
+	return &mockProcedureRepo{findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 4, nil }}
+}
+
+// TestGetAvailableSlots_ContrastTACAfternoonEnds16 verifica el ajuste de la clínica: la cita
+// contrastada TAC de la tarde debe TERMINAR a más tardar 16:00 (no iniciar hasta 16:40). Slot único
+// de 30 min: 15:30 termina 16:00 → VÁLIDO; 16:00 termina 16:30 → INVÁLIDO (antes se ofrecía).
+func TestGetAvailableSlots_ContrastTACAfternoonEnds16(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "15:30", 1, 30),
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "16:00", 1, 30),
+			}, nil
+		},
+	}
+	svc := NewSlotService(tacRepo(), scheduleRepo)
+	// 879301 (TAC tórax) NO es abdomen ni tiene ventana de prep → aísla la franja de contraste.
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "879301", IsContrasted: true, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161530" {
+		t.Errorf("esperaba solo 15:30 (termina 16:00), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_ContrastTACAfternoonCountsDuration verifica que el tope 16:00 considera
+// duración×cantidad de slots: con Espacios=2 (bloque de 60 min), el último inicio válido es 15:00
+// (termina 16:00). 15:30 terminaría 16:30 → INVÁLIDO.
+func TestGetAvailableSlots_ContrastTACAfternoonCountsDuration(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "14:30", 1, 30),
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "15:00", 1, 30),
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "15:30", 1, 30),
+			}, nil
+		},
+	}
+	svc := NewSlotService(tacRepo(), scheduleRepo)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "879301", IsContrasted: true, Espacios: 2, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 2 || slots[0].TimeSlot != "202603161430" || slots[1].TimeSlot != "202603161500" {
+		t.Errorf("esperaba 14:30 y 15:00 (bloque de 60 min termina ≤16:00), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_ContrastTACMorningEnds13 verifica la mañana fin-basada: la cita debe terminar
+// ≤13:00 (almuerzo). 12:30 termina 13:00 → VÁLIDO; 13:00 caería en el almuerzo → INVÁLIDO.
+func TestGetAvailableSlots_ContrastTACMorningEnds13(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "12:30", 1, 30),
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "13:00", 1, 30),
+			}, nil
+		},
+	}
+	svc := NewSlotService(tacRepo(), scheduleRepo)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "879301", IsContrasted: true, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161230" {
+		t.Errorf("esperaba solo 12:30 (termina 13:00), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_ContrastTACAbdomenNotBefore10 verifica que el abdomen contrastado no se
+// ofrece antes de las 10:00 (regla preservada). 879410 es abdomen: 09:30 → INVÁLIDO; 10:00 → VÁLIDO.
+func TestGetAvailableSlots_ContrastTACAbdomenNotBefore10(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "09:30", 1, 30),
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "10:00", 1, 30),
+			}, nil
+		},
+	}
+	svc := NewSlotService(tacRepo(), scheduleRepo)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "879410", IsContrasted: true, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161000" {
+		t.Errorf("esperaba solo 10:00 (abdomen no antes de 10:00), got %+v", slots)
+	}
+}
+
+// TestGetAvailableSlots_ContrastRNMAfternoonEndCounts verifica que RNM también es fin-basado (tope
+// 16:20 sin cambiar su valor). Grid 20 min, Espacios=2 (bloque 40 min): 15:40 termina 16:20 → VÁLIDO;
+// 16:00 terminaría 16:40 → INVÁLIDO (antes se ofrecía porque el inicio 16:00 < 16:20).
+func TestGetAvailableSlots_ContrastRNMAfternoonEndCounts(t *testing.T) {
+	scheduleRepo := &mockScheduleRepo{
+		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
+			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. RNM", "S-doc1", "2026-03-16", "15:40", 1, 20),
+				slotRow("doc1", "Dr. RNM", "S-doc1", "2026-03-16", "16:00", 1, 20),
+				slotRow("doc1", "Dr. RNM", "S-doc1", "2026-03-16", "16:20", 1, 20),
+			}, nil
+		},
+	}
+	svc := NewSlotService(rnmRepo(), scheduleRepo)
+	slots, err := svc.GetAvailableSlots(context.Background(), SlotQuery{CupsCode: "883210", IsContrasted: true, Espacios: 2, MaxSlots: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161540" {
+		t.Errorf("esperaba solo 15:40 (bloque de 40 min termina ≤16:20), got %+v", slots)
+	}
+}
+
 // TestGetAvailableSlots_PreferredDoctorAgeRestricted verifica el fix N8: si el médico
 // preferido está descalificado por edad, NO debe activar el filtro "solo preferido" (que
 // dejaría 0 slots); deben devolverse los slots de los demás médicos elegibles.
@@ -733,41 +853,51 @@ func TestGetAvailableSlots_GroupDisjointDoctorsStrict(t *testing.T) {
 
 func TestContrastWindowAllows(t *testing.T) {
 	hm := func(h, m int) int { return h*60 + m }
+	// Topes SUPERIORES fin-basados: la cita [inicio, inicio+dur) debe TERMINAR dentro de la franja.
 	for _, c := range []struct {
 		name    string
 		subject int
 		abdomen bool
-		minutes int
+		start   int
+		dur     int
 		want    bool
 	}{
-		// TAC no-abdomen
-		{"TAC 07:20 antes", 3, false, hm(7, 20), false},
-		{"TAC 07:40 ok", 3, false, hm(7, 40), true},
-		{"TAC 12:59 ok", 3, false, hm(12, 59), true},
-		{"TAC 13:00 almuerzo", 3, false, hm(13, 0), false},
-		{"TAC 14:00 ok", 3, false, hm(14, 0), true},
-		{"TAC 16:20 ok", 3, false, hm(16, 20), true},
-		{"TAC 16:40 corte", 3, false, hm(16, 40), false},
-		// TAC abdomen: no antes de 10:00
-		{"TAC abd 07:40 no", 3, true, hm(7, 40), false},
-		{"TAC abd 09:59 no", 3, true, hm(9, 59), false},
-		{"TAC abd 10:00 ok", 3, true, hm(10, 0), true},
-		{"TAC abd 14:00 ok", 3, true, hm(14, 0), true},
-		{"TAC abd 16:40 corte", 3, true, hm(16, 40), false},
-		// RNM
-		{"RNM 07:40 ok", 4, false, hm(7, 40), true},
-		{"RNM 11:59 ok", 4, false, hm(11, 59), true},
-		{"RNM 12:00 mediodia", 4, false, hm(12, 0), false},
-		{"RNM 14:00 ok", 4, false, hm(14, 0), true},
-		{"RNM 16:19 ok", 4, false, hm(16, 19), true},
-		{"RNM 16:20 corte", 4, false, hm(16, 20), false},
-		// Otras (RX): regla amplia 07:00-17:00
-		{"RX 06:59 no", 2, false, hm(6, 59), false},
-		{"RX 07:00 ok", 2, false, hm(7, 0), true},
-		{"RX 17:00 corte", 2, false, hm(17, 0), false},
+		// TAC no-abdomen: mañana inicio≥07:40 y fin≤13:00; tarde inicio≥14:00 y fin≤16:00.
+		{"TAC 07:20 antes", 3, false, hm(7, 20), 30, false},
+		{"TAC 07:40 ok", 3, false, hm(7, 40), 30, true},
+		{"TAC 12:30 termina 13:00 ok", 3, false, hm(12, 30), 30, true},
+		{"TAC 12:31 cruza almuerzo", 3, false, hm(12, 31), 30, false},
+		{"TAC 13:00 almuerzo", 3, false, hm(13, 0), 30, false},
+		{"TAC 14:00 ok", 3, false, hm(14, 0), 30, true},
+		{"TAC 15:30 termina 16:00 ok", 3, false, hm(15, 30), 30, true},
+		{"TAC 15:31 pasa de 16:00", 3, false, hm(15, 31), 30, false},
+		{"TAC 16:00 pasa de 16:00", 3, false, hm(16, 0), 30, false}, // antes válido (16:00<16:40)
+		// TAC abdomen: no antes de 10:00 (mismo tope tarde 16:00).
+		{"TAC abd 07:40 no", 3, true, hm(7, 40), 30, false},
+		{"TAC abd 09:59 no", 3, true, hm(9, 59), 30, false},
+		{"TAC abd 10:00 ok", 3, true, hm(10, 0), 30, true},
+		{"TAC abd 14:00 ok", 3, true, hm(14, 0), 30, true},
+		{"TAC abd 15:31 pasa de 16:00", 3, true, hm(15, 31), 30, false},
+		// TAC duración: bloque de 60 min → último inicio válido 15:00.
+		{"TAC tarde 60min 15:00 ok", 3, false, hm(15, 0), 60, true},
+		{"TAC tarde 60min 15:01 no", 3, false, hm(15, 1), 60, false},
+		// RNM: mañana inicio≥07:40 y fin≤12:00; tarde inicio≥14:00 y fin≤16:20.
+		{"RNM 07:40 ok", 4, false, hm(7, 40), 20, true},
+		{"RNM 11:40 termina 12:00 ok", 4, false, hm(11, 40), 20, true},
+		{"RNM 11:41 pasa de 12:00", 4, false, hm(11, 41), 20, false},
+		{"RNM 12:00 mediodia", 4, false, hm(12, 0), 20, false},
+		{"RNM 14:00 ok", 4, false, hm(14, 0), 20, true},
+		{"RNM 16:00 termina 16:20 ok", 4, false, hm(16, 0), 20, true},
+		{"RNM 16:01 pasa de 16:20", 4, false, hm(16, 1), 20, false},
+		{"RNM 16:20 corte", 4, false, hm(16, 20), 20, false},
+		// Otras (RX): regla amplia inicio≥07:00 y fin≤17:00.
+		{"RX 06:59 no", 2, false, hm(6, 59), 30, false},
+		{"RX 07:00 ok", 2, false, hm(7, 0), 30, true},
+		{"RX 16:30 termina 17:00 ok", 2, false, hm(16, 30), 30, true},
+		{"RX 16:31 pasa de 17:00", 2, false, hm(16, 31), 30, false},
 	} {
-		if got := contrastWindowAllows(c.subject, c.abdomen, c.minutes); got != c.want {
-			t.Errorf("%s: contrastWindowAllows(%d,%v,%d)=%v, quiero %v", c.name, c.subject, c.abdomen, c.minutes, got, c.want)
+		if got := contrastWindowAllows(c.subject, c.abdomen, c.start, c.dur); got != c.want {
+			t.Errorf("%s: contrastWindowAllows(%d,%v,%d,%d)=%v, quiero %v", c.name, c.subject, c.abdomen, c.start, c.dur, got, c.want)
 		}
 	}
 }

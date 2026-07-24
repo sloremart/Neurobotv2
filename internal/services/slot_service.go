@@ -216,13 +216,28 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 
 		dt, _ := time.Parse("2006-01-02", date)
 
-		// Contrastados: nunca en sábado (cualquier modalidad), y solo en las franjas permitidas por
-		// modalidad (TAC vs RNM) — el abdomen de TAC no admite contraste antes de las 10:00.
+		// Intervalo REAL de esta agenda/día (fallback a DurationMin) y duración TOTAL de la cita =
+		// nº de slots (Espacios) × intervalo. Se calcula ANTES del filtro de contraste porque las
+		// franjas de contraste se validan por HORA DE FINALIZACIÓN (inicio + duración), no de inicio:
+		// la cita completa debe TERMINAR dentro de la franja.
+		interval := intervalByAgendaDay[agendaDay{row.AgendaID, date}]
+		if interval <= 0 {
+			interval = row.DurationMin
+		}
+		blocks := query.Espacios
+		if blocks < 1 {
+			blocks = 1
+		}
+		blockDuration := blocks * interval
+
+		// Contrastados: nunca en sábado (cualquier modalidad), y solo si la cita COMPLETA cabe en una
+		// franja permitida por modalidad (TAC vs RNM). El abdomen de TAC no admite contraste antes de
+		// las 10:00. El tope superior de cada franja es de FINALIZACIÓN (la cita debe terminar ≤ tope).
 		if query.IsContrasted {
 			if dt.Weekday() == time.Saturday {
 				continue
 			}
-			if !contrastWindowAllows(subjectType, groupHasAbdomenTAC, minutes) {
+			if !contrastWindowAllows(subjectType, groupHasAbdomenTAC, minutes, blockDuration) {
 				continue
 			}
 		}
@@ -249,12 +264,6 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 			}
 		}
 
-		// Intervalo real de esta agenda/día (fallback a DurationMin si no se pudo derivar).
-		interval := intervalByAgendaDay[agendaDay{row.AgendaID, date}]
-		if interval <= 0 {
-			interval = row.DurationMin
-		}
-
 		// Consecutive-slot availability for multi-space procedures.
 		if query.Espacios > 1 {
 			free := freeByAgendaDay[agendaDay{row.AgendaID, date}]
@@ -265,13 +274,8 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 					allFree = false
 					break
 				}
-				// N1+N9: reaplicar las ventanas horarias a CADA slot del bloque, no solo al
-				// inicial. Un bloque que arranca dentro de ventana no debe extenderse fuera de
-				// ella (la cota inferior no hace falta: los slots van hacia adelante en el tiempo).
-				if query.IsContrasted && slotMin >= 17*60 {
-					allFree = false
-					break
-				}
+				// La franja de contraste ya se validó por finalización (inicio+duración) arriba;
+				// aquí solo resta cuidar la ventana de preparación por-CUP (N9) en cada slot del bloque.
 				if cupHasWindow && slotMin >= cupMaxHour*60 {
 					allFree = false
 					break
@@ -327,25 +331,34 @@ func isAbdomenTAC(cupsCode string) bool {
 	return tacAbdomenCups[strings.SplitN(cupsCode, "-", 2)[0]]
 }
 
-// contrastWindowAllows indica si un slot (minutos desde medianoche) admite un estudio CONTRASTADO,
-// según la modalidad (asunto) y si es abdomen de TAC. Solo aplica L–V (el sábado se filtra aparte).
-// Franjas confirmadas por la clínica (intervalos [inicio, fin) en minutos):
-//   - TAC (asunto 3): [07:40,13:00) ∪ [14:00,16:40); abdomen no antes de 10:00 → [10:00,13:00) ∪ [14:00,16:40).
-//   - RNM (asunto 4): [07:40,12:00) ∪ [14:00,16:20).
+// contrastWindowAllows indica si un estudio CONTRASTADO cabe COMPLETO en una franja permitida, para un
+// bloque que empieza en startMin (minutos desde medianoche) y dura blockDuration (nº de slots × intervalo).
+// Solo aplica L–V (el sábado se filtra aparte).
+//
+// Los TOPES SUPERIORES de cada franja son de FINALIZACIÓN: la cita debe TERMINAR (startMin+blockDuration)
+// dentro de la franja, no solo empezar en ella; así una cita de varios slots no se sale del límite.
+// Franjas confirmadas por la clínica (cota inferior = inicio; cota superior = fin):
+//   - TAC (asunto 3): mañana inicio ≥ 07:40 y fin ≤ 13:00; tarde inicio ≥ 14:00 y fin ≤ 16:00.
+//     Abdomen no antes de 10:00 → mañana inicio ≥ 10:00. (El tope de la tarde es 16:00, no 16:40: el
+//     resumen del documento de reglas decía 16:40 pero la TABLA —la fuente— define 14:00–16:00.)
+//   - RNM (asunto 4): mañana inicio ≥ 07:40 y fin ≤ 12:00; tarde inicio ≥ 14:00 y fin ≤ 16:20.
 //   - Otras modalidades: RX y demás no tienen estudios contrastados; si aun así llegara uno, se mantiene
-//     la regla amplia previa (07:00–17:00) para no bloquear de más.
-func contrastWindowAllows(subjectType int, abdomen bool, minutes int) bool {
+//     la regla amplia previa (inicio ≥ 07:00, fin ≤ 17:00) para no bloquear de más.
+func contrastWindowAllows(subjectType int, abdomen bool, startMin, blockDuration int) bool {
+	endMin := startMin + blockDuration
 	switch subjectType {
 	case 3: // TAC
-		start := 7*60 + 40
+		morningStart := 7*60 + 40
 		if abdomen {
-			start = 10 * 60
+			morningStart = 10 * 60
 		}
-		return (minutes >= start && minutes < 13*60) || (minutes >= 14*60 && minutes < 16*60+40)
+		return (startMin >= morningStart && endMin <= 13*60) ||
+			(startMin >= 14*60 && endMin <= 16*60)
 	case 4: // RNM
-		return (minutes >= 7*60+40 && minutes < 12*60) || (minutes >= 14*60 && minutes < 16*60+20)
+		return (startMin >= 7*60+40 && endMin <= 12*60) ||
+			(startMin >= 14*60 && endMin <= 16*60+20)
 	default:
-		return minutes >= 7*60 && minutes < 17*60
+		return startMin >= 7*60 && endMin <= 17*60
 	}
 }
 
