@@ -70,9 +70,15 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		return
 	}
 
-	// 4. Derive flags from Observations
+	// 4. Derive flags from Observations + nombres de CUPS (una cita creada por un agente puede no
+	// traer "Contrastada" en la observación pero sí "CON CONTRASTE" en el nombre → sin esto se
+	// reprogramaría como simple y podría ofrecer un slot fuera de la ventana de contraste).
+	procNames := []string{cupsName}
+	for _, p := range appt.Procedures {
+		procNames = append(procNames, p.CupName)
+	}
 	isContrasted := "0"
-	if utils.ObservationHasContrast(appt.Observations) {
+	if utils.AppointmentIsContrasted(appt.Observations, procNames...) {
 		isContrasted = "1"
 	}
 	isSedated := "0"

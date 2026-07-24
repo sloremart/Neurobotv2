@@ -31,6 +31,35 @@ func TestObservationHasContrast(t *testing.T) {
 	}
 }
 
+func TestAppointmentIsContrasted(t *testing.T) {
+	cases := []struct {
+		name  string
+		obs   string
+		names []string
+		want  bool
+	}{
+		// La observación manda cuando existe.
+		{"obs contrastada", "Contrastada", []string{"TAC DE CRANEO"}, true},
+		{"obs negada gana al nombre ambiguo", "sin contraste", []string{"TAC DE CRANEO"}, false},
+		// Sin señal en la observación, el NOMBRE del CUP resuelve (cita de agente).
+		{"nombre con contraste", "", []string{"TAC DE CRANEO CON CONTRASTE"}, true},
+		{"nombre simple y con contraste", "", []string{"TAC DE CRANEO SIMPLE Y CON CONTRASTE"}, true},
+		{"nombre con contraste + acentos/caso", "creat 05 may", []string{"Rnm De Columna Con Contraste"}, true},
+		// Nombres que NO deben marcar contraste.
+		{"nombre simple", "", []string{"TAC DE CRANEO SIMPLE"}, false},
+		{"nombre sin contraste", "", []string{"TAC DE ABDOMEN SIN CONTRASTE"}, false},
+		{"nombre neutro", "", []string{"RNM DE RODILLA"}, false},
+		{"sin datos", "", nil, false},
+		// Multi-CUP: basta que UN nombre sea contrastado.
+		{"un cup contrastado del grupo", "", []string{"TAC DE TORAX", "TAC DE ABDOMEN CON CONTRASTE"}, true},
+	}
+	for _, c := range cases {
+		if got := AppointmentIsContrasted(c.obs, c.names...); got != c.want {
+			t.Errorf("%s: AppointmentIsContrasted(%q, %v) = %v, want %v", c.name, c.obs, c.names, got, c.want)
+		}
+	}
+}
+
 func TestObservationHasSedation(t *testing.T) {
 	cases := []struct {
 		obs  string

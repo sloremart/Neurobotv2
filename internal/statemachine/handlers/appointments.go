@@ -342,8 +342,15 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 				}
 			}
 
+			// Contraste al reprogramar: observación de SIESA + nombre del/los CUPS (una cita creada por
+			// un agente puede no traer "Contrastada" en la observación pero sí "CON CONTRASTE" en el
+			// nombre). Sin esto se reprogramaría como simple y podría ofrecer un slot fuera de ventana.
+			procNames := []string{cupsName}
+			for _, p := range selectedAppt.Procedures {
+				procNames = append(procNames, p.CupName)
+			}
 			isContrasted := "0"
-			if utils.ObservationHasContrast(selectedAppt.Observations) {
+			if utils.AppointmentIsContrasted(selectedAppt.Observations, procNames...) {
 				isContrasted = "1"
 			}
 			isSedated := "0"

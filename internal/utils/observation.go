@@ -33,6 +33,31 @@ func ObservationHasContrast(obs string) bool {
 	return true
 }
 
+// AppointmentIsContrasted decide si una cita ya creada (al REPROGRAMAR/confirmar, donde ya no hay
+// orden ni OCR) es contrastada. Combina la observación libre de SIESA con el NOMBRE de los
+// procedimientos: un nombre con "con contraste" (cubre "SIMPLE Y CON CONTRASTE") marca contraste
+// aunque la observación no lo diga —p.ej. citas creadas por un AGENTE que no escribió "Contrastada"—.
+// Sin esto, esas citas se reprogramaban como simples y podían ofrecer un slot fuera de la ventana de
+// contraste. Sesgo a detectar (un falso negativo agenda en ventana equivocada = riesgo clínico).
+func AppointmentIsContrasted(observations string, procedureNames ...string) bool {
+	if ObservationHasContrast(observations) {
+		return true
+	}
+	for _, name := range procedureNames {
+		if nameIndicatesContrast(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// nameIndicatesContrast detecta el marcador inequívoco "con contraste" en el nombre de un
+// procedimiento. Solo suma señal cuando el propio nombre es explícitamente contrastado; no infiere
+// de "simple" ni de nombres ambiguos (esos caen en la observación). "sin contraste" no lo dispara.
+func nameIndicatesContrast(name string) bool {
+	return strings.Contains(normalizeObs(name), "con contraste")
+}
+
 // ObservationHasSedation detecta si la observación indica sedación/anestesia, con las mismas
 // reglas de normalización y negación que ObservationHasContrast.
 func ObservationHasSedation(obs string) bool {

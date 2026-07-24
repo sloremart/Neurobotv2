@@ -410,8 +410,14 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		cupsName = appt.Procedures[0].CupName
 	}
 
+	// Contraste: observación de SIESA + nombre del/los CUPS (cita de agente sin "Contrastada" en la
+	// observación pero con "CON CONTRASTE" en el nombre → evita reprogramar como simple fuera de ventana).
+	procNames := []string{cupsName}
+	for _, p := range appt.Procedures {
+		procNames = append(procNames, p.CupName)
+	}
 	isContrasted := "0"
-	if utils.ObservationHasContrast(appt.Observations) {
+	if utils.AppointmentIsContrasted(appt.Observations, procNames...) {
 		isContrasted = "1"
 	}
 	isSedated := "0"
