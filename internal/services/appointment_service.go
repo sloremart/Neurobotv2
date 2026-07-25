@@ -271,7 +271,7 @@ func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contra
 	}
 
 	now := time.Now()
-	count, err := s.repo.CountMonthlyByGroup(ctx, mrcGroups[groupName].CupsCodes, now.Year(), int(now.Month()))
+	count, err := s.repo.CountMonthlyByGroup(ctx, mrcGroups[groupName].CupsCodes, now.Year(), int(now.Month()), "")
 	if err != nil {
 		return false, "", err
 	}
@@ -287,7 +287,9 @@ func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contra
 
 // CheckMRCLimitForMonth verifica si el grupo CUPS ha alcanzado el límite MRC para un mes específico.
 // Retorna true si está bloqueado (al límite). Solo aplica a pacientes MRC (contrato 5/6).
-func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, contractCode string, quantity, year, month int) (bool, error) {
+// excludeApptID (si != "") descuenta esa cita del conteo del mes: se usa al REPROGRAMAR para no contar
+// la cita que se está moviendo (mismo mes → su cantidad no cuenta; otro mes → no está en ese conteo).
+func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, contractCode string, quantity, year, month int, excludeApptID string) (bool, error) {
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
 		return false, nil
 	}
@@ -300,7 +302,7 @@ func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode
 		return false, nil
 	}
 
-	count, err := s.repo.CountMonthlyByGroup(ctx, mrcGroups[groupName].CupsCodes, year, month)
+	count, err := s.repo.CountMonthlyByGroup(ctx, mrcGroups[groupName].CupsCodes, year, month, excludeApptID)
 	if err != nil {
 		return false, err
 	}

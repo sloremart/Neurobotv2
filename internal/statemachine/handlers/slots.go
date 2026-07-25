@@ -26,6 +26,34 @@ import (
 // leída de procedures_json + current_procedure_idx. La orden llega con el CUP base y la cantidad
 // real (del OCR, notación "(#N)") vive en CUPSEntry.Quantity. Se suma sobre los CUPS del grupo
 // (mín. 1). Se usa para que el tope mensual MRC sume la cantidad real de esta orden, no 1.
+// mrcMonthFilter arma el filtro de tope mensual MRC para la búsqueda de slots. Aplica cuando el flujo
+// normal marcó mrc_limit_check, o SIEMPRE en reprogramación (reschedule_appt_id presente): al reprogramar
+// el tope debe RE-EVALUARSE. Excluye del conteo la cita que se reprograma: si el slot elegido cae en el
+// MISMO mes de esa cita, su cantidad no se cuenta (es un movimiento, no consumo nuevo); si cae en OTRO
+// mes, la cita no está en ese conteo y la evaluación es la normal. Devuelve nil si no aplica.
+// CheckMRCLimitForMonth se auto-protege (retorna no-bloqueado para no-MRC), así que activarlo de más
+// es inofensivo. La lista de espera NO usa este helper (arma su propio filtro sin exclusión: es alta nueva).
+func mrcMonthFilter(ctx context.Context, apptSvc *services.AppointmentService, sess *session.Session, code string) func(int, int) (bool, error) {
+	if apptSvc == nil {
+		return nil
+	}
+	rescheduleID := sess.GetContext("reschedule_appt_id")
+	if sess.GetContext("mrc_limit_check") != "1" && rescheduleID == "" {
+		return nil
+	}
+	contract := sess.GetContext("patient_contract")
+	qty := currentProcQuantity(sess)
+	return func(year, month int) (bool, error) {
+		blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month, rescheduleID)
+		if err != nil {
+			// N-30: fail-open (no bloquear el mes ante un error transitorio) pero loguear.
+			slog.Warn("mrc_month_filter_error_fail_open", "cups_code", code, "year", year, "month", month, "error", err)
+			return true, nil
+		}
+		return !blocked, nil
+	}
+}
+
 func currentProcQuantity(sess *session.Session) int {
 	var groups []services.CUPSGroup
 	if err := json.Unmarshal([]byte(sess.GetContext("procedures_json")), &groups); err != nil {
@@ -466,20 +494,8 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				ClinicAddress:   address,
 			}
 
-			// MRC monthly limit filter (MRC patient + mrcGroup CUPS)
-			if sess.GetContext("mrc_limit_check") == "1" && apptSvc != nil {
-				contract := sess.GetContext("patient_contract")
-				qty := currentProcQuantity(sess)
-				query.MonthFilter = func(year, month int) (bool, error) {
-					blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month)
-					if err != nil {
-						// N-30: fail-open (no bloquear el mes ante un error transitorio) pero loguear.
-						slog.Warn("mrc_month_filter_error_fail_open", "cups_code", code, "year", year, "month", month, "error", err)
-						return true, nil
-					}
-					return !blocked, nil
-				}
-			}
+			// MRC monthly limit filter (MRC patient + mrcGroup CUPS), incl. reprogramación.
+			query.MonthFilter = mrcMonthFilter(ctx, apptSvc, sess, code)
 
 			slots, err = slotSvc.GetAvailableSlots(ctx, query)
 			if err == nil && len(slots) > 0 {
@@ -511,19 +527,7 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 					MaxSlots:      5,
 					ClinicAddress: address,
 				}
-				if sess.GetContext("mrc_limit_check") == "1" && apptSvc != nil {
-					contract := sess.GetContext("patient_contract")
-					qty := currentProcQuantity(sess)
-					query.MonthFilter = func(year, month int) (bool, error) {
-						blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month)
-						if err != nil {
-							// N-30: fail-open con log (igual que la rama principal de búsqueda).
-							slog.Warn("mrc_month_filter_error_fail_open", "cups_code", code, "year", year, "month", month, "error", err)
-							return true, nil
-						}
-						return !blocked, nil
-					}
-				}
+				query.MonthFilter = mrcMonthFilter(ctx, apptSvc, sess, code)
 				slots, err = slotSvc.GetAvailableSlots(ctx, query)
 				if err == nil && len(slots) > 0 {
 					successfulCupsCode = code

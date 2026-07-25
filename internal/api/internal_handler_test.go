@@ -115,7 +115,7 @@ func (m *mockApptRepoAPI) FindLastDoctorForCups(ctx context.Context, pid string,
 	return "", nil
 }
 
-func (m *mockApptRepoAPI) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int) (int, error) {
+func (m *mockApptRepoAPI) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int, _ string) (int, error) {
 	return 0, nil
 }
 

@@ -1362,7 +1362,11 @@ func (r *AppointmentRepo) FindLastDoctorForCups(ctx context.Context, patientID s
 	return doc, err
 }
 
-func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error) {
+// CountMonthlyByGroup cuenta el consumo del grupo MRC en un mes. excludeApptID (si != "") descuenta esa
+// cita del conteo: se usa al REPROGRAMAR para no contar la cita que se está moviendo. Si el nuevo slot
+// cae en el MISMO mes de esa cita, su cantidad queda excluida (movimiento, no consumo nuevo); si cae en
+// OTRO mes, la cita no está en ese mes de todas formas y el conteo es el normal.
+func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int, excludeApptID string) (int, error) {
 	if len(cupsCodes) == 0 {
 		return 0, nil
 	}
@@ -1380,8 +1384,8 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 	//     SUM(Cantidad) subcontaba (1 por una variante de 8) → riesgo de pasar el tope del contrato.
 	//   - LEFT(...CHARINDEX...) matches the base code so all variants of a CUPS belong to the group.
 	// citas.contrato is varchar in SIESA, hence the string literals.
-	clause, cupsArgs := inParams(cupsCodes, 3)
-	allArgs := append([]interface{}{startDate, endDate}, cupsArgs...)
+	clause, cupsArgs := inParams(cupsCodes, 4)
+	allArgs := append([]interface{}{startDate, endDate, excludeApptID}, cupsArgs...)
 
 	var count int
 	err := r.db.QueryRowContext(
@@ -1399,7 +1403,8 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 	WHERE c.fecha >= @p1 AND c.fecha < @p2
 	  AND c.contrato IN ('5', '6')
 	  AND LEFT(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento + '-') - 1) IN (%s)
-	  AND c.estado <> 'C'`, clause), allArgs...,
+	  AND c.estado <> 'C'
+	  AND (@p3 = '' OR CAST(c.id AS VARCHAR(20)) <> @p3)`, clause), allArgs...,
 	).Scan(&count)
 	return count, err
 }

@@ -210,7 +210,7 @@ func (m *MockAppointmentRepo) FindLastDoctorForCups(ctx context.Context, patient
 	return "", nil
 }
 
-func (m *MockAppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error) {
+func (m *MockAppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int, _ string) (int, error) {
 	if m.CountMonthlyByGroupFn != nil {
 		return m.CountMonthlyByGroupFn(ctx, cupsCodes, year, month)
 	}

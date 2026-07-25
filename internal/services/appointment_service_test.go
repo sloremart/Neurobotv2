@@ -16,6 +16,7 @@ type mockAppointmentRepo struct {
 	hasFutureForCupFn       func(ctx context.Context, pid, cup string) (bool, error)
 	findLastDoctorForCupsFn func(ctx context.Context, pid string, cups []string) (string, error)
 	countMonthlyByGroupFn   func(ctx context.Context, cups []string, year, month int) (int, error)
+	lastExcludeApptID       string // capturado por CountMonthlyByGroup para asertar la exclusión al reprogramar
 	findUpcomingByPatientFn func(ctx context.Context, patientID string) ([]domain.Appointment, error)
 	findByIDFn              func(ctx context.Context, id string) (*domain.Appointment, error)
 	findByAgendaAndDateFn   func(ctx context.Context, agendaID int, date string) ([]domain.Appointment, error)
@@ -99,7 +100,8 @@ func (m *mockAppointmentRepo) FindLastDoctorForCups(ctx context.Context, pid str
 	return "", nil
 }
 
-func (m *mockAppointmentRepo) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int) (int, error) {
+func (m *mockAppointmentRepo) CountMonthlyByGroup(ctx context.Context, cups []string, year, month int, excludeApptID string) (int, error) {
+	m.lastExcludeApptID = excludeApptID
 	if m.countMonthlyByGroupFn != nil {
 		return m.countMonthlyByGroupFn(ctx, cups, year, month)
 	}
@@ -450,6 +452,32 @@ func TestCheckSOATLimit_ExceedsLimit(t *testing.T) {
 	}
 }
 
+// TestCheckMRCLimitForMonth_ExcludesRescheduledAppt: al reprogramar se pasa el id de la cita que se
+// mueve para descontarla del conteo del grupo (mismo mes → no cuenta; otro mes → no está en el conteo).
+func TestCheckMRCLimitForMonth_ExcludesRescheduledAppt(t *testing.T) {
+	repo := &mockAppointmentRepo{
+		countMonthlyByGroupFn: func(_ context.Context, _ []string, _, _ int) (int, error) { return 0, nil },
+	}
+	svc := NewAppointmentService(repo, nil)
+
+	// MRC (6) + CUP de grupo MRC (861411) + excludeApptID → se propaga al conteo del mes.
+	if _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 7, "APT-RESCH-9"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.lastExcludeApptID != "APT-RESCH-9" {
+		t.Errorf("esperaba excludeApptID=APT-RESCH-9 propagado al conteo, got %q", repo.lastExcludeApptID)
+	}
+
+	// Contrato Evento (4): ni siquiera consulta el conteo → no se pasa exclusión.
+	repo.lastExcludeApptID = ""
+	if _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 7, "APT-X"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.lastExcludeApptID != "" {
+		t.Errorf("Evento no debía consultar el conteo, pero se pasó exclude=%q", repo.lastExcludeApptID)
+	}
+}
+
 func TestCheckMRCLimit_EventoContract_NotBlocked(t *testing.T) {
 	// Contract 4 (SANITAS EVENTO CONTRIBUTIVO) is NOT subject to MRC limits
 	repo := &mockAppointmentRepo{
@@ -506,7 +534,7 @@ func TestCheckMRCLimitForMonth_WithinLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 4)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 4, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +551,7 @@ func TestCheckMRCLimitForMonth_AtLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 3)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 3, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +569,7 @@ func TestCheckMRCLimitForMonth_NonMRCContract(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 3)
+	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 3, "")
 	if err != nil {
 		t.Fatal(err)
 	}

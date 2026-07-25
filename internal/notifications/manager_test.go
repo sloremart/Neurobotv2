@@ -113,7 +113,7 @@ func (m *mockApptRepoNotif) FindLastDoctorForCups(ctx context.Context, patientID
 	return "", nil
 }
 
-func (m *mockApptRepoNotif) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error) {
+func (m *mockApptRepoNotif) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int, _ string) (int, error) {
 	return 0, nil
 }
 

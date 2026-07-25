@@ -51,7 +51,9 @@ type AppointmentRepository interface {
 	DeleteBatch(ctx context.Context, ids []string) error
 	HasFutureForCup(ctx context.Context, patientID, cupCode string) (bool, error)
 	FindLastDoctorForCups(ctx context.Context, patientID string, cups []string) (string, error)
-	CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int) (int, error)
+	// CountMonthlyByGroup cuenta el consumo del grupo MRC en un mes. excludeApptID (si != "")
+	// descuenta esa cita del conteo (usado al reprogramar: no contar la cita que se mueve).
+	CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int, excludeApptID string) (int, error)
 	FindPendingByDate(ctx context.Context, date string) ([]domain.Appointment, error)
 	// RescheduleDayOfAgenda mueve TODAS las citas de UN día de una agenda a otra fecha (crea la agenda
 	// destino duplicando, o la mueve a una existente del mismo médico), en UNA transacción; multi-slot
