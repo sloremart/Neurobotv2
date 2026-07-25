@@ -49,6 +49,23 @@ func (r *SessionRepo) FindActiveByPhone(ctx context.Context, phone string) (*ses
 	return r.scanSession(ctx, query, phone)
 }
 
+// FindCurrentByPhone busca la sesión que OCUPA el cupo único del teléfono (status activo/escalado),
+// SIN filtrar por expires_at. Es el mismo predicado del índice único de sesión activa: una sesión
+// escalada ya VENCIDA es invisible para FindActiveByPhone pero sigue bloqueando el INSERT
+// (ErrActiveSessionExists). Los comandos de agente y el checker de escalaciones necesitan ESTA vista
+// (auditoría 2026-07-25: comando no_show en bucle infinito cada 60s contra una escalada vencida).
+func (r *SessionRepo) FindCurrentByPhone(ctx context.Context, phone string) (*session.Session, error) {
+	query := `SELECT id, phone_number, current_state, status, menu_option,
+	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
+	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
+	          last_activity_at, expires_at, created_at
+	          FROM sessions
+	          WHERE phone_number = ? AND status IN ('active','escalated')
+	          ORDER BY last_activity_at DESC LIMIT 1`
+
+	return r.scanSession(ctx, query, phone)
+}
+
 // scanSession scans a single session row from the given query.
 func (r *SessionRepo) scanSession(ctx context.Context, query string, args ...interface{}) (*session.Session, error) {
 	var s session.Session

@@ -448,18 +448,19 @@ func (m *MockPriceRepo) FindPrice(ctx context.Context, cupCode, entityCode strin
 
 // MockSessionRepo implements session.SessionRepo with in-memory storage.
 type MockSessionRepo struct {
-	FindActiveByPhoneFn func(ctx context.Context, phone string) (*session.Session, error)
-	CreateFn            func(ctx context.Context, s *session.Session) error
-	SaveFn              func(ctx context.Context, s *session.Session) error
-	UpdateStatusFn      func(ctx context.Context, sessionID, status string) error
-	RenewExpiryFn       func(ctx context.Context, sessionID string, expiresAt time.Time) error
-	ExpireSessionsFn    func(ctx context.Context) (int64, error)
-	SetContextFn        func(ctx context.Context, sessionID, key, value string) error
-	SetContextBatchFn   func(ctx context.Context, sessionID string, kvs map[string]string) error
-	GetContextFn        func(ctx context.Context, sessionID, key string) (string, error)
-	GetAllContextFn     func(ctx context.Context, sessionID string) (map[string]string, error)
-	ClearContextFn      func(ctx context.Context, sessionID string, keys ...string) error
-	ClearAllContextFn   func(ctx context.Context, sessionID string) error
+	FindActiveByPhoneFn  func(ctx context.Context, phone string) (*session.Session, error)
+	FindCurrentByPhoneFn func(ctx context.Context, phone string) (*session.Session, error)
+	CreateFn             func(ctx context.Context, s *session.Session) error
+	SaveFn               func(ctx context.Context, s *session.Session) error
+	UpdateStatusFn       func(ctx context.Context, sessionID, status string) error
+	RenewExpiryFn        func(ctx context.Context, sessionID string, expiresAt time.Time) error
+	ExpireSessionsFn     func(ctx context.Context) (int64, error)
+	SetContextFn         func(ctx context.Context, sessionID, key, value string) error
+	SetContextBatchFn    func(ctx context.Context, sessionID string, kvs map[string]string) error
+	GetContextFn         func(ctx context.Context, sessionID, key string) (string, error)
+	GetAllContextFn      func(ctx context.Context, sessionID string) (map[string]string, error)
+	ClearContextFn       func(ctx context.Context, sessionID string, keys ...string) error
+	ClearAllContextFn    func(ctx context.Context, sessionID string) error
 }
 
 func (m *MockSessionRepo) FindActiveByPhone(ctx context.Context, phone string) (*session.Session, error) {
@@ -467,6 +468,15 @@ func (m *MockSessionRepo) FindActiveByPhone(ctx context.Context, phone string) (
 		return m.FindActiveByPhoneFn(ctx, phone)
 	}
 	return nil, nil
+}
+
+// FindCurrentByPhone devuelve la sesión activa/escalada sin filtro de expiry (delegable por test).
+func (m *MockSessionRepo) FindCurrentByPhone(ctx context.Context, phone string) (*session.Session, error) {
+	if m.FindCurrentByPhoneFn != nil {
+		return m.FindCurrentByPhoneFn(ctx, phone)
+	}
+	// Fallback: mismo comportamiento que FindActiveByPhone si el test no lo stubea.
+	return m.FindActiveByPhone(ctx, phone)
 }
 
 func (m *MockSessionRepo) Create(ctx context.Context, s *session.Session) error {

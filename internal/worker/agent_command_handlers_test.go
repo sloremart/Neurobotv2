@@ -63,6 +63,37 @@ func TestAgentCommand_NoShow_ReturnsToBot(t *testing.T) {
 	}
 }
 
+// TestAgentCommand_NoShow_AppliesOnExpiredEscalated (bucle agent cmd, auditoría 2026-07-25): la sesión
+// escalada VENCIDA es invisible para FindOrCreate (filtra expires_at) pero bloquea el Create →
+// ErrActiveSessionExists en bucle cada 60s (el checker re-encolaba el no_show sin fin). El comando debe
+// resolverse vía FindForAgentCommand (sin filtro de expiry) y aplicar el no_show a la primera.
+func TestAgentCommand_NoShow_AppliesOnExpiredEscalated(t *testing.T) {
+	pool, sm, sender, sess := escalatedPool(t)
+	sess.Context["pre_escalation_state"] = "ASK_DOCUMENT"
+	// Simular el estado real del bug: FindOrCreate NO ve la sesión (vencida) y el Create choca.
+	sm.findOrCreateFn = func(_ context.Context, _ string) (*session.Session, bool, error) {
+		return nil, false, session.ErrActiveSessionExists
+	}
+	sm.findForAgentCmdFn = func(_ context.Context, _ string) (*session.Session, error) {
+		return sess, nil
+	}
+	noShowResumed := ""
+	sm.resumeNoShowFn = func(_ context.Context, s *session.Session, target string) error {
+		noShowResumed = target
+		s.Status = session.StatusActive
+		return nil
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "no_show", Phone: "+573001234567"})
+
+	if noShowResumed != "ASK_DOCUMENT" {
+		t.Fatalf("el no_show debe aplicarse sobre la escalada vencida (via FindForAgentCommand), got %q", noShowResumed)
+	}
+	if countSent(sender, "text") < 1 {
+		t.Errorf("esperaba aviso de no-show al paciente, got %d", countSent(sender, "text"))
+	}
+}
+
 // TestAgentCommand_NoShow_SkipsIfNotEscalated: guard de idempotencia — si la sesión ya no está escalada
 // (el agente respondió, o ya se procesó otro no_show), no re-promptea de nuevo.
 func TestAgentCommand_NoShow_SkipsIfNotEscalated(t *testing.T) {

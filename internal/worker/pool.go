@@ -50,6 +50,9 @@ type StalePendingSource interface {
 type SessionManagement interface {
 	PhoneMutex() *session.PhoneMutex
 	FindOrCreate(ctx context.Context, phone string) (*session.Session, bool, error)
+	// FindForAgentCommand devuelve la sesión activa/escalada del teléfono AUNQUE esté vencida
+	// (los comandos de agente nunca crean sesión). nil sin error = no hay sesión aplicable.
+	FindForAgentCommand(ctx context.Context, phone string) (*session.Session, error)
 	RenewTimeout(ctx context.Context, sess *session.Session) error
 	TouchPatientActivity(ctx context.Context, sess *session.Session) error
 	TouchAgentActivity(ctx context.Context, phone string) error
@@ -679,8 +682,10 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(cmd.Phone)
 
-	// 2. Find escalated session
-	sess, _, err := p.sessionManager.FindOrCreate(parentCtx, cmd.Phone)
+	// 2. Find escalated session — NUNCA FindOrCreate: un comando de agente no crea sesión, y la
+	// escalada puede estar VENCIDA (invisible para FindOrCreate pero bloqueante para el Create →
+	// ErrActiveSessionExists en bucle: el checker re-encolaba el no_show cada 60s; auditoría 07-25).
+	sess, err := p.sessionManager.FindForAgentCommand(parentCtx, cmd.Phone)
 	if err != nil {
 		slog.Error("session error (agent cmd)", "phone", utils.MaskPhone(cmd.Phone), "error", err)
 		return

@@ -11,25 +11,26 @@ import (
 
 // mockRepo is a test-local mock implementing SessionRepo.
 type mockRepo struct {
-	findActiveByPhoneFn func(ctx context.Context, phone string) (*Session, error)
-	createFn            func(ctx context.Context, s *Session) error
-	saveFn              func(ctx context.Context, s *Session) error
-	updateStatusFn      func(ctx context.Context, sessionID, status string) error
-	renewExpiryFn       func(ctx context.Context, sessionID string, expiresAt time.Time) error
-	setContextFn        func(ctx context.Context, sessionID, key, value string) error
-	setContextBatchFn   func(ctx context.Context, sessionID string, kvs map[string]string) error
-	getContextFn        func(ctx context.Context, sessionID, key string) (string, error)
-	getAllContextFn     func(ctx context.Context, sessionID string) (map[string]string, error)
-	clearContextFn      func(ctx context.Context, sessionID string, keys ...string) error
-	clearAllContextFn   func(ctx context.Context, sessionID string) error
-	markEscalatedFn     func(ctx context.Context, sessionID, teamID string) error
-	resumeSessionFn     func(ctx context.Context, sessionID, newState string, timeoutMinutes int) error
-	findEscalatedFn     func(ctx context.Context) ([]EscalatedSession, error)
-	touchPatientFn      func(ctx context.Context, sessionID string, expiresAt time.Time) error
-	touchAgentFn        func(ctx context.Context, phone string) error
-	incrementRemFn      func(ctx context.Context, sessionID string) error
-	markAbandonedFn     func(ctx context.Context, sessionID string) error
-	updateConvIDFn      func(ctx context.Context, phone, conversationID string) error
+	findActiveByPhoneFn  func(ctx context.Context, phone string) (*Session, error)
+	findCurrentByPhoneFn func(ctx context.Context, phone string) (*Session, error)
+	createFn             func(ctx context.Context, s *Session) error
+	saveFn               func(ctx context.Context, s *Session) error
+	updateStatusFn       func(ctx context.Context, sessionID, status string) error
+	renewExpiryFn        func(ctx context.Context, sessionID string, expiresAt time.Time) error
+	setContextFn         func(ctx context.Context, sessionID, key, value string) error
+	setContextBatchFn    func(ctx context.Context, sessionID string, kvs map[string]string) error
+	getContextFn         func(ctx context.Context, sessionID, key string) (string, error)
+	getAllContextFn      func(ctx context.Context, sessionID string) (map[string]string, error)
+	clearContextFn       func(ctx context.Context, sessionID string, keys ...string) error
+	clearAllContextFn    func(ctx context.Context, sessionID string) error
+	markEscalatedFn      func(ctx context.Context, sessionID, teamID string) error
+	resumeSessionFn      func(ctx context.Context, sessionID, newState string, timeoutMinutes int) error
+	findEscalatedFn      func(ctx context.Context) ([]EscalatedSession, error)
+	touchPatientFn       func(ctx context.Context, sessionID string, expiresAt time.Time) error
+	touchAgentFn         func(ctx context.Context, phone string) error
+	incrementRemFn       func(ctx context.Context, sessionID string) error
+	markAbandonedFn      func(ctx context.Context, sessionID string) error
+	updateConvIDFn       func(ctx context.Context, phone, conversationID string) error
 }
 
 func (r *mockRepo) FindActiveByPhone(ctx context.Context, phone string) (*Session, error) {
@@ -37,6 +38,13 @@ func (r *mockRepo) FindActiveByPhone(ctx context.Context, phone string) (*Sessio
 		return r.findActiveByPhoneFn(ctx, phone)
 	}
 	return nil, nil
+}
+
+func (r *mockRepo) FindCurrentByPhone(ctx context.Context, phone string) (*Session, error) {
+	if r.findCurrentByPhoneFn != nil {
+		return r.findCurrentByPhoneFn(ctx, phone)
+	}
+	return r.FindActiveByPhone(ctx, phone)
 }
 
 func (r *mockRepo) Create(ctx context.Context, s *Session) error {
@@ -254,6 +262,9 @@ func TestRenewTimeout(t *testing.T) {
 	}
 	mgr := NewSessionManager(repo, 120)
 	sess := newTestSession()
+	// Expiry corto a propósito: newTestSession usa Now+2h (== timeout) y en Windows dos time.Now()
+	// consecutivos caen en el mismo tick del reloj → After() sobre iguales fallaba (flake).
+	sess.ExpiresAt = time.Now().Add(30 * time.Minute)
 	oldExpiry := sess.ExpiresAt
 
 	err := mgr.RenewTimeout(context.Background(), sess)

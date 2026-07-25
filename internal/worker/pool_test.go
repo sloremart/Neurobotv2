@@ -20,17 +20,18 @@ import (
 // --- Mock SessionManagement ---
 
 type mockSessionMgmt struct {
-	mutex          *session.PhoneMutex
-	findOrCreateFn func(ctx context.Context, phone string) (*session.Session, bool, error)
-	renewFn        func(ctx context.Context, sess *session.Session) error
-	touchPatientFn func(ctx context.Context, sess *session.Session) error
-	touchAgentFn   func(ctx context.Context, phone string) error
-	saveFn         func(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error
-	clearAllFn     func(ctx context.Context, sess *session.Session) error
-	escalateFn     func(ctx context.Context, sess *session.Session, teamID string) error
-	resumeFn       func(ctx context.Context, sess *session.Session, targetState string) error
-	resumeNoShowFn func(ctx context.Context, sess *session.Session, targetState string) error
-	completeFn     func(ctx context.Context, sess *session.Session) error
+	mutex             *session.PhoneMutex
+	findOrCreateFn    func(ctx context.Context, phone string) (*session.Session, bool, error)
+	findForAgentCmdFn func(ctx context.Context, phone string) (*session.Session, error)
+	renewFn           func(ctx context.Context, sess *session.Session) error
+	touchPatientFn    func(ctx context.Context, sess *session.Session) error
+	touchAgentFn      func(ctx context.Context, phone string) error
+	saveFn            func(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error
+	clearAllFn        func(ctx context.Context, sess *session.Session) error
+	escalateFn        func(ctx context.Context, sess *session.Session, teamID string) error
+	resumeFn          func(ctx context.Context, sess *session.Session, targetState string) error
+	resumeNoShowFn    func(ctx context.Context, sess *session.Session, targetState string) error
+	completeFn        func(ctx context.Context, sess *session.Session) error
 }
 
 func newMockSessionMgmt() *mockSessionMgmt {
@@ -43,6 +44,15 @@ func (m *mockSessionMgmt) FindOrCreate(ctx context.Context, phone string) (*sess
 		return m.findOrCreateFn(ctx, phone)
 	}
 	return &session.Session{ID: "sess-test", PhoneNumber: phone, CurrentState: "GREETING", Context: map[string]string{}}, true, nil
+}
+
+func (m *mockSessionMgmt) FindForAgentCommand(ctx context.Context, phone string) (*session.Session, error) {
+	if m.findForAgentCmdFn != nil {
+		return m.findForAgentCmdFn(ctx, phone)
+	}
+	// Fallback: los tests existentes de comandos de agente stubean findOrCreateFn.
+	s, _, err := m.FindOrCreate(ctx, phone)
+	return s, err
 }
 
 func (m *mockSessionMgmt) RenewTimeout(ctx context.Context, sess *session.Session) error {

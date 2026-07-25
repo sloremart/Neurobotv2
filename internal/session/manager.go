@@ -23,6 +23,7 @@ var ErrActiveSessionExists = errors.New("active session already exists for phone
 // SessionRepo define la interfaz que necesita el manager (implementada por local.SessionRepo)
 type SessionRepo interface {
 	FindActiveByPhone(ctx context.Context, phone string) (*Session, error)
+	FindCurrentByPhone(ctx context.Context, phone string) (*Session, error)
 	Create(ctx context.Context, session *Session) error
 	Save(ctx context.Context, session *Session) error
 	UpdateStatus(ctx context.Context, sessionID, status string) error
@@ -109,6 +110,24 @@ func NewSessionManager(repo SessionRepo, timeoutMinutes int) *SessionManager {
 
 // SetEscalationRecorder inyecta el registro por-escalación (opcional).
 func (m *SessionManager) SetEscalationRecorder(e EscalationRecorder) { m.escalations = e }
+
+// FindForAgentCommand devuelve la sesión que ocupa el cupo del teléfono (activa o escalada), AUNQUE
+// esté vencida, con su contexto cargado. Un comando de agente NUNCA debe crear sesión: la escalada
+// vencida es invisible para FindOrCreate (filtra expires_at) pero bloquea el Create → el comando
+// fallaba con ErrActiveSessionExists en bucle (el checker lo re-encolaba cada minuto). Devuelve nil
+// sin error si no hay sesión activa/escalada.
+func (m *SessionManager) FindForAgentCommand(ctx context.Context, phone string) (*Session, error) {
+	s, err := m.repo.FindCurrentByPhone(ctx, phone)
+	if err != nil || s == nil {
+		return nil, err
+	}
+	ctxMap, err := m.repo.GetAllContext(ctx, s.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.Context = ctxMap
+	return s, nil
+}
 
 // FindOrCreate busca sesión activa o crea una nueva.
 // Retorna (session, isNew, error).
