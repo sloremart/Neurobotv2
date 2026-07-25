@@ -10,7 +10,7 @@ func TestServiceNameForSubjectType(t *testing.T) {
 		1: "Fisiatria", 7: "Fisiatria", 15: "Fisiatria",
 		2:  "Radiografia",
 		3:  "Tomografia",
-		12: "Tomografia",
+		12: "PET", // PET/CT: servicio propio (antes compartía "Tomografia" con asunto 3)
 		4:  "Resonancia",
 		17: "Resonancia",
 		6:  "Ecografia",

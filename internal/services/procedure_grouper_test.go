@@ -243,6 +243,40 @@ func TestGroupByServiceFromDB_MultipleSameService(t *testing.T) {
 	}
 }
 
+// PET (asunto 12 → servicio "PET"): los 2 CUPS (FDG + PSMA) agrupan en UNA cita y cada procedimiento
+// es 1 espacio de slot (regla por defecto, sin reglas de TAC/contraste). Confirma "cada procedimiento
+// = un espacio".
+func TestGroupByServiceFromDB_PET(t *testing.T) {
+	mock := newMock(
+		struct {
+			code, name, service string
+			spaces              int
+		}{"921402", "PET-TC CON 18-FLUOR", "PET", 1},
+		struct {
+			code, name, service string
+			spaces              int
+		}{"921405", "PET-TC CON PSMA", "PET", 1},
+	)
+
+	cups := []CUPSEntry{
+		cup("921402", "PET FDG", 1),
+		cup("921405", "PET PSMA", 1),
+	}
+	groups, err := GroupByServiceFromDB(context.Background(), cups, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("PET debía agrupar en 1 cita, got %d grupos", len(groups))
+	}
+	if groups[0].ServiceType != "PET" {
+		t.Errorf("esperaba servicio 'PET', got %q", groups[0].ServiceType)
+	}
+	if groups[0].Espacios != 2 {
+		t.Errorf("esperaba Espacios=2 (1 por procedimiento × 2), got %d", groups[0].Espacios)
+	}
+}
+
 // 5. CUPS from different services produce separate groups.
 func TestGroupByServiceFromDB_MultipleDiffService(t *testing.T) {
 	mock := newMock(

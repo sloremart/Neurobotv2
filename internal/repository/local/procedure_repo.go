@@ -63,16 +63,21 @@ func (r *ProcedureRepo) scanOne(row *sql.Row) (*domain.Procedure, error) {
 // clínico que usan las reglas de agrupación (forceServiceByCode lo sobreescribe para códigos
 // específicos). Reemplaza la antigua columna Antares `servicio`. Mapa derivado del catálogo real:
 //
-//	Fisiatría: 1,7,15   Radiografía: 2   Tomografía: 3,12
+//	Fisiatría: 1,7,15   Radiografía: 2   Tomografía: 3   PET/CT: 12
 //	Resonancia: 4,17    Ecografía: 6,19  Neurología: 8,9,10,11,16   (resto → General)
+//
+// PET (asunto 12) es servicio PROPIO —no "Tomografia"— para que agrupe como su propia cita (no se
+// mezcle con un TAC) y caiga a la regla por defecto: 1 espacio por procedimiento × cantidad.
 func serviceNameForSubjectType(subjectType int) string {
 	switch subjectType {
 	case 1, 7, 15:
 		return "Fisiatria"
 	case 2:
 		return "Radiografia"
-	case 3, 12:
+	case 3:
 		return "Tomografia"
+	case 12:
+		return "PET"
 	case 4, 17:
 		return "Resonancia"
 	case 6, 19:

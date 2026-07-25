@@ -25,7 +25,7 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 	m.Register(sm.StateGreeting, greetingHandler(cfg))
 	m.RegisterWithConfig(sm.StateMainMenu, sm.HandlerConfig{
 		InputType: sm.InputButton,
-		Options:   []string{"pet_ct", "medicamentos", "agendar", "consultar", "resultados", "ubicacion", "ayuda"},
+		Options:   []string{"medicamentos", "agendar", "consultar", "resultados", "ubicacion", "ayuda"},
 		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
 			list := buildMainMenuList()
 			list.Body = "Por favor selecciona una opción del menú.\n\n" + list.Body
@@ -203,31 +203,6 @@ func mainMenuHandler() sm.StateHandler {
 		selected := sm.ValidatedPayload(ctx)
 
 		switch selected {
-		case "pet_ct":
-			text := "Te contamos sobre nuestro servicio de PET-CT, un examen diagnóstico avanzado de tomografía por emisión de positrones, para FDG F-18 y PSMA, que permite detectar enfermedades como cáncer, afecciones cardíacas y trastornos neurológicos.\n\n" +
-				"- - - - - - - - - - - - - - - - - - - - - - - - -\n\n" +
-				"📌 *¿Cómo agendar tu examen?*\n\n" +
-				"🔹 *Si eres paciente particular:*\n" +
-				"• Si cuentas con orden médica e historia clínica, envíalas y programamos tu cita.\n" +
-				"• Si no cuentas con esto, te ofrecemos valoración médica previa al examen, sin costo adicional.\n\n" +
-				"💰 Valor del examen: *$5.500.000*\n" +
-				"✅ Paga el 50% para programar tu cita y solicitar el radiofármaco.\n" +
-				"✅ Paga el otro 50% el día del examen.\n" +
-				"🎉 ¡Aprovecha *20% de descuento adicional* por tiempo limitado!\n\n" +
-				"🔹 *Si eres paciente por EPS:*\n" +
-				"Debes enviarnos:\n" +
-				"• Historia clínica\n" +
-				"• Orden médica\n" +
-				"• Autorización de la EPS\n\n" +
-				"📞 Incluye dos números de contacto\n\n" +
-				"Una vez recibamos la información, nuestra coordinadora se comunicará contigo para indicarte preparación, 📆 fecha y hora de tu examen.\n\n" +
-				"🎥 *Mira cómo es el examen:*\n" +
-				"https://www.instagram.com/reel/DTfqm7sAvhL/?igsh=MTBhZHV5dWh4ejNp\n\n" +
-				"¿Deseas agendar o tienes alguna duda? Estoy aquí para ayudarte 😊"
-			return sm.NewResult(sm.StateEscalateToAgent).
-				WithText(text).
-				WithContext("escalation_reason", "pet_ct").
-				WithEvent("menu_selected", map[string]interface{}{"option": "pet_ct"}), nil
 		case "medicamentos":
 			// Reutiliza el flujo de agendar para IDENTIFICAR/crear al paciente y resolver su contrato;
 			// la bandera medication_flow desvía a la validación de medicamentos al llegar a la orden
@@ -330,7 +305,6 @@ func buildMainMenuList() *sm.ListMessage {
 		Sections: []sm.ListSection{{
 			Title: "Menú principal",
 			Rows: []sm.ListRow{
-				{ID: "pet_ct", Title: "☢️ Agendar cita PET-CT", Description: "Tomografía por emisión de positrones FDG F-18 / PSMA"},
 				{ID: "medicamentos", Title: "💉 Aplicar medicamentos", Description: "Atención personalizada con un agente (SANITAS)"},
 				{ID: "agendar", Title: "Agendar cita", Description: "Si buscas una cita como particular o cuentas con una orden de tu IPS"},
 				{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
