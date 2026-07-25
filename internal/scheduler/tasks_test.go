@@ -19,6 +19,36 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/testutil"
 )
 
+// TestGroupRequiresCreatinine: el recordatorio agrega el aviso de creatinina solo si alguna cita del
+// grupo es contrastada (por observación de SIESA o por el nombre del CUP "CON CONTRASTE").
+func TestGroupRequiresCreatinine(t *testing.T) {
+	procRepo := &testutil.MockProcedureRepo{
+		FindByCodeFn: func(_ context.Context, code string) (*domain.Procedure, error) {
+			if code == "879112" {
+				return &domain.Procedure{Code: code, Name: "TAC DE CRÁNEO CON CONTRASTE", IsActive: true}, nil
+			}
+			return &domain.Procedure{Code: code, Name: "Estudio simple", IsActive: true}, nil
+		},
+	}
+	ctx := context.Background()
+
+	// (a) Observación "Contrastada" (cita del bot) → true.
+	obsGroup := []domain.Appointment{{Observations: "Contrastada", Procedures: []domain.AppointmentProcedure{{CupCode: "883210"}}}}
+	if !groupRequiresCreatinine(ctx, obsGroup, procRepo) {
+		t.Error("observación Contrastada debía requerir creatinina")
+	}
+	// (b) Sin observación pero CUP con nombre CON CONTRASTE (cita de agente) → true.
+	nameGroup := []domain.Appointment{{Observations: "", Procedures: []domain.AppointmentProcedure{{CupCode: "879112"}}}}
+	if !groupRequiresCreatinine(ctx, nameGroup, procRepo) {
+		t.Error("CUP con nombre CON CONTRASTE debía requerir creatinina")
+	}
+	// (c) Estudio simple, sin señal → false.
+	simpleGroup := []domain.Appointment{{Observations: "", Procedures: []domain.AppointmentProcedure{{CupCode: "883210"}}}}
+	if groupRequiresCreatinine(ctx, simpleGroup, procRepo) {
+		t.Error("estudio simple no debía requerir creatinina")
+	}
+}
+
 // ─── Local mocks for scheduler-specific interfaces ────────────────────────────
 
 // mockWaitingListRepo implements WaitingListRepo.

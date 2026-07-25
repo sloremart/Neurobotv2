@@ -219,6 +219,9 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 		}
 
 		proceduresText := buildReminderProcedures(ctx, group, t.ProcedureRepo)
+		if groupRequiresCreatinine(ctx, group, t.ProcedureRepo) {
+			proceduresText = appendCreatinineNotice(proceduresText)
+		}
 
 		appointmentDate := utils.FormatFriendlyDate(firstAppt.Date)
 		appointmentTime := services.FormatTimeSlot(firstAppt.TimeSlot)
@@ -379,6 +382,9 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		}
 
 		proceduresText := buildReminderProcedures(ctx, group, t.ProcedureRepo)
+		if groupRequiresCreatinine(ctx, group, t.ProcedureRepo) {
+			proceduresText = appendCreatinineNotice(proceduresText)
+		}
 		tmpl := bird.TemplateConfig{
 			ProjectID: t.Cfg.BirdTemplateConfirmProjectID,
 			VersionID: t.Cfg.BirdTemplateConfirmVersionID,
@@ -765,6 +771,34 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 // appointment_time del template solo refleja una; con una sola cita deja solo el nombre (la hora va
 // en appointment_time). CupName puede venir igual al código si el catálogo no está cargado: en ese
 // caso resuelve el nombre real vía procRepo. Rune-safe y acotado al límite del body de WhatsApp.
+// groupRequiresCreatinine indica si alguna cita del grupo es CONTRASTADA (requiere creatinina vigente),
+// combinando la observación de SIESA con el nombre del CUP (mismo criterio que al reprogramar). Se usa
+// para agregar el aviso de creatinina en el recordatorio de WhatsApp.
+func groupRequiresCreatinine(ctx context.Context, group []domain.Appointment, procRepo repository.ProcedureRepository) bool {
+	for _, appt := range group {
+		var names []string
+		for _, proc := range appt.Procedures {
+			name := proc.CupName
+			if (name == "" || name == proc.CupCode) && procRepo != nil {
+				if p, err := procRepo.FindByCode(ctx, utils.BaseCupCode(proc.CupCode)); err == nil && p != nil && p.Name != "" {
+					name = p.Name
+				}
+			}
+			names = append(names, name)
+		}
+		if utils.AppointmentIsContrasted(appt.Observations, names...) {
+			return true
+		}
+	}
+	return false
+}
+
+// appendCreatinineNotice agrega el aviso de creatinina al texto de procedimientos del recordatorio. Va
+// EN UNA SOLA LÍNEA porque WhatsApp no admite saltos de línea en los parámetros de plantilla.
+func appendCreatinineNotice(proceduresText string) string {
+	return proceduresText + ". IMPORTANTE: por ser un examen con contraste, debes llevar tu examen de creatinina vigente (máximo 30 días de tomado)"
+}
+
 func buildReminderProcedures(ctx context.Context, group []domain.Appointment, procRepo repository.ProcedureRepository) string {
 	multiAppt := len(group) > 1
 	var procedures []string

@@ -118,6 +118,7 @@ const (
 	StatePregnancyBlock      = "PREGNANCY_BLOCK"
 	StateAskBabyWeight       = "ASK_BABY_WEIGHT"
 	StateGfrCreatinine       = "GFR_CREATININE"
+	StateGfrExamDate         = "GFR_EXAM_DATE"
 	StateGfrHeight           = "GFR_HEIGHT"
 	StateGfrWeight           = "GFR_WEIGHT"
 	StateGfrDisease          = "GFR_DISEASE"
@@ -263,6 +264,7 @@ var stateTypes = map[string]StateType{
 	StatePregnancyBlock:      StateTypeAutomatic,
 	StateAskBabyWeight:       StateTypeInteractive,
 	StateGfrCreatinine:       StateTypeInteractive,
+	StateGfrExamDate:         StateTypeInteractive,
 	StateGfrHeight:           StateTypeInteractive,
 	StateGfrWeight:           StateTypeInteractive,
 	StateGfrDisease:          StateTypeInteractive,

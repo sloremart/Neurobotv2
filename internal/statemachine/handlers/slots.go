@@ -706,6 +706,18 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 		// Valid selection → mostrar confirmación (fuente única del copy: buildBookingSummary).
 		summary := buildBookingSummary(sess, &selected, addrMapper)
 
+		// Vigencia del examen de creatinina: si el slot elegido queda DESPUÉS del límite (toma + 30
+		// días), recordar que deberá repetir el examen. No bloquea (regla de negocio: avisar y permitir).
+		if limit := sess.GetContext("gfr_creatinine_limit"); limit != "" {
+			if ld, err := time.Parse("2006-01-02", limit); err == nil {
+				if sd, err2 := time.Parse("2006-01-02", selected.Date); err2 == nil && sd.After(ld) {
+					summary += fmt.Sprintf(
+						"\n\n⚠️ *Recuerda:* esta cita (%s) queda *después* de la vigencia de tu examen de creatinina (%s). Deberás llevar un examen *actualizado* (máximo 30 días) el día de la cita.",
+						sd.Format("02/01/2006"), ld.Format("02/01/2006"))
+				}
+			}
+		}
+
 		return sm.NewResult(sm.StateConfirmBooking).
 			WithContext("selected_slot_id", slotKey(&selected)).
 			WithButtons(

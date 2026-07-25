@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
@@ -24,6 +25,7 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	m.Register(sm.StatePregnancyBlock, pregnancyBlockHandler())
 	m.Register(sm.StateAskBabyWeight, askBabyWeightHandler())
 	m.Register(sm.StateGfrCreatinine, gfrCreatinineHandler())
+	m.Register(sm.StateGfrExamDate, gfrExamDateHandler())
 	m.Register(sm.StateGfrDisease, gfrDiseaseHandler())
 	m.Register(sm.StateGfrHeight, gfrHeightHandler())
 	m.RegisterWithConfig(sm.StateGfrWeight, sm.HandlerConfig{
@@ -51,6 +53,10 @@ func registerMedicalRecovery(m *sm.Machine) {
 	m.RegisterRecovery(sm.StateGfrCreatinine, sm.HandlerConfig{
 		AIRecovery:  true,
 		AIInputHint: "El valor de CREATININA en sangre, en mg/dL (número decimal entre 0 y 30). v = solo el número decimal (usa punto).",
+	})
+	m.RegisterRecovery(sm.StateGfrExamDate, sm.HandlerConfig{
+		AIRecovery:  true,
+		AIInputHint: "La FECHA DE TOMA del examen de creatinina. v = la fecha en formato AAAA-MM-DD.",
 	})
 	m.RegisterRecovery(sm.StateGfrHeight, sm.HandlerConfig{
 		AIRecovery:  true,
@@ -311,10 +317,49 @@ func gfrCreatinineHandler() sm.StateHandler {
 			return retryResult, nil
 		}
 
-		age, _ := strconv.Atoi(sess.GetContext("patient_age"))
+		// Tras el valor, pedir la FECHA de toma del examen (vigencia de 30 días).
+		return sm.NewResult(sm.StateGfrExamDate).
+			WithContext("gfr_creatinine", fmt.Sprintf("%.2f", value)).
+			WithText("¿Qué día te tomaste el examen de creatinina?\n\nEscríbelo como *DD/MM/AAAA* (por ejemplo *05/07/2026*).\n\nEl examen debe tener *máximo 30 días* al momento de tu cita."), nil
+	}
+}
 
+// GFR_EXAM_DATE (interactivo) — fecha de TOMA del examen de creatinina. Con ella se calcula la vigencia
+// (toma + 30 días) = la última fecha de cita válida con ese examen. Se le informa al paciente; si el
+// examen ya venció, se le avisa que deberá llevar uno actualizado. NO bloquea. Luego, si elige un slot
+// posterior al límite, se le recuerda de nuevo (showSlotsHandler) y en el recordatorio de WhatsApp.
+func gfrExamDateHandler() sm.StateHandler {
+	const dateHelp = "Escribe la *fecha de toma* del examen como *DD/MM/AAAA*, por ejemplo *05/07/2026*."
+	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		input := strings.TrimSpace(msg.Text)
+
+		// Mismo parser flexible que la fecha de nacimiento (ISO y DD/MM/AAAA, con - o /).
+		examDate, ok := parseBirthDate(input)
+		if !ok || examDate.After(time.Now()) {
+			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
+				"No entendí la fecha. "+dateHelp)
+			return retryResult, nil
+		}
+
+		limit := examDate.AddDate(0, 0, 30)
+		today := time.Now().Truncate(24 * time.Hour)
+
+		var limitMsg string
+		if limit.Before(today) {
+			limitMsg = fmt.Sprintf(
+				"⚠️ Tu examen de creatinina (tomado el *%s*) ya superó los *30 días* de vigencia. Puedes continuar agendando, pero deberás llevar un examen *actualizado* (máximo 30 días) el día de tu cita.",
+				examDate.Format("02/01/2006"))
+		} else {
+			limitMsg = fmt.Sprintf(
+				"Tu examen de creatinina es válido hasta el *%s* (30 días desde la toma). Puedes elegir una cita hasta esa fecha; si eliges una *posterior*, deberás repetir el examen para actualizarlo.",
+				limit.Format("02/01/2006"))
+		}
+
+		age, _ := strconv.Atoi(sess.GetContext("patient_age"))
 		r := sm.NewResult("").
-			WithContext("gfr_creatinine", fmt.Sprintf("%.2f", value))
+			WithContext("gfr_exam_date", examDate.Format("2006-01-02")).
+			WithContext("gfr_creatinine_limit", limit.Format("2006-01-02")).
+			WithText(limitMsg)
 
 		switch {
 		case age <= 14:

@@ -251,7 +251,7 @@ func TestGfrCreatinine_ValidInput(t *testing.T) {
 	m.Register(sm.StateGfrCreatinine, gfrCreatinineHandler())
 
 	sess := testSess(sm.StateGfrCreatinine)
-	sess.Context["patient_age"] = "50" // >= 40 → goes to GFR_WEIGHT
+	sess.Context["patient_age"] = "50"
 
 	result, err := m.Process(context.Background(), sess, textM("1.2"))
 	if err != nil {
@@ -260,8 +260,9 @@ func TestGfrCreatinine_ValidInput(t *testing.T) {
 	if result.UpdateCtx == nil || result.UpdateCtx["gfr_creatinine"] != "1.20" {
 		t.Errorf("expected gfr_creatinine=1.20, got %v", result.UpdateCtx)
 	}
-	if result.NextState != sm.StateGfrWeight {
-		t.Errorf("expected GFR_WEIGHT for age 50, got %s", result.NextState)
+	// Tras el valor se pide la FECHA de toma del examen (la ramificación por edad ocurre después).
+	if result.NextState != sm.StateGfrExamDate {
+		t.Errorf("expected GFR_EXAM_DATE after value, got %s", result.NextState)
 	}
 }
 
@@ -700,7 +701,7 @@ func TestGfrCreatinine_Child(t *testing.T) {
 	m.Register(sm.StateGfrCreatinine, gfrCreatinineHandler())
 
 	sess := testSess(sm.StateGfrCreatinine)
-	sess.Context["patient_age"] = "10" // <= 14 → GFR_HEIGHT
+	sess.Context["patient_age"] = "10"
 
 	result, err := m.Process(context.Background(), sess, textM("0.8"))
 	if err != nil {
@@ -709,8 +710,8 @@ func TestGfrCreatinine_Child(t *testing.T) {
 	if result.UpdateCtx == nil || result.UpdateCtx["gfr_creatinine"] != "0.80" {
 		t.Errorf("expected gfr_creatinine=0.80, got %v", result.UpdateCtx)
 	}
-	if result.NextState != sm.StateGfrHeight {
-		t.Errorf("expected GFR_HEIGHT for age 10, got %s", result.NextState)
+	if result.NextState != sm.StateGfrExamDate {
+		t.Errorf("expected GFR_EXAM_DATE after value, got %s", result.NextState)
 	}
 }
 
@@ -719,7 +720,7 @@ func TestGfrCreatinine_YoungAdult(t *testing.T) {
 	m.Register(sm.StateGfrCreatinine, gfrCreatinineHandler())
 
 	sess := testSess(sm.StateGfrCreatinine)
-	sess.Context["patient_age"] = "25" // 15-39 → GFR_DISEASE
+	sess.Context["patient_age"] = "25"
 
 	result, err := m.Process(context.Background(), sess, textM("1.0"))
 	if err != nil {
@@ -728,8 +729,54 @@ func TestGfrCreatinine_YoungAdult(t *testing.T) {
 	if result.UpdateCtx == nil || result.UpdateCtx["gfr_creatinine"] != "1.00" {
 		t.Errorf("expected gfr_creatinine=1.00, got %v", result.UpdateCtx)
 	}
-	if result.NextState != sm.StateGfrDisease {
-		t.Errorf("expected GFR_DISEASE for age 25, got %s", result.NextState)
+	if result.NextState != sm.StateGfrExamDate {
+		t.Errorf("expected GFR_EXAM_DATE after value, got %s", result.NextState)
+	}
+}
+
+// TestGfrExamDate_ValidComputesLimitAndBranches: la fecha de toma calcula la vigencia (toma+30d),
+// la guarda y ramifica por edad (aquí 50 → GFR_WEIGHT).
+func TestGfrExamDate_ValidComputesLimitAndBranches(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateGfrExamDate, gfrExamDateHandler())
+
+	sess := testSess(sm.StateGfrExamDate)
+	sess.Context["patient_age"] = "50"
+
+	// Fecha reciente (dentro de 30 días) para que la vigencia quede en el futuro.
+	recent := time.Now().AddDate(0, 0, -5).Format("02/01/2006")
+	result, err := m.Process(context.Background(), sess, textM(recent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UpdateCtx["gfr_creatinine_limit"] == "" {
+		t.Error("esperaba gfr_creatinine_limit calculado")
+	}
+	wantLimit := time.Now().AddDate(0, 0, -5).AddDate(0, 0, 30).Format("2006-01-02")
+	if result.UpdateCtx["gfr_creatinine_limit"] != wantLimit {
+		t.Errorf("límite=%q, esperaba %q (toma+30d)", result.UpdateCtx["gfr_creatinine_limit"], wantLimit)
+	}
+	if result.NextState != sm.StateGfrWeight {
+		t.Errorf("edad 50 → GFR_WEIGHT, got %s", result.NextState)
+	}
+}
+
+// TestGfrExamDate_InvalidRetries: fecha inválida o futura → reintento en el mismo estado.
+func TestGfrExamDate_InvalidRetries(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateGfrExamDate, gfrExamDateHandler())
+
+	sess := testSess(sm.StateGfrExamDate)
+	sess.Context["patient_age"] = "50"
+
+	// Fecha futura → inválida.
+	future := time.Now().AddDate(0, 0, 10).Format("02/01/2006")
+	result, err := m.Process(context.Background(), sess, textM(future))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateGfrExamDate {
+		t.Errorf("fecha futura debía reintentar en GFR_EXAM_DATE, got %s", result.NextState)
 	}
 }
 
