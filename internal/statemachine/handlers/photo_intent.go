@@ -24,7 +24,8 @@ func PhotoIntentInterceptor() sm.Interceptor {
 		if msg.MessageType != "image" && msg.MessageType != "document" {
 			return nil, false
 		}
-		if sess.CurrentState != sm.StateMainMenu {
+		// MENÚ principal o menú de fallback (tras un handoff fallido): una foto = intención de agendar.
+		if sess.CurrentState != sm.StateMainMenu && sess.CurrentState != sm.StateFallbackMenu {
 			return nil, false
 		}
 

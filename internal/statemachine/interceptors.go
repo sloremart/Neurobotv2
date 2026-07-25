@@ -95,11 +95,20 @@ func ImageOutOfContextInterceptor() Interceptor {
 			return nil, false
 		}
 
-		// MAIN_MENU: una foto/documento aquí = intención de agendar (el paciente ya está identificado y
-		// suele mandar la orden directo). Se deja pasar para que PhotoIntentInterceptor (registrado
-		// después) arranque el flujo de agendar en vez del dead-end "No esperaba una imagen".
-		if sess.CurrentState == StateMainMenu {
+		// MAIN_MENU y FALLBACK_MENU: una foto/documento aquí = intención de agendar. Se deja pasar para
+		// que PhotoIntentInterceptor (registrado después) arranque el flujo de agendar en vez del
+		// dead-end. FALLBACK_MENU se alcanza tras un handoff fallido: el paciente suele reintentar
+		// mandando su orden (auditoría) y no debe toparse un segundo callejón.
+		if sess.CurrentState == StateMainMenu || sess.CurrentState == StateFallbackMenu {
 			return nil, false
+		}
+
+		// OUT_OF_HOURS_MENU: fuera de horario NO se agenda (política). Una foto aquí = orden → en vez del
+		// dead-end genérico, se acusa recibo y se recuerdan los horarios de agendamiento.
+		if sess.CurrentState == StateOutOfHoursMenu {
+			return NewResult(sess.CurrentState).
+				WithText("Recibimos tu orden 📷. Nuestro horario para *agendar citas* es *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.*\n\nEscríbenos en ese horario y con gusto te ayudamos a programar tu cita. 😊").
+				WithEvent("image_out_of_hours", map[string]interface{}{"state": sess.CurrentState}), true
 		}
 
 		// Primer mensaje de la sesión (CHECK_BUSINESS_HOURS): la orden llega como primer mensaje →

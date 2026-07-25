@@ -239,6 +239,31 @@ func TestImageOutOfContext_MainMenuPassesThrough(t *testing.T) {
 	}
 }
 
+// FALLBACK_MENU debe DEJARSE PASAR (una foto ahí = intención de agendar → PhotoIntent la arranca).
+func TestImageOutOfContext_FallbackMenuPassesThrough(t *testing.T) {
+	interceptor := ImageOutOfContextInterceptor()
+	sess := newSess(StateFallbackMenu)
+	if _, intercepted := interceptor(context.Background(), sess, typedMsg("image")); intercepted {
+		t.Error("imagen en FALLBACK_MENU NO debe interceptarse por ImageOutOfContext (la maneja PhotoIntent)")
+	}
+}
+
+// OUT_OF_HOURS_MENU: una foto NO cae al dead-end genérico; se responde con aviso de horarios (no agenda).
+func TestImageOutOfContext_OutOfHoursMenuMessage(t *testing.T) {
+	interceptor := ImageOutOfContextInterceptor()
+	sess := newSess(StateOutOfHoursMenu)
+	result, intercepted := interceptor(context.Background(), sess, typedMsg("image"))
+	if !intercepted {
+		t.Fatal("esperaba interceptar la foto en OUT_OF_HOURS_MENU")
+	}
+	if len(result.Events) == 0 || result.Events[0].Type != "image_out_of_hours" {
+		t.Errorf("esperaba evento image_out_of_hours, got %+v", result.Events)
+	}
+	if len(result.Messages) == 0 {
+		t.Error("esperaba el mensaje de horarios")
+	}
+}
+
 func TestImageOutOfContext_TextIgnored(t *testing.T) {
 	interceptor := ImageOutOfContextInterceptor()
 	_, intercepted := interceptor(context.Background(), newSess(StateAskDocument), textMsg("hello"))

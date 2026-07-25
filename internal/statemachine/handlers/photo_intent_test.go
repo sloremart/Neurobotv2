@@ -43,6 +43,17 @@ func TestPhotoIntent_DocumentAtMainMenu_StartsScheduling(t *testing.T) {
 	}
 }
 
+// Una foto en FALLBACK_MENU (tras un handoff fallido) también arranca agendar: el paciente reintenta
+// mandando su orden y no debe toparse un segundo callejón (auditoría ciclo 122).
+func TestPhotoIntent_ImageAtFallbackMenu_StartsScheduling(t *testing.T) {
+	intercept := PhotoIntentInterceptor()
+	sess := testSess(sm.StateFallbackMenu)
+	res, ok := intercept(context.Background(), sess, imageMsg("http://x/y.jpg"))
+	if !ok || res.NextState != sm.StateAskClientType {
+		t.Fatalf("foto en FALLBACK_MENU debía arrancar agendar; ok=%v next=%v", ok, res)
+	}
+}
+
 // Texto en MAIN_MENU NO se intercepta (lo maneja el menú normal).
 func TestPhotoIntent_TextAtMainMenu_PassesThrough(t *testing.T) {
 	intercept := PhotoIntentInterceptor()
