@@ -57,6 +57,7 @@ func TestCreatePatientFlow(t *testing.T) {
 		Address: "CALLE 1 #2-3", DepartmentCode: "50", CityCode: "006", Zone: "U",
 		EntityCode: "EPS005", AffiliationType: "1", UserType: "1",
 		MaritalStatus: "1", BloodType: "O+", Barrio: "6457", CountryCode: "170",
+		EducationLevel: "8", Occupation: "DOCENTE",
 	}
 
 	id, err := repo.Create(ctx, in)
@@ -91,14 +92,20 @@ func TestCreatePatientFlow(t *testing.T) {
 	}
 
 	// Verify celular == telefono and tipo_sangre persisted (not exposed via FindByID).
-	var celular, telefono, tipoSangre, codPais string
-	var barrio, tipoAfilia, idPais int64
+	var celular, telefono, tipoSangre, codPais, ocupacion string
+	var barrio, tipoAfilia, idPais, escolaridad int64
 	if err := db.QueryRowContext(ctx,
-		`SELECT ISNULL(celular,''), ISNULL(telefono,''), ISNULL(tipo_sangre,''), ISNULL(barrio,0), ISNULL(tipo_afilia,0), ISNULL(IdPais,0), ISNULL(codPaisResidencia,'') FROM sis_paci WHERE autoid=@p1`, id).
-		Scan(&celular, &telefono, &tipoSangre, &barrio, &tipoAfilia, &idPais, &codPais); err != nil {
+		`SELECT ISNULL(celular,''), ISNULL(telefono,''), ISNULL(tipo_sangre,''), ISNULL(barrio,0), ISNULL(tipo_afilia,0), ISNULL(IdPais,0), ISNULL(codPaisResidencia,''), ISNULL(escolaridad,0), ISNULL(ocupacion,'') FROM sis_paci WHERE autoid=@p1`, id).
+		Scan(&celular, &telefono, &tipoSangre, &barrio, &tipoAfilia, &idPais, &codPais, &escolaridad, &ocupacion); err != nil {
 		t.Fatalf("read fields: %v", err)
 	}
-	t.Logf("celular=%q tel=%q rh=%q barrio=%d afilia=%d IdPais=%d codPais=%q", celular, telefono, tipoSangre, barrio, tipoAfilia, idPais, codPais)
+	t.Logf("celular=%q tel=%q rh=%q barrio=%d afilia=%d IdPais=%d codPais=%q escolaridad=%d ocupacion=%q", celular, telefono, tipoSangre, barrio, tipoAfilia, idPais, codPais, escolaridad, ocupacion)
+	if escolaridad != 8 {
+		t.Errorf("escolaridad=%d want 8", escolaridad)
+	}
+	if ocupacion != "DOCENTE" {
+		t.Errorf("ocupacion=%q want DOCENTE", ocupacion)
+	}
 	if idPais != 50 || codPais != "50" {
 		t.Errorf("country codes: IdPais=%d codPais=%q want 50/\"50\"", idPais, codPais)
 	}

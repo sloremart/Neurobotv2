@@ -47,6 +47,8 @@ const (
 	StateRegGender           = "REG_GENDER"
 	StateRegBloodType        = "REG_BLOOD_TYPE"
 	StateRegMaritalStatus    = "REG_MARITAL_STATUS"
+	StateRegEducationLevel   = "REG_EDUCATION_LEVEL"
+	StateRegOccupation       = "REG_OCCUPATION"
 	StateRegAddress          = "REG_ADDRESS"
 	StateRegPhone            = "REG_PHONE"
 	StateRegPhone2           = "REG_PHONE2"

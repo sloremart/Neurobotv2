@@ -56,6 +56,7 @@ type CreatePatientInput struct {
 	MaritalStatus   string // "1"-"5" → estadoCivil
 	BloodType       string // sis_tiposangre.valor (ej. "O+") → tipo_sangre
 	Barrio          string // sis_barrios.codigo → sis_paci.barrio (bigint)
-	EducationLevel  string
+	EducationLevel  string // id de nivel educativo → sis_paci.escolaridad (int); "" o "0" → NULL
+	Occupation      string // ocupación/oficio (texto libre) → sis_paci.ocupacion (varchar 50)
 	CountryCode     string
 }

@@ -359,6 +359,8 @@ var regFieldLabels = map[string]string{
 	sm.StateRegBirthDate:       "fecha de nacimiento (formato: AAAA-MM-DD)",
 	sm.StateRegGender:          "genero (M o F)",
 	sm.StateRegMaritalStatus:   "estado civil (SOLTERO, CASADO, UNION LIBRE, DIVORCIADO, VIUDO)",
+	sm.StateRegEducationLevel:  "nivel educativo (NINGUNO, PRIMARIA, SECUNDARIA, BACHILLER, TECNICO, TECNOLOGO, UNIVERSITARIO, POSGRADO)",
+	sm.StateRegOccupation:      "ocupacion u oficio (o NA)",
 	sm.StateRegAddress:         "direccion completa",
 	sm.StateRegPhone:           "telefono (formato colombiano, ej: 3001234567)",
 	sm.StateRegPhone2:          "telefono secundario (o NA)",

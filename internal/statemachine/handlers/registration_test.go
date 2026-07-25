@@ -505,8 +505,8 @@ func TestRegMaritalStatus_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegPhone {
-		t.Errorf("expected REG_PHONE, got %s", result.NextState)
+	if result.NextState != sm.StateRegEducationLevel {
+		t.Errorf("expected REG_EDUCATION_LEVEL, got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_marital_status"]; v != "1" {
 		t.Errorf("expected reg_marital_status=1, got %q", v)
@@ -522,11 +522,93 @@ func TestRegMaritalStatus_Casado(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateRegPhone {
-		t.Errorf("expected REG_PHONE, got %s", result.NextState)
+	if result.NextState != sm.StateRegEducationLevel {
+		t.Errorf("expected REG_EDUCATION_LEVEL, got %s", result.NextState)
 	}
 	if v := result.UpdateCtx["reg_marital_status"]; v != "2" {
 		t.Errorf("expected reg_marital_status=2, got %q", v)
+	}
+}
+
+func registerEducationLevelConfig(m *sm.Machine) {
+	m.RegisterWithConfig(sm.StateRegEducationLevel, sm.HandlerConfig{
+		InputType: sm.InputButton,
+		Options:   educationLevelValues(),
+		Handler:   regEducationLevelHandler(),
+	})
+}
+
+func TestRegEducationLevel_Valid(t *testing.T) {
+	m := sm.NewMachine()
+	registerEducationLevelConfig(m)
+
+	sess := testSess(sm.StateRegEducationLevel)
+	result, err := m.Process(context.Background(), sess, postbackM("8"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateRegOccupation {
+		t.Errorf("expected REG_OCCUPATION, got %s", result.NextState)
+	}
+	if v := result.UpdateCtx["reg_education_level"]; v != "8" {
+		t.Errorf("expected reg_education_level=8, got %q", v)
+	}
+}
+
+func TestRegEducationLevel_PreferNotToSay(t *testing.T) {
+	m := sm.NewMachine()
+	registerEducationLevelConfig(m)
+
+	sess := testSess(sm.StateRegEducationLevel)
+	result, err := m.Process(context.Background(), sess, postbackM("0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateRegOccupation {
+		t.Errorf("expected REG_OCCUPATION, got %s", result.NextState)
+	}
+	if v := result.UpdateCtx["reg_education_level"]; v != "0" {
+		t.Errorf("expected reg_education_level=0, got %q", v)
+	}
+}
+
+func TestRegOccupation_Text(t *testing.T) {
+	sess := testSess(sm.StateRegOccupation)
+	result, err := regOccupationHandler()(context.Background(), sess, textM("Docente"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateRegPhone {
+		t.Errorf("expected REG_PHONE, got %s", result.NextState)
+	}
+	if v := result.UpdateCtx["reg_occupation"]; v != "Docente" {
+		t.Errorf("expected reg_occupation=Docente, got %q", v)
+	}
+}
+
+func TestRegOccupation_NA(t *testing.T) {
+	sess := testSess(sm.StateRegOccupation)
+	result, err := regOccupationHandler()(context.Background(), sess, textM("NA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateRegPhone {
+		t.Errorf("expected REG_PHONE, got %s", result.NextState)
+	}
+	if v, ok := result.UpdateCtx["reg_occupation"]; !ok || v != "" {
+		t.Errorf("expected reg_occupation vacío con NA, got %q (ok=%v)", v, ok)
+	}
+}
+
+func TestEducationLevelCatalog(t *testing.T) {
+	if got := len(educationLevelValues()); got != 10 {
+		t.Errorf("esperaba 10 opciones (límite WhatsApp), got %d", got)
+	}
+	cases := map[string]string{"8": "Universitario", "1": "Ninguno", "0": "No informa", "": "No informa"}
+	for id, want := range cases {
+		if got := formatEducationLevel(id); got != want {
+			t.Errorf("formatEducationLevel(%q)=%q, quería %q", id, got, want)
+		}
 	}
 }
 

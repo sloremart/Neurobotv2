@@ -82,6 +82,18 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: withCorrectionRedirect(regMaritalStatusHandler()),
 	})
+	m.RegisterWithConfig(sm.StateRegEducationLevel, sm.HandlerConfig{
+		InputType: sm.InputButton,
+		Options:   educationLevelValues(),
+		RetryPrompt: func(_ *session.Session, result *sm.StateResult) {
+			result.Messages = append(result.Messages, &sm.ListMessage{
+				Body: "Selecciona tu *nivel educativo*:", Title: "Nivel educativo",
+				Sections: []sm.ListSection{{Title: "Nivel educativo", Rows: educationLevelListRows()}},
+			})
+		},
+		Handler: withCorrectionRedirect(regEducationLevelHandler()),
+	})
+	m.Register(sm.StateRegOccupation, withCorrectionRedirect(regOccupationHandler()))
 	m.Register(sm.StateRegAddress, withCorrectionRedirect(regFieldHandler("reg_address", "Escribe tu dirección (calle y número).", validateNotEmpty, sm.StateRegBarrio, "¿En qué *barrio* vives? Escribe el nombre (ej: La Esperanza) o responde *NA* si no lo sabes:")))
 	m.Register(sm.StateRegPhone, withCorrectionRedirect(regPhoneHandler()))
 	m.Register(sm.StateRegPhone2, regOptionalPhoneHandler())
@@ -545,8 +557,34 @@ func regBloodTypeHandler() sm.StateHandler {
 func regMaritalStatusHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
-		return sm.NewResult(sm.StateRegPhone).
+		return sm.NewResult(sm.StateRegEducationLevel).
 			WithContext("reg_marital_status", selected).
+			WithList("Selecciona tu *nivel educativo*:", "Nivel educativo",
+				sm.ListSection{Title: "Nivel educativo", Rows: educationLevelListRows()}), nil
+	}
+}
+
+// REG_EDUCATION_LEVEL — nivel educativo (sis_paci.escolaridad, int). Validación declarativa.
+func regEducationLevelHandler() sm.StateHandler {
+	return func(ctx context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		selected := sm.ValidatedPayload(ctx)
+		return sm.NewResult(sm.StateRegOccupation).
+			WithContext("reg_education_level", selected).
+			WithText("¿Cuál es tu *ocupación* u oficio? (ej: docente, comerciante, ama de casa, estudiante). Si prefieres, responde *NA*:"), nil
+	}
+}
+
+// REG_OCCUPATION — ocupación (sis_paci.ocupacion, texto libre varchar(50)). Campo opcional: NA lo deja vacío.
+func regOccupationHandler() sm.StateHandler {
+	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		input := strings.TrimSpace(msg.Text)
+		occupation := input
+		if noResponses[strings.ToLower(input)] {
+			occupation = ""
+		}
+		sess.RetryCount = 0
+		return sm.NewResult(sm.StateRegPhone).
+			WithContext("reg_occupation", occupation).
 			WithText("Ingresa tu *celular principal* preferiblemente con WhatsApp (ej: 3001234567):"), nil
 	}
 }
@@ -1026,6 +1064,8 @@ func createPatientHandler(patientSvc *services.PatientService) sm.StateHandler {
 			MaritalStatus:   sess.GetContext("reg_marital_status"),
 			BloodType:       sess.GetContext("reg_blood_type"),
 			Barrio:          sess.GetContext("reg_barrio"),
+			EducationLevel:  sess.GetContext("reg_education_level"),
+			Occupation:      sess.GetContext("reg_occupation"),
 			CountryCode:     "170",
 		}
 
@@ -1103,6 +1143,8 @@ func buildRegistrationSummary(sess *session.Session) string {
 			"Género: %s\n"+
 			"RH: %s\n"+
 			"Estado civil: %s\n"+
+			"Nivel educativo: %s\n"+
+			"Ocupación: %s\n"+
 			"Teléfono: %s\n"+
 			"Email: %s\n\n"+
 			"*Afiliación*\n"+
@@ -1121,6 +1163,8 @@ func buildRegistrationSummary(sess *session.Session) string {
 		formatGender(sess.GetContext("reg_gender")),
 		formatOptional(sess.GetContext("reg_blood_type")),
 		formatMaritalStatus(sess.GetContext("reg_marital_status")),
+		formatEducationLevel(sess.GetContext("reg_education_level")),
+		formatOptional(sess.GetContext("reg_occupation")),
 		sess.GetContext("reg_phone"),
 		formatOptional(sess.GetContext("reg_email")),
 		entityDisplay,
@@ -1206,6 +1250,53 @@ var maritalStatusLabels = map[string]string{
 
 func formatMaritalStatus(id string) string {
 	if label, ok := maritalStatusLabels[id]; ok {
+		return label
+	}
+	return id
+}
+
+// educationLevelListRows devuelve el nivel educativo (sis_paci.escolaridad, int → catálogo escolaridad).
+// La estructura del atributo es un id int con etiqueta; se ofrece una lista estándar condensada (≤10
+// filas por el límite de WhatsApp). El id "0" ("Prefiero no decir") se guarda como NULL en SIESA.
+// Si el catálogo `escolaridad` de PROD usa otros ids, basta ajustar este mapa (y su seed) para alinear.
+func educationLevelListRows() []sm.ListRow {
+	return []sm.ListRow{
+		{ID: "1", Title: "Ninguno"},
+		{ID: "2", Title: "Preescolar"},
+		{ID: "3", Title: "Primaria"},
+		{ID: "4", Title: "Secundaria"},
+		{ID: "5", Title: "Bachiller / Media"},
+		{ID: "6", Title: "Técnico"},
+		{ID: "7", Title: "Tecnólogo"},
+		{ID: "8", Title: "Universitario"},
+		{ID: "9", Title: "Posgrado"},
+		{ID: "0", Title: "Prefiero no decir"},
+	}
+}
+
+// educationLevelValues son los payloads válidos del botón/lista de nivel educativo.
+func educationLevelValues() []string {
+	rows := educationLevelListRows()
+	vals := make([]string, len(rows))
+	for i, r := range rows {
+		vals[i] = r.ID
+	}
+	return vals
+}
+
+var educationLevelLabels = func() map[string]string {
+	m := map[string]string{}
+	for _, r := range educationLevelListRows() {
+		m[r.ID] = r.Title
+	}
+	return m
+}()
+
+func formatEducationLevel(id string) string {
+	if id == "" || id == "0" {
+		return "No informa"
+	}
+	if label, ok := educationLevelLabels[id]; ok {
 		return label
 	}
 	return id

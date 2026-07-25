@@ -174,6 +174,13 @@ func (r *PatientRepo) insertPatient(ctx context.Context, input domain.CreatePati
 		barrioArg = n
 	}
 
+	// escolaridad es int (nivel educativo; catálogo escolaridad, sin FK). "" o "0" ("Prefiero no
+	// decir") → NULL, igual que el histórico. ocupacion es texto libre varchar(50).
+	var escolaridadArg interface{}
+	if n, err := strconv.Atoi(strings.TrimSpace(input.EducationLevel)); err == nil && n > 0 {
+		escolaridadArg = n
+	}
+
 	// OUTPUT INTO @table_variable funciona con triggers (a diferencia de OUTPUT directo).
 	// nro_historia = tipo_id + num_id es requerido por el constraint sis_paci_uq(nro_historia, tipo_id).
 	// NombreCompleto NO se setea aquí: lo llena automáticamente el trigger updatenro_historia
@@ -190,6 +197,7 @@ func (r *PatientRepo) insertPatient(ctx context.Context, input domain.CreatePati
 		telefono, celular, telefono_alternativo, email,
 		entidad, fecha_crea, id_sede,
 		tipo_usuario, tipo_afilia, estadoCivil, tipo_sangre,
+		escolaridad, ocupacion,
 		IdPais, codPaisResidencia
 	) OUTPUT INSERTED.autoid INTO @ids
 	VALUES (
@@ -200,6 +208,7 @@ func (r *PatientRepo) insertPatient(ctx context.Context, input domain.CreatePati
 		@p13, @p13, @p14, @p15,
 		@p16, GETDATE(), 2,
 		@p17, @p18, @p19, @p20,
+		@p22, @p23,
 		50, '50'
 	);
 	SELECT autoid FROM @ids;`
@@ -215,6 +224,7 @@ func (r *PatientRepo) insertPatient(ctx context.Context, input domain.CreatePati
 		input.EntityCode,
 		userTypeInt, affiliationTypeInt(input.AffiliationType), maritalStatusInt, truncateSIESA(input.BloodType, 10),
 		barrioArg,
+		escolaridadArg, truncateSIESA(input.Occupation, 50),
 	).Scan(&newID)
 	if err != nil {
 		// Carrera o drift no cubierto por el pre-check: si el INSERT chocó contra sis_paci_uq,
