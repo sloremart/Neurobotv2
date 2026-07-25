@@ -285,7 +285,7 @@ func Load() *Config {
 		// Center
 		CenterKey:                  getEnv("CENTER_KEY", "siesa"),
 		CenterName:                 getEnv("CENTER_NAME", "Neuro Electrodiagnóstico del Llano"),
-		MedicationExternalWANumber: strings.TrimSpace(getEnv("MEDICATION_EXTERNAL_WA_NUMBER", "")),
+		MedicationExternalWANumber: digitsOnly(getEnv("MEDICATION_EXTERNAL_WA_NUMBER", "")),
 		BotName:                    getEnv("BOT_NAME", "Samuel"),
 		ResultsURL:                 getEnv("RESULTS_URL", ""),
 		ResultsVideoURL:            getEnv("RESULTS_VIDEO_URL", ""),
@@ -369,6 +369,18 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// digitsOnly conserva solo los dígitos de s. Para el número de WhatsApp del canal externo: acepta que
+// lo escriban con "+", espacios o guiones (ej. "+57 300 123 4567") y lo deja como "573001234567", que
+// es el formato que exige wa.me (indicativo + número, sin "+").
+func digitsOnly(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, s)
 }
 
 func parsePhoneList(s string) []string {
