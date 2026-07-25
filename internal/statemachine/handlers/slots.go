@@ -385,11 +385,23 @@ func coverageNoConvenioHandler() sm.StateHandler {
 				WithText("Te comunicamos con un agente para gestionar tu cita.").
 				WithEvent("coverage_escalate_agent", nil), nil
 		}
-		// cov_particular → cambiar a PARTICULAR y re-buscar (el particular siempre tiene tarifa > 0,
-		// así el gate no se vuelve a disparar). Se limpia patient_contract para que lookupContract
-		// resuelva el contrato particular al agendar.
+		// cov_particular → cambiar a PARTICULAR (siempre tiene tarifa > 0, así el gate no se re-dispara).
+		// Se limpia patient_contract para que lookupContract resuelva el contrato particular al agendar.
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "coverage_particular",
 			observability.EmitOpts{Phone: sess.PhoneNumber})
+
+		// Si el "sin convenio" se detectó AL AGENDAR (ya había slot elegido), se CONSERVA ese slot: se
+		// agenda el MISMO horario como particular, sin re-buscar (los slots no dependen del contrato).
+		// Si el slot ya no está, createAppointmentHandler cae al flujo normal de "horario ya tomado".
+		if sess.GetContext("coverage_from_booking") == "1" {
+			return sm.NewResult(sm.StateCreateAppointment).
+				WithContext("patient_entity", particularEntityCode).
+				WithClearCtx("patient_contract", "coverage_from_booking").
+				WithText("Perfecto, agendamos como *particular* el horario que elegiste. Un momento...").
+				WithEvent("coverage_continue_particular", map[string]interface{}{"keep_slot": true}), nil
+		}
+
+		// Desde el gate PREVIO (antes de mostrar slots, sin horario elegido) → re-buscar como particular.
 		return sm.NewResult(sm.StateSearchSlots).
 			WithContext("patient_entity", particularEntityCode).
 			WithClearCtx("patient_contract").
@@ -1359,13 +1371,20 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			if cupsName == "" {
 				cupsName = sess.GetContext("cups_code")
 			}
+			// Se detectó "sin convenio" AL AGENDAR (ya hay slot elegido). Se conserva ese horario: se
+			// ofrece particular PARA EL MISMO slot (no se re-busca). coverage_from_booking lo indica.
+			slotWhen := ""
+			if d, perr := time.Parse("2006-01-02", slot.Date); perr == nil {
+				slotWhen = fmt.Sprintf(" para el *%s a las %s*", d.Format("02/01/2006"), services.FormatTimeSlot(slot.TimeSlot))
+			}
 			return sm.NewResult(sm.StateCoverageNoConvenio).
+				WithContext("coverage_from_booking", "1").
 				WithButtons(
-					fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Puedes agendarlo como *particular*, que tiene un costo.\n\n¿Cómo deseas continuar?", cupsName),
-					sm.Button{Text: "Continuar particular", Payload: "cov_particular"},
+					fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Como *particular* tiene un costo.\n\n¿Deseas agendarlo como particular%s?", cupsName, slotWhen),
+					sm.Button{Text: "Sí, particular", Payload: "cov_particular"},
 					sm.Button{Text: "Hablar con agente", Payload: "cov_agente"},
 				).
-				WithEvent("coverage_no_convenio", map[string]interface{}{"cup": sess.GetContext("cups_code")}), nil
+				WithEvent("coverage_no_convenio", map[string]interface{}{"cup": sess.GetContext("cups_code"), "from_booking": true}), nil
 		}
 
 		// Parse date

@@ -151,6 +151,32 @@ func TestCoverageNoConvenioHandler(t *testing.T) {
 			t.Error("esperaba limpiar patient_contract")
 		}
 	})
+	t.Run("particular desde agendamiento -> CONSERVA slot (CREATE_APPOINTMENT)", func(t *testing.T) {
+		sess := testSess(sm.StateCoverageNoConvenio)
+		sess.SetContext("coverage_from_booking", "1") // el "sin convenio" se detectó con slot ya elegido
+		res, err := h(ctx, sess, postbackM("cov_particular"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.NextState != sm.StateCreateAppointment {
+			t.Errorf("con slot elegido esperaba CREATE_APPOINTMENT (conservar slot), got %s", res.NextState)
+		}
+		if res.UpdateCtx["patient_entity"] != particularEntityCode {
+			t.Errorf("esperaba patient_entity=%s", particularEntityCode)
+		}
+		var clearedContract, clearedFlag bool
+		for _, k := range res.ClearCtx {
+			if k == "patient_contract" {
+				clearedContract = true
+			}
+			if k == "coverage_from_booking" {
+				clearedFlag = true
+			}
+		}
+		if !clearedContract || !clearedFlag {
+			t.Errorf("esperaba limpiar patient_contract y coverage_from_booking, got %v", res.ClearCtx)
+		}
+	})
 	t.Run("agente -> ESCALATE_TO_AGENT", func(t *testing.T) {
 		res, err := h(ctx, testSess(sm.StateCoverageNoConvenio), postbackM("cov_agente"))
 		if err != nil {
