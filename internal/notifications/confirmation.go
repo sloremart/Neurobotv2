@@ -466,7 +466,11 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		"patient_id":     appt.PatientID,
 		"patient_name":   appt.PatientName,
 		"patient_entity": appt.Entity,
-		"patient_age":    "0",
+		// Contrato de la cita original → effectiveContract re-valida MRC/Evento por CUPS al
+		// reprogramar (misma regla que al crear); sin esto quedaba vacío y solo se preservaba el
+		// contrato original sin re-validar. Ver nota en self_reschedule.go.
+		"patient_contract": appt.Entity,
+		"patient_age":      "0",
 
 		// Procedure data
 		"cups_code":       cupsCode,

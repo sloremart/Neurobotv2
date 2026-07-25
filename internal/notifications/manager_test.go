@@ -1548,6 +1548,11 @@ func TestSelfReschedule_FromConfirmation(t *testing.T) {
 	if kvs["patient_entity"] != "EPS-GOLD" {
 		t.Errorf("expected patient_entity=EPS-GOLD, got %s", kvs["patient_entity"])
 	}
+	// patient_contract = contrato de la cita original: habilita que effectiveContract re-valide
+	// MRC/Evento por CUPS al reprogramar (antes quedaba vacío y no se re-validaba).
+	if kvs["patient_contract"] != "EPS-GOLD" {
+		t.Errorf("expected patient_contract=EPS-GOLD (contrato de la cita), got %s", kvs["patient_contract"])
+	}
 	if kvs["patient_age"] != "0" {
 		t.Errorf("expected patient_age=0, got %s", kvs["patient_age"])
 	}
@@ -1589,6 +1594,7 @@ func TestSelfReschedule_FromRescheduleFlow(t *testing.T) {
 		findByIDFn: func(ctx context.Context, id string) (*domain.Appointment, error) {
 			appt := sampleAppt()
 			appt.ID = id
+			appt.Entity = "5" // contrato de la cita original (SANITAS MRC subsidiado)
 			return &appt, nil
 		},
 	}
@@ -1619,6 +1625,11 @@ func TestSelfReschedule_FromRescheduleFlow(t *testing.T) {
 	}
 	if kvs["reschedule_appt_id"] != "APT-RSCH-1" {
 		t.Errorf("expected reschedule_appt_id=APT-RSCH-1, got %s", kvs["reschedule_appt_id"])
+	}
+	// patient_contract = contrato de la cita original → effectiveContract re-valida MRC/Evento por
+	// CUPS al agendar (antes quedaba vacío y la regla MRC no se re-aplicaba al reprogramar).
+	if kvs["patient_contract"] != "5" {
+		t.Errorf("expected patient_contract=5 (contrato de la cita), got %s", kvs["patient_contract"])
 	}
 }
 

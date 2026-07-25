@@ -127,7 +127,13 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		"patient_id":     appt.PatientID,
 		"patient_name":   appt.PatientName,
 		"patient_entity": appt.Entity,
-		"patient_age":    "0", // Skip age restrictions (already validated)
+		// Contrato de la cita original (appt.Entity = citas.contrato). Sin esto, patient_contract
+		// quedaba vacío y effectiveContract NO re-validaba la regla MRC: una cita que quedó con
+		// contrato MRC (5/6) pero cuyos CUPS no son de grupo MRC se reprogramaba manteniendo MRC en
+		// vez de degradar a Evento (7/4). Con esto, effectiveContract(sess) re-deriva por CUPS igual
+		// que al crear. Para citas ya correctas es idéntico; solo corrige las mal quedadas.
+		"patient_contract": appt.Entity,
+		"patient_age":      "0", // Skip age restrictions (already validated)
 
 		// Procedure data
 		"cups_code":       cupsCode,
