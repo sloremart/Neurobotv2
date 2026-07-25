@@ -120,7 +120,10 @@ type Config struct {
 	// Escalation (chat con agente humano)
 	EscalationPatientCloseMin  int // Cierre escalada por silencio del PACIENTE (no del agente)
 	EscalationAgentReminderMin int // Minutos sin respuesta del agente antes de recordarle
-	EscalationAgentReminderMax int // Máximo de recordatorios por ventana de espera
+	// EscalationAgentReminderMax: máximo de recordatorios. La ventana total del agente antes de
+	// devolver el chat al bot = AgentReminderMin*(AgentReminderMax+1). Con 75 y 3 → 5h (recordatorios
+	// a 75/150/225 min, devolución a los 300).
+	EscalationAgentReminderMax int
 
 	// Center
 	CenterKey       string
@@ -272,7 +275,7 @@ func Load() *Config {
 
 		// Escalation
 		EscalationPatientCloseMin:  getEnvInt("ESCALATION_PATIENT_CLOSE_MIN", 120),
-		EscalationAgentReminderMin: getEnvInt("ESCALATION_AGENT_REMINDER_MIN", 15),
+		EscalationAgentReminderMin: getEnvInt("ESCALATION_AGENT_REMINDER_MIN", 75), // 75*(3+1)=300min=5h de ventana del agente
 		EscalationAgentReminderMax: getEnvInt("ESCALATION_AGENT_REMINDER_MAX", 3),
 
 		// Center

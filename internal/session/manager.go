@@ -420,7 +420,8 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 		agentEverReplied := s.LastAgentMsg != nil
 
 		// (0) Agente NO-SHOW: el agente NUNCA respondió y ya pasó la ventana de recordatorios
-		// (AgentReminderMin*(Max+1) = 15 min tras el último recordatorio). NO es abandono del paciente
+		// (AgentReminderMin*(Max+1); con 75 y Max=3 → 300 min = 5h, un intervalo tras el 3er
+		// recordatorio de los 225). NO es abandono del paciente
 		// (estaba esperando una respuesta que no llegó) → se DEVUELVE al bot en su paso (el worker
 		// re-promptea) y se marca 'agent_no_show' para la métrica del agente. Requiere el resumer.
 		if !agentEverReplied && deps.Resumer != nil && deps.AgentReminderMin > 0 &&
