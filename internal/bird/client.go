@@ -522,8 +522,13 @@ func (c *Client) CreateConversationForPhone(ctx context.Context, phone string) (
 	url := fmt.Sprintf("%s/workspaces/%s/conversations", c.conversationsBase(), c.workspaceID)
 	// Schema validado contra Bird REAL (2026-07-23, canal testing dacc4070, contacto +573***3616):
 	// "name" es OBLIGATORIO (422 InvalidPayload {"name is missing"} sin él); con él responde 201 con
-	// el "id" top-level, incluso si el contacto ya tiene otras conversaciones (no hay 409 aquí). El
-	// nombre es provisional: MarkConversationEscalated lo sobreescribe con equipo/paciente al asignar.
+	// el "id" top-level. El nombre es provisional: MarkConversationEscalated lo sobreescribe con
+	// equipo/paciente al asignar.
+	//
+	// 409 ContactAlreadyInConversation: para contactos recurrentes cuyo hilo NO aparece en el
+	// list-lookup (defecto conocido de Bird), la creación devuelve 409 y el body trae en
+	// details.conversationId el ID de la conversación EXISTENTE. Se extrae y se usa como éxito (abajo):
+	// cierra el residual de "empty conversation ID" que caía a PICKUP MANUAL.
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name":      "Neuro-Bot escalación",
 		"channelId": c.channelID,
@@ -549,6 +554,22 @@ func (c *Client) CreateConversationForPhone(ctx context.Context, phone string) (
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
+		// 409: el contacto ya está en una conversación; Bird entrega su ID en details.conversationId.
+		// Si viene, es la conversación existente → reutilizarla (cachear) en vez de fallar.
+		if resp.StatusCode == 409 {
+			var conflict struct {
+				Code    string `json:"code"`
+				Details struct {
+					ConversationID string `json:"conversationId"`
+				} `json:"details"`
+			}
+			if json.Unmarshal(body, &conflict) == nil && conflict.Details.ConversationID != "" {
+				c.CacheConversationID(phone, conflict.Details.ConversationID)
+				slog.Info("conversation_reused_from_409",
+					"phone", utils.MaskPhone(phone), "conversation_id", conflict.Details.ConversationID, "code", conflict.Code)
+				return conflict.Details.ConversationID, nil
+			}
+		}
 		return "", fmt.Errorf("create conversation: status %d, body: %s",
 			resp.StatusCode, maskDigitRuns(truncateForLog(string(body), 400)))
 	}

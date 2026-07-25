@@ -262,6 +262,51 @@ func TestFetchMessageConversationID_FromContextID(t *testing.T) {
 	}
 }
 
+// TestCreateConversationForPhone_409ReusesExisting valida el fix del residual "empty conversation ID":
+// ante 409 ContactAlreadyInConversation, Bird entrega el conversationId existente en details y el bot
+// lo reutiliza como éxito (no falla → no cae a PICKUP MANUAL).
+func TestCreateConversationForPhone_409ReusesExisting(t *testing.T) {
+	// 409 con details.conversationId → se reutiliza.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"code":"ContactAlreadyInConversation","message":"...","details":{"conversationId":"conv-existente"}}`))
+	}))
+	defer srv.Close()
+	c := NewClientForTest(srv.URL)
+	c.accessKeyID = "test-key"
+	got, err := c.CreateConversationForPhone(context.Background(), "+573001234567")
+	if err != nil {
+		t.Fatalf("409 con conversationId no debía fallar: %v", err)
+	}
+	if got != "conv-existente" {
+		t.Errorf("esperaba conv-existente del 409, got %q", got)
+	}
+
+	// 201 normal → devuelve el id top-level.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"id":"conv-nueva"}`))
+	}))
+	defer srv2.Close()
+	c2 := NewClientForTest(srv2.URL)
+	c2.accessKeyID = "test-key"
+	if got, err := c2.CreateConversationForPhone(context.Background(), "+573001234567"); err != nil || got != "conv-nueva" {
+		t.Errorf("201 debía devolver conv-nueva, got %q err=%v", got, err)
+	}
+
+	// 409 SIN conversationId → sigue siendo error (no se inventa nada).
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"code":"OtroConflicto","message":"..."}`))
+	}))
+	defer srv3.Close()
+	c3 := NewClientForTest(srv3.URL)
+	c3.accessKeyID = "test-key"
+	if _, err := c3.CreateConversationForPhone(context.Background(), "+573001234567"); err == nil {
+		t.Error("409 sin conversationId debía seguir siendo error")
+	}
+}
+
 // TestFetchMessageConversationID_RetriesOn404 valida la instrumentación del residual "empty
 // conversation ID" (auditoría 2026-07-23): un 4xx transitorio (p.ej. mensaje aún no materializado)
 // se REINTENTA los fetchMsgConvTries intentos y termina en "" (el WARN final lleva status+body).
