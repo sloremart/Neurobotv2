@@ -182,7 +182,7 @@ var stateTypes = map[string]StateType{
 	StateShowResults:            StateTypeAutomatic,
 	StateShowLocations:          StateTypeAutomatic,
 	StateShowHelp:               StateTypeAutomatic,
-	StateMedicationCheckSanitas: StateTypeInteractive,
+	StateMedicationCheckSanitas: StateTypeAutomatic,
 
 	// Entity Management
 	StateCheckEntity:         StateTypeAutomatic,

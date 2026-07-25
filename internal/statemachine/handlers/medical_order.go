@@ -76,6 +76,13 @@ func ocrFailureMessage(errReason string) string {
 // Si sí → sube foto y flujo normal. Si no → escala a agente y registra en lista de espera.
 func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRService, birdClient *bird.Client) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		// Flujo "Aplicar medicamentos": reutiliza la identificación/registro de agendar, pero NO pide
+		// orden — al llegar aquí desvía a la validación SANITAS + canal/escalación (único punto de
+		// intercepción, así no hay que tocar cada ruteo del flujo de agendar).
+		if sess.GetContext("medication_flow") == "1" {
+			return sm.NewResult(sm.StateMedicationCheckSanitas), nil
+		}
+
 		// Antes de pedir la orden: si el paciente ya tiene citas ACTIVAS en lista de espera, ofrecerle
 		// elegir una de ellas (retoma en la búsqueda de slots con los datos guardados) o seguir como
 		// cita nueva. Si no tiene ninguna, no se pregunta nada y continúa el flujo normal.

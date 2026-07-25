@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,6 +284,8 @@ func TestMainMenu_InvalidInput(t *testing.T) {
 
 // TestMainMenu_Medicamentos: seleccionar "medicamentos" en el menú lleva al gate de SANITAS
 // (estado interactivo), NO directo a escalación (a diferencia de PET-CT).
+// TestMainMenu_Medicamentos: el menú entra al flujo de agendar (identificar/crear paciente) con la
+// bandera medication_flow, para validar el contrato SANITAS real (no autodeclarado).
 func TestMainMenu_Medicamentos(t *testing.T) {
 	m := sm.NewMachine()
 	RegisterGreetingHandlers(m, sampleConfig(), nil)
@@ -292,22 +295,23 @@ func TestMainMenu_Medicamentos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState != sm.StateMedicationCheckSanitas {
-		t.Errorf("expected MEDICATION_CHECK_SANITAS, got %s", result.NextState)
+	if result.NextState != sm.StateAskClientType {
+		t.Errorf("expected ASK_CLIENT_TYPE (flujo de agendar), got %s", result.NextState)
 	}
-	if len(result.Messages) < 1 {
-		t.Error("expected la pregunta de SANITAS (botones)")
+	if result.UpdateCtx["medication_flow"] != "1" {
+		t.Errorf("expected medication_flow=1, got %q", result.UpdateCtx["medication_flow"])
 	}
 }
 
-// TestMedicationCheckSanitas_Si: si es SANITAS, se escala a agente con reason=medicamentos
-// (mismo patrón que PET-CT: no se agenda por el bot).
-func TestMedicationCheckSanitas_Si(t *testing.T) {
+// TestMedicationCheck_SanitasNoChannel_Escalates: SANITAS sin canal externo configurado → escala a
+// agente (como antes), tras validar el contrato real.
+func TestMedicationCheck_SanitasNoChannel_Escalates(t *testing.T) {
 	m := sm.NewMachine()
-	RegisterGreetingHandlers(m, sampleConfig(), nil)
+	RegisterGreetingHandlers(m, sampleConfig(), nil) // sin MedicationExternalWANumber
 
 	sess := testSess(sm.StateMedicationCheckSanitas)
-	result, err := m.Process(context.Background(), sess, postbackM("med_sanitas_si"))
+	sess.Context["patient_contract"] = "6" // SANITAS MRC contributivo
+	result, err := m.Process(context.Background(), sess, textM(""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,40 +321,48 @@ func TestMedicationCheckSanitas_Si(t *testing.T) {
 	if result.UpdateCtx["escalation_reason"] != "medicamentos" {
 		t.Errorf("expected escalation_reason=medicamentos, got %s", result.UpdateCtx["escalation_reason"])
 	}
+}
+
+// TestMedicationCheck_SanitasWithChannel_SendsLink: SANITAS con canal externo → NO escala; cierra con
+// el link wa.me al canal (no pasa a ESCALATE_TO_AGENT).
+func TestMedicationCheck_SanitasWithChannel_SendsLink(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.MedicationExternalWANumber = "573001234567"
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, cfg, nil)
+
+	sess := testSess(sm.StateMedicationCheckSanitas)
+	sess.Context["patient_contract"] = "4" // SANITAS Evento contributivo
+	sess.Context["patient_name"] = "Juan Perez"
+	sess.Context["patient_doc"] = "123456"
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState == sm.StateEscalateToAgent {
+		t.Error("con canal externo NO debía escalar a agente")
+	}
 	if len(result.Messages) < 1 {
-		t.Error("expected el mensaje con los documentos a enviar")
+		t.Fatal("esperaba el mensaje con el link")
+	}
+	txt := result.Messages[0].(*sm.TextMessage).Text
+	if !strings.Contains(txt, "wa.me/573001234567") {
+		t.Errorf("esperaba el link wa.me al canal externo, got: %s", txt)
 	}
 }
 
-// TestMedicationCheckSanitas_No: si NO es SANITAS, se informa y vuelve al menú principal (no escala).
-func TestMedicationCheckSanitas_No(t *testing.T) {
+// TestMedicationCheck_NotSanitas_BackToMenu: contrato NO-SANITAS → informa y vuelve al menú (no escala).
+func TestMedicationCheck_NotSanitas_BackToMenu(t *testing.T) {
 	m := sm.NewMachine()
 	RegisterGreetingHandlers(m, sampleConfig(), nil)
 
 	sess := testSess(sm.StateMedicationCheckSanitas)
-	result, err := m.Process(context.Background(), sess, postbackM("med_sanitas_no"))
+	sess.Context["patient_contract"] = "8" // PARTICULAR
+	result, err := m.Process(context.Background(), sess, textM(""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.NextState != sm.StateMainMenu {
 		t.Errorf("expected MAIN_MENU, got %s", result.NextState)
-	}
-	if len(result.Messages) < 1 {
-		t.Error("expected el mensaje de no-disponible + menú")
-	}
-}
-
-// TestMedicationCheckSanitas_Invalid: input inválido en el gate → retry en el mismo estado.
-func TestMedicationCheckSanitas_Invalid(t *testing.T) {
-	m := sm.NewMachine()
-	RegisterGreetingHandlers(m, sampleConfig(), nil)
-
-	sess := testSess(sm.StateMedicationCheckSanitas)
-	result, err := m.Process(context.Background(), sess, textM("cualquier cosa"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.NextState != sm.StateMedicationCheckSanitas {
-		t.Errorf("expected MEDICATION_CHECK_SANITAS (retry), got %s", result.NextState)
 	}
 }

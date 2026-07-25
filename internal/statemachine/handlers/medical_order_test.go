@@ -210,6 +210,23 @@ func TestAskMedicalOrder_Automatic(t *testing.T) {
 	}
 }
 
+// TestAskMedicalOrder_MedicationFlowDiverts: con medication_flow=1, el flujo NO pide la orden; desvía
+// a la validación SANITAS de medicamentos (punto único de intercepción del flujo reutilizado de agendar).
+func TestAskMedicalOrder_MedicationFlowDiverts(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(nil, nil, nil))
+
+	sess := testSess(sm.StateAskMedicalOrder)
+	sess.SetContext("medication_flow", "1")
+	result, err := m.Process(context.Background(), sess, textM("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateMedicationCheckSanitas {
+		t.Errorf("esperaba MEDICATION_CHECK_SANITAS, got %s", result.NextState)
+	}
+}
+
 func TestUploadMedicalOrder_TextReceived(t *testing.T) {
 	m := sm.NewMachine()
 	m.Register(sm.StateUploadMedicalOrder, uploadMedicalOrderHandler(nil, nil))

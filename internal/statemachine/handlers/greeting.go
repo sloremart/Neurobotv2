@@ -3,11 +3,13 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
@@ -31,13 +33,9 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 		},
 		Handler: mainMenuHandler(),
 	})
-	m.RegisterWithConfig(sm.StateMedicationCheckSanitas, sm.HandlerConfig{
-		InputType:   sm.InputButton,
-		Options:     []string{"med_sanitas_si", "med_sanitas_no"},
-		ErrorMsg:    "Por favor selecciona una de las opciones.",
-		RetryPrompt: func(_ *session.Session, result *sm.StateResult) { medicationSanitasQuestion(result) },
-		Handler:     medicationCheckSanitasHandler(),
-	})
+	// Automático: valida el contrato SANITAS REAL del paciente ya identificado (no autodeclarado) y
+	// bifurca a canal externo (link wa.me) o escalación a agente.
+	m.Register(sm.StateMedicationCheckSanitas, medicationCheckSanitasHandler(cfg))
 	m.Register(sm.StateShowHelp, showHelpHandler())
 }
 
@@ -231,8 +229,12 @@ func mainMenuHandler() sm.StateHandler {
 				WithContext("escalation_reason", "pet_ct").
 				WithEvent("menu_selected", map[string]interface{}{"option": "pet_ct"}), nil
 		case "medicamentos":
-			// Validar SANITAS antes de escalar (por ahora el servicio es solo para SANITAS Evento).
-			return medicationSanitasQuestion(sm.NewResult(sm.StateMedicationCheckSanitas)).
+			// Reutiliza el flujo de agendar para IDENTIFICAR/crear al paciente y resolver su contrato;
+			// la bandera medication_flow desvía a la validación de medicamentos al llegar a la orden
+			// (askMedicalOrderHandler), en vez de pedir la orden. Así se valida SANITAS con el contrato
+			// real (no autodeclarado).
+			return startAgendarFlow(sm.NewResult(sm.StateAskClientType)).
+				WithContext("medication_flow", "1").
 				WithEvent("menu_selected", map[string]interface{}{"option": "medicamentos"}), nil
 		case "consultar":
 			return sm.NewResult(sm.StateAskDocumentType).
@@ -240,8 +242,10 @@ func mainMenuHandler() sm.StateHandler {
 				WithText(docTypeMenuText()).
 				WithEvent("menu_selected", map[string]interface{}{"option": "consultar"}), nil
 		case "agendar":
-			// Bird V2: entity type selection BEFORE document entry
+			// Bird V2: entity type selection BEFORE document entry. Limpia medication_flow por si el
+			// paciente venía de un intento de medicamentos abandonado (evita desviar el agendar normal).
 			return startAgendarFlow(sm.NewResult(sm.StateAskClientType)).
+				WithClearCtx("medication_flow").
 				WithEvent("menu_selected", map[string]interface{}{"option": "agendar"}), nil
 		case "resultados":
 			return sm.NewResult(sm.StateShowResults).
@@ -270,46 +274,51 @@ func startAgendarFlow(r *sm.StateResult) *sm.StateResult {
 			})
 }
 
-// medicationSanitasQuestion añade al resultado la pregunta de elegibilidad SANITAS (botones Sí/No).
-// Se usa tanto al entrar al flujo (desde el menú) como en el RetryPrompt del estado.
-func medicationSanitasQuestion(r *sm.StateResult) *sm.StateResult {
-	return r.WithButtons(
-		"Con gusto te ayudamos con el servicio de *Aplicación de medicamentos* 💉.\n\n"+
-			"Por ahora este servicio está disponible únicamente para afiliados a *SANITAS* (plan Evento).\n\n"+
-			"¿Eres afiliado a SANITAS?",
-		sm.Button{Text: "Sí, soy SANITAS", Payload: "med_sanitas_si"},
-		sm.Button{Text: "No / otra EPS", Payload: "med_sanitas_no"},
-	)
-}
-
-// MEDICATION_CHECK_SANITAS (interactivo) — valida elegibilidad SANITAS del servicio Aplicación de
-// medicamentos. Si el paciente es SANITAS, se le indican los documentos a enviar y se escala a un
-// agente (igual que PET-CT: no se agenda por el bot). Si no, se le informa y vuelve al menú principal.
-func medicationCheckSanitasHandler() sm.StateHandler {
-	return func(ctx context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
-		selected := sm.ValidatedPayload(ctx)
-
-		switch selected {
-		case "med_sanitas_si":
-			text := "Perfecto ✅. Para gestionar tu solicitud de *Aplicación de medicamentos*, por favor ten a la mano y envía los siguientes documentos:\n\n" +
-				"• Historia clínica\n" +
-				"• Orden médica\n" +
-				"• Autorización vigente\n\n" +
-				"En un momento te conecto con un agente que continuará con tu solicitud. 😊"
-			return sm.NewResult(sm.StateEscalateToAgent).
-				WithText(text).
-				WithContext("escalation_reason", "medicamentos").
-				WithEvent("medication_sanitas_confirmed", nil), nil
-		case "med_sanitas_no":
+// MEDICATION_CHECK_SANITAS (automático) — se llega tras identificar/crear al paciente (flujo de
+// agendar reutilizado). Valida el contrato SANITAS REAL (4/5/6/7), no autodeclarado:
+//   - No SANITAS → informa y vuelve al menú.
+//   - SANITAS → indica los documentos a tener listos y bifurca:
+//     · si hay canal externo (MEDICATION_EXTERNAL_WA_NUMBER) → envía el link wa.me (no escala);
+//     · si no → escala a un agente como antes.
+func medicationCheckSanitasHandler(cfg *config.Config) sm.StateHandler {
+	return func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		if !services.IsSanitasContract(sess.GetContext("patient_contract")) {
 			list := buildMainMenuList()
-			list.Body = "Por ahora el servicio de *Aplicación de medicamentos* solo está disponible para afiliados a *SANITAS* (plan Evento).\n\n" + list.Body
+			list.Body = "Por ahora el servicio de *Aplicación de medicamentos* solo está disponible para afiliados a *SANITAS*.\n\n" + list.Body
 			r := sm.NewResult(sm.StateMainMenu).
-				WithEvent("medication_sanitas_declined", nil)
+				WithClearCtx("medication_flow").
+				WithEvent("medication_not_sanitas", map[string]interface{}{"contract": sess.GetContext("patient_contract")})
 			r.Messages = append(r.Messages, list)
 			return r, nil
 		}
 
-		return nil, fmt.Errorf("unreachable: selected=%s", selected)
+		docs := "Perfecto ✅. Para tu solicitud de *Aplicación de medicamentos* ten a la mano estos documentos:\n\n" +
+			"• Historia clínica\n" +
+			"• Orden médica\n" +
+			"• Autorización vigente\n\n"
+
+		// Canal externo configurado → enviar link wa.me con mensaje prellenado (nombre + documento +
+		// motivo) y cerrar; el paciente lo continúa en ese canal.
+		if cfg != nil && cfg.MedicationExternalWANumber != "" {
+			name := sess.GetContext("patient_name")
+			doc := sess.GetContext("patient_doc")
+			prefill := fmt.Sprintf("Hola, soy %s (documento %s). Solicito el servicio de *aplicación de medicamentos*.", name, doc)
+			link := "https://wa.me/" + cfg.MedicationExternalWANumber + "?text=" + url.QueryEscape(prefill)
+			text := docs +
+				"Para continuar, escríbenos por nuestro *canal de aplicación de medicamentos* en este enlace:\n\n" +
+				link + "\n\n" +
+				"Al abrirlo verás un mensaje listo con tus datos; solo pulsa *enviar* y un asesor te atenderá. 😊"
+			return buildAutoCloseResult(text).
+				WithClearCtx("medication_flow").
+				WithEvent("medication_external_channel", map[string]interface{}{"contract": sess.GetContext("patient_contract")}), nil
+		}
+
+		// Sin canal externo → escalar a agente (como antes).
+		return sm.NewResult(sm.StateEscalateToAgent).
+			WithText(docs+"En un momento te conecto con un agente que continuará con tu solicitud. 😊").
+			WithClearCtx("medication_flow").
+			WithContext("escalation_reason", "medicamentos").
+			WithEvent("medication_sanitas_confirmed", nil), nil
 	}
 }
 

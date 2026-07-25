@@ -126,11 +126,15 @@ type Config struct {
 	EscalationAgentReminderMax int
 
 	// Center
-	CenterKey       string
-	CenterName      string
-	BotName         string
-	ResultsURL      string
-	ResultsVideoURL string
+	CenterKey  string
+	CenterName string
+	// MedicationExternalWANumber: número WhatsApp (internacional, solo dígitos, ej. 573001234567) del
+	// canal externo de "Aplicación de medicamentos". Si está definido, el bot envía al paciente el link
+	// wa.me a ese canal (no escala); si está vacío, escala a un agente como antes.
+	MedicationExternalWANumber string
+	BotName                    string
+	ResultsURL                 string
+	ResultsVideoURL            string
 
 	// Security
 	InternalAPIKey string
@@ -279,11 +283,12 @@ func Load() *Config {
 		EscalationAgentReminderMax: getEnvInt("ESCALATION_AGENT_REMINDER_MAX", 3),
 
 		// Center
-		CenterKey:       getEnv("CENTER_KEY", "siesa"),
-		CenterName:      getEnv("CENTER_NAME", "Neuro Electrodiagnóstico del Llano"),
-		BotName:         getEnv("BOT_NAME", "Samuel"),
-		ResultsURL:      getEnv("RESULTS_URL", ""),
-		ResultsVideoURL: getEnv("RESULTS_VIDEO_URL", ""),
+		CenterKey:                  getEnv("CENTER_KEY", "siesa"),
+		CenterName:                 getEnv("CENTER_NAME", "Neuro Electrodiagnóstico del Llano"),
+		MedicationExternalWANumber: strings.TrimSpace(getEnv("MEDICATION_EXTERNAL_WA_NUMBER", "")),
+		BotName:                    getEnv("BOT_NAME", "Samuel"),
+		ResultsURL:                 getEnv("RESULTS_URL", ""),
+		ResultsVideoURL:            getEnv("RESULTS_VIDEO_URL", ""),
 
 		// Security
 		InternalAPIKey: os.Getenv("INTERNAL_API_KEY"),
