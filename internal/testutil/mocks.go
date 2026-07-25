@@ -237,6 +237,11 @@ func (m *MockAppointmentRepo) FindDoctorAgendasOnDate(_ context.Context, _, _ st
 	return nil, nil
 }
 
+// AppointmentAsunto returns 0 by default (mock; real impl reads citas.asunto).
+func (m *MockAppointmentRepo) AppointmentAsunto(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 // SlotCountForAppointment returns the configured slot count (or 0 by default).
 func (m *MockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
 	if m.SlotCountForAppointmentFn != nil {

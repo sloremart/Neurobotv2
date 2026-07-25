@@ -61,6 +61,10 @@ type AppointmentRepository interface {
 	// están asociados a la cita (IdCita = apptID). Es la fuente de verdad del número
 	// de espacios que ocupa una cita multi-slot (1 cita / N slots).
 	SlotCountForAppointment(ctx context.Context, apptID string) (int, error)
+	// AppointmentAsunto devuelve el asunto_id de la cita (citas.asunto). 17 = SOPORTE
+	// SEDACIÓN: señal determinística de que la cita es sedada, independiente de la
+	// observación libre. Se usa al reprogramar/confirmar para preservar el ruteo a sedación.
+	AppointmentAsunto(ctx context.Context, apptID string) (int, error)
 	// WriteCreationAudit registra el alta de la cita en SIESA: una fila en log_citas
 	// (APARTAR CITA) + su detalle en log_citas_procedimientos (una por CUPS de
 	// citas_procedimientos). Best-effort/asíncrono. Se llama tras insertar los CUPS.

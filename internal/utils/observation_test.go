@@ -60,6 +60,27 @@ func TestAppointmentIsContrasted(t *testing.T) {
 	}
 }
 
+func TestAppointmentIsSedated(t *testing.T) {
+	cases := []struct {
+		name   string
+		obs    string
+		asunto int
+		want   bool
+	}{
+		{"obs sedada", "Bajo Sedación", 4, true},
+		{"asunto 17 con obs vacia (caso agente)", "", 17, true},
+		{"asunto 17 aunque obs diga sin sedacion", "sin sedación", 17, true}, // la agenda manda
+		{"ni obs ni asunto", "", 4, false},
+		{"obs negada, asunto normal", "sin sedación", 4, false},
+		{"obs sedada, asunto normal", "con anestesia general", 3, true},
+	}
+	for _, c := range cases {
+		if got := AppointmentIsSedated(c.obs, c.asunto); got != c.want {
+			t.Errorf("%s: AppointmentIsSedated(%q, %d) = %v, want %v", c.name, c.obs, c.asunto, got, c.want)
+		}
+	}
+}
+
 func TestObservationHasSedation(t *testing.T) {
 	cases := []struct {
 		obs  string

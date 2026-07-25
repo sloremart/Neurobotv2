@@ -118,6 +118,10 @@ func (m *mockAppointmentRepo) FindDoctorAgendasOnDate(_ context.Context, _, _ st
 	return nil, nil
 }
 
+func (m *mockAppointmentRepo) AppointmentAsunto(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 func (m *mockAppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID string) (int, error) {
 	if m.slotCountFn != nil {
 		return m.slotCountFn(ctx, apptID)

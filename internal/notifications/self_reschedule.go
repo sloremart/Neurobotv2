@@ -81,8 +81,11 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 	if utils.AppointmentIsContrasted(appt.Observations, procNames...) {
 		isContrasted = "1"
 	}
+	// Sedación: observación + asunto de la cita (17 = agenda de sedación, señal fiable cuando el
+	// agente no escribió la observación).
+	asunto, _ := m.apptSvc.AppointmentAsunto(ctx, pending.AppointmentID)
 	isSedated := "0"
-	if utils.ObservationHasSedation(appt.Observations) {
+	if utils.AppointmentIsSedated(appt.Observations, asunto) {
 		isSedated = "1"
 	}
 

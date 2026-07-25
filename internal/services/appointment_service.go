@@ -365,6 +365,12 @@ func (s *AppointmentService) SlotCountForAppointment(ctx context.Context, apptID
 	return s.repo.SlotCountForAppointment(ctx, apptID)
 }
 
+// AppointmentAsunto delega en el repo: asunto_id de la cita (17 = SOPORTE SEDACIÓN). Se usa al
+// reprogramar/confirmar para detectar sedación por agenda cuando la observación no la trae.
+func (s *AppointmentService) AppointmentAsunto(ctx context.Context, apptID string) (int, error) {
+	return s.repo.AppointmentAsunto(ctx, apptID)
+}
+
 // FindPendingEmgAppointment delega en el repo: cita EMG futura pendiente más próxima del paciente
 // (ancla para consolidar órdenes EMG/NC separadas).
 func (s *AppointmentService) FindPendingEmgAppointment(ctx context.Context, patientID string, emgCodes []string) (*domain.Appointment, error) {

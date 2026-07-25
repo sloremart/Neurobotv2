@@ -130,6 +130,10 @@ func (m *mockApptRepoAPI) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	return domain.RescheduleDayResult{}, nil
 }
 
+func (m *mockApptRepoAPI) AppointmentAsunto(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 func (m *mockApptRepoAPI) SlotCountForAppointment(_ context.Context, _ string) (int, error) {
 	return 0, nil
 }

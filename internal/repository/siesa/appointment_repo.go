@@ -1269,6 +1269,24 @@ func (r *AppointmentRepo) SlotCountForAppointment(ctx context.Context, apptID st
 	return n, nil
 }
 
+// AppointmentAsunto devuelve el asunto_id de la cita (citas.asunto). 17 = SOPORTE SEDACIÓN: señal
+// determinística de que la cita es sedada, independiente de la observación libre —que los agentes
+// casi nunca llenan (0/55 en el histórico)—. Se usa al reprogramar/confirmar para no perder el ruteo
+// a la agenda de sedación. Devuelve 0 si no existe la cita.
+func (r *AppointmentRepo) AppointmentAsunto(ctx context.Context, apptID string) (int, error) {
+	var asunto int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT ISNULL(asunto,0) FROM citas WITH (NOLOCK) WHERE id = @p1`,
+		apptID).Scan(&asunto)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("siesa appointment asunto %s: %w", apptID, err)
+	}
+	return asunto, nil
+}
+
 // DeleteBatch is a SOFT delete (INTEG-01): semantically it does NOT remove the citas rows.
 // citas.id is referenced by FK constraints (CitasObservaciones, E_Payment, E_Payment_Logs,
 // Recordatorio_mail_deta), so a physical DELETE fails at runtime whenever a child row exists,

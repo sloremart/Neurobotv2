@@ -353,8 +353,12 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 			if utils.AppointmentIsContrasted(selectedAppt.Observations, procNames...) {
 				isContrasted = "1"
 			}
+			// Sedación: observación + asunto de la cita (17 = agenda de sedación). Los agentes casi
+			// nunca escriben "sedación" en la observación, pero sí crean la cita en el asunto 17; sin
+			// mirar el asunto, se reprogramaría como normal perdiendo el ruteo a la agenda de sedación.
+			asunto, _ := apptSvc.AppointmentAsunto(ctx, selectedAppt.ID)
 			isSedated := "0"
-			if utils.ObservationHasSedation(selectedAppt.Observations) {
+			if utils.AppointmentIsSedated(selectedAppt.Observations, asunto) {
 				isSedated = "1"
 			}
 

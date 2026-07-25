@@ -23,6 +23,7 @@ type mockApptRepoNotif struct {
 	findByIDFn func(ctx context.Context, id string) (*domain.Appointment, error)
 	confirmFn  func(ctx context.Context, id string, channel, channelID string) error
 	cancelFn   func(ctx context.Context, id string, reason, channel, channelID string) error
+	asunto     int // devuelto por AppointmentAsunto (17 = sedación)
 }
 
 func (m *mockApptRepoNotif) FindByID(ctx context.Context, id string) (*domain.Appointment, error) {
@@ -126,6 +127,10 @@ func (m *mockApptRepoNotif) RescheduleDayOfAgenda(_ context.Context, _ domain.Re
 
 func (m *mockApptRepoNotif) FindDoctorAgendasOnDate(_ context.Context, _, _ string) ([]domain.DoctorAgendaOnDate, error) {
 	return nil, nil
+}
+
+func (m *mockApptRepoNotif) AppointmentAsunto(_ context.Context, _ string) (int, error) {
+	return m.asunto, nil
 }
 
 func (m *mockApptRepoNotif) SlotCountForAppointment(_ context.Context, _ string) (int, error) {

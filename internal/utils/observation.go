@@ -58,6 +58,19 @@ func nameIndicatesContrast(name string) bool {
 	return strings.Contains(normalizeObs(name), "con contraste")
 }
 
+// SedationAsunto es el asunto_id de SOPORTE SEDACIÓN en SIESA. Una cita en este asunto está en la
+// agenda de sedación → es sedada con certeza, aunque su observación no lo diga.
+const SedationAsunto = 17
+
+// AppointmentIsSedated decide si una cita ya creada (al REPROGRAMAR/confirmar) es sedada. Combina la
+// observación libre con el ASUNTO de la cita: asunto 17 (SOPORTE SEDACIÓN) es señal determinística de
+// sedación, independiente de la observación —que los agentes casi nunca llenan (0/55 en el histórico)—.
+// Sin esto, una cita sedada creada por un agente se reprogramaría como normal, perdiendo el ruteo a la
+// agenda de sedación. El asunto manda: si la cita está en la agenda de sedación, es sedada.
+func AppointmentIsSedated(observations string, asunto int) bool {
+	return asunto == SedationAsunto || ObservationHasSedation(observations)
+}
+
 // ObservationHasSedation detecta si la observación indica sedación/anestesia, con las mismas
 // reglas de normalización y negación que ObservationHasContrast.
 func ObservationHasSedation(obs string) bool {
