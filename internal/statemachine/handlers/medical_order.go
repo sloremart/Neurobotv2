@@ -435,6 +435,25 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 		}
 		cups = valid
 
+		// Bloqueos SANITAS: por regla de negocio el bot NO agenda bloqueos (053101–053115, 048101) a
+		// pacientes SANITAS (contratos 4/5/6/7). Si la orden trae un bloqueo —aunque venga con otros
+		// procedimientos agendables— TODA la orden se deriva a un agente para gestión manual.
+		if services.IsSanitasContract(sess.GetContext("patient_contract")) {
+			for _, cup := range cups {
+				if services.IsBloqueoCups(cup.Code) {
+					observability.Emit(observability.TraceSession(sess.ID), "agendar", "bloqueo_sanitas_escalated",
+						observability.EmitOpts{
+							Phone:  sess.PhoneNumber,
+							Reason: "bloqueo_sanitas",
+							Attrs:  map[string]interface{}{"cups_code": cup.Code},
+						})
+					return sm.NewResult(sm.StateEscalateToAgent).
+						WithText("Tu orden incluye un *bloqueo*, que se agenda directamente con un asesor. Te comunico con un agente para gestionar tu cita.").
+						WithEvent("bloqueo_sanitas_escalated", map[string]interface{}{"cups_code": cup.Code}), nil
+				}
+			}
+		}
+
 		if len(cups) == 0 {
 			observability.Emit(observability.TraceSession(sess.ID), "agendar", "cups_none",
 				observability.EmitOpts{Phone: sess.PhoneNumber})

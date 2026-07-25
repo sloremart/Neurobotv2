@@ -478,6 +478,41 @@ func TestCheckMRCLimitForMonth_ExcludesRescheduledAppt(t *testing.T) {
 	}
 }
 
+func TestIsBloqueoCups(t *testing.T) {
+	cases := []struct {
+		code string
+		want bool
+	}{
+		{"053105", true},   // BLOQUEO DE UNIÓN MIONEURAL (el único agendable hoy)
+		{"053105-8", true}, // con sufijo → por código base
+		{"048101", true},   // BLOQUEO DE NERVIO TRIGEMINAL
+		{"053101", true},   // familia
+		{"053115", true},   // familia
+		{"053116", false},  // fuera de la familia
+		{"890274", false},  // consulta neurología
+		{"891509", false},  // neuroconducción
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsBloqueoCups(c.code); got != c.want {
+			t.Errorf("IsBloqueoCups(%q) = %v, want %v", c.code, got, c.want)
+		}
+	}
+}
+
+func TestIsSanitasContract(t *testing.T) {
+	for _, c := range []string{"4", "5", "6", "7"} {
+		if !IsSanitasContract(c) {
+			t.Errorf("IsSanitasContract(%q) = false, want true", c)
+		}
+	}
+	for _, c := range []string{"8", "13", "21", "22", "24", ""} {
+		if IsSanitasContract(c) {
+			t.Errorf("IsSanitasContract(%q) = true, want false", c)
+		}
+	}
+}
+
 func TestCheckMRCLimit_EventoContract_NotBlocked(t *testing.T) {
 	// Contract 4 (SANITAS EVENTO CONTRIBUTIVO) is NOT subject to MRC limits
 	repo := &mockAppointmentRepo{

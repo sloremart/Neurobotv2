@@ -203,6 +203,32 @@ func IsMRCGroupCups(cupsCode string) (groupName string, maxPerMonth int, found b
 	return "", 0, false
 }
 
+// bloqueoCups: CUPS de BLOQUEOS (neurología/dolor) que el bot NO debe agendar a pacientes SANITAS
+// (regla de negocio: los bloqueos SANITAS se agendan manualmente por un agente). Familia 053101–053115
+// (todos "BLOQUEO DE…") + 048101. Hoy solo 053105 está en el catálogo del bot, pero se lista la familia
+// completa como defensa ante futuros mapeos o códigos que lleguen en una orden.
+var bloqueoCups = map[string]bool{
+	"048101": true,
+	"053101": true, "053102": true, "053103": true, "053104": true, "053105": true,
+	"053106": true, "053107": true, "053108": true, "053109": true, "053110": true,
+	"053111": true, "053112": true, "053113": true, "053114": true, "053115": true,
+}
+
+// IsBloqueoCups indica si el CUP (por su código BASE, sin sufijo) es un bloqueo.
+func IsBloqueoCups(cupsCode string) bool {
+	return bloqueoCups[utils.BaseCupCode(cupsCode)]
+}
+
+// IsSanitasContract indica si el contrato es SANITAS (Evento 4/7 + MRC 5/6). Se usa para la regla de
+// bloqueos: los bloqueos SANITAS no los agenda el bot.
+func IsSanitasContract(contractCode string) bool {
+	switch contractCode {
+	case "4", "5", "6", "7":
+		return true
+	}
+	return false
+}
+
 // Restricciones de edad por doctor (hardcoded por negocio)
 var doctorAgeRestrictions = map[string]struct {
 	MinAge int

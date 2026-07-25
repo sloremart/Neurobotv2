@@ -650,6 +650,63 @@ func TestValidateOCR_EnrichesFromDB(t *testing.T) {
 	}
 }
 
+// TestValidateOCR_BloqueoSanitas_Escalates: paciente SANITAS (6) con un bloqueo (053105) en la orden
+// —aunque venga con otro procedimiento agendable— NO lo agenda el bot: toda la orden se escala a agente.
+func TestValidateOCR_BloqueoSanitas_Escalates(t *testing.T) {
+	procRepo := &mockProcedureRepo{
+		findByCodeFn: func(_ context.Context, code string) (*domain.Procedure, error) {
+			return &domain.Procedure{ID: 1, Code: code, Name: "Proc " + code, IsActive: true}, nil
+		},
+	}
+	cups := []services.CUPSEntry{
+		{Code: "890271", Name: "EMG", Quantity: 1},     // agendable
+		{Code: "053105", Name: "Bloqueo", Quantity: 1}, // bloqueo
+	}
+	cupsJSON, _ := json.Marshal(cups)
+
+	m := sm.NewMachine()
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+
+	sess := testSess(sm.StateValidateOCR)
+	sess.Context["ocr_cups_json"] = string(cupsJSON)
+	sess.Context["patient_contract"] = "6" // SANITAS MRC contributivo
+
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateEscalateToAgent {
+		t.Errorf("bloqueo SANITAS debía escalar a agente, got %s", result.NextState)
+	}
+}
+
+// TestValidateOCR_BloqueoNonSanitas_NoEscalate: el mismo bloqueo para un paciente NO-SANITAS (particular)
+// NO dispara la regla → el flujo continúa normal.
+func TestValidateOCR_BloqueoNonSanitas_NoEscalate(t *testing.T) {
+	procRepo := &mockProcedureRepo{
+		findByCodeFn: func(_ context.Context, code string) (*domain.Procedure, error) {
+			return &domain.Procedure{ID: 1, Code: code, Name: "Proc " + code, IsActive: true}, nil
+		},
+	}
+	cups := []services.CUPSEntry{{Code: "053105", Name: "Bloqueo", Quantity: 1}}
+	cupsJSON, _ := json.Marshal(cups)
+
+	m := sm.NewMachine()
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+
+	sess := testSess(sm.StateValidateOCR)
+	sess.Context["ocr_cups_json"] = string(cupsJSON)
+	sess.Context["patient_contract"] = "8" // PARTICULAR
+
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState == sm.StateEscalateToAgent {
+		t.Error("bloqueo NO-SANITAS no debía escalar por esta regla")
+	}
+}
+
 func TestValidateOCR_DocumentMismatch_NoWarning(t *testing.T) {
 	procRepo := &mockProcedureRepo{
 		findByCodeFn: func(ctx context.Context, code string) (*domain.Procedure, error) {
