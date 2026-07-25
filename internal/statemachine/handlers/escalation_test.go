@@ -85,6 +85,41 @@ func TestEscalateHandler_Success(t *testing.T) {
 	}
 }
 
+// TestEscalateHandler_NoAgentsGate: si NO hay agentes disponibles, el bot NO escala (evita
+// no-show/expiración); avisa el horario y vuelve al menú. Cubre todas las vías de escalación.
+func TestEscalateHandler_NoAgentsGate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Endpoint de agentes → SIN agentes activos.
+		if r.Method == "GET" && r.URL.Path == "/workspaces/ws-test/agents" {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[]}`))
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer srv.Close()
+
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), testEscalationConfig(), nil)
+
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+	result, err := m.Process(context.Background(), sess, bird.InboundMessage{Phone: "+573001234567", ConversationID: "conv-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState == sm.StateEscalated {
+		t.Error("sin agentes NO debía escalar (ESCALATED)")
+	}
+	if result.NextState != sm.StateMainMenu {
+		t.Errorf("esperaba volver a MAIN_MENU, got %s", result.NextState)
+	}
+	if len(result.Events) == 0 || result.Events[0].Type != "escalation_no_agents" {
+		t.Errorf("esperaba evento escalation_no_agents, got %+v", result.Events)
+	}
+}
+
 // mockEscalationCreator captura las llamadas a Create para asertar el registro por escalación.
 type mockEscalationCreator struct {
 	calls      int
@@ -140,10 +175,15 @@ func TestEscalateHandler_RecordsEscalation(t *testing.T) {
 }
 
 func TestEscalateHandler_EmptyConversationFallback(t *testing.T) {
-	// EscalateToAgent will fail with empty conversationID
+	// EscalateToAgent will fail with empty conversationID (hay agentes → pasa el gate de disponibilidad).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/workspaces/ws-test/agents" {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"a1","teams":[{"id":"team-fallback"}],"availability":{"status":"active"}}]}`))
+			return
+		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"id":"ok"}`))
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
 	}))
 	defer srv.Close()
 

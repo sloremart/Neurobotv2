@@ -51,6 +51,21 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 		}
 
+		// Gate de disponibilidad: si NO hay agentes disponibles (a cualquier hora), NO crear una
+		// escalación destinada a no-show/expiración. Se avisa el horario y se vuelve al menú (no se
+		// pierde al paciente). Cubre todas las vías de escalación (keyword, reintentos agotados, etc.)
+		// en un solo punto. Mismo criterio que POST_ACTION_MENU (auditoría: escalaciones nocturnas al
+		// vacío → agent_no_show=275, escalation_expired=534/7d).
+		if birdClient != nil && !birdClient.HasAvailableAgents() {
+			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_no_agents",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: preState})
+			r := sm.NewResult(sm.StateMainMenu).
+				WithText("En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.* Por favor escríbenos en ese horario y con gusto te ayudamos. 😊").
+				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState})
+			r.Messages = append(r.Messages, buildMainMenuList())
+			return r, nil
+		}
+
 		slog.Debug(
 			"escalation_start",
 			"session_id", sess.ID,
