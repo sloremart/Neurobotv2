@@ -1290,13 +1290,34 @@ func (c *Client) listAgents(statusFilter string) ([]AgentInfo, error) {
 	return result.Results, nil
 }
 
+// ErrContactHasAnotherConversation señala el 409 de Bird en el que reabrir ESTA conversación es
+// imposible porque el CONTACTO ya tiene otra activa (código ResourceAlreadyExists). Se distingue del
+// 409 de concurrencia sobre el feed item: aquel es transitorio y se reintenta, este NO se resuelve
+// nunca reintentando la misma conversación — hay que asignar la conversación activa del contacto.
+var ErrContactHasAnotherConversation = errors.New("contact already has another active conversation")
+
+// isContactConversationConflict distingue el 409 de contacto del 409 de concurrencia leyendo el cuerpo
+// que Bird adjunta al error (doPatchFeedItem incluye "status %d, body: %s").
+func isContactConversationConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "another active conversation")
+}
+
 // AssignFeedItem assigns a conversation to a team+agent in Bird Inbox.
 // First searches for the feed item by conversationId (feed item ID != conversation ID),
 // then PATCHes using the actual feed item ID. Retries the search if not found yet.
-func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, agentID string) error {
+//
+// phone (opcional) permite rescatar el handoff cuando la conversación objetivo ya no se puede reabrir
+// porque el contacto tiene OTRA activa: en ese caso se resuelve la conversación vigente del paciente y
+// se asigna esa. Sin teléfono no hay a dónde redirigir y se devuelve ErrContactHasAnotherConversation.
+func (c *Client) AssignFeedItem(ctx context.Context, conversationID, phone, teamID, agentID string) error {
 	if conversationID == "" {
 		return nil
 	}
+	switched := false // solo se redirige una vez, para no entrar en ciclo entre conversaciones
 
 	payload := map[string]interface{}{
 		"teamId": teamID,
@@ -1353,6 +1374,31 @@ func (c *Client) AssignFeedItem(ctx context.Context, conversationID, teamID, age
 				// suposición (hoy el reason del flow-event lo pierde).
 				slog.Warn("feed_item_reopen_failed", "status", rResp, "conversation_id", conversationID,
 					"feed_item_id", feedItemID, "attempt", attempt, "error", rErr)
+				// 409 de CONTACTO (ResourceAlreadyExists, "another active conversation exists for this
+				// contact"): Bird no permite reabrir esta conversación porque el paciente ya tiene otra
+				// activa. Reintentar la MISMA conversación está condenado (auditoría 2026-07-27: el
+				// paciente terminaba en PICKUP MANUAL tras 3 reintentos inútiles). Se resuelve cuál es la
+				// conversación vigente del contacto y se asigna ESA — que es donde el paciente está
+				// escribiendo de verdad.
+				if rResp == 409 && isContactConversationConflict(rErr) {
+					if phone == "" || switched {
+						return fmt.Errorf("assign feed item: reopen feed_item=%s: %w", feedItemID, ErrContactHasAnotherConversation)
+					}
+					active, lerr := c.LookupConversationByPhone(phone)
+					if lerr != nil || active == "" || active == conversationID {
+						slog.Warn("feed_item_contact_conflict_unresolved", "conversation_id", conversationID,
+							"phone", utils.MaskPhone(phone), "lookup_error", lerr, "lookup_result", active)
+						return fmt.Errorf("assign feed item: reopen feed_item=%s: %w", feedItemID, ErrContactHasAnotherConversation)
+					}
+					slog.Info("feed_item_switched_to_active_conversation", "phone", utils.MaskPhone(phone),
+						"from_conversation_id", conversationID, "to_conversation_id", active)
+					conversationID = active
+					switched = true
+					// La conversación vigente pasa a ser la de referencia para los envíos siguientes.
+					c.CacheConversationID(phone, active)
+					continue
+				}
+
 				// 409 Conflict = el estado del feed item cambió entre el searchFeedItem y el PATCH
 				// (concurrencia: pacientes con muchas conversaciones reabren/cierran el hilo en paralelo,
 				// verificado en auditoría — el mismo contacto acumula decenas de tickets). Reintentar el
@@ -1835,7 +1881,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 				"team_id", teamID,
 				"error", err,
 			)
-			return "", "", c.AssignFeedItem(ctx, conversationID, teamID, "")
+			return "", "", c.AssignFeedItem(ctx, conversationID, phone, teamID, "")
 		}
 	}
 	if len(agents) == 0 {
@@ -1844,7 +1890,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 			"conversation_id", conversationID,
 			"team_id", teamID,
 		)
-		return "", "", c.AssignFeedItem(ctx, conversationID, teamID, "")
+		return "", "", c.AssignFeedItem(ctx, conversationID, phone, teamID, "")
 	}
 
 	// 3. Pick least loaded agent in target team
@@ -1858,7 +1904,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 			"team_id", teamID,
 			"workload", agent.RootItemAssignedCount,
 		)
-		return agent.ID, agent.DisplayName, c.AssignFeedItem(ctx, conversationID, teamID, agent.ID)
+		return agent.ID, agent.DisplayName, c.AssignFeedItem(ctx, conversationID, phone, teamID, agent.ID)
 	}
 
 	// 4. Fallback: try fallback team (Call Center)
@@ -1874,7 +1920,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 				"original_team_id", teamID,
 				"workload", agent.RootItemAssignedCount,
 			)
-			return agent.ID, agent.DisplayName, c.AssignFeedItem(ctx, conversationID, fallbackTeamID, agent.ID)
+			return agent.ID, agent.DisplayName, c.AssignFeedItem(ctx, conversationID, phone, fallbackTeamID, agent.ID)
 		}
 	}
 
@@ -1884,7 +1930,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 		"conversation_id", conversationID,
 		"team_id", teamID,
 	)
-	return "", "", c.AssignFeedItem(ctx, conversationID, teamID, "")
+	return "", "", c.AssignFeedItem(ctx, conversationID, phone, teamID, "")
 }
 
 // UpdateFeedItem updates a conversation's feed item in Bird Inbox.

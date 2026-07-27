@@ -766,7 +766,7 @@ func TestAssignFeedItem_Success(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.AssignFeedItem(context.Background(), "conv-123", "team-a", "agent-1")
+	err := c.AssignFeedItem(context.Background(), "conv-123", "", "team-a", "agent-1")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -807,7 +807,7 @@ func TestAssignFeedItem_ReopensClosed(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	if err := c.AssignFeedItem(context.Background(), "conv-reopen", "team-a", "agent-1"); err != nil {
+	if err := c.AssignFeedItem(context.Background(), "conv-reopen", "", "team-a", "agent-1"); err != nil {
 		t.Fatalf("expected no error (debe reabrir + asignar), got %v", err)
 	}
 	if len(patches) != 2 {
@@ -866,7 +866,7 @@ func TestAssignFeedItem_ReopenConflictRetries(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	if err := c.AssignFeedItem(context.Background(), "conv-conflict", "team-a", "agent-1"); err != nil {
+	if err := c.AssignFeedItem(context.Background(), "conv-conflict", "", "team-a", "agent-1"); err != nil {
 		t.Fatalf("esperaba éxito tras reintentar el 409, got %v", err)
 	}
 	if reopenCount != 2 {
@@ -879,7 +879,7 @@ func TestAssignFeedItem_ReopenConflictRetries(t *testing.T) {
 
 func TestAssignFeedItem_EmptyConversation(t *testing.T) {
 	c := NewClientForTest("http://localhost")
-	err := c.AssignFeedItem(context.Background(), "", "team-a", "agent-1")
+	err := c.AssignFeedItem(context.Background(), "", "", "team-a", "agent-1")
 	if err != nil {
 		t.Errorf("expected nil for empty conversation, got %v", err)
 	}
@@ -903,7 +903,7 @@ func TestAssignFeedItem_NoAgent(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	err := c.AssignFeedItem(context.Background(), "conv-1", "team-a", "")
+	err := c.AssignFeedItem(context.Background(), "conv-1", "", "team-a", "")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

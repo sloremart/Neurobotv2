@@ -57,6 +57,10 @@ type WaitingListFinder interface {
 // SessionCreator creates sessions and sets context (avoids importing repo/local directly).
 type SessionCreator interface {
 	Create(ctx context.Context, s *session.Session) error
+	// FindCurrentByPhone devuelve la sesión que OCUPA el cupo único del teléfono (activa o escalada),
+	// SIN filtrar por vencimiento — el mismo predicado del índice único. Es la vista que hay que
+	// consultar antes de crear: una escalada ya vencida sigue bloqueando el INSERT.
+	FindCurrentByPhone(ctx context.Context, phone string) (*session.Session, error)
 	SetContextBatch(ctx context.Context, sessionID string, kvs map[string]string) error
 	UpdateStatus(ctx context.Context, sessionID, status string) error
 	CompleteActiveByPhone(ctx context.Context, phone string) error
@@ -1214,7 +1218,32 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 			"patient_name":         patientName,
 			"pre_escalation_state": sm.StateNotifPending,
 		}
-		if err := m.sessionRepo.Create(ctx, sess); err != nil {
+		// Si el paciente YA tiene una sesión ocupando el cupo del teléfono, se escala SOBRE ella en vez
+		// de crear otra. Auditoría 2026-07-21/26: el Create a ciegas chocaba con el índice único
+		// ("active session already exists for phone"); el error solo se logueaba y la escalación seguía
+		// con sessID vacío, así que el handoff a Bird ocurría pero NO se registraba (sin fila en
+		// escalations → sin SLA, sin recordatorio al agente, sin no-show) y la sesión original quedaba
+		// activa: el bot le seguía respondiendo al paciente mientras el agente lo atendía.
+		existing, ferr := m.sessionRepo.FindCurrentByPhone(ctx, p.Phone)
+		if ferr != nil {
+			slog.Warn("escalateNotifToAgent: lookup session", "error", ferr, "phone", utils.MaskPhone(p.Phone))
+		}
+
+		if existing != nil {
+			sessID = existing.ID
+			// Marcarla escalada: el worker deja de responder automáticamente y el chat queda del agente.
+			if existing.Status != session.StatusEscalated {
+				if err := m.sessionRepo.UpdateStatus(ctx, existing.ID, session.StatusEscalated); err != nil {
+					slog.Error("escalateNotifToAgent: escalate existing session", "error", err,
+						"phone", utils.MaskPhone(p.Phone), "session_id", existing.ID)
+				}
+			}
+			if err := m.sessionRepo.SetContextBatch(ctx, existing.ID, sessCtx); err != nil {
+				slog.Error("escalateNotifToAgent: set context", "error", err, "phone", utils.MaskPhone(p.Phone))
+			}
+			slog.Info("escalateNotifToAgent: reusing active session", "phone", utils.MaskPhone(p.Phone),
+				"session_id", existing.ID, "prev_status", existing.Status)
+		} else if err := m.sessionRepo.Create(ctx, sess); err != nil {
 			slog.Error("escalateNotifToAgent: create session", "error", err, "phone", utils.MaskPhone(p.Phone))
 		} else {
 			sessID = sess.ID

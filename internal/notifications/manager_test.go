@@ -878,6 +878,7 @@ type mockSessionCreator struct {
 	mu             sync.Mutex
 	createFn       func(ctx context.Context, s *session.Session) error
 	setCtxBatchFn  func(ctx context.Context, sessionID string, kvs map[string]string) error
+	findCurrentFn  func(ctx context.Context, phone string) (*session.Session, error)
 	createdSession *session.Session
 	batchSessionID string
 	batchKVs       map[string]string
@@ -891,6 +892,17 @@ func (m *mockSessionCreator) Create(ctx context.Context, s *session.Session) err
 		return m.createFn(ctx, s)
 	}
 	return nil
+}
+
+// FindCurrentByPhone: sin sesión previa por defecto (el escenario "no hay sesión" de siempre). El caso
+// con sesión existente se cubre en escalate_notif_existing_session_test.go.
+func (m *mockSessionCreator) FindCurrentByPhone(ctx context.Context, phone string) (*session.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.findCurrentFn != nil {
+		return m.findCurrentFn(ctx, phone)
+	}
+	return nil, nil
 }
 
 func (m *mockSessionCreator) SetContextBatch(ctx context.Context, sessionID string, kvs map[string]string) error {

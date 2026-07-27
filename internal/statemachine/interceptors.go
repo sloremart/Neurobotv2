@@ -118,12 +118,44 @@ func ImageOutOfContextInterceptor() Interceptor {
 			return nil, false
 		}
 
+		// Una orden enviada mientras el bot pregunta OTRA cosa se GUARDA en vez de descartarse.
+		// Auditoría 2026-07-27: 11 de 15 rechazos de imagen del día cayeron en ASK_CLIENT_TYPE, con
+		// pacientes reenviando la misma foto hasta 6 veces antes de rendirse — y el propio
+		// PhotoIntentInterceptor los manda a ese estado diciéndoles "no necesitas reenviarla". Al
+		// guardarla, askMedicalOrderHandler la consume después (stashed_order_used) sin re-pedirla.
+		//
+		// GUARDA: solo si la orden AÚN no se ha leído (ocr_cups_json vacío). Después de leída, una foto
+		// es otra cosa (p.ej. el examen de laboratorio en GFR_CREATININE) y tomarla por orden médica
+		// sería peor que no guardarla. Tampoco se pisa un stash previo: vale el primero.
+		mediaURL := ""
+		switch msg.MessageType {
+		case "image":
+			mediaURL = msg.ImageURL
+		case "document":
+			mediaURL = msg.DocumentURL
+		}
+		orderAlreadyRead := sess.GetContext("ocr_cups_json") != ""
+		canStash := mediaURL != "" && !orderAlreadyRead && sess.GetContext("stashed_order_url") == ""
+
 		// Emitir también como flow_event para que el rechazo sea VISIBLE en el funnel de la skill
 		// auditora (el chat_event por sí solo era un punto ciego: ni ERROR ni caída de funnel). El attr
 		// `state` distingue el caso benigno (imagen suelta en un menú) del BUG (rechazo en un estado que
-		// SÍ espera foto, p.ej. un UPLOAD_* nuevo sin whitelistear).
+		// SÍ espera foto, p.ej. un UPLOAD_* nuevo sin whitelistear); `stashed` distingue el callejón real
+		// (la foto se perdió) de la recuperación (la foto quedó guardada).
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "image_out_of_context",
-			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"state": sess.CurrentState}})
+			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{
+				"state":   sess.CurrentState,
+				"stashed": canStash,
+			}})
+
+		if canStash {
+			return NewResult(sess.CurrentState).
+				WithText("Recibí tu orden 📷 y la guardo para usarla apenas lleguemos a ese paso — no necesitas reenviarla.\n\nSigamos con lo que te acabo de preguntar. 👆").
+				WithContext("stashed_order_url", mediaURL).
+				WithEvent("image_stashed_out_of_context", map[string]interface{}{
+					"state": sess.CurrentState,
+				}), true
+		}
 
 		result := NewResult(sess.CurrentState).
 			WithText("No esperaba una imagen en este momento. Si necesitas enviar una orden médica, primero selecciona la opción de agendar cita.").

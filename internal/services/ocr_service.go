@@ -22,6 +22,18 @@ import (
 // maxOCRPages acota cuántas páginas de un PDF multipágina se mandan a Vision en el fallback (costo/tamaño).
 const maxOCRPages = 10
 
+// defaultAnalyzeTimeout es el presupuesto propio de UN análisis OCR. DEBE quedar holgadamente por
+// debajo del presupuesto por mensaje del worker (processMsgTimeout = 2 min).
+//
+// Bug de producción 2026-07-27: el OCR corría con el contexto COMPLETO del mensaje y sin cota propia
+// podía consumirlo entero — el peor caso son 3 intentos × 60s de timeout HTTP, más el download, más el
+// fallback multipágina. Cuando eso pasaba, TODO lo posterior (SaveState, chat_events, inbox MarkDone)
+// fallaba en cascada con "context deadline exceeded": el paciente perdía el estado de su sesión y, como
+// la goroutine seguía tomando el lock del teléfono los 2 minutos, su mensaje siguiente moría en
+// phone_lock_timeout. Con cota propia el OCR se rinde solo, el handler emite ocr_timeout y le ofrece
+// reintentar, y sobra contexto para persistir y responder.
+const defaultAnalyzeTimeout = 75 * time.Second
+
 type OCRService struct {
 	apiKey        string
 	model         string // gpt-4o-mini
@@ -29,26 +41,51 @@ type OCRService struct {
 	client        *http.Client
 	cupsContext   string // CUPS reference table injected into the prompt
 	birdAccessKey string // Bird API key for downloading media files
+	// analyzeTimeout es el techo de UN análisis completo (download + Vision + reintentos). 0 = default.
+	analyzeTimeout time.Duration
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
 	return &OCRService{
-		apiKey:        apiKey,
-		model:         model,
-		apiURL:        "https://api.openai.com/v1/chat/completions",
-		client:        &http.Client{Timeout: 60 * time.Second},
-		cupsContext:   cupsContext,
-		birdAccessKey: birdAccessKey,
+		apiKey:         apiKey,
+		model:          model,
+		apiURL:         "https://api.openai.com/v1/chat/completions",
+		client:         &http.Client{Timeout: 60 * time.Second},
+		cupsContext:    cupsContext,
+		birdAccessKey:  birdAccessKey,
+		analyzeTimeout: defaultAnalyzeTimeout,
 	}
 }
 
 // NewOCRServiceForTest creates an OCRService pointing at a custom URL (for httptest).
 func NewOCRServiceForTest(apiURL string) *OCRService {
 	return &OCRService{
-		apiURL: apiURL,
-		model:  "test-model",
-		client: &http.Client{Timeout: 5 * time.Second},
+		apiURL:         apiURL,
+		model:          "test-model",
+		client:         &http.Client{Timeout: 5 * time.Second},
+		analyzeTimeout: defaultAnalyzeTimeout,
 	}
+}
+
+// SetAnalyzeTimeout ajusta el presupuesto propio de un análisis (<=0 restaura el default).
+func (s *OCRService) SetAnalyzeTimeout(d time.Duration) {
+	if d <= 0 {
+		d = defaultAnalyzeTimeout
+	}
+	s.analyzeTimeout = d
+}
+
+// withAnalyzeBudget acota el contexto de UN análisis. Es un TECHO, nunca una extensión: si al mensaje
+// le queda menos tiempo que el presupuesto, manda el del mensaje (context.WithTimeout ya toma el
+// mínimo con el deadline del padre).
+func (s *OCRService) withAnalyzeBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := s.analyzeTimeout
+	if d <= 0 {
+		d = defaultAnalyzeTimeout
+	}
+	//nolint:gosec // G118: el cancel se DEVUELVE al llamador, que lo invoca con defer (patrón estándar
+	// de un helper que acota un contexto).
+	return context.WithTimeout(ctx, d)
 }
 
 type OCRResult struct {
@@ -358,6 +395,9 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 
 // AnalyzeImage envía una imagen a OpenAI Vision y extrae CUPS + documento
 func (s *OCRService) AnalyzeImage(ctx context.Context, imageURL string) (*OCRResult, error) {
+	ctx, cancel := s.withAnalyzeBudget(ctx)
+	defer cancel()
+
 	systemPrompt := s.buildSystemPrompt()
 	messages := []map[string]interface{}{
 		{"role": "system", "content": systemPrompt},
@@ -376,6 +416,11 @@ func (s *OCRService) AnalyzeImage(ctx context.Context, imageURL string) (*OCRRes
 // using Ghostscript (300 DPI), and sends the image to OpenAI Vision for OCR.
 // Same behavior as Laravel's VisionMedicalOrderService.
 func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*OCRResult, error) {
+	// Presupuesto propio: cubre download + conversión de PDF + Vision (incluido el fallback
+	// multipágina). Sin él, un documento pesado o un Vision colgado agotaba el contexto del mensaje.
+	ctx, cancel := s.withAnalyzeBudget(ctx)
+	defer cancel()
+
 	// 1. Download the file (with Bird auth if configured)
 	req, err := http.NewRequestWithContext(ctx, "GET", documentURL, nil)
 	if err != nil {
@@ -536,6 +581,9 @@ func hasValidCUP(res *OCRResult) bool {
 // documento puede mezclar historia clínica y hojas de orden; el prompt refuerza extraer CUPS SOLO de
 // las hojas de FORMULACIÓN/orden e ignorar la historia clínica, e incluir todas las órdenes si hay varias.
 func (s *OCRService) AnalyzeImages(ctx context.Context, imageURLs []string) (*OCRResult, error) {
+	ctx, cancel := s.withAnalyzeBudget(ctx)
+	defer cancel()
+
 	content := []map[string]interface{}{
 		{"type": "text", "text": "Este documento tiene VARIAS páginas y puede incluir HISTORIA CLÍNICA además de la(s) hoja(s) de FORMULACIÓN/orden. Extrae los CUPS SOLO de las hojas de orden/formulación (las que traen la tabla de procedimientos con su código). IGNORA la historia clínica. Si hay órdenes en varias páginas, inclúyelas todas."},
 	}

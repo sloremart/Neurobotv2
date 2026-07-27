@@ -29,9 +29,13 @@ const (
 	dedupTTL              = 5 * time.Minute
 	dedupCleanup          = 2 * time.Minute
 	phoneLockTimeout      = 30 * time.Second
-	processMsgTimeout     = 2 * time.Minute // BUG-004: cota por mensaje del ctx desacoplado del apagado
-	agentCmdQueueSize     = 50
-	maxDedupEntries       = 100000 // safety cap; fail-open if exceeded (allow potential dups)
+	// persistStateTimeout acota el guardado de estado, que corre con contexto PROPIO (desacoplado del
+	// presupuesto del mensaje) para que un handler que se pasó de tiempo no se lleve por delante el
+	// estado del paciente. Ver sendAndSave (auditoría 2026-07-27).
+	persistStateTimeout = 15 * time.Second
+	processMsgTimeout   = 2 * time.Minute // BUG-004: cota por mensaje del ctx desacoplado del apagado
+	agentCmdQueueSize   = 50
+	maxDedupEntries     = 100000 // safety cap; fail-open if exceeded (allow potential dups)
 
 	// Re-replay del WAL (M7): recupera mensajes que quedaron 'pending' (p.ej. descartados por
 	// backpressure) sin esperar al reinicio. El umbral (> dedupTTL) evita reprocesar mensajes en
@@ -1237,7 +1241,16 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 		}
 	}
 
-	// Persist state + context
+	// Persist state + context.
+	//
+	// El guardado corre con SU PROPIO contexto, desacoplado del presupuesto del mensaje. Auditoría
+	// 2026-07-27: cuando el handler agotaba los 2 min del mensaje (OCR colgado), TODA la persistencia
+	// posterior heredaba un contexto ya vencido y fallaba con "context deadline exceeded" — el paciente
+	// perdía el estado de su sesión y quedaba reintentando el mismo paso. El estado es lo último que se
+	// debe perder: aunque el mensaje se pasara de tiempo, lo ya decidido se persiste.
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), persistStateTimeout)
+	defer persistCancel()
+
 	clearAll := false
 	for _, k := range result.ClearCtx {
 		if k == "__all__" {
@@ -1247,13 +1260,13 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 	}
 
 	if clearAll {
-		if err := p.sessionManager.ClearAllContext(ctx, sess); err != nil {
+		if err := p.sessionManager.ClearAllContext(persistCtx, sess); err != nil {
 			slog.Error("clear all context error", "phone", utils.MaskPhone(phone), "session_id", sess.ID, "conversation_id", convID, "error", err)
 		}
 		result.ClearCtx = nil
 	}
 
-	if err := p.sessionManager.SaveState(ctx, sess, result.NextState, result.UpdateCtx, result.ClearCtx); err != nil {
+	if err := p.sessionManager.SaveState(persistCtx, sess, result.NextState, result.UpdateCtx, result.ClearCtx); err != nil {
 		ctxKeys := make([]string, 0, len(result.UpdateCtx))
 		for k := range result.UpdateCtx {
 			ctxKeys = append(ctxKeys, k)
@@ -1269,7 +1282,9 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 		)
 		// Force-close the session so the next message creates a fresh one
 		// instead of loading stale state that causes confusing regressions.
-		if completeErr := p.sessionManager.Complete(ctx, sess); completeErr != nil {
+		// Contexto propio también aquí: el rescate se invoca JUSTO cuando el guardado falló, y si el
+		// motivo fue un deadline compartido, reusarlo hacía que el rescate fallara siempre.
+		if completeErr := p.sessionManager.Complete(persistCtx, sess); completeErr != nil {
 			slog.Error(
 				"save_state_fallback_complete_failed",
 				"phone", utils.MaskPhone(phone),
