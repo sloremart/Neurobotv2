@@ -186,6 +186,10 @@ var allowedAttrKeys = map[string]bool{
 	// handoff falla con "empty conversation ID". Todo booleano/enum, sin PII. Permite saber en la
 	// PRÓXIMA ocurrencia qué capa cayó (webhook/caché/send/fetch/lookup) sin suponer.
 	"msg_conv_id": true, "cache_hit": true, "sent_ok": true, "fetch_ok": true, "lookup": true,
+	// Callejones de foto: distingue el rechazo REAL (stashed=false, la foto se perdió) de la
+	// recuperación (stashed=true, quedó guardada para el paso de la orden). Sin esta clave el attr se
+	// descartaba en silencio y el evento no permitía separar ambos casos.
+	"stashed": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

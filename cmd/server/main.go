@@ -42,6 +42,16 @@ import (
 
 var startTime = time.Now()
 
+// Sello de build, inyectado con -ldflags -X al compilar (ver docker/Dockerfile). Sin él no había forma
+// de saber QUÉ código corre en producción: /health/debug solo decía desde cuándo está arriba, no qué
+// versión es. Eso llevó dos veces a discutir si un deploy había entrado o no (auditoría, ciclos 125 y
+// 129) apoyándose en inferencias frágiles. Con esto, "¿está desplegado el fix?" se responde leyendo
+// build_commit. Los valores por defecto aplican al compilar fuera de Docker (go run / go build local).
+var (
+	buildCommit = "unknown"
+	buildTime   = "unknown"
+)
+
 func main() {
 	// Capture signals explicitly so we can log which one we received
 	sigCh := make(chan os.Signal, 1)
@@ -754,8 +764,12 @@ func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool) h
 		uptime := time.Since(startTime)
 
 		info := map[string]interface{}{
-			"uptime":          uptime.String(),
-			"started_at":      startTime.Format(time.RFC3339),
+			"uptime":     uptime.String(),
+			"started_at": startTime.Format(time.RFC3339),
+			// Qué código corre, no solo desde cuándo. build_commit es el SHA corto con el que se
+			// compiló la imagen; comparado contra `git log -1` de main dice si el deploy entró.
+			"build_commit":    buildCommit,
+			"build_time":      buildTime,
 			"goroutines":      runtime.NumGoroutine(),
 			"memory_alloc_mb": float64(m.Alloc) / 1024 / 1024,
 			"memory_sys_mb":   float64(m.Sys) / 1024 / 1024,

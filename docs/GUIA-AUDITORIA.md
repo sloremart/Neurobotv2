@@ -85,7 +85,7 @@ curl -s -H "X-API-Key: $KEY" "$BASE/api/internal/flow-stats?flow=agendar" | jq
 | Endpoint | Auth | Para qué |
 |----------|------|----------|
 | `GET /health` | no | Liveness + ping a ambas BD (MySQL local y SIESA). |
-| `GET /health/debug` | sí | Estado detallado: cola del worker, conexiones DB, etc. |
+| `GET /health/debug` | sí | Estado detallado: **`build_commit`** (qué código corre), `build_time`, cola del worker, conexiones DB, etc. |
 
 ### 2.5 Acciones (no auditoría, pero útiles al investigar)
 `POST /test-alert` (probar Telegram), `POST /send-reminders` (disparar recordatorios sin esperar 07:00),
@@ -182,6 +182,16 @@ Mirar primero `outcome` (¿bien, bloqueado, error, escalado?) y luego `reason` (
 ### P6 — "El bot no responde a NADIE / responde a unos sí y a otros no"
 1. `GET /logs?search=invalid webhook signature&lines=500` → si hay firmas fallando, es config de webhooks en Bird (suscripción duplicada / secreto que no coincide). Mira la URL y `outbound` del log.
 2. `GET /health` → ¿BD arriba? `GET /health/debug` → ¿cola del worker saturada?
+
+> **¿Está desplegado un fix?** No se infiere: se lee. `GET /health/debug` devuelve `build_commit`, el
+> SHA corto con el que se compiló la imagen que está corriendo. Si coincide con `git log --oneline -1`
+> de `main`, el deploy entró; si no, el binario es anterior por más que el `git pull` del server diga
+> que está al día. `started_at` solo dice desde cuándo está arriba, **no** qué versión es — usarlo como
+> prueba de despliegue llevó a conclusiones equivocadas dos veces (ciclos 125 y 129).
+>
+> El sello lo pone el propio `docker/Dockerfile` leyendo el `.git` del contexto de build: no hay que
+> pasar build-args, `docker compose up -d --build bot` sigue siendo el mismo comando. Si algún día
+> aparece `build_commit: "unknown"`, es que se compiló sin el `.git` disponible.
 3. `GET /logs?level=ERROR` → panics o errores de arranque.
 
 ### P7 — "¿Las tareas programadas corrieron?"

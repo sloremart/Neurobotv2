@@ -230,3 +230,24 @@ func TestTruncateReason(t *testing.T) {
 		t.Errorf("debe quitar saltos de línea, got %q", got)
 	}
 }
+
+// La allowlist de attrs es un filtro SILENCIOSO: una clave no listada se descarta sin error ni aviso.
+// Eso convirtió el attr `stashed` en un punto ciego — se emitía en cada rechazo de imagen pero nunca
+// llegaba a la tabla, así que no se podía distinguir el callejón real (la foto se perdió) de la
+// recuperación (quedó guardada). Este test fija las claves de las que depende la auditoría.
+func TestSanitizeAttrs_KeepsAuditKeys(t *testing.T) {
+	out := sanitizeAttrs(map[string]interface{}{
+		"state":   "ASK_CLIENT_TYPE",
+		"stashed": false, // el valor falso también debe conservarse: es el caso que delata el callejón
+	})
+	if got, ok := out["state"]; !ok || got != "ASK_CLIENT_TYPE" {
+		t.Errorf("state debió pasar, got %v (ok=%v)", got, ok)
+	}
+	got, ok := out["stashed"]
+	if !ok {
+		t.Fatal("stashed debió pasar: sin él, el evento no distingue rechazo de recuperación")
+	}
+	if got != false {
+		t.Errorf("stashed debió conservar su valor false, got %v", got)
+	}
+}
