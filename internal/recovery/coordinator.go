@@ -17,6 +17,14 @@ import (
 const (
 	CtxRecoveryActive   = "ai_recovery_active"
 	CtxRecoveryAttempts = "ai_recovery_attempts"
+	// CtxRecoveryInjecting marca que estamos DENTRO de la re-entrada a machine.Process que hace
+	// inject(). Vive solo durante esa llamada (nunca se persiste). Sin él, si el valor inyectado
+	// vuelve a disparar la escalación, el handler de escalación llama a TryStart otra vez y la
+	// recursión no tiene fondo — el proceso muere por stack overflow (stack máximo de goroutine de
+	// Go = 1 GB). Ocurrió en producción el 28-jul-2026: un paciente escribió "Asesor" durante el
+	// registro, el validador puro lo aceptó como nombre y la re-inyección volvió a hacer match con
+	// la keyword de escalación.
+	CtxRecoveryInjecting = "ai_recovery_injecting"
 )
 
 // MonthlyCounter controla el tope mensual de recuperaciones (AI_RECOVERY_MONTHLY_LIMIT). nil = sin
@@ -70,6 +78,18 @@ func (c *Coordinator) TryStart(ctx context.Context, sess *session.Session, msg b
 	if !c.enabled || c.ai == nil {
 		return nil, false
 	}
+	// Guard de re-entrada: ya estamos dentro de la inyección de un valor recuperado y ese valor
+	// volvió a disparar la escalación. Escalar de verdad en vez de recuperar otra vez (si no, la
+	// recursión inject → Process → escalación → TryStart no termina nunca).
+	if sess.GetContext(CtxRecoveryInjecting) != "" {
+		return nil, false
+	}
+	// El paciente pidió explícitamente un humano ("asesor", "agente", ...). Es el escape de
+	// R-CHAT-04, no un input ambiguo: no hay nada que recuperar y tomarlo como dato del formulario
+	// lo guardaría como si fuera su nombre.
+	if sm.IsEscalationKeyword(msg.Text) {
+		return nil, false
+	}
 	cfg, ok := c.machine.Config(blockedState)
 	if !ok || !cfg.AIRecovery {
 		return nil, false
@@ -111,6 +131,10 @@ func (c *Coordinator) TryStart(ctx context.Context, sess *session.Session, msg b
 func (c *Coordinator) Handle(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, bool) {
 	blockedState := sess.GetContext(CtxRecoveryActive)
 	if blockedState == "" {
+		return nil, false
+	}
+	// Mismo guard de re-entrada que TryStart: nunca recuperar dentro de una inyección en curso.
+	if sess.GetContext(CtxRecoveryInjecting) != "" {
 		return nil, false
 	}
 	cfg, ok := c.machine.Config(blockedState)
@@ -191,6 +215,12 @@ func (c *Coordinator) inject(ctx context.Context, sess *session.Session, blocked
 		ReceivedAt:     orig.ReceivedAt,
 		ConversationID: orig.ConversationID,
 	}
+	// Marcar la re-entrada mientras dura el Process anidado: si el valor inyectado vuelve a caer en
+	// la escalación, TryStart/Handle lo detectan y escalan en vez de recursar. Se limpia siempre
+	// (incluido el camino de error) para que el flag no se persista con la sesión.
+	sess.SetContext(CtxRecoveryInjecting, "1")
+	defer delete(sess.Context, CtxRecoveryInjecting)
+
 	out, err := c.machine.Process(ctx, sess, vmsg)
 	if err != nil || out == nil {
 		return nil, false

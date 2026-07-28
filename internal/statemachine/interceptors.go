@@ -167,12 +167,22 @@ func ImageOutOfContextInterceptor() Interceptor {
 	}
 }
 
+// escalationKeywords son las palabras con las que el paciente pide un humano desde cualquier estado
+// (R-CHAT-04). Compartidas con IsEscalationKeyword para que la capa de recuperación IA reconozca el
+// mismo escape que el interceptor y no intente "recuperar" un pedido explícito de agente.
+var escalationKeywords = map[string]bool{
+	"agente": true, "asesor": true, "humano": true, "ayuda": true,
+}
+
+// IsEscalationKeyword indica si el texto es un pedido explícito de hablar con un humano.
+func IsEscalationKeyword(text string) bool {
+	return escalationKeywords[strings.TrimSpace(strings.ToLower(text))]
+}
+
 // EscalationKeywordsInterceptor allows users to request a human agent from any state
 // by typing keywords like "agente", "asesor", "humano", "ayuda" (R-CHAT-04).
 func EscalationKeywordsInterceptor() Interceptor {
-	keywords := map[string]bool{
-		"agente": true, "asesor": true, "humano": true, "ayuda": true,
-	}
+	keywords := escalationKeywords
 
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool) {
 		// No interceptar en estados terminales o ya escalados
