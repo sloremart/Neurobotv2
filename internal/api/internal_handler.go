@@ -2027,7 +2027,7 @@ func (h *InternalHandler) HandleTestAlert(w http.ResponseWriter, r *http.Request
 //
 //	lines    — max lines to return (default 200, max 10000)
 //	level    — filter by level: debug, info, warn, error
-//	from     — start datetime: YYYY-MM-DD or YYYY-MM-DDTHH:MM
+//	from     — start datetime: YYYY-MM-DD or YYYY-MM-DDTHH:MM (sin from/to: últimas 24 h)
 //	to       — end datetime: YYYY-MM-DD or YYYY-MM-DDTHH:MM
 //	search   — substring search in log message
 //	phone    — filter by phone number (matches anywhere in log line)
@@ -2065,6 +2065,11 @@ func (h *InternalHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		if t, err := parseFlexTime(v); err == nil {
 			filter.To = t
 		}
+	}
+	// Sin ventana explícita, mirar solo las últimas 24 h: si no, findLogFiles hace glob de TODOS los
+	// archivos del directorio (meses de logs, varios GB) para responder un "últimas 200 líneas".
+	if filter.From.IsZero() && filter.To.IsZero() {
+		filter.From = time.Now().Add(-24 * time.Hour)
 	}
 
 	logDir := h.cfg.LogDir

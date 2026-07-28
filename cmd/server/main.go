@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -491,7 +492,7 @@ func main() {
 	// HTTP Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB))
-	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool))))
+	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -785,7 +786,7 @@ func safeGo(name string, f func()) {
 	}()
 }
 
-func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool) http.HandlerFunc {
+func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
@@ -805,6 +806,30 @@ func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool) h
 			"memory_heap_mb":  float64(m.HeapAlloc) / 1024 / 1024,
 			"gc_cycles":       m.NumGC,
 			"gc_last":         time.Since(time.Unix(0, int64(m.LastGC))).String(),
+		}
+
+		// Kill switches y perfil: "¿qué versión corre y con qué switches?" tiene que responderse desde
+		// aquí. Sin esto había que entrar por SSH a leer el .env — y un switch mal puesto se ve igual
+		// que un bug (el bot sano que "no hace nada" es casi siempre BOT_ENABLED=false).
+		if cfg != nil {
+			info["config"] = map[string]interface{}{
+				"bot_enabled":                    cfg.BotEnabled,
+				"ai_recovery_enabled":            cfg.AIRecoveryEnabled,
+				"whatsapp_notifications_enabled": cfg.WhatsAppNotificationsEnabled,
+				"ivr_notifications_enabled":      cfg.IVRNotificationsEnabled,
+				"testing_always_open":            cfg.TestingAlwaysOpen,
+				"scaling_profile":                cfg.ScalingProfile,
+				"log_level":                      cfg.LogLevel,
+			}
+			// Tamaño del log del día: un bucle caliente lo dispara (28-jul-2026: 7,4 GB contra ~30 MB
+			// de un día normal). Es la señal más barata de "algo está girando en falso", y además avisa
+			// del riesgo de disco. Se mide solo el archivo de hoy, no todo el directorio.
+			if cfg.LogDir != "" {
+				todayLog := filepath.Join(cfg.LogDir, fmt.Sprintf("neuro-bot-%s.log", time.Now().Format("2006-01-02")))
+				if st, err := os.Stat(todayLog); err == nil {
+					info["log_today_mb"] = float64(st.Size()) / 1024 / 1024
+				}
+			}
 		}
 
 		// Carga del bot. Tras eliminar /api/internal/kpis/* (motor de KPIs duplicado), estas señales
