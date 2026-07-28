@@ -46,7 +46,10 @@ docker-test-race:
 # Tests de integracion (build-tag `integration`). Cada uno se SALTA si su DSN no esta seteado:
 #   SIESA_DSN       -> repos SIESA (SQL Server). Ej: sqlserver://sa:pass@host:1433?database=ZeusSalud_Neuro&encrypt=disable
 #   LOCAL_TEST_DSN  -> repos locales (MySQL, con migraciones aplicadas).
-#                      Ej: botuser:botpass@tcp(127.0.0.1:3306)/neuro_bot?parseTime=true
+#                      Ej: botuser:botpass@tcp(127.0.0.1:13308)/neuro_bot?parseTime=true&loc=Local
+#                      loc=Local es OBLIGATORIO: sin él el driver manda los time.Time como UTC y
+#                      MySQL los interpreta en la zona de la sesión (America/Bogota), guardándolos
+#                      5 horas en el futuro — los tests que filtran por received_at fallan solos.
 test-integration:
 	go test -tags integration -v ./internal/repository/...
 

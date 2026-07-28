@@ -42,6 +42,15 @@ import (
 
 var startTime = time.Now()
 
+const (
+	// maxReplayAttempts: cuántas veces se replaya un mensaje del WAL al arrancar antes de darlo por
+	// veneno y descartarlo. Bajo a propósito: si tres arranques seguidos no lograron procesarlo, el
+	// problema no es transitorio y seguir intentando solo mantiene al bot en bucle de reinicio.
+	maxReplayAttempts = 3
+	// replayBatchLimit acota cuántas filas se cargan de una: cada una trae su raw_body completo.
+	replayBatchLimit = 500
+)
+
 // Sello de build, inyectado con -ldflags -X al compilar (ver docker/Dockerfile). Sin él no había forma
 // de saber QUÉ código corre en producción: /health/debug solo decía desde cuándo está arriba, no qué
 // versión es. Eso llevó dos veces a discutir si un deploy había entrado o no (auditoría, ciclos 125 y
@@ -337,11 +346,31 @@ func main() {
 		safeGo("capacity-monitor", func() { capMon.Start(ctx) })
 	}
 
-	// WAL replay: re-process messages that weren't completed before last shutdown/crash
-	if pending, err := inboxRepo.FindPending(ctx); err != nil {
+	// WAL replay: re-process messages that weren't completed before last shutdown/crash.
+	//
+	// Protección de mensaje veneno (migración 035): un mensaje cuyo procesamiento MATA al proceso
+	// nunca se marca 'done', así que sin tope se replaya en cada arranque y el bot queda en bucle de
+	// reinicio permanente (28-jul-2026: ~2h de caída a partir de UN mensaje). Se descarta lo que ya
+	// agotó sus intentos ANTES de replayar, y el intento se persiste ANTES de encolar.
+	if poisoned, err := inboxRepo.PoisonExhausted(ctx, maxReplayAttempts); err != nil {
+		slog.Error("inbox poison check failed", "error", err)
+	} else if len(poisoned) > 0 {
+		// slog.Error → alerta a Telegram: un mensaje descartado es pérdida de datos, hay que mirarlo.
+		slog.Error("inbox replay: mensajes descartados por agotar reintentos (posible crash al procesarlos)",
+			"count", len(poisoned), "max_attempts", maxReplayAttempts, "ids", poisoned)
+	}
+
+	if pending, err := inboxRepo.FindPending(ctx, replayBatchLimit); err != nil {
 		slog.Error("inbox replay query failed", "error", err)
 	} else if len(pending) > 0 {
 		slog.Info("replaying unprocessed inbox messages", "count", len(pending))
+		ids := make([]string, len(pending))
+		for i, row := range pending {
+			ids[i] = row.ID
+		}
+		if err := inboxRepo.MarkReplayAttempt(ctx, ids); err != nil {
+			slog.Error("inbox replay attempt counter failed", "error", err)
+		}
 		for _, row := range pending {
 			var event bird.WebhookEvent
 			if err := json.Unmarshal([]byte(row.RawBody), &event); err != nil {

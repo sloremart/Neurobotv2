@@ -11,6 +11,10 @@ vendor/
 *.log
 backups/
 *.sql
+# Las migraciones SÍ se versionan: son parte del código (golang-migrate las aplica al arrancar y van
+# empaquetadas en la imagen). Sin esta excepción cada migración nueva necesita `git add -f` y es fácil
+# pushear el código sin su cambio de esquema — prod arranca esperando una columna que no existe.
+!migrations/*.sql
 *.sql.gz
 *.bak
 docker-compose.override.yml
