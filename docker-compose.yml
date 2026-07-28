@@ -129,6 +129,12 @@ services:
       TG_CHAT_IDS: ${TG_CHAT_IDS:-}
       IGNORE_CONTAINERS: "neuro_bot_watcher"
       VERBOSE: "0"
+      # Solo los contenedores de ESTE proyecto. El servidor aloja varios stacks y `docker events` sin
+      # filtro reporta todo el demonio: alertas de contenedores ajenos indistinguibles de las del bot.
+      COMPOSE_PROJECT: "${COMPOSE_PROJECT_NAME:-neurobotv2}"
+      # Silencio por contenedor tras una alerta. Un bucle de reinicio emite un evento cada ~13s: sin
+      # esto son ~5 mensajes por minuto durante horas (28-jul-2026) y el canal se vuelve ilegible.
+      COOLDOWN_SECONDS: "300"
       TZ: America/Bogota
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
