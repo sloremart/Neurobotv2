@@ -137,11 +137,18 @@ func findLogFiles(dir, prefix string, from, to time.Time) ([]string, error) {
 	return matches, nil
 }
 
-// extractDate parses the date from a filename like "neuro-bot-2026-03-24.log".
+// extractDate parses the date from a filename like "neuro-bot-2026-03-24.log", o de un archivo
+// rotado por tamaño como "neuro-bot-2026-03-24.02.log" (ver DailyFileWriter.rollBySizeLocked).
 func extractDate(path, prefix string) time.Time {
 	base := filepath.Base(path)
 	base = strings.TrimPrefix(base, prefix+"-")
 	base = strings.TrimSuffix(base, ".log")
+	// Descartar el sufijo de secuencia: sin esto la fecha no parsea, el archivo cae en el caso
+	// "no se pudo leer la fecha → incluir" y las partes rotadas se escanean SIEMPRE, aunque queden
+	// fuera de la ventana pedida.
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
 	// L19: parsear la fecha del nombre en la MISMA zona que from/to (que vienen en time.Local).
 	// Con time.Parse (UTC) y offset negativo (Colombia UTC-5), el archivo del propio día se excluía.
 	t, err := time.ParseInLocation("2006-01-02", base, time.Local)

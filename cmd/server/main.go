@@ -77,7 +77,7 @@ func main() {
 	utils.SetMaskPhones(cfg.LogMaskPhones)
 
 	// Configurar logger
-	initLogger(cfg.LogLevel, cfg.LogDir)
+	initLogger(cfg.LogLevel, cfg.LogDir, cfg.LogMaxFileMB)
 
 	slog.Info(
 		"bot starting",
@@ -610,7 +610,7 @@ func main() {
 	}
 }
 
-func initLogger(level, logDir string) {
+func initLogger(level, logDir string, maxFileMB int) {
 	var logLevel slog.Level
 	switch level {
 	case "debug":
@@ -625,7 +625,7 @@ func initLogger(level, logDir string) {
 
 	var w io.Writer = os.Stdout
 	if logDir != "" {
-		fw, err := logging.NewDailyFileWriter(logDir, "neuro-bot", 30)
+		fw, err := logging.NewDailyFileWriter(logDir, "neuro-bot", 30, int64(maxFileMB)*1024*1024)
 		if err != nil {
 			log.Printf("WARN: could not init log file writer: %v (logging to stdout only)", err)
 		} else {

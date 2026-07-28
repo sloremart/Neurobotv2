@@ -15,6 +15,9 @@ type Config struct {
 	Timezone string
 	LogLevel string
 	LogDir   string
+	// LogMaxFileMB acota el tamaño de UN archivo de log (LOG_MAX_FILE_MB, 0 = sin tope). Existe para
+	// que LOG_LEVEL=debug en producción no sea un riesgo de disco: un bucle caliente escribe MB/s.
+	LogMaxFileMB int
 
 	// Local DB
 	DBHost     string
@@ -187,6 +190,9 @@ func Load() *Config {
 		Timezone: getEnv("TZ", "America/Bogota"),
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 		LogDir:   getEnv("LOG_DIR", "/app/logs"),
+		// 512 MB: muy por encima de un día normal (~30 MB), y muy por debajo de lo que un bucle
+		// desbocado escribe en una hora (~10 GB).
+		LogMaxFileMB: getEnvInt("LOG_MAX_FILE_MB", 512),
 
 		// Local DB
 		DBHost:     getEnv("DB_HOST", "db"),
