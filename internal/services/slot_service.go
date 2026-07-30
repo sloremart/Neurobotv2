@@ -35,6 +35,8 @@ type SlotQuery struct {
 	MaxSlots        int                                 // Default 5
 	ClinicAddress   string                              // Procedure clinic address
 	MonthFilter     func(year, month int) (bool, error) // Optional: true = month allowed, nil = no filter
+	MinDate         time.Time                           // Optional: exclude slots before this date (gestational window start)
+	MaxDate         time.Time                           // Optional: exclude slots after this date (gestational window cutoff)
 }
 
 type AvailableSlot struct {
@@ -215,6 +217,14 @@ func (s *SlotService) GetAvailableSlots(ctx context.Context, query SlotQuery) ([
 		}
 
 		dt, _ := time.Parse("2006-01-02", date)
+
+		// Ventana gestacional: solo mostrar slots dentro de la ventana clínica [MinDate, MaxDate].
+		if !query.MinDate.IsZero() && dt.Before(query.MinDate) {
+			continue
+		}
+		if !query.MaxDate.IsZero() && dt.After(query.MaxDate) {
+			continue
+		}
 
 		// Intervalo REAL de esta agenda/día (fallback a DurationMin) y duración TOTAL de la cita =
 		// nº de slots (Espacios) × intervalo. Se calcula ANTES del filtro de contraste porque las

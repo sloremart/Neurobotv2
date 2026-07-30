@@ -157,6 +157,8 @@ PROCEDIMIENTOS — PROCESO DE DECISIÓN (OBLIGATORIO):
    - Si en la fila del procedimiento existe un número de 4 a 6 dígitos, ese ES el cups_code.
    - Si el código tiene cualquier sufijo tras un guion (ej: "891509-16", "891509-1", "891509-4"), usa SOLO los dígitos del código base: "891509". El número del sufijo indica cantidad; captúrala usando (#N) o la regla 2, nunca en cups_code.
    - Copia la descripción tal cual de la orden en cups_name.
+   - VERIFICACIÓN CRÍTICA DE DÍGITOS: Los códigos CUPS son identificadores únicos donde cada dígito importa. Dígitos que suelen confundirse: 0/6, 3/8, 1/7, 2/4. Verifica cada dígito individualmente. Si la descripción menciona "OTORRINOLARINGOLOGIA" pero el código que lees existe en tu lista como "FISIATRIA", has leído mal el código — vuelve a leerlo con cuidado.
+   - VERIFICACIÓN CRUZADA: Si el cups_code que leíste existe en la LISTA DE REFERENCIA y su descripción en la lista corresponde a UNA ESPECIALIDAD DISTINTA a la que menciona la descripción de la orden (ej: la orden dice "OTORRINOLARINGOLOGIA" pero la lista tiene ese código como "MEDICINA FISICA"), indica el código tal como está en la imagen (puede ser un código fuera de la lista) y deja cups_name con la descripción exacta de la orden.
 
 2) SOLO SI NO HAY CÓDIGO EN LA ORDEN:
    - Compara la descripción de la orden con la LISTA DE REFERENCIA (al final).

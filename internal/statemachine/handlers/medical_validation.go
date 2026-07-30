@@ -714,74 +714,101 @@ func checkSpecialCupsHandler() sm.StateHandler {
 	}
 }
 
-// ASK_GESTATIONAL_WEEKS (interactivo) — confirma si paciente está en el rango de semanas requerido.
-// Sigue el mismo patrón que askContrastedHandler: flag _prompted_weeks para separar primera llamada (mostrar botones) de segunda (validar).
+// ASK_GESTATIONAL_WEEKS (interactivo) — pide la semana de gestación exacta, valida el rango y
+// calcula la fecha límite para mostrar solo slots dentro de la ventana clínica permitida.
+// La semana se guarda en gestational_max_date (YYYY-MM-DD) = hoy + días hasta semana máxima.
 func askGestationalWeeksHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsCode := sess.GetContext("cups_code")
 		gr := pregnancyUltrasoundCups[cupsCode]
 
-		questionText := fmt.Sprintf("Para esta ecografía necesitas estar entre las *%s* de gestación.\n\n¿Estás actualmente en ese rango?", gr.label)
-		buttons := []sm.Button{
-			{Text: "Sí", Payload: "weeks_yes"},
-			{Text: "No", Payload: "weeks_no"},
-		}
+		questionText := "¿En qué semana de gestación se encuentra actualmente? _(escribe el número, por ejemplo: *12* o *12.5*)_"
 
-		// Primera llamada (auto-chain desde CHECK_SPECIAL_CUPS): mostrar pregunta y detenerse
+		// Primera llamada: mostrar pregunta y detenerse
 		if sess.GetContext("_prompted_weeks") == "" {
 			return sm.NewResult(sess.CurrentState).
 				WithContext("_prompted_weeks", "1").
-				WithButtons(questionText, buttons...), nil
+				WithText(questionText), nil
 		}
 
-		// Selección numérica de semanas — SOLO para el resume del agente (/bot resume ... 19).
-		// M4: gatear por el prefijo de ID `agent-` (convención de los mensajes inyectados por el agente,
-		// igual que en el worker pool). Sin esto, un PACIENTE que responde el Sí/No tecleando "1"/"2"
-		// (en vez de tocar el chip) caía aquí: "1"→weeksInt=10 < gr.min → "fuera de rango" → auto-cierre,
-		// rechazando por error a una paciente que SÍ está en el rango. Ahora el texto del paciente va
-		// directo a ValidateButtonResponse (que ya mapea 1→Sí, 2→No).
+		// Comandos del agente: weeks_yes / weeks_no (sin número de semana).
+		// weeks_yes sin número no permite calcular maxDate → no se filtra por fecha, se continúa.
 		isAgentInput := strings.HasPrefix(msg.ID, "agent-")
-		if weeks, err := strconv.ParseFloat(strings.Replace(strings.TrimSpace(msg.Text), ",", ".", 1), 64); isAgentInput && err == nil && weeks > 0 {
-			weeksInt := int(weeks * 10) // e.g. 19 → 190, 13.6 → 136
-			if weeksInt >= gr.min && weeksInt <= gr.max {
+		if isAgentInput {
+			switch strings.TrimSpace(msg.Text) {
+			case "weeks_yes":
 				sess.RetryCount = 0
 				return sm.NewResult(sm.StateAskContrasted).
 					WithClearCtx("_prompted_weeks").
-					WithEvent("gestational_weeks_confirmed", map[string]interface{}{"cups_code": cupsCode, "range": gr.label, "weeks": weeks}), nil
+					WithEvent("gestational_weeks_confirmed", map[string]interface{}{"cups_code": cupsCode, "range": gr.label}), nil
+			case "weeks_no":
+				sess.RetryCount = 0
+				return buildAutoCloseResult(fmt.Sprintf(
+					"Esta ecografía requiere estar entre las *%s* de gestación.\n\nCuando estés en ese rango, vuelve a contactarnos y con gusto te agendaremos.",
+					gr.label,
+				)).
+					WithClearCtx("_prompted_weeks").
+					WithEvent("gestational_weeks_out_of_range", map[string]interface{}{"cups_code": cupsCode, "range": gr.label}), nil
 			}
-			// Número fuera de rango → tratar como weeks_no
+		}
+
+		// Parsear número de semanas (paciente o agente con número específico).
+		weekStr := strings.TrimSpace(strings.Replace(msg.Text, ",", ".", 1))
+		weeks, err := strconv.ParseFloat(weekStr, 64)
+		if err != nil || weeks <= 0 {
+			// Respuesta no reconocida: re-preguntar (máx 3 intentos antes de escalar).
+			return sm.NewResult(sess.CurrentState).
+				WithText(fmt.Sprintf("Por favor indica el número de semanas (ejemplo: *12* o *12.5*).\n\n%s", questionText)), nil
+		}
+
+		maxWeeks := float64(gr.max) / 10.0
+		minWeeks := float64(gr.min) / 10.0
+
+		// Si la paciente ya superó la semana máxima, ya no hay ventana posible → cerrar.
+		daysToMax := int((maxWeeks - weeks) * 7)
+		if daysToMax < 0 {
 			sess.RetryCount = 0
 			return buildAutoCloseResult(fmt.Sprintf(
-				"Esta ecografía requiere estar entre las *%s* de gestación.\n\nCuando estés en ese rango, vuelve a contactarnos y con gusto te agendaremos.",
-				gr.label,
+				"Para esta ecografía es necesario que se realice entre las *%s* de gestación. Lamentablemente en semana %.1f ya no es posible realizarla.\n\nConsulta con tu médico las opciones disponibles.",
+				gr.label, weeks,
 			)).
 				WithClearCtx("_prompted_weeks").
-				WithEvent("gestational_weeks_out_of_range", map[string]interface{}{"cups_code": cupsCode, "range": gr.label, "weeks": weeks}), nil
+				WithEvent("gestational_weeks_past_range", map[string]interface{}{"cups_code": cupsCode, "range": gr.label, "weeks": weeks}), nil
 		}
 
-		// Segunda llamada: validar respuesta del paciente
-		result, selected := sm.ValidateButtonResponse(sess, msg, "weeks_yes", "weeks_no")
-		if result != nil {
-			// Respuesta inválida: re-mostrar botones
-			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
-				Text:    questionText,
-				Buttons: buttons,
-			}}
-			return result, nil
+		// Calcular ventana de slots: [hoy + díasHastaMin, hoy + díasHastaMax].
+		// Si la paciente ya pasó o está en la semana mínima, el inicio es hoy (sin MinDate).
+		maxDate := time.Now().AddDate(0, 0, daysToMax)
+		maxDateStr := maxDate.Format("2006-01-02")
+
+		var minDateStr string
+		daysToMin := int((minWeeks - weeks) * 7)
+		if daysToMin > 0 {
+			minDate := time.Now().AddDate(0, 0, daysToMin)
+			minDateStr = minDate.Format("2006-01-02")
 		}
 
-		switch selected {
-		case "weeks_yes":
-			return sm.NewResult(sm.StateAskContrasted).
-				WithClearCtx("_prompted_weeks").
-				WithEvent("gestational_weeks_confirmed", map[string]interface{}{"cups_code": cupsCode, "range": gr.label}), nil
-		default: // weeks_no
-			return buildAutoCloseResult(fmt.Sprintf(
-				"Esta ecografía requiere estar entre las *%s* de gestación.\n\nCuando estés en ese rango, vuelve a contactarnos y con gusto te agendaremos.",
-				gr.label,
-			)).
-				WithClearCtx("_prompted_weeks").
-				WithEvent("gestational_weeks_out_of_range", map[string]interface{}{"cups_code": cupsCode, "range": gr.label}), nil
+		infoMsg := fmt.Sprintf(
+			"Para esta ecografía es necesario que se realice entre las *%s* de gestación. Buscaremos los horarios disponibles en ese período.",
+			gr.label,
+		)
+		sess.RetryCount = 0
+		result := sm.NewResult(sm.StateAskContrasted).
+			WithText(infoMsg).
+			WithContext("gestational_max_date", maxDateStr).
+			WithClearCtx("_prompted_weeks").
+			WithEvent("gestational_weeks_confirmed", map[string]interface{}{
+				"cups_code":   cupsCode,
+				"range":       gr.label,
+				"weeks":       weeks,
+				"min_date":    minDateStr,
+				"max_date":    maxDateStr,
+				"days_to_min": daysToMin,
+				"days_to_max": daysToMax,
+			})
+		if minDateStr != "" {
+			result = result.WithContext("gestational_min_date", minDateStr)
 		}
+		return result, nil
 	}
 }

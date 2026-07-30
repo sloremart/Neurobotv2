@@ -606,12 +606,13 @@ func buildAgentCommands(sess *session.Session, cupsCode string) string {
 		if gr, ok := pregnancyUltrasoundCups[cupsCode]; ok {
 			gestRange = gr.label
 		}
-		situation = fmt.Sprintf("Ecografia obstetrica — paciente no respondio si esta en el rango de semanas requerido.\nProcedimiento: %s (%s)\nRango requerido: %s\nPaciente: %s",
+		situation = fmt.Sprintf("Ecografia obstetrica — el bot espera que la paciente indique su semana de gestacion exacta.\nProcedimiento: %s (%s)\nRango requerido: %s\nPaciente: %s",
 			cupsName, cupsCode, gestRange, patientName)
-		actions = fmt.Sprintf("- Preguntale al paciente cuantas semanas de gestacion tiene. El rango requerido es: %s\n", gestRange) +
-			"  /bot resume ASK_GESTATIONAL_WEEKS weeks_yes — Paciente SI esta en el rango\n" +
+		actions = fmt.Sprintf("- Preguntale a la paciente cuantas semanas de gestacion tiene. El rango requerido es: %s\n", gestRange) +
+			"  /bot resume ASK_GESTATIONAL_WEEKS 13 — Enviar semana exacta (ej: 13, 11.5, 12)\n" +
+			"  /bot resume ASK_GESTATIONAL_WEEKS weeks_yes — Paciente SI esta en el rango (sin filtrar por fecha)\n" +
 			"  /bot resume ASK_GESTATIONAL_WEEKS weeks_no — Paciente NO esta en el rango\n" +
-			"  /bot resume ASK_GESTATIONAL_WEEKS — Preguntar de nuevo con botones"
+			"  /bot resume ASK_GESTATIONAL_WEEKS — Preguntar de nuevo"
 
 	case sm.StateAskContrasted:
 		situation = fmt.Sprintf("El paciente no respondio si el examen es con o sin contraste.\nProcedimiento: %s (%s)\nPaciente: %s",

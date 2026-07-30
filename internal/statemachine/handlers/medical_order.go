@@ -436,6 +436,20 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 					skipped = append(skipped, cup.Code)
 					continue
 				}
+
+				// Validación cruzada de especialidad: si el nombre que leyó el OCR menciona
+				// una especialidad claramente distinta a la del catálogo, es un error de dígito
+				// del OCR (ej: 890382 Otorrino leído como 890364 Fisiatría). Descartar y escalar.
+				if ocrSpecialtyMismatch(cup.Name, proc.Name) {
+					slog.Warn("validate_ocr_specialty_mismatch",
+						"cups_code", cup.Code,
+						"ocr_name", cup.Name,
+						"catalog_name", proc.Name,
+					)
+					skipped = append(skipped, cup.Code)
+					continue
+				}
+
 				cup.Name = proc.Name
 			}
 			valid = append(valid, cup)
@@ -843,4 +857,43 @@ func selectProcedureHandler() sm.StateHandler {
 				"name": selected.Name,
 			}), nil
 	}
+}
+
+// ocrSpecialtyMismatch detecta cuando el nombre leído por el OCR indica una especialidad médica
+// claramente distinta a la que tiene el catálogo para el código encontrado. Esto ocurre cuando el
+// OCR confunde dígitos similares (ej: 890382 Otorrinolaringología → 890364 Fisiatría). Si hay
+// discordancia, el CUPS se descarta para que el flujo escale al agente en lugar de agendar el
+// procedimiento equivocado.
+//
+// Solo detecta especialidades ajenas a la clínica (neurología, fisiatría, imágenes) — no genera
+// falsos positivos en procedimientos propios aunque tengan palabras genéricas compartidas.
+func ocrSpecialtyMismatch(ocrName, catalogName string) bool {
+	ocr := strings.ToUpper(ocrName)
+	cat := strings.ToUpper(catalogName)
+
+	// Especialidades externas: si el OCR las menciona pero el catálogo NO → error de dígito.
+	externalKeywords := []string{
+		"OTORRINOLARING", "OTORRIN",
+		"CARDIOLOG",
+		"GASTROENTEROLOG", "GASTRO",
+		"DERMATOLOG",
+		"OFTALMOLOG",
+		"UROLOG",
+		"GINECOLOG", "OBSTETRIC",
+		"ORTOPED", "TRAUMATOLOG",
+		"PSIQUIAT",
+		"ENDOCRINOLOG",
+		"ONCOLOG",
+		"REUMATOLOG",
+		"ANESTESIOL",
+		"NEUMOLOG",
+		"INFECTOLOG",
+		"HEMATOLOG",
+	}
+	for _, kw := range externalKeywords {
+		if strings.Contains(ocr, kw) && !strings.Contains(cat, kw) {
+			return true
+		}
+	}
+	return false
 }

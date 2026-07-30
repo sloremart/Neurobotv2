@@ -423,6 +423,15 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 			espacios = 1
 		}
 
+		// Ventana gestacional (881436, 881437): fechas calculadas en askGestationalWeeksHandler.
+		var gestMinDate, gestMaxDate time.Time
+		if minDateStr := sess.GetContext("gestational_min_date"); minDateStr != "" {
+			gestMinDate, _ = time.Parse("2006-01-02", minDateStr)
+		}
+		if maxDateStr := sess.GetContext("gestational_max_date"); maxDateStr != "" {
+			gestMaxDate, _ = time.Parse("2006-01-02", maxDateStr)
+		}
+
 		// Códigos a probar: primario + alternativos (mismo grupo). La búsqueda de slots los prueba en
 		// orden, así que el gate de cobertura debe mirar TODOS, no solo el primario.
 		cupsCodesToTry := []string{cupsCode}
@@ -504,6 +513,8 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				AfterDate:       sess.GetContext("slots_after_date"),
 				MaxSlots:        5,
 				ClinicAddress:   address,
+				MinDate:         gestMinDate,
+				MaxDate:         gestMaxDate,
 			}
 
 			// MRC monthly limit filter (MRC patient + mrcGroup CUPS), incl. reprogramación.
@@ -538,6 +549,8 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 					AfterDate:     sess.GetContext("slots_after_date"),
 					MaxSlots:      5,
 					ClinicAddress: address,
+					MinDate:       gestMinDate,
+					MaxDate:       gestMaxDate,
 				}
 				query.MonthFilter = mrcMonthFilter(ctx, apptSvc, sess, code)
 				slots, err = slotSvc.GetAvailableSlots(ctx, query)
