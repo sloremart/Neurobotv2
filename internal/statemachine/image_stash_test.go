@@ -83,3 +83,41 @@ func TestImageOutOfContext_DoesNotOverwriteExistingStash(t *testing.T) {
 		t.Errorf("no debe pisarse la orden ya guardada; got %q", got)
 	}
 }
+
+// TestImageOutOfContext_SecondPhotoWithStash_AcknowledgesInsteadOfDeadEnd cubre lo medido en producción
+// DESPUÉS del deploy del stash (auditoría ciclo 130, H130-2): en ASK_CLIENT_TYPE los 11 rechazos del día
+// traían stashed=false, en clusters de hasta 4 fotos por sesión. La causa es que la orden se guarda al
+// arrancar (photo_first_message / photo_intent_scheduling), así que en ASK_CLIENT_TYPE canStash es
+// SIEMPRE false y la 2ª foto en adelante recibía el dead-end "No esperaba una imagen en este momento…
+// primero selecciona la opción de agendar cita" — falso, porque el paciente YA está agendando y su orden
+// YA está guardada. En sess:3d412228 eso terminó en escalación y expiración sin atender.
+//
+// No pisar el stash (correcto) y responder el dead-end (incorrecto) son DOS decisiones distintas.
+func TestImageOutOfContext_SecondPhotoWithStash_AcknowledgesInsteadOfDeadEnd(t *testing.T) {
+	interceptor := ImageOutOfContextInterceptor()
+
+	sess := newSess(StateAskClientType)
+	sess.Context["stashed_order_url"] = "https://media.bird.com/primera.jpg"
+
+	result, intercepted := interceptor(context.Background(), sess, imageMsgWithURL("https://media.bird.com/segunda.jpg"))
+	if !intercepted {
+		t.Fatal("esperaba interceptación")
+	}
+
+	var texts string
+	for _, m := range result.Messages {
+		texts += OutboundText(m)
+	}
+	if strings.Contains(texts, "No esperaba una imagen") {
+		t.Errorf("reenviar la orden ya guardada NO es un callejón: el paciente sigue en el flujo de agendar; got %q", texts)
+	}
+	if !strings.Contains(strings.ToLower(texts), "orden") {
+		t.Errorf("el mensaje debe reconocer que su orden ya está guardada; got %q", texts)
+	}
+	if got := result.UpdateCtx["stashed_order_url"]; got != "" && got != "https://media.bird.com/primera.jpg" {
+		t.Errorf("la orden guardada no debe pisarse; got %q", got)
+	}
+	if result.NextState != StateAskClientType {
+		t.Errorf("el flujo debe continuar en ASK_CLIENT_TYPE, got %s", result.NextState)
+	}
+}

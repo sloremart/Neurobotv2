@@ -2,6 +2,14 @@ package observability
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -249,5 +257,164 @@ func TestSanitizeAttrs_KeepsAuditKeys(t *testing.T) {
 	}
 	if got != false {
 		t.Errorf("stashed debió conservar su valor false, got %v", got)
+	}
+}
+
+// H130-2: `stash_reason` explica por qué la foto no se guardó (no_media / already_read /
+// already_stashed). Es la clave que permite separar "ya tenía su orden" de "no llegó media" sin salir
+// de la API; si no está en la allowlist, sanitizeAttrs la descarta EN SILENCIO y la auditoría vuelve a
+// inferir en vez de leer (ciclo 129: esa ceguera produjo una conclusión errónea sobre un despliegue).
+func TestSanitizeAttrs_KeepsStashReason(t *testing.T) {
+	out := sanitizeAttrs(map[string]interface{}{
+		"stashed":      false,
+		"stash_reason": "already_stashed",
+	})
+	if got, ok := out["stash_reason"]; !ok || got != "already_stashed" {
+		t.Errorf("stash_reason debió pasar, got %v (ok=%v)", got, ok)
+	}
+}
+
+// TestCatalog_CoversEveryEmitInTree recorre el árbol y exige que TODO (flow, step) que el código emite
+// esté registrado en el catálogo.
+//
+// Por qué existe: un Emit sin entrada en el catálogo NO falla — emit() lo acepta con un WARN y le pone
+// level=milestone/outcome=info por defecto. Consecuencia silenciosa: un step TERMINAL registrado como
+// milestone hace que su trace nunca se dé por cerrado (el detector de completitud lo reporta
+// "estancado" para siempre) y un bloqueo se contabiliza como 'info'. La auditoría del 2026-08-01
+// encontró DIEZ steps así, acumulados por varios fixes que agregaron su Emit sin tocar el catálogo:
+// nada lo impedía, porque el aviso es un WARN que nadie mira. Este test es lo que lo impide.
+func TestCatalog_CoversEveryEmitInTree(t *testing.T) {
+	root := filepath.Join("..", "..")
+	// Se recorre el AST, no el texto: una versión con regex dejaba fuera 5 call sites por detalles de
+	// sintaxis (traceID literal, o una llamada con coma/cadena dentro del argumento, como
+	// agendaTrace(id, fecha) o appt.Date.Format("2006-01-02")). Justo el tipo de punto ciego que este
+	// test existe para no tener.
+	lit := func(e ast.Expr) (string, bool) {
+		b, ok := e.(*ast.BasicLit)
+		if !ok || b.Kind != token.STRING {
+			return "", false
+		}
+		s, err := strconv.Unquote(b.Value)
+		return s, err == nil
+	}
+
+	missing := map[string][]string{}
+	callSites, parsed := 0, 0
+	var dynamic, unreadable []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		// Un archivo que no se puede leer o parsear NO se salta en silencio: se acumula y se reporta al
+		// final. Saltarlo callado dejaría Emit sin verificar y el test diría "todo bien" sin haberlo mirado.
+		if walkErr != nil {
+			unreadable = append(unreadable, path+": "+walkErr.Error())
+			return nil //nolint:nilerr // se reporta al final; abortar el Walk ocultaría el resto del árbol
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if perr != nil {
+			unreadable = append(unreadable, path+": "+perr.Error())
+			return nil //nolint:nilerr // ídem: se acumula y se reporta, no se ignora
+		}
+		fileHasDynamic := false
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Emit" {
+				return true
+			}
+			if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "observability" {
+				return true
+			}
+			callSites++
+			if len(call.Args) < 3 {
+				fileHasDynamic = true
+				return true
+			}
+			flow, okF := lit(call.Args[1])
+			step, okS := lit(call.Args[2])
+			if !okF || !okS {
+				fileHasDynamic = true // step (o flow) en variable: no verificable estáticamente
+				return true
+			}
+			parsed++
+			key := flow + "/" + step
+			if _, ok := catalog[key]; !ok {
+				missing[key] = append(missing[key], path)
+			}
+			return true
+		})
+		if fileHasDynamic {
+			dynamic = append(dynamic, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("recorrer el árbol: %v", err)
+	}
+
+	// Los Emit con step en VARIABLE no se pueden verificar leyendo el fuente. Hoy hay exactamente uno
+	// (internal/recovery/coordinator.go, que emite los 7 pasos de 'recuperacion', todos catalogados).
+	// Se fija ese número: si aparece otro, este test falla a propósito para obligar a comprobar a mano
+	// que sus steps estén en el catálogo. Un test que ignora en silencio lo que no puede leer repite el
+	// mismo defecto que este test existe para evitar.
+	const knownDynamicEmitFiles = 1
+	if len(dynamic) != knownDynamicEmitFiles {
+		t.Errorf("Emit con step dinámico en %d archivo(s), esperaba %d: %v\n"+
+			"  → verificá a mano que todos los steps posibles estén en el catálogo y actualizá esta constante",
+			len(dynamic), knownDynamicEmitFiles, dynamic)
+	}
+	if len(unreadable) > 0 {
+		t.Errorf("%d archivo(s) no se pudieron leer/parsear, así que sus Emit quedaron SIN verificar: %v",
+			len(unreadable), unreadable)
+	}
+	if callSites == 0 {
+		t.Fatal("no se encontró ningún observability.Emit( — el recorrido del árbol no funcionó")
+	}
+	t.Logf("verificados %d de %d call sites de Emit (%d dinámico(s))", parsed, callSites, callSites-parsed)
+
+	if len(missing) > 0 {
+		keys := make([]string, 0, len(missing))
+		for k := range missing {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		t.Errorf("%d (flow, step) emitidos SIN entrada en el catálogo — quedarían como milestone/info "+
+			"por defecto (terminal que no cierra, bloqueo contado como info):", len(keys))
+		for _, k := range keys {
+			t.Errorf("  %s  ← %s", k, missing[k][0])
+		}
+	}
+}
+
+// TestCatalog_NewTerminalsAreTerminal fija el criterio que motivó H131-1: no basta con que el step ESTÉ
+// en el catálogo, tiene que estar con el nivel correcto. Un terminal registrado como milestone deja su
+// trace abierto para siempre y el detector de completitud lo reporta "estancado" en cada ciclo; un
+// bloqueo registrado como 'info' no aparece en las estadísticas de bloqueos. La presencia la garantiza
+// TestCatalog_CoversEveryEmitInTree; el NIVEL lo garantiza este.
+func TestCatalog_NewTerminalsAreTerminal(t *testing.T) {
+	terminals := map[string]string{
+		"notif_recordatorio/same_day_no_response":       "info",      // avisado y sin respuesta: nada más que hacer
+		"notif_recordatorio/escalation_no_conversation": "error",     // el handoff falló: nadie avisó al agente
+		"escalacion/escalation_no_agents":               "blocked",   // gate cierra el intento y devuelve al menú
+		"agendar/ocr_no_cups_code":                      "escalated", // sin CUPS válidos → agente
+		"agendar/bloqueo_sanitas_escalated":             "escalated", // CUP de bloqueo → agente
+	}
+	for key, wantOutcome := range terminals {
+		spec, ok := catalog[key]
+		if !ok {
+			t.Errorf("%s: sin entrada en el catálogo", key)
+			continue
+		}
+		if spec.level > LvOutcome {
+			t.Errorf("%s: level=%d (milestone o más verboso) — es TERMINAL, su trace nunca cerraría",
+				key, spec.level)
+		}
+		if spec.outcome != wantOutcome {
+			t.Errorf("%s: outcome=%q, esperaba %q", key, spec.outcome, wantOutcome)
+		}
 	}
 }

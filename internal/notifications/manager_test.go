@@ -882,6 +882,7 @@ type mockSessionCreator struct {
 	createdSession *session.Session
 	batchSessionID string
 	batchKVs       map[string]string
+	completedPhone string // teléfono cuyo cupo se liberó con CompleteActiveByPhone
 }
 
 func (m *mockSessionCreator) Create(ctx context.Context, s *session.Session) error {
@@ -921,6 +922,9 @@ func (m *mockSessionCreator) UpdateStatus(ctx context.Context, sessionID, status
 }
 
 func (m *mockSessionCreator) CompleteActiveByPhone(ctx context.Context, phone string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completedPhone = phone
 	return nil
 }
 
@@ -2525,4 +2529,104 @@ func TestMarkIVRSent_FollowupDisabled_KeepsPendingForDTMF(t *testing.T) {
 
 func (m *mockApptRepoNotif) CancelBatchAndBlockSlots(_ context.Context, _ []string, _, _, _ string) error {
 	return nil
+}
+
+// Auditoría ciclo 130 (H130-5): el paciente responde "agéndame" a la plantilla de lista de espera, pero
+// una sesión fantasma (escalada y vencida, que nadie cerró) sigue ocupando el cupo único del teléfono.
+// Antes: Create devolvía ErrActiveSessionExists, se logueaba el error y el flujo MORÍA en silencio — el
+// paciente que sí quería la cita no recibía nada (prod 2026-07-28 12:49). Debe liberar el cupo y seguir.
+func TestWaitingListSchedule_PhantomSessionOccupiesSlot_RecoversAndSchedules(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	phantom := &session.Session{
+		ID: "phantom", PhoneNumber: "+573001234567", Status: session.StatusEscalated,
+		ExpiresAt: time.Now().Add(-2 * time.Hour), // vencida: el agente ya no está, solo bloquea el cupo
+	}
+	wlRepo := &mockWaitingListFinder{
+		findByIDFn: func(_ context.Context, _ string) (*domain.WaitingListEntry, error) {
+			return sampleWaitingListEntry(), nil
+		},
+	}
+	createCalls := 0
+	sessRepo := &mockSessionCreator{
+		findCurrentFn: func(_ context.Context, _ string) (*session.Session, error) {
+			return phantom, nil
+		},
+		createFn: func(_ context.Context, _ *session.Session) error {
+			createCalls++
+			if createCalls == 1 {
+				return session.ErrActiveSessionExists // la fantasma bloquea el INSERT
+			}
+			return nil // tras liberar el cupo, el INSERT pasa
+		},
+	}
+	enqueuer := &mockVirtualEnqueuer{}
+
+	mgr := NewNotificationManager(birdClient, nil, &config.Config{})
+	mgr.SetWaitingListDeps(wlRepo, sessRepo, enqueuer)
+	mgr.RegisterPending(PendingNotification{
+		Type: "waiting_list", Phone: "+573001234567", WaitingListID: "wl-1",
+	})
+
+	mgr.HandleResponse("+573001234567", "wl_schedule", "conv-1")
+
+	if sessRepo.completedPhone != "+573001234567" {
+		t.Errorf("esperaba liberar el cupo del teléfono, got %q", sessRepo.completedPhone)
+	}
+	if createCalls != 2 {
+		t.Fatalf("esperaba reintento del Create tras liberar el cupo, hubo %d intento(s)", createCalls)
+	}
+	if sessRepo.batchSessionID == "" {
+		t.Error("esperaba contexto de la lista de espera cargado en la sesión nueva")
+	}
+	if len(enqueuer.calls) != 1 {
+		t.Errorf("esperaba encolar el mensaje virtual para SEARCH_SLOTS, got %d", len(enqueuer.calls))
+	}
+}
+
+// Contracara: si quien ocupa el cupo es una sesión ESCALADA, hay un agente humano en ese chat. El bot
+// NO debe arrebatárselo para agendar por su cuenta; deja el caso al agente.
+func TestWaitingListSchedule_EscalatedSessionOccupiesSlot_DoesNotHijack(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	escalated := &session.Session{
+		ID: "with-agent", PhoneNumber: "+573001234567", Status: session.StatusEscalated,
+		ExpiresAt: time.Now().Add(time.Hour), // VIVA: el agente está en ese chat ahora mismo
+	}
+	wlRepo := &mockWaitingListFinder{
+		findByIDFn: func(_ context.Context, _ string) (*domain.WaitingListEntry, error) {
+			return sampleWaitingListEntry(), nil
+		},
+	}
+	createCalls := 0
+	sessRepo := &mockSessionCreator{
+		findCurrentFn: func(_ context.Context, _ string) (*session.Session, error) {
+			return escalated, nil
+		},
+		createFn: func(_ context.Context, _ *session.Session) error {
+			createCalls++
+			return session.ErrActiveSessionExists
+		},
+	}
+	enqueuer := &mockVirtualEnqueuer{}
+
+	mgr := NewNotificationManager(birdClient, nil, &config.Config{})
+	mgr.SetWaitingListDeps(wlRepo, sessRepo, enqueuer)
+	mgr.RegisterPending(PendingNotification{
+		Type: "waiting_list", Phone: "+573001234567", WaitingListID: "wl-1",
+	})
+
+	mgr.HandleResponse("+573001234567", "wl_schedule", "conv-1")
+
+	if sessRepo.completedPhone != "" {
+		t.Error("no debe cerrar la sesión escalada: hay un agente atendiendo ese chat")
+	}
+	if createCalls != 1 {
+		t.Errorf("no debe reintentar el Create sobre una escalada, hubo %d intento(s)", createCalls)
+	}
+	if len(enqueuer.calls) != 0 {
+		t.Errorf("no debe arrancar SEARCH_SLOTS por su cuenta, encoló %d", len(enqueuer.calls))
+	}
 }

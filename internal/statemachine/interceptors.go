@@ -135,7 +135,20 @@ func ImageOutOfContextInterceptor() Interceptor {
 			mediaURL = msg.DocumentURL
 		}
 		orderAlreadyRead := sess.GetContext("ocr_cups_json") != ""
-		canStash := mediaURL != "" && !orderAlreadyRead && sess.GetContext("stashed_order_url") == ""
+		alreadyStashed := sess.GetContext("stashed_order_url") != ""
+		canStash := mediaURL != "" && !orderAlreadyRead && !alreadyStashed
+
+		// stashReason explica POR QUÉ no se guardó. Sin él, `stashed=false` obliga a inferir la causa
+		// desde fuera (auditoría ciclo 130: no se podía distinguir "ya había stash" de "no venía media").
+		stashReason := ""
+		switch {
+		case mediaURL == "":
+			stashReason = "no_media"
+		case orderAlreadyRead:
+			stashReason = "already_read"
+		case alreadyStashed:
+			stashReason = "already_stashed"
+		}
 
 		// Emitir también como flow_event para que el rechazo sea VISIBLE en el funnel de la skill
 		// auditora (el chat_event por sí solo era un punto ciego: ni ERROR ni caída de funnel). El attr
@@ -144,8 +157,9 @@ func ImageOutOfContextInterceptor() Interceptor {
 		// (la foto se perdió) de la recuperación (la foto quedó guardada).
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "image_out_of_context",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{
-				"state":   sess.CurrentState,
-				"stashed": canStash,
+				"state":        sess.CurrentState,
+				"stashed":      canStash,
+				"stash_reason": stashReason,
 			}})
 
 		if canStash {
@@ -153,6 +167,18 @@ func ImageOutOfContextInterceptor() Interceptor {
 				WithText("Recibí tu orden 📷 y la guardo para usarla apenas lleguemos a ese paso — no necesitas reenviarla.\n\nSigamos con lo que te acabo de preguntar. 👆").
 				WithContext("stashed_order_url", mediaURL).
 				WithEvent("image_stashed_out_of_context", map[string]interface{}{
+					"state": sess.CurrentState,
+				}), true
+		}
+
+		// La orden YA está guardada y el paciente la reenvía (típicamente porque la pregunta en curso no
+		// le parece respuesta a su foto). No se pisa el stash, pero tampoco es un callejón: sigue dentro
+		// del flujo de agendar. Decirle "primero selecciona la opción de agendar cita" es falso y lo
+		// empujaba a reintentar o a pedir un agente (auditoría ciclo 130, H130-2).
+		if alreadyStashed && !orderAlreadyRead && mediaURL != "" {
+			return NewResult(sess.CurrentState).
+				WithText("Ya tengo tu orden 📷, no necesitas reenviarla.\n\nSigamos con lo que te acabo de preguntar. 👆").
+				WithEvent("image_stash_duplicate", map[string]interface{}{
 					"state": sess.CurrentState,
 				}), true
 		}

@@ -194,9 +194,14 @@ func (r *SessionRepo) UpdateStatus(ctx context.Context, sessionID, status string
 
 // CompleteActiveByPhone marks any active/escalated session for the given phone as completed.
 // Used by the notification handler to close leftover sessions after confirm/cancel.
+//
+// El predicado es el del índice único uq_active_phone (status IN ('active','escalated')) y por eso NO
+// filtra expires_at: el cupo del teléfono lo ocupa la fila por su STATUS, viva o vencida. Con el filtro
+// de vencimiento, una sesión fantasma (escalación que nadie cerró) sobrevivía a la limpieza y hacía
+// fallar el INSERT siguiente con ErrActiveSessionExists (auditoría ciclo 130, H130-5).
 func (r *SessionRepo) CompleteActiveByPhone(ctx context.Context, phone string) error {
 	_, err := r.db.ExecContext(ctx,
-		"UPDATE sessions SET status = 'completed', updated_at = NOW() WHERE phone_number = ? AND status IN ('active','escalated') AND expires_at > NOW()",
+		"UPDATE sessions SET status = 'completed', updated_at = NOW() WHERE phone_number = ? AND status IN ('active','escalated')",
 		phone)
 	if err != nil {
 		return fmt.Errorf("complete active by phone: %w", err)

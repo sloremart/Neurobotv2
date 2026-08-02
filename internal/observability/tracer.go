@@ -91,6 +91,18 @@ var catalog = map[string]stepSpec{
 	// que SÍ espera foto, p.ej. un UPLOAD_* nuevo sin whitelistear). Milestone: no es terminal.
 	"agendar/image_out_of_context": {LvMilestone, "info", ""},
 
+	// Auditoría 2026-08-01 (H131-1): steps que ya se emitían pero NUNCA estuvieron en el catálogo, así
+	// que caían en el default milestone/info. El nivel se asigna por lo que HACE cada uno en el código:
+	// terminal (LvOutcome) si cierra el flujo, milestone si el paciente sigue dentro.
+	"agendar/stashed_order_used":        {LvMilestone, "ok", ""},      // se consumió la orden guardada
+	"agendar/stashed_order_failed":      {LvMilestone, "retry", ""},   // no se pudo leer → se re-pide
+	"agendar/photo_first_message":       {LvMilestone, "info", ""},    // foto como 1er mensaje
+	"agendar/photo_intent_scheduling":   {LvMilestone, "info", ""},    // foto = intención de agendar
+	"agendar/ocr_page_appended":         {LvMilestone, "ok", ""},      // página adicional fusionada
+	"agendar/ocr_append_failed":         {LvMilestone, "retry", ""},   // no se pudo anexar → se re-pide
+	"agendar/ocr_no_cups_code":          {LvOutcome, "escalated", ""}, // sin CUPS válidos → agente
+	"agendar/bloqueo_sanitas_escalated": {LvOutcome, "escalated", ""}, // CUP de bloqueo SANITAS → agente
+
 	// Recordatorio / IVR (§3.3 / §3A) — trace notif:<apptID>
 	"notif_recordatorio/reminder_sent": {LvMilestone, "ok", "bird_msg"},
 	"notif_recordatorio/ivr_placed":    {LvMilestone, "ok", "call"},
@@ -99,6 +111,15 @@ var catalog = map[string]stepSpec{
 	"notif_recordatorio/escalated":     {LvOutcome, "escalated", ""},
 	"notif_recordatorio/expired":       {LvOutcome, "info", ""},
 	"notif_recordatorio/error":         {LvError, "error", ""},
+	// H131-1. same_day_no_response es TERMINAL válido (GUIA §16): la cita es de hoy, se avisó y el
+	// paciente no contestó; no hay más que hacer. Como milestone, su trace quedaba "sin cerrar" para
+	// siempre y aparecía como estancado en cada ciclo de auditoría.
+	"notif_recordatorio/same_day_reminder_sent": {LvMilestone, "ok", "bird_msg"},
+	"notif_recordatorio/same_day_no_response":   {LvOutcome, "info", ""},
+	// escalation_no_conversation: sin conversation_id NO se manda la nota ni se asigna el agente, así
+	// que el handoff FALLÓ aunque nada lance excepción. Mismo trato que escalacion/escalation_no_channel,
+	// su equivalente exacto: terminal con outcome de error, para que deje de ser un fallo invisible.
+	"notif_recordatorio/escalation_no_conversation": {LvOutcome, "error", ""},
 
 	// Identificación (§3A) — trace sess:<id>
 	"identificacion/patient_lookup":  {LvMilestone, "ok", ""},
@@ -133,6 +154,12 @@ var catalog = map[string]stepSpec{
 	"escalacion/escalation_expired":    {LvOutcome, "info", ""},
 	"escalacion/agent_no_show":         {LvOutcome, "no_show", ""}, // agente nunca atendió → bot retoma
 	"escalacion/escalation_no_channel": {LvOutcome, "error", ""},   // no se pudo resolver conversación en Bird
+	// H131-1. ack_sent: acuse al paciente de que un agente lo atenderá (sigue esperando → milestone).
+	// escalation_no_agents: el gate de disponibilidad CIERRA el intento y devuelve al paciente al menú;
+	// es terminal y es un bloqueo, no un 'info' (como milestone salía "estancado" en cada ciclo — ya
+	// reportado como cosmético en el ciclo 121).
+	"escalacion/ack_sent":             {LvMilestone, "info", ""},
+	"escalacion/escalation_no_agents": {LvOutcome, "blocked", ""},
 
 	// Recuperación asistida por IA (§11) — trace sess:<id>. Concepto distinto de escalación.
 	"recuperacion/ai_recovery_started":  {LvMilestone, "info", ""},    // 3.ª falla del bot → arranca IA
@@ -190,6 +217,9 @@ var allowedAttrKeys = map[string]bool{
 	// recuperación (stashed=true, quedó guardada para el paso de la orden). Sin esta clave el attr se
 	// descartaba en silencio y el evento no permitía separar ambos casos.
 	"stashed": true,
+	// stash_reason: por qué NO se guardó (no_media / already_read / already_stashed). Con `stashed`
+	// solo se sabe QUE no se guardó; el motivo era una inferencia desde fuera (ciclo 130).
+	"stash_reason": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

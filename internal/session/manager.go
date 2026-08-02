@@ -161,8 +161,14 @@ func (m *SessionManager) FindOrCreate(ctx context.Context, phone string) (*Sessi
 		// M3: otra ruta (worker/NotificationManager) creó la sesión activa de este teléfono entre nuestro
 		// FindActiveByPhone y el Create (índice único uq_active_phone). Re-leemos la ganadora en vez de
 		// duplicar — así nunca quedan dos sesiones activas para el mismo teléfono.
+		//
+		// La re-lectura usa FindCurrentByPhone, NO FindActiveByPhone: el índice único no mira expires_at
+		// y esta vista tampoco, así que ve también la sesión VENCIDA que ocupa el cupo (típico de una
+		// escalación que nadie cerró). Con la vista filtrada por vencimiento la recuperación quedaba
+		// ciega y el paciente recibía "estamos experimentando dificultades técnicas" en cada mensaje
+		// mientras viviera la fantasma (auditoría ciclo 129/130: 9 ocurrencias en 5 días).
 		if errors.Is(err, ErrActiveSessionExists) {
-			if existing, ferr := m.repo.FindActiveByPhone(ctx, phone); ferr == nil && existing != nil {
+			if existing, ferr := m.repo.FindCurrentByPhone(ctx, phone); ferr == nil && existing != nil {
 				ctxMap, cerr := m.repo.GetAllContext(ctx, existing.ID)
 				if cerr != nil {
 					return nil, false, cerr

@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -76,10 +77,39 @@ func (m *NotificationManager) handleWaitingList(phone, action string, pending *P
 			sessionCtx["preferred_doctor_doc"] = entry.PreferredDoctorDoc
 		}
 
-		// Crear sesión + contexto en BD
+		// Crear sesión + contexto en BD.
+		//
+		// H130-5: el cupo único del teléfono puede estar ocupado por una sesión FANTASMA (escalada que
+		// nadie cerró y ya venció). Antes el Create fallaba con ErrActiveSessionExists, se logueaba el
+		// error y el flujo moría en silencio: el paciente que acababa de pedir su cita desde la lista de
+		// espera no recibía NADA. Se libera el cupo y se reintenta — salvo que quien lo ocupe sea una
+		// escalación VIVA, porque ahí hay un agente humano en ese chat y no se le arrebata.
 		if err := m.sessionRepo.Create(ctx, sess); err != nil {
-			slog.Error("waiting list: create session", "error", err)
-			return
+			if !errors.Is(err, session.ErrActiveSessionExists) {
+				slog.Error("waiting list: create session", "error", err)
+				return
+			}
+			occupant, ferr := m.sessionRepo.FindCurrentByPhone(ctx, phone)
+			if ferr != nil {
+				slog.Error("waiting list: lookup session occupant", "error", ferr)
+				return
+			}
+			if occupant != nil && occupant.Status == session.StatusEscalated &&
+				occupant.ExpiresAt.After(time.Now()) {
+				slog.Warn("waiting list: escalación viva ocupa el cupo, la agenda queda para el agente",
+					"phone", utils.MaskPhone(phone), "session_id", occupant.ID)
+				return
+			}
+			if cerr := m.sessionRepo.CompleteActiveByPhone(ctx, phone); cerr != nil {
+				slog.Error("waiting list: liberar cupo de sesión fantasma", "error", cerr)
+				return
+			}
+			if rerr := m.sessionRepo.Create(ctx, sess); rerr != nil {
+				slog.Error("waiting list: create session tras liberar cupo", "error", rerr)
+				return
+			}
+			slog.Info("waiting list: cupo liberado de sesión fantasma, sesión creada",
+				"phone", utils.MaskPhone(phone), "session_id", sess.ID)
 		}
 		if m.tracker != nil { // sesión proactiva: contar también en total_sessions
 			m.tracker.LogEvent(ctx, sess.ID, phone, "session_started", map[string]interface{}{"proactive": true})

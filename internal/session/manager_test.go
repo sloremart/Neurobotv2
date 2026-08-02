@@ -1149,3 +1149,46 @@ func TestFindOrCreate_DuplicateActive_RereadsWinner(t *testing.T) {
 		t.Error("expected context cargado de la ganadora")
 	}
 }
+
+// Auditoría ciclo 129/130: la sesión que ocupa el cupo del teléfono puede estar VENCIDA (típico de una
+// escalación que nadie cerró). El índice único uq_active_phone NO mira expires_at, pero
+// FindActiveByPhone SÍ → la rama de recuperación del race quedaba ciega, devolvía el error y el paciente
+// recibía "estamos experimentando dificultades técnicas" en CADA mensaje (9 ocurrencias en 5 días).
+// La recuperación debe mirar la MISMA vista que el índice: FindCurrentByPhone.
+func TestFindOrCreate_DuplicateActiveButExpired_RereadsWithCurrentView(t *testing.T) {
+	phantom := &Session{
+		ID:          "phantom",
+		PhoneNumber: "+573001112233",
+		Status:      StatusEscalated,
+		ExpiresAt:   time.Now().Add(-2 * time.Hour), // vencida: invisible para FindActiveByPhone
+	}
+	repo := &mockRepo{
+		findActiveByPhoneFn: func(_ context.Context, _ string) (*Session, error) {
+			return nil, nil // filtra expires_at > NOW() → nunca ve la fantasma
+		},
+		findCurrentByPhoneFn: func(_ context.Context, _ string) (*Session, error) {
+			return phantom, nil // vista del índice único: activa o escalada, sin filtrar vencimiento
+		},
+		createFn: func(_ context.Context, _ *Session) error {
+			return ErrActiveSessionExists // el INSERT choca contra la fantasma
+		},
+		getAllContextFn: func(_ context.Context, _ string) (map[string]string, error) {
+			return map[string]string{"k": "v"}, nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+
+	s, isNew, err := mgr.FindOrCreate(context.Background(), "+573001112233")
+	if err != nil {
+		t.Fatalf("expected recovery from phantom session, got error %v", err)
+	}
+	if isNew {
+		t.Error("expected isNew=false (recuperó la fantasma, no creó)")
+	}
+	if s == nil || s.ID != "phantom" {
+		t.Errorf("expected phantom session, got %+v", s)
+	}
+	if s != nil && s.Context["k"] != "v" {
+		t.Error("expected context cargado de la fantasma")
+	}
+}

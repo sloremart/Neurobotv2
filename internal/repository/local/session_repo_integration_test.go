@@ -174,3 +174,54 @@ func TestSessionRepo_UpdateConversationIDByPhone(t *testing.T) {
 		t.Errorf("H2: PII fue pisada, esperaba Juan Perez, got %q", got.PatientName)
 	}
 }
+
+// Auditoría ciclo 130 (H130-5): CompleteActiveByPhone es "cierra lo que OCUPA el cupo del teléfono", y
+// el cupo lo define el índice único uq_active_phone, que NO mira expires_at. Mientras el SQL filtraba
+// expires_at > NOW(), una sesión VENCIDA (típico de una escalación que nadie cerró) sobrevivía a la
+// limpieza y seguía bloqueando el INSERT siguiente con ErrActiveSessionExists.
+func TestSessionRepo_CompleteActiveByPhone_AlsoClearsExpiredOccupant(t *testing.T) {
+	db := openLocalTestDB(t)
+	defer db.Close()
+	repo := NewSessionRepo(db)
+	ctx := context.Background()
+
+	id := fmt.Sprintf("itest-ph-%d", time.Now().UnixNano())
+	phone := "+57398" + fmt.Sprintf("%07d", time.Now().UnixNano()%10000000)
+	t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE phone_number = ?", phone) })
+
+	// Sesión fantasma: escalada y ya vencida, pero sigue ocupando el cupo único del teléfono.
+	phantom := &session.Session{
+		ID: id, PhoneNumber: phone, CurrentState: "ESCALATED",
+		Status: session.StatusEscalated, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := repo.Create(ctx, phantom); err != nil {
+		t.Fatalf("create phantom: %v", err)
+	}
+	// El vencimiento se fuerza en el SERVIDOR: escribirlo desde Go depende de la zona horaria del DSN
+	// (sin loc= el driver manda UTC y la fila parece viva 5h más), y entonces el test no probaría nada.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE sessions SET expires_at = NOW() - INTERVAL 2 HOUR WHERE id = ?", id); err != nil {
+		t.Fatalf("forzar vencimiento: %v", err)
+	}
+
+	if err := repo.CompleteActiveByPhone(ctx, phone); err != nil {
+		t.Fatalf("complete active by phone: %v", err)
+	}
+
+	got, err := repo.FindByID(ctx, id)
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got.Status != session.StatusCompleted {
+		t.Fatalf("la fantasma vencida sigue ocupando el cupo: status=%q, esperaba completed", got.Status)
+	}
+
+	// Consecuencia que importa: con el cupo libre, el siguiente INSERT ya no choca.
+	fresh := &session.Session{
+		ID: id + "-new", PhoneNumber: phone, CurrentState: "SEARCH_SLOTS",
+		Status: session.StatusActive, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := repo.Create(ctx, fresh); err != nil {
+		t.Fatalf("create tras limpiar el cupo: %v", err)
+	}
+}
