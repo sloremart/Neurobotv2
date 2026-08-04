@@ -310,9 +310,12 @@ func (r *AppointmentRepo) FindByID(ctx context.Context, id string) (*domain.Appo
 // FindUpcomingByPatient
 // ────────────────────────────────────────────────────────────────────────────
 
+// FindUpcomingByPatient lista las citas futuras no canceladas del paciente. TOP (50) como cota de
+// seguridad (M3): un paciente real no tiene 50 citas futuras; sin cota, un dato corrupto arrastraba
+// las subconsultas por fila sin límite.
 func (r *AppointmentRepo) FindUpcomingByPatient(ctx context.Context, patientID string) ([]domain.Appointment, error) {
 	rows, err := r.db.QueryContext(ctx, `
-	SELECT CAST(c.id AS VARCHAR(20)),
+	SELECT TOP (50) CAST(c.id AS VARCHAR(20)),
 	       CAST(c.fecha AS DATE),
 	       ISNULL(c.hora,''),
 	       ISNULL(c.meridiano,''),
@@ -1580,7 +1583,13 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 	}
 	offset := (page - 1) * size
 
-	conds := []string{"c.estado NOT IN ('C','A')", "c.fecha >= CAST(GETDATE() AS DATE)"}
+	// Cota superior fija (M1): sin agenda_id ni date, un doctor solo acotaba por fecha >= hoy y el
+	// costo crecía con el horizonte de agendamiento. 181 días cubre la ventana real de agendas (90d).
+	conds := []string{
+		"c.estado NOT IN ('C','A')",
+		"c.fecha >= CAST(GETDATE() AS DATE)",
+		"c.fecha < DATEADD(DAY, 181, GETDATE())",
+	}
 	args := []interface{}{}
 	if f.AgendaID != nil {
 		conds = append(conds, "c.id_programacion = @agenda")
@@ -1608,11 +1617,12 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 
 	// Solo columnas visibles (hora del slot + nombre + cédula) + id (para acciones) + total (COUNT OVER).
 	//nolint:gosec // G202: las condiciones son literales fijos; los valores del usuario van por sql.Named.
+	// M2: la hora del slot se resuelve con UN solo OUTER APPLY (antes la misma subconsulta escalar
+	// iba duplicada en el SELECT y en el ORDER BY → dos seeks a pmd por fila candidata).
 	query := `
 	SELECT CAST(c.id AS VARCHAR(20)),
 	       CONVERT(VARCHAR(10), c.fecha, 23) AS fecha,
-	       ISNULL((SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
-	               FROM programacion_medico_detalle pmd WITH (NOLOCK) WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha),-1) AS hhmm,
+	       ISNULL(slot.hhmm, -1) AS hhmm,
 	       ISNULL(c.hora,'') AS hora_cita,
 	       ISNULL(LTRIM(RTRIM(CONCAT(p.primer_nom,' ',ISNULL(p.segundo_nom,''),' ',
 	           p.primer_ape,' ',ISNULL(p.segundo_ape,'')))),'') AS nombre_paciente,
@@ -1620,11 +1630,13 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 	       COUNT(*) OVER() AS total_rows
 	FROM citas c WITH (NOLOCK)
 	INNER JOIN sis_paci p WITH (NOLOCK) ON p.autoid = c.autoid
+	OUTER APPLY (
+	    SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha) AS hhmm
+	    FROM programacion_medico_detalle pmd WITH (NOLOCK)
+	    WHERE pmd.IdCita = c.id ORDER BY pmd.Fecha
+	) slot
 	WHERE ` + strings.Join(conds, " AND ") + `
-	ORDER BY c.fecha ASC,
-	         (SELECT TOP 1 DATEPART(HOUR,pmd.Fecha)*100+DATEPART(MINUTE,pmd.Fecha)
-	          FROM programacion_medico_detalle pmd WITH (NOLOCK) WHERE pmd.IdCita=c.id ORDER BY pmd.Fecha) ASC,
-	         c.hora
+	ORDER BY c.fecha ASC, slot.hhmm ASC, c.hora
 	OFFSET @off ROWS FETCH NEXT @size ROWS ONLY`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
