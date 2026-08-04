@@ -2117,18 +2117,20 @@ func (r *AppointmentRepo) lookupSubjectTypeFromHistory(ctx context.Context, proc
 		}
 		baseCups := strings.SplitN(p.CupCode, "-", 2)[0]
 
-		// Search in procedures/imaging (citas_procedimientos)
+		// Search in procedures/imaging (citas_procedimientos). P6: LIKE de prefijo en vez de
+		// LEFT(col, n) = @base — misma semántica (col empieza por la base), sin función sobre la
+		// columna, y apto para un índice futuro en id_procedimiento.
 		var subjectType int
 		_ = r.db.QueryRowContext(
 			ctx, `
 		SELECT TOP 1 c.asunto
 		FROM citas c WITH (NOLOCK)
 		JOIN citas_procedimientos cp WITH (NOLOCK) ON cp.id_cita = c.id
-		WHERE LEFT(cp.id_procedimiento, @p2) = @p1
+		WHERE cp.id_procedimiento LIKE @p1 + '%'
 		  AND c.asunto IN (SELECT id FROM sis_asunto WITH (NOLOCK))
 		  AND c.estado != 'C'
 		ORDER BY c.fecha DESC`,
-			baseCups, len(baseCups),
+			baseCups,
 		).Scan(&subjectType)
 		if subjectType > 0 {
 			return subjectType
