@@ -174,11 +174,15 @@ type Config struct {
 	LocalDBMaxOpen    int    // Local DB max open connections (default 25)
 	LocalDBMaxIdle    int    // Local DB max idle connections (default 10)
 	ExternalDBMaxOpen int    // External DB max open connections (default 10)
-	ExternalDBMaxIdle int    // External DB max idle connections (default 5)
-	HTTPReadTimeout   int    // HTTP server read timeout seconds (default 30)
-	HTTPWriteTimeout  int    // HTTP server write timeout seconds (default 30)
-	HTTPIdleTimeout   int    // HTTP server idle timeout seconds (default 60)
-	MySQLMaxConns     int    // MySQL max_connections hint for docker-compose (informational)
+	// ExternalDBKPIMaxOpen: pool SIESA DEDICADO a los KPIs/analytics del dashboard (P5). Separado
+	// del pool principal para que una ráfaga de KPIs (8 queries al cargar la vista SIESA en frío)
+	// no deje sin conexiones al flujo de agendamiento de pacientes.
+	ExternalDBKPIMaxOpen int // default 3
+	ExternalDBMaxIdle    int // External DB max idle connections (default 5)
+	HTTPReadTimeout      int // HTTP server read timeout seconds (default 30)
+	HTTPWriteTimeout     int // HTTP server write timeout seconds (default 30)
+	HTTPIdleTimeout      int // HTTP server idle timeout seconds (default 60)
+	MySQLMaxConns        int // MySQL max_connections hint for docker-compose (informational)
 }
 
 func Load() *Config {
@@ -327,16 +331,17 @@ func Load() *Config {
 		TestingWhitelistPhones: parsePhoneList(os.Getenv("TESTING_WHITELIST_PHONES")),
 
 		// Scaling
-		ScalingProfile:    getEnv("SCALING_PROFILE", "normal"),
-		WorkerPoolSize:    getEnvInt("WORKER_POOL_SIZE", 10),
-		WorkerQueueSize:   getEnvInt("WORKER_QUEUE_SIZE", 100),
-		LocalDBMaxOpen:    getEnvInt("LOCAL_DB_MAX_OPEN", 25),
-		LocalDBMaxIdle:    getEnvInt("LOCAL_DB_MAX_IDLE", 10),
-		ExternalDBMaxOpen: getEnvInt("EXTERNAL_DB_MAX_OPEN", 10),
-		ExternalDBMaxIdle: getEnvInt("EXTERNAL_DB_MAX_IDLE", 5),
-		HTTPReadTimeout:   getEnvInt("HTTP_READ_TIMEOUT", 30),
-		HTTPWriteTimeout:  getEnvInt("HTTP_WRITE_TIMEOUT", 30),
-		HTTPIdleTimeout:   getEnvInt("HTTP_IDLE_TIMEOUT", 60),
+		ScalingProfile:       getEnv("SCALING_PROFILE", "normal"),
+		WorkerPoolSize:       getEnvInt("WORKER_POOL_SIZE", 10),
+		WorkerQueueSize:      getEnvInt("WORKER_QUEUE_SIZE", 100),
+		LocalDBMaxOpen:       getEnvInt("LOCAL_DB_MAX_OPEN", 25),
+		LocalDBMaxIdle:       getEnvInt("LOCAL_DB_MAX_IDLE", 10),
+		ExternalDBMaxOpen:    getEnvInt("EXTERNAL_DB_MAX_OPEN", 10),
+		ExternalDBMaxIdle:    getEnvInt("EXTERNAL_DB_MAX_IDLE", 5),
+		ExternalDBKPIMaxOpen: getEnvInt("EXTERNAL_DB_KPI_MAX_OPEN", 3),
+		HTTPReadTimeout:      getEnvInt("HTTP_READ_TIMEOUT", 30),
+		HTTPWriteTimeout:     getEnvInt("HTTP_WRITE_TIMEOUT", 30),
+		HTTPIdleTimeout:      getEnvInt("HTTP_IDLE_TIMEOUT", 60),
 	}
 
 	cfg.validate()

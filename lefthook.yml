@@ -16,6 +16,11 @@
 #   neurobot-lint      → caché propia de golangci-lint (/root/.cache/golangci-lint)
 # Docker los crea solos la primera vez. Para limpiarlos: docker volume rm neurobot-go-mod neurobot-go-build neurobot-lint
 
+# SOPORTE DE GIT WORKTREES: en un worktree, .git es un ARCHIVO que apunta al repo principal;
+# si solo se monta $(pwd), git no existe dentro del contenedor y revgrep lintea TODO el repo
+# (deuda histórica incluida). El wrapper monta la RAÍZ del repo principal y exporta
+# GIT_DIR/GIT_WORK_TREE con rutas del contenedor, así el lint de "solo lo nuevo" funciona
+# igual en el checkout normal y en worktrees anidados (.claude/worktrees/...).
 pre-commit:
   parallel: false
   commands:
@@ -24,12 +29,12 @@ pre-commit:
       # Verifica que TODO el repo cumpla gofumpt+goimports. Seguro de re-activar porque la
       # deuda de formato histórica ya se limpió (commit "chore: gofumpt+goimports todo el repo").
       # Si algún día vuelve a fallar masivamente, reformatear con: golangci-lint fmt ./...
-      run: MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app -v neurobot-go-mod:/go/pkg/mod -v neurobot-go-build:/root/.cache/go-build -v neurobot-lint:/root/.cache/golangci-lint golangci/golangci-lint:v2.11.0 golangci-lint fmt --diff
+      run: MSYS_NO_PATHCONV=1 sh -c 'WT=$(git rev-parse --show-toplevel); GD=$(git rev-parse --path-format=absolute --git-common-dir); ROOT=${GD%/.git}; case "$WT" in "$ROOT"*) REL=${WT#"$ROOT"};; *) ROOT=$WT; REL=;; esac; docker run --rm -v "$ROOT:/repo" -w "/repo$REL" -v neurobot-go-mod:/go/pkg/mod -v neurobot-go-build:/root/.cache/go-build -v neurobot-lint:/root/.cache/golangci-lint golangci/golangci-lint:v2.11.0 golangci-lint fmt --diff'
     lint-new:
       glob: "*.go"
       # --new-from-rev=HEAD: solo falla por problemas NUEVOS respecto al último commit.
       # Así la deuda histórica de LINT (no formato) no bloquea cada commit desde el día uno.
-      run: MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app -v neurobot-go-mod:/go/pkg/mod -v neurobot-go-build:/root/.cache/go-build -v neurobot-lint:/root/.cache/golangci-lint golangci/golangci-lint:v2.11.0 golangci-lint run --new-from-rev=HEAD
+      run: MSYS_NO_PATHCONV=1 sh -c 'WT=$(git rev-parse --show-toplevel); AGD=$(git rev-parse --absolute-git-dir); GD=$(git rev-parse --path-format=absolute --git-common-dir); ROOT=${GD%/.git}; case "$WT" in "$ROOT"*) REL=${WT#"$ROOT"}; GREL=${AGD#"$ROOT"};; *) ROOT=$WT; REL=; GREL=/.git;; esac; docker run --rm -v "$ROOT:/repo" -w "/repo$REL" -e GIT_DIR="/repo$GREL" -e GIT_WORK_TREE="/repo$REL" -v neurobot-go-mod:/go/pkg/mod -v neurobot-go-build:/root/.cache/go-build -v neurobot-lint:/root/.cache/golangci-lint golangci/golangci-lint:v2.11.0 golangci-lint run --new-from-rev=HEAD'
 
 # Nota: dejamos `go vet`, `go test -race` y `govulncheck` para la CI (son más lentos).
 # El pre-commit prioriza feedback en segundos: formato (todo) + lint de lo nuevo.

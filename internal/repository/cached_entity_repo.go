@@ -9,8 +9,9 @@ import (
 )
 
 // CachedEntityRepo wraps an EntityRepository with in-memory TTL cache
-// for FindActive and FindActiveByCategory. Individual lookups (FindByCode,
-// GetCodeByIndexAndCategory) are delegated directly to the inner repo.
+// for FindActive, FindActiveByCategory and FindByCode (M6, auditoría de queries: al agendar se
+// consulta el contrato POR CADA CUP del grupo y los contratos son casi estáticos).
+// GetCodeByIndexAndCategory se delega directo al inner repo.
 type CachedEntityRepo struct {
 	inner EntityRepository
 	ttl   time.Duration
@@ -19,6 +20,12 @@ type CachedEntityRepo struct {
 	all        []domain.Entity
 	byCategory map[string][]domain.Entity
 	loadedAt   time.Time
+	byCode     map[string]entityCodeEntry
+}
+
+type entityCodeEntry struct {
+	at time.Time
+	e  *domain.Entity
 }
 
 func NewCachedEntityRepo(inner EntityRepository, ttl time.Duration) *CachedEntityRepo {
@@ -26,6 +33,7 @@ func NewCachedEntityRepo(inner EntityRepository, ttl time.Duration) *CachedEntit
 		inner:      inner,
 		ttl:        ttl,
 		byCategory: make(map[string][]domain.Entity),
+		byCode:     make(map[string]entityCodeEntry),
 	}
 }
 
@@ -75,7 +83,21 @@ func (c *CachedEntityRepo) FindActiveByCategory(ctx context.Context, category st
 }
 
 func (c *CachedEntityRepo) FindByCode(ctx context.Context, code string) (*domain.Entity, error) {
-	return c.inner.FindByCode(ctx, code)
+	c.mu.RLock()
+	if entry, ok := c.byCode[code]; ok && time.Since(entry.at) <= c.ttl {
+		c.mu.RUnlock()
+		return entry.e, nil
+	}
+	c.mu.RUnlock()
+
+	e, err := c.inner.FindByCode(ctx, code)
+	if err != nil {
+		return nil, err // los errores no se cachean
+	}
+	c.mu.Lock()
+	c.byCode[code] = entityCodeEntry{at: time.Now(), e: e}
+	c.mu.Unlock()
+	return e, nil
 }
 
 func (c *CachedEntityRepo) GetCodeByIndexAndCategory(ctx context.Context, index int, category string) (string, error) {

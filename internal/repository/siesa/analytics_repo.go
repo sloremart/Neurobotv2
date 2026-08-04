@@ -52,6 +52,13 @@ func (r *AnalyticsRepo) cached(key string) (interface{}, bool) {
 
 func (r *AnalyticsRepo) store(key string, data interface{}) {
 	r.mu.Lock()
+	// M7: la clave es `from|to` del query string → rangos arbitrarios crean entradas sin tope.
+	// Se purgan las vencidas en cada store (el mapa es chico; iterar es barato).
+	for k, e := range r.cache {
+		if time.Since(e.at) > r.ttl {
+			delete(r.cache, k)
+		}
+	}
 	r.cache[key] = cacheEntry{at: time.Now(), data: data}
 	r.mu.Unlock()
 }

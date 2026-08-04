@@ -484,7 +484,17 @@ func main() {
 			// KPIs agregados de SIESA (ocupación, citas por estado, conciliación) para el dashboard.
 			// Cache 10 min; la conciliación cruza con cups_medico (repos.Procedure, BD local).
 			if repos != nil && repos.Procedure != nil {
-				internalHandler.SetSiesaAnalyticsReader(siesa.NewAnalyticsRepo(externalDB, 10*time.Minute), repos.Procedure)
+				// P5 (auditoría queries): pool SIESA DEDICADO y chico para los KPIs, para que una
+				// ráfaga del dashboard no deje sin conexiones al flujo de agendamiento. Si no se
+				// puede abrir, cae al pool principal (comportamiento previo).
+				kpiDB, kerr := database.NewSIESAKPIDB(cfg)
+				if kerr != nil || kpiDB == nil {
+					slog.Warn("kpi db pool not available, analytics will share the main SIESA pool", "error", kerr)
+					kpiDB = externalDB
+				} else {
+					defer func() { _ = kpiDB.Close() }()
+				}
+				internalHandler.SetSiesaAnalyticsReader(siesa.NewAnalyticsRepo(kpiDB, 10*time.Minute), repos.Procedure)
 			}
 		}
 	}
@@ -667,7 +677,7 @@ func initRepositories(cfg *config.Config, externalDB, localDB *sql.DB) *reposito
 			Schedule:     siesa.NewScheduleRepo(externalDB),
 			Procedure:    repository.NewCachedProcedureRepo(localrepo.NewProcedureRepo(localDB), 60*time.Minute),
 			Entity:       repository.NewCachedEntityRepo(siesa.NewEntityRepo(externalDB), 30*time.Minute),
-			Price:        siesa.NewPriceRepo(externalDB),
+			Price:        repository.NewCachedPriceRepo(siesa.NewPriceRepo(externalDB), 30*time.Minute),
 			Municipality: siesa.NewMunicipalityRepo(externalDB),
 		}
 	default:

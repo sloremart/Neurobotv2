@@ -46,9 +46,29 @@ func NewExternalDB(cfg *config.Config) (*sql.DB, error) {
 	return NewSIESADB(cfg)
 }
 
+// NewSIESAKPIDB abre un pool SIESA SEPARADO y chico para los KPIs/analytics del dashboard (P5,
+// auditoría de queries): mismas credenciales/DSN que el pool principal, pero con
+// EXTERNAL_DB_KPI_MAX_OPEN (default 3) conexiones. Así una ráfaga de KPIs no compite por las
+// conexiones del flujo de agendamiento de pacientes.
+func NewSIESAKPIDB(cfg *config.Config) (*sql.DB, error) {
+	maxOpen := cfg.ExternalDBKPIMaxOpen
+	if maxOpen <= 0 {
+		maxOpen = 3
+	}
+	db, err := openSIESA(cfg, maxOpen, 1)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
 // NewSIESADB opens a SQL Server connection to the SIESA database (ZeusSalud_Neuro).
 // DSN: EXTERNAL_DB_HOST, EXTERNAL_DB_PORT (default 1433), EXTERNAL_DB_DATABASE, EXTERNAL_DB_USER, EXTERNAL_DB_PASSWORD
 func NewSIESADB(cfg *config.Config) (*sql.DB, error) {
+	return openSIESA(cfg, cfg.ExternalDBMaxOpen, cfg.ExternalDBMaxIdle)
+}
+
+func openSIESA(cfg *config.Config, maxOpen, maxIdle int) (*sql.DB, error) {
 	port := cfg.ExtDBPort
 	if port == "" || port == "3306" {
 		port = "1433"
@@ -86,8 +106,8 @@ func NewSIESADB(cfg *config.Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("siesa db open: %w", err)
 	}
 
-	db.SetMaxOpenConns(cfg.ExternalDBMaxOpen)
-	db.SetMaxIdleConns(cfg.ExternalDBMaxIdle)
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
 	db.SetConnMaxLifetime(2 * time.Minute)
 	db.SetConnMaxIdleTime(1 * time.Minute)
 

@@ -68,11 +68,19 @@ WHERE pm.id = @p1 AND pm.activo = 1`
 //
 // The 3h floor and 90-day ceiling are range predicates on pmd.Fecha (no CAST on the
 // column) so the datetime index is preserved. afterDate (YYYY-MM-DD) paginates forward.
-func (r *ScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
+// availableSlotsRowCap acota las filas transferidas por la query de slots (la más ejecutada del
+// bot). Es un cap de seguridad, no una página: con agendas normales el resultado queda muy por
+// debajo; si algún día se supera, la paginación por afterDate sigue alcanzando la cola porque el
+// ORDER BY entrega siempre los slots más próximos primero (auditoría queries P1).
+const availableSlotsRowCap = 1500
+
+// buildAvailableSlotsQuery arma la query de slots disponibles (extraída de FindAvailableSlots
+// para poder testearla sin BD).
+func buildAvailableSlotsQuery(asuntoID int, afterDate string, allowedDoctors []int) (string, []interface{}) {
 	var sb strings.Builder
 	args := []interface{}{asuntoID}
 
-	sb.WriteString(`
+	fmt.Fprintf(&sb, `
 WITH eligible AS (
     SELECT pm.id AS aid
     FROM programacion_medico pm WITH (NOLOCK)
@@ -82,8 +90,9 @@ WITH eligible AS (
         ON pmra.IdProgramacionMedicoRelacion = pmr.Id
     WHERE pm.activo = 1 AND pmra.IdAsunto = @p1
 )
-SELECT
-    pmd.Fecha,
+SELECT TOP (%d)
+    pmd.Fecha,`, availableSlotsRowCap)
+	sb.WriteString(`
     CAST(m.cedula AS VARCHAR(20)),
     RTRIM(m.nombre),
     CAST(m.codigo AS VARCHAR(20)),
@@ -142,8 +151,14 @@ WHERE pmd.IdCita IS NULL
 		fmt.Fprintf(&sb, ` AND pmd.Fecha >= DATEADD(DAY, 1, CAST(@p%d AS DATE))`, len(args))
 	}
 	sb.WriteString(` ORDER BY pmd.Fecha`)
+	return sb.String(), args
+}
 
-	rows, err := r.db.QueryContext(ctx, sb.String(), args...)
+// FindAvailableSlots devuelve los slots libres del asunto (ver buildAvailableSlotsQuery y el
+// comentario grande de arriba: joins, ventana de 90 días, doble validación por sis_asuntoMedico).
+func (r *ScheduleRepo) FindAvailableSlots(ctx context.Context, asuntoID int, afterDate string, allowedDoctors []int) ([]domain.AvailableSlotRow, error) {
+	query, args := buildAvailableSlotsQuery(asuntoID, afterDate, allowedDoctors)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("FindAvailableSlots asunto=%d: %w", asuntoID, err)
 	}
