@@ -49,7 +49,7 @@ func TestPhotoStartInterceptor(t *testing.T) {
 	if res.NextState != sm.StateGreeting {
 		t.Errorf("NextState = %s, esperaba GREETING (arranque normal)", res.NextState)
 	}
-	if res.UpdateCtx["stashed_order_url"] != "http://x/orden.jpg" {
+	if !strings.Contains(res.UpdateCtx[sm.StashedOrderURLsKey], "http://x/orden.jpg") {
 		t.Errorf("esperaba stash de la URL; ctx=%v", res.UpdateCtx)
 	}
 
@@ -71,7 +71,7 @@ func TestPhotoStartInterceptor_OutOfHours(t *testing.T) {
 	if !ok || res.NextState != sm.StateOutOfHours {
 		t.Fatalf("esperaba OUT_OF_HOURS; ok=%v res=%v", ok, res)
 	}
-	if res.UpdateCtx["stashed_order_url"] != "" {
+	if res.UpdateCtx[sm.StashedOrderURLsKey] != "" {
 		t.Error("fuera de horario NO debe stashear")
 	}
 }

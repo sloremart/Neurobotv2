@@ -308,6 +308,13 @@ func TestCatalog_CoversEveryEmitInTree(t *testing.T) {
 			unreadable = append(unreadable, path+": "+walkErr.Error())
 			return nil //nolint:nilerr // se reporta al final; abortar el Walk ocultaría el resto del árbol
 		}
+		// Saltar directorios ocultos (.git, .claude, …). El equipo usa git worktrees dentro de
+		// .claude/worktrees/, que son COPIAS COMPLETAS del repo: sin esto el Walk cuenta cada archivo
+		// dos veces y el test falla con "Emit con step dinámico en 2 archivos" — un rojo espurio que
+		// depende de si tienes un worktree abierto, no del código.
+		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}

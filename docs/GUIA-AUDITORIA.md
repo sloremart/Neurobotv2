@@ -440,10 +440,20 @@ Cubre citas de HOY agendadas después de la corrida de las 07:00 (nunca les lleg
   enteró; si crece, hay hueco de conversaciones Bird.
 
 ### B) STASH de la orden (foto como primer mensaje / en menú, flujo agendar)
-- SANO: `photo_first_message` (o `photo_intent_scheduling`) → …identificación… →
-  `stashed_order_used` (OCR directo, sin re-pedir foto) O `stashed_order_failed` (fallback: pide foto normal).
+El stash es MULTIPÁGINA desde el ciclo 133: una orden de varias hojas llega como varias fotos seguidas y
+se acumulan todas (tope 4). Al consumirlas, la 1ª decide el paso y las demás se fusionan con
+`ocr_page_appended` (mismo mecanismo que §C).
+- SANO: `photo_first_message` (o `photo_intent_scheduling`) → [`image_out_of_context{stashed:true, n}`
+  por cada hoja extra] → …identificación… → `stashed_order_used{n}` (OCR directo, sin re-pedir foto)
+  [+ un `ocr_page_appended` por hoja extra fusionada] O `stashed_order_failed{n}` (fallback: pide foto).
 - CAZAR: [FLUJO-INCOMPLETO] sesión con `photo_first_message`/`photo_intent_scheduling` que llega a
-  ASK_MEDICAL_ORDER SIN `stashed_order_used` NI `stashed_order_failed` = stash perdido.
+  ASK_MEDICAL_ORDER SIN `stashed_order_used` NI `stashed_order_failed` = stash perdido · [BUG]
+  `stashed_order_failed` REPETIDO en la misma sesión sin foto nueva en medio = el stash roto no se está
+  borrando de la BD (regresión del fix del ciclo 133) · [BUG] `stashed_order_used{n=N}` con menos de N
+  hojas leídas (faltan `ocr_page_appended`) = se agendó una orden truncada.
+- `stash_reason` en `image_out_of_context`: `no_media` | `already_read` (la orden ya se leyó: la foto es
+  otra cosa) | `stash_full` (tope de 4 hojas; acusa recibo, NO es callejón). `already_stashed` ya NO
+  existe: una hoja siguiente ahora se acumula en vez de rechazarse.
 
 ### C) PÁGINAS ADICIONALES en confirmación OCR (flujo agendar)
 Imagen durante CONFIRM_OCR_RESULT = página extra: fusión de CUPS (dedupe) y re-VALIDATE_OCR.

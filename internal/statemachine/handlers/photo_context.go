@@ -41,7 +41,7 @@ func PhotoStartInterceptor(cfg *config.Config) sm.Interceptor {
 			return nil, false
 		}
 		if base.NextState == sm.StateGreeting {
-			base.WithContext("stashed_order_url", mediaURLOf(msg)).
+			base.WithContext(sm.StashedOrderURLsKey, sm.EncodeStashedOrderURLs([]string{mediaURLOf(msg)})).
 				WithEvent("photo_first_message", map[string]interface{}{"type": msg.MessageType})
 			observability.Emit(observability.TraceSession(sess.ID), "agendar", "photo_first_message",
 				observability.EmitOpts{Phone: sess.PhoneNumber})
