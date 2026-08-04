@@ -650,6 +650,12 @@ variables en el `.env` del servidor.
 Ya existe en `scripts/backup-db.sh`. Genera dumps comprimidos en `backups/` (usa `--no-tablespaces`
 para funcionar con el usuario restringido en MySQL 8.0).
 
+**Credenciales: las lee del `.env` del proyecto — basta con ejecutarlo, no hay que exportar nada.**
+Precedencia: variables de entorno > `.env` > defaults de desarrollo (`botuser`/`botpass`). Busca el
+`.env` junto al proyecto (no en el directorio actual), así que funciona desde cualquier `cwd` y en cron.
+Si el dump falla (credenciales, disco lleno), **borra el `.gz` a medias** y sale con código ≠ 0: nunca
+deja un archivo con nombre y fecha perfectos pero vacío.
+
 ```bash
 # Ejecutar manualmente
 cd /ruta/a/neuro-bot
@@ -685,7 +691,7 @@ crontab -l
 cd /ruta/a/neuro-bot && ./scripts/backup-db.sh
 
 # Ver log despues de las 03:00
-tail -20 /var/log/neuro-bot-backup.log
+tail -20 backups/cron.log        # es donde escribe la línea de cron de arriba
 
 # Ver backups generados
 ls -lh backups/
