@@ -142,12 +142,29 @@ func (m *NotificationManager) freeSlotCapacity(ctx context.Context, codMedi int,
 	return len(seen)
 }
 
+// entryQueryKey identifica una consulta de slots por los campos de la entrada que la determinan
+// (ver entrySlotQuery: CupsCode, edad, contraste, sedación, espacios, médico preferido, grupo de
+// CUPS y — vía MonthFilter — el contrato MRC). Dos entradas con la misma clave producen la MISMA
+// consulta, así que dentro de una corrida pueden compartir resultado.
+func entryQueryKey(e domain.WaitingListEntry) string {
+	return e.CupsCode + "|" + strconv.Itoa(e.PatientAge) + "|" +
+		strconv.FormatBool(e.IsContrasted) + "|" + strconv.FormatBool(e.IsSedated) + "|" +
+		strconv.Itoa(e.Espacios) + "|" + e.PreferredDoctorDoc + "|" + e.ContractCode + "|" +
+		e.ProceduresJSON
+}
+
 // notifyWaitingEntries recorre entradas en FIFO y notifica a las que caben en la capacidad y tienen un
 // bloque contiguo válido (con sus restricciones), en claim-then-send. Descuenta capacidad por notificado
 // (FIFO con skip). Cada entrada se auto-describe por su CupsCode, así que sirve tanto al matching por
 // CUP como al matching por SLOT. Devuelve cuántas notificó.
+//
+// Auditoría queries P2: hasta 200 entradas por corrida y muchas comparten CUP y restricciones →
+// las consultas idénticas (slots y cita-futura) se MEMOIZAN dentro de la corrida. Es seguro:
+// notificar no reserva cupos, así que el resultado de la misma consulta no cambia entre entradas.
 func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries []domain.WaitingListEntry, remaining int) int {
 	notified := 0
+	slotMemo := make(map[string][]services.AvailableSlot)
+	futureMemo := make(map[string]bool)
 	for _, entry := range entries {
 		if remaining < 1 {
 			break
@@ -165,10 +182,16 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 			continue
 		}
 		// Ya tiene cita para este CUP → no notificar.
-		hasFuture, herr := m.apptChecker.HasFutureForCup(ctx, entry.PatientID, entry.CupsCode)
-		if herr != nil {
-			slog.Error("wl_check: has future check", "patient_id", entry.PatientID, "error", herr)
-			continue
+		futureKey := entry.PatientID + "|" + entry.CupsCode
+		hasFuture, seen := futureMemo[futureKey]
+		if !seen {
+			var herr error
+			hasFuture, herr = m.apptChecker.HasFutureForCup(ctx, entry.PatientID, entry.CupsCode)
+			if herr != nil {
+				slog.Error("wl_check: has future check", "patient_id", entry.PatientID, "error", herr)
+				continue
+			}
+			futureMemo[futureKey] = hasFuture
 		}
 		if hasFuture {
 			if uerr := m.wlChecker.UpdateStatus(ctx, entry.ID, "duplicate_found"); uerr != nil {
@@ -180,10 +203,16 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 			continue
 		}
 		// ¿Existe un bloque contiguo del tamaño que requiere ESTA entrada, con sus restricciones?
-		slots, serr := m.slotSearcher.GetAvailableSlots(ctx, m.entrySlotQuery(ctx, entry))
-		if serr != nil {
-			slog.Error("wl_check: get available slots", "cups_code", entry.CupsCode, "entry_id", entry.ID, "error", serr)
-			continue
+		slotKey := entryQueryKey(entry)
+		slots, seen := slotMemo[slotKey]
+		if !seen {
+			var serr error
+			slots, serr = m.slotSearcher.GetAvailableSlots(ctx, m.entrySlotQuery(ctx, entry))
+			if serr != nil {
+				slog.Error("wl_check: get available slots", "cups_code", entry.CupsCode, "entry_id", entry.ID, "error", serr)
+				continue
+			}
+			slotMemo[slotKey] = slots
 		}
 		if len(slots) == 0 {
 			observability.Emit(trace, "lista_espera", "skipped",
