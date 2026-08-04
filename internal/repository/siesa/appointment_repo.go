@@ -1687,7 +1687,7 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	var medico int
 	err = tx.QueryRowContext(ctx,
 		`SELECT TOP 1 Medico FROM programacion_medico_detalle
-		 WHERE IdProgramacionMedico = @p1 AND CAST(Fecha AS DATE) = @p2`,
+		 WHERE IdProgramacionMedico = @p1 AND Fecha >= @p2 AND Fecha < DATEADD(DAY, 1, @p2)`,
 		in.AgendaID, in.OldDate).Scan(&medico)
 	if errors.Is(err, sql.ErrNoRows) {
 		return res, invalidReschedule("la agenda %d no tiene slots el %s", in.AgendaID, in.OldDate)
@@ -1701,7 +1701,7 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	res.MovedIDs, err = func() ([]string, error) {
 		rows, qerr := tx.QueryContext(ctx,
 			`SELECT CAST(id AS VARCHAR(20)) FROM citas
-			 WHERE id_programacion = @p1 AND CAST(fecha AS DATE) = @p2 AND estado <> 'C'`,
+			 WHERE id_programacion = @p1 AND fecha = @p2 AND estado <> 'C'`,
 			in.AgendaID, in.OldDate)
 		if qerr != nil {
 			return nil, qerr
@@ -1731,7 +1731,7 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 		var destMedico int
 		err = tx.QueryRowContext(ctx,
 			`SELECT TOP 1 Medico FROM programacion_medico_detalle
-			 WHERE IdProgramacionMedico = @p1 AND CAST(Fecha AS DATE) = @p2`,
+			 WHERE IdProgramacionMedico = @p1 AND Fecha >= @p2 AND Fecha < DATEADD(DAY, 1, @p2)`,
 			destID, in.NewDate).Scan(&destMedico)
 		if errors.Is(err, sql.ErrNoRows) {
 			return res, invalidReschedule("la agenda destino %d no tiene slots el %s", destID, in.NewDate)
@@ -1750,8 +1750,8 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 		FROM programacion_medico_detalle d
 		JOIN programacion_medico_detalle s
 		  ON CONVERT(VARCHAR(5), d.Fecha, 108) = CONVERT(VARCHAR(5), s.Fecha, 108)
-		WHERE s.IdProgramacionMedico = @src AND CAST(s.Fecha AS DATE) = @old
-		  AND d.Medico = @med AND CAST(d.Fecha AS DATE) = @new`,
+		WHERE s.IdProgramacionMedico = @src AND s.Fecha >= @old AND s.Fecha < DATEADD(DAY, 1, @old)
+		  AND d.Medico = @med AND d.Fecha >= @new AND d.Fecha < DATEADD(DAY, 1, @new)`,
 			sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate),
 			sql.Named("med", medico), sql.Named("new", in.NewDate)).Scan(&conflict)
 		if err != nil {
@@ -1776,8 +1776,9 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	FROM programacion_medico_detalle dst
 	JOIN programacion_medico_detalle src
 	  ON CONVERT(VARCHAR(5), dst.Fecha, 108) = CONVERT(VARCHAR(5), src.Fecha, 108)
-	WHERE src.IdProgramacionMedico = @src AND CAST(src.Fecha AS DATE) = @old AND src.IdCita IS NOT NULL
-	  AND dst.IdProgramacionMedico = @dst AND CAST(dst.Fecha AS DATE) = @new
+	WHERE src.IdProgramacionMedico = @src AND src.Fecha >= @old AND src.Fecha < DATEADD(DAY, 1, @old)
+	  AND src.IdCita IS NOT NULL
+	  AND dst.IdProgramacionMedico = @dst AND dst.Fecha >= @new AND dst.Fecha < DATEADD(DAY, 1, @new)
 	  AND dst.IdCita IS NULL AND dst.SinProgramacion = 0`,
 		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate),
 		sql.Named("dst", destID), sql.Named("new", in.NewDate)); err != nil {
@@ -1787,7 +1788,7 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	// 5. Mover las citas (id_programacion + fecha; vuelven a 'P' → el paciente reconfirma).
 	result, err := tx.ExecContext(ctx, `
 	UPDATE citas SET id_programacion = @dst, fecha = @new, estado = 'P'
-	WHERE id_programacion = @src AND CAST(fecha AS DATE) = @old AND estado <> 'C'`,
+	WHERE id_programacion = @src AND fecha = @old AND estado <> 'C'`,
 		sql.Named("dst", destID), sql.Named("new", in.NewDate),
 		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate))
 	if err != nil {
@@ -1801,11 +1802,11 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	err = tx.QueryRowContext(ctx, `
 	SELECT
 	  (SELECT COUNT(*) FROM programacion_medico_detalle d
-	   WHERE d.IdProgramacionMedico = @src AND CAST(d.Fecha AS DATE) = @old
-	     AND d.IdCita IN (SELECT id FROM citas WHERE id_programacion = @dst AND CAST(fecha AS DATE) = @new AND estado <> 'C')),
+	   WHERE d.IdProgramacionMedico = @src AND d.Fecha >= @old AND d.Fecha < DATEADD(DAY, 1, @old)
+	     AND d.IdCita IN (SELECT id FROM citas WHERE id_programacion = @dst AND fecha = @new AND estado <> 'C')),
 	  (SELECT COUNT(*) FROM programacion_medico_detalle d
-	   WHERE d.IdProgramacionMedico = @dst AND CAST(d.Fecha AS DATE) = @new
-	     AND d.IdCita IN (SELECT id FROM citas WHERE id_programacion = @dst AND CAST(fecha AS DATE) = @new AND estado <> 'C'))`,
+	   WHERE d.IdProgramacionMedico = @dst AND d.Fecha >= @new AND d.Fecha < DATEADD(DAY, 1, @new)
+	     AND d.IdCita IN (SELECT id FROM citas WHERE id_programacion = @dst AND fecha = @new AND estado <> 'C'))`,
 		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate),
 		sql.Named("dst", destID), sql.Named("new", in.NewDate)).Scan(&srcSlots, &dstSlots)
 	if err != nil {
@@ -1827,7 +1828,7 @@ func (r *AppointmentRepo) RescheduleDayOfAgenda(ctx context.Context, in domain.R
 	// 7. Bloquear los slots del día origen (NO liberar): el día queda cerrado, nadie agenda ahí.
 	if _, err = tx.ExecContext(ctx, `
 	UPDATE programacion_medico_detalle SET IdCita = NULL, Bloqueado = 1
-	WHERE IdProgramacionMedico = @src AND CAST(Fecha AS DATE) = @old`,
+	WHERE IdProgramacionMedico = @src AND Fecha >= @old AND Fecha < DATEADD(DAY, 1, @old)`,
 		sql.Named("src", in.AgendaID), sql.Named("old", in.OldDate)); err != nil {
 		return res, fmt.Errorf("siesa reschedule: bloquear día origen: %w", err)
 	}
@@ -1854,7 +1855,10 @@ func (r *AppointmentRepo) FindDoctorAgendasOnDate(ctx context.Context, doctorCod
 	           MIN(CONVERT(VARCHAR(5), pmd.Fecha, 108)) AS desde,
 	           MAX(CONVERT(VARCHAR(5), pmd.Fecha, 108)) AS hasta
 	    FROM programacion_medico_detalle pmd WITH (NOLOCK)
-	    WHERE pmd.Medico = @doctor AND CAST(pmd.Fecha AS DATE) = @date AND pmd.SinProgramacion = 0
+	    -- Rango half-open sobre Fecha (sin CAST en la columna): pmd solo tiene índices liderados
+	    -- por Fecha (PK Fecha,Medico) — con CAST la query se queda sin camino de acceso.
+	    WHERE pmd.Medico = @doctor AND pmd.Fecha >= @date AND pmd.Fecha < DATEADD(DAY, 1, @date)
+	      AND pmd.SinProgramacion = 0
 	    GROUP BY pmd.IdProgramacionMedico
 	) a
 	OUTER APPLY (
@@ -1950,7 +1954,7 @@ func (r *AppointmentRepo) duplicateAgendaForDayTx(ctx context.Context, tx *sql.T
 	SELECT DATEADD(DAY, DATEDIFF(DAY,@old,@newdate), Fecha),@newid,@newid,Medico,Bloqueado,Adicional,PuntoAtencion,NULL,
 	       Reservada,DescripcionReserva,EsCitaGrupal,MaximoPacientes,SinProgramacion,CodMotivoBloqueo,intervalo
 	FROM programacion_medico_detalle
-	WHERE IdProgramacionMedico = @src AND CAST(Fecha AS DATE) = @old`,
+	WHERE IdProgramacionMedico = @src AND Fecha >= @old AND Fecha < DATEADD(DAY, 1, @old)`,
 		sql.Named("old", oldDate), sql.Named("newdate", newDate), sql.Named("newid", newID), sql.Named("src", srcAgendaID)); err != nil {
 		return 0, fmt.Errorf("siesa duplicate agenda: insertar detalle: %w", err)
 	}
