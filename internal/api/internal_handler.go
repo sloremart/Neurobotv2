@@ -209,8 +209,9 @@ func (h *InternalHandler) SetSiesaAnalyticsReader(a SiesaAnalyticsReader, cm Cup
 // queryIntDefault lee un parámetro entero de la query string, con valor por defecto si falta o es inválido.
 // maxAnalyticsRangeDays acota la amplitud de from/to en los endpoints de analytics: sin este tope,
 // un query string arbitrario (?from=1900-01-01) dispara una agregación sobre TODO el histórico de
-// citas en la BD SIESA compartida con la UI clínica (auditoría queries P3).
-const maxAnalyticsRangeDays = 180
+// citas en la BD SIESA compartida con la UI clínica (auditoría queries P3). 90 días: la vista más
+// amplia del dashboard usa ventanas de 30-60 días; nada legítimo pide más de un trimestre.
+const maxAnalyticsRangeDays = 90
 
 // analyticsQueryTimeout es el deadline de toda query de analytics contra SIESA. Los handlers de
 // agenda ya usan 8s; analytics agrega sobre tablas más grandes, se le da un poco más.
@@ -583,6 +584,9 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 	// Dedupe del par (cita, CUPS): la fuente UNION ALL podría repetir el mismo par; sin dedupe se
 	// inflarían total_mal_cups/bot_cita_cups y la key de la tabla en la UI colisionaría.
 	seenPairs := make(map[string]struct{})
+	// M5 (auditoría queries): una consulta a cups_medico POR CUPS DISTINTO, no por par cita-CUPS
+	// (eran miles de round-trips a MySQL por carga). Un error se memoiza como nil = fail-open.
+	medicosByCups := make(map[string][]int)
 	for _, c := range citas {
 		distinctCitas[c.CitaID] = struct{}{}
 		pairKey := fmt.Sprintf("%d|%s", c.CitaID, c.Cups)
@@ -590,8 +594,16 @@ func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http
 			continue
 		}
 		seenPairs[pairKey] = struct{}{}
-		allowed, err := h.cupsMedico.FindMedicosForCups(r.Context(), c.Cups)
-		if err != nil || len(allowed) == 0 {
+		allowed, seen := medicosByCups[c.Cups]
+		if !seen {
+			var lerr error
+			allowed, lerr = h.cupsMedico.FindMedicosForCups(r.Context(), c.Cups)
+			if lerr != nil {
+				allowed = nil
+			}
+			medicosByCups[c.Cups] = allowed
+		}
+		if len(allowed) == 0 {
 			continue // fail-open: CUPS sin médicos configurados no se evalúa
 		}
 		checkedRows++

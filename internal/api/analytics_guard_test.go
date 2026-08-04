@@ -21,8 +21,8 @@ func TestClampAnalyticsRange(t *testing.T) {
 		name, from, to, want string
 	}{
 		{"dentro_del_tope_no_cambia", "2026-06-01", "2026-06-30", "2026-06-01"},
-		{"exacto_180_no_cambia", "2026-01-01", "2026-06-30", "2026-01-01"},
-		{"rango_gigante_se_recorta", "1900-01-01", "2999-12-31", "2999-07-04"},
+		{"exacto_90_no_cambia", "2026-04-01", "2026-06-30", "2026-04-01"},
+		{"rango_gigante_se_recorta", "1900-01-01", "2999-12-31", "2999-10-02"},
 		{"from_vacio_pasa_igual", "", "2026-06-30", ""},
 		{"to_vacio_pasa_igual", "2026-06-01", "", "2026-06-01"},
 		{"from_invalido_pasa_igual", "no-fecha", "2026-06-30", "no-fecha"},
@@ -55,8 +55,8 @@ func TestHandleSiesaCitasEstado_ClampsRangeAndSetsDeadline(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if gotFrom != "2999-07-04" || gotTo != "2999-12-31" {
-		t.Errorf("rango recibido por el repo = [%s, %s], want [2999-07-04, 2999-12-31]", gotFrom, gotTo)
+	if gotFrom != "2999-10-02" || gotTo != "2999-12-31" {
+		t.Errorf("rango recibido por el repo = [%s, %s], want [2999-10-02, 2999-12-31]", gotFrom, gotTo)
 	}
 	if !hadDeadline {
 		t.Error("la query de analytics debe llevar context con deadline")
@@ -81,8 +81,8 @@ func TestHandleSiesaNoShow_ClampsRangeAndSetsDeadline(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if gotFrom != "2999-07-04" {
-		t.Errorf("from recibido = %s, want 2999-07-04", gotFrom)
+	if gotFrom != "2999-10-02" {
+		t.Errorf("from recibido = %s, want 2999-10-02", gotFrom)
 	}
 	if !hadDeadline {
 		t.Error("la query de analytics debe llevar context con deadline")
@@ -105,8 +105,8 @@ func TestHandleSiesaBotShare_ClampsRange(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if gotFrom != "2026-01-01" { // 2026-06-30 - 180 días
-		t.Errorf("from recibido = %s, want 2026-01-01", gotFrom)
+	if gotFrom != "2026-04-01" { // 2026-06-30 - 90 días
+		t.Errorf("from recibido = %s, want 2026-04-01", gotFrom)
 	}
 }
 
@@ -137,10 +137,10 @@ func TestHandleSiesaConversion_ClampsRange(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if gotFrom != "2026-01-01" {
-		t.Errorf("from SIESA = %s, want 2026-01-01", gotFrom)
+	if gotFrom != "2026-04-01" {
+		t.Errorf("from SIESA = %s, want 2026-04-01", gotFrom)
 	}
-	if got := funnelFrom.Format("2006-01-02"); got != "2026-01-01" {
-		t.Errorf("from del funnel local = %s, want 2026-01-01 (ambas ventanas deben coincidir)", got)
+	if got := funnelFrom.Format("2006-01-02"); got != "2026-04-01" {
+		t.Errorf("from del funnel local = %s, want 2026-04-01 (ambas ventanas deben coincidir)", got)
 	}
 }

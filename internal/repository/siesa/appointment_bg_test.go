@@ -1,6 +1,8 @@
 package siesa
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -46,4 +48,42 @@ func TestWaitBackground_TimesOut(t *testing.T) {
 		t.Fatalf("esperaba retorno por timeout ~100ms, got %v", elapsed)
 	}
 	r.bgWG.Done() // limpiar la goroutine de espera interna
+}
+
+// Auditoría queries M8: cada Confirm/Cancel/Create lanza una goroutine de auditoría; sin tope, un
+// pico de confirmaciones compite por las 10 conexiones del pool contra la ruta caliente. El
+// semáforo acota cuántas escrituras de auditoría corren a la vez (las demás esperan su turno,
+// ninguna se pierde).
+func TestAuditSemaphoreBoundsConcurrency(t *testing.T) {
+	r := NewAppointmentRepo(nil, "", 0)
+	var cur, peak atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			release := r.acquireAuditSlot()
+			defer release()
+			c := cur.Add(1)
+			for {
+				p := peak.Load()
+				if c <= p || peak.CompareAndSwap(p, c) {
+					break
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+			cur.Add(-1)
+		}()
+	}
+	wg.Wait()
+	if got := peak.Load(); got > maxConcurrentAudits {
+		t.Errorf("concurrencia pico = %d, tope = %d", got, maxConcurrentAudits)
+	}
+}
+
+// El semáforo es nil-safe: un repo construido a pelo (tests) no debe bloquearse ni panickear.
+func TestAuditSemaphoreNilSafe(_ *testing.T) {
+	r := &AppointmentRepo{}
+	release := r.acquireAuditSlot()
+	release()
 }

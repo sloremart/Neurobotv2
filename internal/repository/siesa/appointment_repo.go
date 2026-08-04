@@ -67,6 +67,25 @@ type AppointmentRepo struct {
 	// (WaitBackground) ANTES de cerrar el pool — si no, una auditoría en vuelo veía "sql: database is
 	// closed". Best-effort: si no terminan dentro del timeout, el apagado continúa igual.
 	bgWG sync.WaitGroup
+
+	// M8 (auditoría queries): tope de escrituras de auditoría CONCURRENTES. Las goroutines siguen
+	// siendo fire-and-forget (ninguna auditoría se pierde), pero solo maxConcurrentAudits ejecutan
+	// SQL a la vez — sin esto, un pico de confirmaciones competía por las 10 conexiones del pool
+	// contra la ruta caliente de agendamiento.
+	auditSem chan struct{}
+}
+
+// maxConcurrentAudits acota cuántas goroutines de auditoría ejecutan SQL simultáneamente.
+const maxConcurrentAudits = 3
+
+// acquireAuditSlot toma un cupo del semáforo de auditoría y devuelve su release. Nil-safe: un repo
+// construido sin NewAppointmentRepo (tests) no bloquea.
+func (r *AppointmentRepo) acquireAuditSlot() func() {
+	if r.auditSem == nil {
+		return func() {}
+	}
+	r.auditSem <- struct{}{}
+	return func() { <-r.auditSem }
 }
 
 // NewAppointmentRepo construye el repo. assignCedula y botUserID definen la identidad del bot en
@@ -78,7 +97,10 @@ func NewAppointmentRepo(db *sql.DB, assignCedula string, botUserID int) *Appoint
 	if botUserID == 0 {
 		botUserID = defaultSiesaBotUserID
 	}
-	return &AppointmentRepo{db: db, assignCedula: assignCedula, botUserID: botUserID}
+	return &AppointmentRepo{
+		db: db, assignCedula: assignCedula, botUserID: botUserID,
+		auditSem: make(chan struct{}, maxConcurrentAudits),
+	}
 }
 
 // WaitBackground espera (hasta timeout) a que terminen las escrituras de auditoría fire-and-forget en
@@ -966,6 +988,8 @@ func (r *AppointmentRepo) writeAuditLog(ctx context.Context, id, evento, obs str
 				slog.Error("audit_log_panic", "appointment_id", id, "evento", evento, "recover", rec)
 			}
 		}()
+		release := r.acquireAuditSlot()
+		defer release()
 		cctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
 		defer cancel()
 		if _, err := r.db.ExecContext(cctx, query, id, obs, evento, r.botUserID); err != nil {
@@ -1029,6 +1053,8 @@ func (r *AppointmentRepo) WriteCreationAudit(ctx context.Context, appointmentID,
 				slog.Error("creation_audit_panic", "appointment_id", appointmentID, "recover", rec)
 			}
 		}()
+		release := r.acquireAuditSlot()
+		defer release()
 		cctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
 		defer cancel()
 		if _, err := r.db.ExecContext(cctx, creationAuditQuery, appointmentID, observations, r.botUserID); err != nil {
@@ -1096,6 +1122,8 @@ func (r *AppointmentRepo) writeAuditLogBatch(ctx context.Context, ids []string, 
 				slog.Error("audit_log_batch_panic", "evento", evento, "recover", rec)
 			}
 		}()
+		release := r.acquireAuditSlot()
+		defer release()
 		cctx, cancel := context.WithTimeout(bgCtx, 15*time.Second)
 		defer cancel()
 		if _, err := r.db.ExecContext(cctx, query, allArgs...); err != nil {
@@ -1584,11 +1612,12 @@ func (r *AppointmentRepo) FindAgendaAppointmentsPaged(ctx context.Context, f dom
 	offset := (page - 1) * size
 
 	// Cota superior fija (M1): sin agenda_id ni date, un doctor solo acotaba por fecha >= hoy y el
-	// costo crecía con el horizonte de agendamiento. 181 días cubre la ventana real de agendas (90d).
+	// costo crecía con el horizonte de agendamiento. 91 días cubre la ventana real de agendas (90d,
+	// la misma de FindAvailableSlots).
 	conds := []string{
 		"c.estado NOT IN ('C','A')",
 		"c.fecha >= CAST(GETDATE() AS DATE)",
-		"c.fecha < DATEADD(DAY, 181, GETDATE())",
+		"c.fecha < DATEADD(DAY, 91, GETDATE())",
 	}
 	args := []interface{}{}
 	if f.AgendaID != nil {

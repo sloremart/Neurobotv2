@@ -709,12 +709,14 @@ func (m *mockSiesaAnalyticsReader) BotAppointmentsWithCups(ctx context.Context, 
 	return nil, nil
 }
 
-// mockCupsMedicoReader devuelve los médicos permitidos por CUPS desde un mapa.
+// mockCupsMedicoReader devuelve los médicos permitidos por CUPS desde un mapa y cuenta llamadas.
 type mockCupsMedicoReader struct {
 	medicos map[string][]int
+	calls   int
 }
 
 func (m *mockCupsMedicoReader) FindMedicosForCups(_ context.Context, cups string) ([]int, error) {
+	m.calls++
 	return m.medicos[cups], nil
 }
 
