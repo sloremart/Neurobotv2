@@ -217,6 +217,7 @@ func ImageOutOfContextInterceptor() Interceptor {
 // mismo escape que el interceptor y no intente "recuperar" un pedido explícito de agente.
 var escalationKeywords = map[string]bool{
 	"agente": true, "asesor": true, "humano": true, "ayuda": true,
+	"asesora": true, "asesores": true, "agentes": true,
 }
 
 // IsEscalationKeyword indica si el texto es un pedido explícito de hablar con un humano.
@@ -242,7 +243,21 @@ func EscalationKeywordsInterceptor() Interceptor {
 		}
 
 		input := strings.TrimSpace(strings.ToLower(msg.Text))
-		if !keywords[input] {
+
+		// Coincidencia exacta (palabra sola) o como token dentro de una frase.
+		// "agente" → sí. "quiero hablar con un agente" → sí. "agentecia" → no.
+		matched := keywords[input]
+		if !matched {
+			for _, word := range strings.Fields(input) {
+				// Quitar puntuación final común (,.:!?)
+				word = strings.TrimRight(word, ".,;:!?")
+				if keywords[word] {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
 			return nil, false
 		}
 
