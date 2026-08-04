@@ -31,7 +31,7 @@ func TestImageOutOfContext_StashesOrderInQuestionStates(t *testing.T) {
 			if !intercepted {
 				t.Fatal("esperaba interceptación")
 			}
-			if result.UpdateCtx["stashed_order_url"] != "https://media.bird.com/orden.jpg" {
+			if !strings.Contains(result.UpdateCtx["stashed_order_urls"], "https://media.bird.com/orden.jpg") {
 				t.Errorf("la orden debe quedar guardada para usarla en el paso de la orden, got ctx=%v", result.UpdateCtx)
 			}
 			// El mensaje ya no puede ser el dead-end: debe acusar recibo.
@@ -65,13 +65,14 @@ func TestImageOutOfContext_DoesNotStashAfterOrderRead(t *testing.T) {
 	if !intercepted {
 		t.Fatal("esperaba interceptación")
 	}
-	if _, ok := result.UpdateCtx["stashed_order_url"]; ok {
+	if _, ok := result.UpdateCtx[StashedOrderURLsKey]; ok {
 		t.Error("no debe guardarse como orden médica una imagen enviada después de leída la orden")
 	}
 }
 
 // TestImageOutOfContext_DoesNotOverwriteExistingStash: si ya hay una orden guardada, una segunda foto no
-// debe pisarla (la primera es la que el paciente mandó con intención).
+// debe PISARLA. La primera hoja es la que el paciente mandó con intención y debe seguir siendo la primera
+// (la segunda se agrega detrás — ver TestImageOutOfContext_StashesAdditionalPages).
 func TestImageOutOfContext_DoesNotOverwriteExistingStash(t *testing.T) {
 	interceptor := ImageOutOfContextInterceptor()
 
@@ -79,8 +80,77 @@ func TestImageOutOfContext_DoesNotOverwriteExistingStash(t *testing.T) {
 	sess.Context["stashed_order_url"] = "https://media.bird.com/primera.jpg"
 
 	result, _ := interceptor(context.Background(), sess, imageMsgWithURL("https://media.bird.com/segunda.jpg"))
-	if got := result.UpdateCtx["stashed_order_url"]; got != "" && got != "https://media.bird.com/primera.jpg" {
-		t.Errorf("no debe pisarse la orden ya guardada; got %q", got)
+	stash := result.UpdateCtx["stashed_order_urls"]
+	if !strings.Contains(stash, "primera.jpg") {
+		t.Errorf("no debe perderse la orden ya guardada; got %q", stash)
+	}
+	if i, j := strings.Index(stash, "primera.jpg"), strings.Index(stash, "segunda.jpg"); j >= 0 && i > j {
+		t.Errorf("la primera hoja debe seguir siendo la primera; got %q", stash)
+	}
+}
+
+// TestImageOutOfContext_StashesAdditionalPages cubre lo medido en producción el 2026-08-04
+// (auditoría ciclo 133): un paciente mandó su orden completa en CINCO fotos en dos segundos, antes de
+// que el bot alcanzara a contestar. La primera se guardó y las otras CUATRO se descartaron con
+// stash_reason=already_stashed, respondiéndole "Ya tengo tu orden, no necesitas reenviarla" — una frase
+// FALSA: el bot tenía la primera hoja, no la orden.
+//
+// Mandar una orden de varias hojas como varias fotos seguidas es el comportamiento normal del paciente,
+// y el bot ya sabe fusionar páginas aguas abajo (PhotoAppendInterceptor/mergeCupsJSON). El stash debe
+// acumularlas igual, o la cita se agenda con la mitad de los procedimientos y sin ninguna señal.
+func TestImageOutOfContext_StashesAdditionalPages(t *testing.T) {
+	interceptor := ImageOutOfContextInterceptor()
+
+	sess := newSess(StateAskClientType)
+	sess.Context["stashed_order_urls"] = `["https://media.bird.com/pag1.jpg"]`
+
+	result, intercepted := interceptor(context.Background(), sess, imageMsgWithURL("https://media.bird.com/pag2.jpg"))
+	if !intercepted {
+		t.Fatal("esperaba interceptación")
+	}
+	stash := result.UpdateCtx["stashed_order_urls"]
+	for _, must := range []string{"pag1.jpg", "pag2.jpg"} {
+		if !strings.Contains(stash, must) {
+			t.Errorf("la página %s debe quedar guardada; got %q", must, stash)
+		}
+	}
+	if i, j := strings.Index(stash, "pag1.jpg"), strings.Index(stash, "pag2.jpg"); i > j {
+		t.Errorf("las páginas deben conservar su orden de llegada; got %q", stash)
+	}
+
+	var texts string
+	for _, m := range result.Messages {
+		texts += OutboundText(m)
+	}
+	if strings.Contains(texts, "no necesitas reenviarla") {
+		t.Errorf("no debe decirle que ya la tiene: acaba de recibir OTRA hoja; got %q", texts)
+	}
+}
+
+// TestImageOutOfContext_StashPageCap: el stash acumula páginas pero con tope, para no disparar el costo
+// de OCR de una sesión (cada hoja guardada es un análisis más al consumirla). Pasado el tope se acusa
+// recibo sin guardar, nunca el dead-end.
+func TestImageOutOfContext_StashPageCap(t *testing.T) {
+	interceptor := ImageOutOfContextInterceptor()
+
+	sess := newSess(StateAskClientType)
+	sess.Context["stashed_order_urls"] = `["https://media.bird.com/p1.jpg","https://media.bird.com/p2.jpg","https://media.bird.com/p3.jpg","https://media.bird.com/p4.jpg"]`
+
+	result, intercepted := interceptor(context.Background(), sess, imageMsgWithURL("https://media.bird.com/p5.jpg"))
+	if !intercepted {
+		t.Fatal("esperaba interceptación")
+	}
+	for k, v := range result.UpdateCtx {
+		if strings.Contains(v, "p5.jpg") {
+			t.Errorf("pasado el tope no debe guardarse otra página; got %s=%q", k, v)
+		}
+	}
+	var texts string
+	for _, m := range result.Messages {
+		texts += OutboundText(m)
+	}
+	if strings.Contains(texts, "No esperaba una imagen") {
+		t.Errorf("el tope no es un callejón: debe acusar recibo; got %q", texts)
 	}
 }
 

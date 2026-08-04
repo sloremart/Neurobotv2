@@ -2,6 +2,7 @@ package statemachine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -126,7 +127,8 @@ func ImageOutOfContextInterceptor() Interceptor {
 		//
 		// GUARDA: solo si la orden AÚN no se ha leído (ocr_cups_json vacío). Después de leída, una foto
 		// es otra cosa (p.ej. el examen de laboratorio en GFR_CREATININE) y tomarla por orden médica
-		// sería peor que no guardarla. Tampoco se pisa un stash previo: vale el primero.
+		// sería peor que no guardarla. Las hojas siguientes se ACUMULAN (una orden de varias páginas se
+		// manda como varias fotos seguidas), hasta el tope de MaxStashedOrderPages.
 		mediaURL := ""
 		switch msg.MessageType {
 		case "image":
@@ -135,8 +137,9 @@ func ImageOutOfContextInterceptor() Interceptor {
 			mediaURL = msg.DocumentURL
 		}
 		orderAlreadyRead := sess.GetContext("ocr_cups_json") != ""
-		alreadyStashed := sess.GetContext("stashed_order_url") != ""
-		canStash := mediaURL != "" && !orderAlreadyRead && !alreadyStashed
+		stashedPages := StashedOrderURLs(sess)
+		stashFull := len(stashedPages) >= MaxStashedOrderPages
+		canStash := mediaURL != "" && !orderAlreadyRead && !stashFull
 
 		// stashReason explica POR QUÉ no se guardó. Sin él, `stashed=false` obliga a inferir la causa
 		// desde fuera (auditoría ciclo 130: no se podía distinguir "ya había stash" de "no venía media").
@@ -146,8 +149,8 @@ func ImageOutOfContextInterceptor() Interceptor {
 			stashReason = "no_media"
 		case orderAlreadyRead:
 			stashReason = "already_read"
-		case alreadyStashed:
-			stashReason = "already_stashed"
+		case stashFull:
+			stashReason = "stash_full"
 		}
 
 		// Emitir también como flow_event para que el rechazo sea VISIBLE en el funnel de la skill
@@ -155,31 +158,47 @@ func ImageOutOfContextInterceptor() Interceptor {
 		// `state` distingue el caso benigno (imagen suelta en un menú) del BUG (rechazo en un estado que
 		// SÍ espera foto, p.ej. un UPLOAD_* nuevo sin whitelistear); `stashed` distingue el callejón real
 		// (la foto se perdió) de la recuperación (la foto quedó guardada).
+		pages := stashedPages
+		if canStash {
+			pages = AppendStashedOrderURL(stashedPages, mediaURL)
+		}
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "image_out_of_context",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{
 				"state":        sess.CurrentState,
 				"stashed":      canStash,
 				"stash_reason": stashReason,
+				"n":            len(pages),
 			}})
 
 		if canStash {
+			// La primera hoja se acusa como "tu orden"; las siguientes, como páginas adicionales. Decirle
+			// "ya tengo tu orden" a quien acaba de mandar la hoja 2 es falso y lo deja creyendo que el bot
+			// tiene algo que no tiene (auditoría ciclo 133).
+			text := "Recibí tu orden 📷 y la guardo para usarla apenas lleguemos a ese paso — no necesitas reenviarla.\n\nSigamos con lo que te acabo de preguntar. 👆"
+			event := "image_stashed_out_of_context"
+			if len(stashedPages) > 0 {
+				text = fmt.Sprintf("Recibí también esa hoja de tu orden 📄 (llevo %d). Las uso todas apenas lleguemos a ese paso.\n\nSigamos con lo que te acabo de preguntar. 👆", len(pages))
+				event = "image_stash_page_added"
+			}
 			return NewResult(sess.CurrentState).
-				WithText("Recibí tu orden 📷 y la guardo para usarla apenas lleguemos a ese paso — no necesitas reenviarla.\n\nSigamos con lo que te acabo de preguntar. 👆").
-				WithContext("stashed_order_url", mediaURL).
-				WithEvent("image_stashed_out_of_context", map[string]interface{}{
+				WithText(text).
+				WithContext(StashedOrderURLsKey, EncodeStashedOrderURLs(pages)).
+				WithClearCtx(legacyStashedOrderURLKey).
+				WithEvent(event, map[string]interface{}{
 					"state": sess.CurrentState,
+					"pages": len(pages),
 				}), true
 		}
 
-		// La orden YA está guardada y el paciente la reenvía (típicamente porque la pregunta en curso no
-		// le parece respuesta a su foto). No se pisa el stash, pero tampoco es un callejón: sigue dentro
-		// del flujo de agendar. Decirle "primero selecciona la opción de agendar cita" es falso y lo
+		// Tope de páginas alcanzado: el paciente sigue mandando hojas. No es un callejón (sigue dentro del
+		// flujo de agendar) y decirle "primero selecciona la opción de agendar cita" sería falso — eso lo
 		// empujaba a reintentar o a pedir un agente (auditoría ciclo 130, H130-2).
-		if alreadyStashed && !orderAlreadyRead && mediaURL != "" {
+		if stashFull && !orderAlreadyRead && mediaURL != "" {
 			return NewResult(sess.CurrentState).
-				WithText("Ya tengo tu orden 📷, no necesitas reenviarla.\n\nSigamos con lo que te acabo de preguntar. 👆").
-				WithEvent("image_stash_duplicate", map[string]interface{}{
+				WithText(fmt.Sprintf("Ya tengo %d páginas de tu orden 📷, no necesitas reenviarlas.\n\nSigamos con lo que te acabo de preguntar. 👆", len(stashedPages))).
+				WithEvent("image_stash_full", map[string]interface{}{
 					"state": sess.CurrentState,
+					"pages": len(stashedPages),
 				}), true
 		}
 

@@ -75,7 +75,18 @@ func ocrFailureMessage(errReason string) string {
 // Para pacientes PARTICULAR: primero pregunta si tienen orden médica.
 // Si sí → sube foto y flujo normal. Si no → escala a agente y registra en lista de espera.
 func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRService, birdClient *bird.Client) sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (res *sm.StateResult, err error) {
+		// El stash que NO se pudo leer debe borrarse de la BD, no solo del mapa en memoria: la sesión se
+		// recarga de BD en el mensaje siguiente y la URL rota volvería, reintentándose para siempre
+		// (auditoría ciclo 133: el mismo stash falló dos veces en sess:7cbdfb83 sin foto nueva en medio).
+		// Como el camino de fallo sigue hacia abajo y tiene varios returns, el borrado se engancha aquí.
+		clearStash := false
+		defer func() {
+			if clearStash && res != nil {
+				res.ClearCtx = append(res.ClearCtx, sm.StashKeysToClear()...)
+			}
+		}()
+
 		// Flujo "Aplicar medicamentos": reutiliza la identificación/registro de agendar, pero NO pide
 		// orden — al llegar aquí desvía a la validación SANITAS + canal/escalación (único punto de
 		// intercepción, así no hay que tocar cada ruteo del flujo de agendar).
@@ -92,21 +103,25 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRServi
 			}
 		}
 
-		// Orden GUARDADA del primer mensaje (stash, §8.1 #1): usarla directamente, sin re-pedir la foto.
+		// Orden GUARDADA antes de llegar aquí (stash, §8.1 #1): usarla directamente, sin re-pedir la foto.
 		// Un solo intento: el stash se limpia SIEMPRE; si el OCR falla se cae al flujo normal (pedir foto).
-		if u := sess.GetContext("stashed_order_url"); u != "" && ocrSvc != nil {
-			res, err := processOrderMedia(ctx, sess, ocrSvc, birdClient, u)
-			if err == nil && res != nil && (res.NextState == sm.StateValidateOCR || res.NextState == sm.StateEscalateToAgent) {
-				res.ClearCtx = append(res.ClearCtx, "stashed_order_url")
-				res.WithEvent("stashed_order_used", nil)
+		if pages := sm.StashedOrderURLs(sess); len(pages) > 0 && ocrSvc != nil {
+			stashRes, stashErr := processStashedOrder(ctx, sess, ocrSvc, birdClient, pages)
+			if stashErr == nil && stashRes != nil && (stashRes.NextState == sm.StateValidateOCR || stashRes.NextState == sm.StateEscalateToAgent) {
+				stashRes.ClearCtx = append(stashRes.ClearCtx, sm.StashKeysToClear()...)
+				stashRes.WithEvent("stashed_order_used", map[string]interface{}{"pages": len(pages)})
 				observability.Emit(observability.TraceSession(sess.ID), "agendar", "stashed_order_used",
-					observability.EmitOpts{Phone: sess.PhoneNumber})
-				return res, nil
+					observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(pages)}})
+				return stashRes, nil
 			}
-			// No se pudo leer la orden guardada → limpiar y pedirla como siempre (flujo actual intacto).
-			sess.SetContext("stashed_order_url", "")
+			// No se pudo leer la orden guardada → limpiar (memoria + BD vía clearStash) y pedirla como
+			// siempre. El borrado en memoria evita que el resto de ESTA pasada la vuelva a ver.
+			clearStash = true
+			for _, k := range sm.StashKeysToClear() {
+				sess.SetContext(k, "")
+			}
 			observability.Emit(observability.TraceSession(sess.ID), "agendar", "stashed_order_failed",
-				observability.EmitOpts{Phone: sess.PhoneNumber})
+				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(pages)}})
 		}
 
 		// Pacientes PARTICULAR: preguntar si tienen orden antes de pedir foto
@@ -305,6 +320,48 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 			return uploadNonMedia(sess, birdClient, msg)
 		}
 	}
+}
+
+// minBudgetForExtraPage es lo que debe quedarle al mensaje para intentar OTRA hoja del stash. El
+// presupuesto de UN análisis es de 75s dentro de los 2 min del mensaje: sin esta guarda, una orden de
+// varias hojas podría consumir el mensaje entero y tumbar la persistencia posterior (mismo modo de
+// fallo que el bug de presupuesto OCR de 2026-07-27).
+const minBudgetForExtraPage = 25 * time.Second
+
+// budgetAllowsExtraPage indica si al mensaje le queda tiempo para un análisis más.
+func budgetAllowsExtraPage(ctx context.Context) bool {
+	dl, ok := ctx.Deadline()
+	return !ok || time.Until(dl) > minBudgetForExtraPage
+}
+
+// processStashedOrder consume la orden GUARDADA, que puede tener varias hojas: el paciente manda una
+// orden de dos o tres páginas como varias fotos seguidas antes de llegar al paso de la orden (auditoría
+// ciclo 133). La primera hoja decide el siguiente paso (mismo camino de siempre) y las demás se fusionan
+// con el mismo mecanismo que las páginas adicionales del paso "¿Es correcto?" (mergeCupsJSON, dedupe por
+// código). Una hoja ilegible NO tumba la orden: se registra y se sigue con las que sí se leyeron.
+func processStashedOrder(ctx context.Context, sess *session.Session, ocrSvc *services.OCRService, birdClient *bird.Client, pages []string) (*sm.StateResult, error) {
+	res, err := processOrderMedia(ctx, sess, ocrSvc, birdClient, pages[0])
+	if err != nil || res == nil || res.NextState != sm.StateValidateOCR {
+		return res, err
+	}
+
+	for _, url := range pages[1:] {
+		if !budgetAllowsExtraPage(ctx) {
+			slog.Warn("stash_extra_page_skipped_budget", "session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber))
+			break
+		}
+		ocrRes, ocrErr := ocrSvc.AnalyzeDocument(ctx, url)
+		if ocrErr != nil || ocrRes == nil || !ocrRes.Success || len(ocrRes.Cups) == 0 {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_append_failed",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
+			continue
+		}
+		merged, added := mergeCupsJSON(res.UpdateCtx["ocr_cups_json"], ocrRes.Cups)
+		res.WithContext("ocr_cups_json", merged)
+		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_page_appended",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": added}})
+	}
+	return res, nil
 }
 
 // processOrderMedia corre el OCR sobre una imagen/PDF de orden médica y decide el siguiente paso.
