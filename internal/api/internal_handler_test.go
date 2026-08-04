@@ -665,17 +665,25 @@ func TestIsoWeekMonday(t *testing.T) {
 type mockSiesaAnalyticsReader struct {
 	botCreatedFn      func(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
 	botAppointmentsFn func(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
+	citasEstadoFn     func(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error)
+	noShowFn          func(ctx context.Context, from, to string) ([]domain.NoShowRow, error)
 }
 
 func (m *mockSiesaAnalyticsReader) Occupancy(_ context.Context, _ int) ([]domain.OccupancyRow, error) {
 	return nil, nil
 }
 
-func (m *mockSiesaAnalyticsReader) AppointmentsByState(_ context.Context, _, _ string) ([]domain.AppointmentStateRow, error) {
+func (m *mockSiesaAnalyticsReader) AppointmentsByState(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error) {
+	if m.citasEstadoFn != nil {
+		return m.citasEstadoFn(ctx, from, to)
+	}
 	return nil, nil
 }
 
-func (m *mockSiesaAnalyticsReader) NoShowByDay(_ context.Context, _, _ string) ([]domain.NoShowRow, error) {
+func (m *mockSiesaAnalyticsReader) NoShowByDay(ctx context.Context, from, to string) ([]domain.NoShowRow, error) {
+	if m.noShowFn != nil {
+		return m.noShowFn(ctx, from, to)
+	}
 	return nil, nil
 }
 
