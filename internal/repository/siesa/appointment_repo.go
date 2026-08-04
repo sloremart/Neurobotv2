@@ -1366,6 +1366,35 @@ func (r *AppointmentRepo) FindLastDoctorForCups(ctx context.Context, patientID s
 // cita del conteo: se usa al REPROGRAMAR para no contar la cita que se está moviendo. Si el nuevo slot
 // cae en el MISMO mes de esa cita, su cantidad queda excluida (movimiento, no consumo nuevo); si cae en
 // OTRO mes, la cita no está en ese mes de todas formas y el conteo es el normal.
+// mrcGroupPredicate arma el predicado sargable de pertenencia al grupo MRC: cp pertenece si es
+// exactamente una BASE del grupo o una variante `base-<sufijo>`. Las entradas del catálogo con
+// sufijo se normalizan a su base y se deduplican (espeja IsMRCGroupCups, que matchea por base).
+// Sustituye al antiguo LEFT(...CHARINDEX...) IN (...), que aplicaba funciones sobre la columna
+// en cada fila del mes (auditoría queries P7).
+func mrcGroupPredicate(cupsCodes []string, startAt int) (clause string, args []interface{}) {
+	seen := make(map[string]bool, len(cupsCodes))
+	var sb strings.Builder
+	sb.WriteString("(")
+	for _, code := range cupsCodes {
+		base := code
+		if i := strings.IndexByte(code, '-'); i >= 0 {
+			base = code[:i]
+		}
+		if base == "" || seen[base] {
+			continue
+		}
+		seen[base] = true
+		if len(args) > 0 {
+			sb.WriteString(" OR ")
+		}
+		fmt.Fprintf(&sb, "cp.id_procedimiento = @p%d OR cp.id_procedimiento LIKE @p%d",
+			startAt+len(args), startAt+len(args)+1)
+		args = append(args, base, base+"-%")
+	}
+	sb.WriteString(")")
+	return sb.String(), args
+}
+
 func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []string, year, month int, excludeApptID string) (int, error) {
 	if len(cupsCodes) == 0 {
 		return 0, nil
@@ -1382,10 +1411,16 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 	//     UNITARIO; (b) al facturar, la clínica expande 891509-8 en 8 filas del CUP base. Por eso se
 	//     suma el SUFIJO numérico cuando existe, y cp.Cantidad solo cuando NO hay sufijo. El antiguo
 	//     SUM(Cantidad) subcontaba (1 por una variante de 8) → riesgo de pasar el tope del contrato.
-	//   - LEFT(...CHARINDEX...) matches the base code so all variants of a CUPS belong to the group.
-	// citas.contrato is varchar in SIESA, hence the string literals.
-	clause, cupsArgs := inParams(cupsCodes, 4)
-	allArgs := append([]interface{}{startDate, endDate, excludeApptID}, cupsArgs...)
+	//   - El match por base se hace con predicados sargables (= base OR LIKE 'base-%'), ver
+	//     mrcGroupPredicate. citas.contrato is varchar in SIESA, hence the string literals.
+	// excludeApptID se compara como INT (c.id es int): con CAST(c.id AS VARCHAR) la conversión caía
+	// sobre la columna en cada fila. Vacío o no numérico → 0 = sin exclusión (mismo efecto neto).
+	excludeID := 0
+	if n, convErr := strconv.Atoi(strings.TrimSpace(excludeApptID)); convErr == nil {
+		excludeID = n
+	}
+	clause, cupsArgs := mrcGroupPredicate(cupsCodes, 4)
+	allArgs := append([]interface{}{startDate, endDate, excludeID}, cupsArgs...)
 
 	var count int
 	err := r.db.QueryRowContext(
@@ -1402,9 +1437,9 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 	JOIN citas_procedimientos cp ON cp.id_cita = c.id
 	WHERE c.fecha >= @p1 AND c.fecha < @p2
 	  AND c.contrato IN ('5', '6')
-	  AND LEFT(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento + '-') - 1) IN (%s)
+	  AND %s
 	  AND c.estado <> 'C'
-	  AND (@p3 = '' OR CAST(c.id AS VARCHAR(20)) <> @p3)`, clause), allArgs...,
+	  AND (@p3 = 0 OR c.id <> @p3)`, clause), allArgs...,
 	).Scan(&count)
 	return count, err
 }
