@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -63,6 +64,12 @@ func (m *mockSessionCreatorWithLookup) UpdateStatus(_ context.Context, sessionID
 
 func (m *mockSessionCreatorWithLookup) CompleteActiveByPhone(_ context.Context, _ string) error {
 	return nil
+}
+
+func (m *mockSessionCreatorWithLookup) LastPatientMessageAt(_ context.Context, _ string) (*time.Time, error) {
+	// Ventana abierta por defecto: estos tests cubren la escalación, no el gate de ventana.
+	now := time.Now()
+	return &now, nil
 }
 
 func escalationBirdServer() *httptest.Server {

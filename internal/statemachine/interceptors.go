@@ -263,6 +263,7 @@ func EscalationKeywordsInterceptor() Interceptor {
 
 		sess.RetryCount = 0
 		return NewResult(StateEscalateToAgent).
+			WithText(EscalationNoticeText).
 			WithEvent("escalation_requested", map[string]interface{}{
 				"from_state": sess.CurrentState,
 				"keyword":    input,

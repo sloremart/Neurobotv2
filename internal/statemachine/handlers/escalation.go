@@ -103,7 +103,6 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 
 		// 4. If conversationID is still empty, send patient message first.
 		// The Channels API response contains conversationId which gets cached.
-		patientNotified := false
 		if conversationID == "" {
 			slog.Warn(
 				"escalation_no_conversation_id",
@@ -113,7 +112,6 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				"sess_conv_id", sess.ConversationID,
 			)
 			sentMsgID, sendErr := birdClient.SendText(msg.Phone, "", "Te voy a conectar con un agente. Un momento por favor...")
-			patientNotified = true
 			diagSentOK = sentMsgID != ""
 			if sendErr != nil {
 				slog.Error(
@@ -213,7 +211,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 						"lookup":      diagLookup,
 					},
 				})
-			// B — No abandonar al paciente: ya se le envió "te voy a conectar…" (patientNotified), así
+			// B — No abandonar al paciente: el aviso "te voy a conectar…" viaja en los mensajes del caller, así
 			// que en vez de un menú frío de reinicio se le confirma que un asesor lo contactará (el
 			// pickup manual queda disparado por la alerta ERROR de arriba) y se le deja una salida.
 			return sm.NewResult(sm.StateFallbackMenu).
@@ -235,10 +233,10 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 		}
 
-		// 6. Notify patient (skip if already sent in step 4)
-		if !patientNotified {
-			birdClient.SendText(msg.Phone, conversationID, "Te voy a conectar con un agente. Un momento por favor...")
-		}
+		// 6. El aviso al paciente YA viene en el StateResult del caller que escaló (texto contextual
+		// propio, o EscalationNoticeText en los helpers/interceptor/post-action/recovery). El envío
+		// directo que iba aquí duplicaba el aviso (~700 msgs/sem cobrados de más). El pre-envío del
+		// paso 4 (:115) se conserva solo para el caso SIN conversationID, donde además resuelve el canal.
 
 		// 7. Send detailed context summary for the agent (Inbox only — invisible to patient)
 		summary := buildAgentSummary(sess, cupsCode, teamName)

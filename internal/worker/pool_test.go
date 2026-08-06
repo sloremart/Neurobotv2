@@ -585,12 +585,14 @@ func TestProcessMessage_SaveStateWithContext(t *testing.T) {
 func TestProcessMessage_MultipleMessages(t *testing.T) {
 	sm := newMockSessionMgmt()
 	sender := &mockMessageSender{}
+	// Lista + texto posterior: par NO fusionable por el coalescer (nada se pega tras un
+	// interactivo) — sigue probando el bucle de envío multi-mensaje.
 	processor := &mockMessageProcessor{
 		processFn: func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error) {
 			return &statemachine.StateResult{
 				NextState: "MAIN_MENU",
 				Messages: []statemachine.OutboundMessage{
-					&statemachine.TextMessage{Text: "Hola!"},
+					&statemachine.ListMessage{Body: "Menú", Title: "Opciones", Sections: []statemachine.ListSection{{Title: "S", Rows: []statemachine.ListRow{{ID: "1", Title: "Op"}}}}},
 					&statemachine.TextMessage{Text: "Cómo te puedo ayudar?"},
 				},
 			}, nil
@@ -770,11 +772,12 @@ func TestProcessMessage_TrackerCalls(t *testing.T) {
 
 	pool.processMessage(context.Background(), msg)
 
-	// Verify events: 1 session_started + 2 message_sent = 3 total
+	// Verify events: 1 session_started + 1 message_sent (los 2 textos del turno se coalescen
+	// en un solo envío) = 2 total
 	eventStore.mu.Lock()
 	defer eventStore.mu.Unlock()
-	if len(eventStore.insertedEvents) != 3 {
-		t.Errorf("expected 3 events (1 session_started + 2 message_sent), got %d", len(eventStore.insertedEvents))
+	if len(eventStore.insertedEvents) != 2 {
+		t.Errorf("expected 2 events (1 session_started + 1 message_sent coalescido), got %d", len(eventStore.insertedEvents))
 	}
 	if eventStore.insertedEvents[0].EventType != "session_started" {
 		t.Errorf("expected session_started as first event, got %s", eventStore.insertedEvents[0].EventType)
@@ -1118,12 +1121,13 @@ func TestSendMessage_SendError(t *testing.T) {
 func TestProcessMessage_SendMessageError_Continues(t *testing.T) {
 	sm := newMockSessionMgmt()
 	sender := &mockMessageSender{sendErr: errors.New("bird api down")}
+	// Par NO fusionable (interactivo primero) para seguir probando que el bucle continúa tras un error.
 	processor := &mockMessageProcessor{
 		processFn: func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error) {
 			return &statemachine.StateResult{
 				NextState: "MAIN_MENU",
 				Messages: []statemachine.OutboundMessage{
-					&statemachine.TextMessage{Text: "Msg 1"},
+					&statemachine.ListMessage{Body: "Msg 1", Title: "T", Sections: []statemachine.ListSection{{Title: "S", Rows: []statemachine.ListRow{{ID: "1", Title: "Op"}}}}},
 					&statemachine.TextMessage{Text: "Msg 2"},
 				},
 			}, nil

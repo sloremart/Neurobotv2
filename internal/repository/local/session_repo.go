@@ -209,6 +209,23 @@ func (r *SessionRepo) CompleteActiveByPhone(ctx context.Context, phone string) e
 	return nil
 }
 
+// LastPatientMessageAt devuelve el último mensaje DEL paciente en cualquier sesión del teléfono
+// (abierta o cerrada), o nil si nunca escribió. Es la referencia de la ventana de servicio de 24h
+// de WhatsApp: fuera de ella el texto libre se cobra pero no se entrega.
+func (r *SessionRepo) LastPatientMessageAt(ctx context.Context, phone string) (*time.Time, error) {
+	var ts sql.NullTime
+	err := r.db.QueryRowContext(ctx,
+		"SELECT MAX(last_patient_msg_at) FROM sessions WHERE phone_number = ?", phone).Scan(&ts)
+	if err != nil {
+		return nil, fmt.Errorf("last patient message at: %w", err)
+	}
+	if !ts.Valid {
+		return nil, nil
+	}
+	t := ts.Time
+	return &t, nil
+}
+
 // UpdateConversationIDByPhone actualiza SOLO la columna conversation_id de la sesión activa/escalada
 // del teléfono. Es un UPDATE de una columna (no reescribe la fila), así que es seguro sin el
 // phone-lock y NO puede pisar current_state ni la PII del paciente — cierra el lost-update que tenía
@@ -341,7 +358,7 @@ func (r *SessionRepo) MarkAbandoned(ctx context.Context, sessionID string) error
 // FindInactiveSessions returns active sessions idle for at least idleMinutes,
 // along with how many inactivity reminders have been sent.
 func (r *SessionRepo) FindInactiveSessions(ctx context.Context, idleMinutes int) ([]session.InactiveSession, error) {
-	query := `SELECT s.id, s.phone_number, COALESCE(s.conversation_id, ''),
+	query := `SELECT s.id, s.phone_number, COALESCE(s.conversation_id, ''), s.current_state,
 	          s.last_activity_at, COALESCE(sc.ctx_value, '0')
 	          FROM sessions s
 	          LEFT JOIN session_context sc ON sc.session_id = s.id AND sc.ctx_key = 'inactivity_reminders'
@@ -359,7 +376,7 @@ func (r *SessionRepo) FindInactiveSessions(ctx context.Context, idleMinutes int)
 	for rows.Next() {
 		var s session.InactiveSession
 		var remStr string
-		if err := rows.Scan(&s.ID, &s.PhoneNumber, &s.ConversationID, &s.LastActivity, &remStr); err != nil {
+		if err := rows.Scan(&s.ID, &s.PhoneNumber, &s.ConversationID, &s.CurrentState, &s.LastActivity, &remStr); err != nil {
 			return nil, fmt.Errorf("scan inactive session: %w", err)
 		}
 		fmt.Sscanf(remStr, "%d", &s.Reminders)

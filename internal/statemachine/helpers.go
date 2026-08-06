@@ -34,6 +34,11 @@ func SetMaxRetries(n int) {
 	}
 }
 
+// EscalationNoticeText es el aviso al paciente cuando una ruta escala SIN texto contextual propio.
+// Viaja en el StateResult (un solo mensaje por turno); el handler de escalación ya no hace el
+// envío directo redundante que duplicaba el aviso en las rutas que sí tienen texto.
+const EscalationNoticeText = "Te voy a conectar con un agente. Un momento por favor..."
+
 // ValidateWithRetry valida input del usuario con reintentos automáticos.
 // Retorna nil si el input es válido (caller debe procesarlo).
 // Retorna StateResult si hay error de validación o escalación por reintentos.
@@ -49,6 +54,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 		sess.RetryCount = 0
 		// Escalate to agent first; if agent unavailable, escalation handler falls back to FALLBACK_MENU
 		return NewResult(StateEscalateToAgent).
+			WithText(EscalationNoticeText).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"retries":    maxRetries,
@@ -111,6 +117,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 		sess.RetryCount = 0
 		// Escalate to agent first; if agent unavailable, escalation handler falls back to FALLBACK_MENU
 		return NewResult(StateEscalateToAgent).
+			WithText(EscalationNoticeText).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"last_input": loggedInput,
@@ -136,6 +143,7 @@ func RetryOrEscalate(sess *session.Session, errorMsg string) *StateResult {
 		sess.RetryCount = 0
 		// Escalate to agent first; if agent unavailable, escalation handler falls back to FALLBACK_MENU
 		return NewResult(StateEscalateToAgent).
+			WithText(EscalationNoticeText).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":   sess.CurrentState,
 				"retries": maxRetries,

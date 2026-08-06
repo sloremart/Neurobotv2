@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 
@@ -234,10 +235,18 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 				observability.EmitOpts{Phone: entry.PhoneNumber})
 			continue // otra corrida concurrente ya la reclamó
 		}
-		// Enviar; si falla, revertir a 'waiting' para que se reintente.
-		if !m.sendWaitingNotification(ctx, entry) {
-			if uerr := m.wlChecker.UpdateStatus(ctx, entry.ID, "waiting"); uerr != nil {
-				slog.Warn("wl_check: revert claim to waiting", "entry_id", entry.ID, "error", uerr)
+		// Enviar; si falla TRANSITORIO se revierte a 'waiting' (el siguiente ciclo reintenta).
+		// Un fallo PERMANENTE (4xx de Bird / identificador no contactable) queda 'unreachable':
+		// devolverlo a 'waiting' sería pagar un envío condenado en cada ciclo, para siempre.
+		if err := m.sendWaitingNotification(ctx, entry); err != nil {
+			status := "waiting"
+			if bird.IsPermanentSendError(err) || errors.Is(err, ErrSuppressedNoWhatsApp) {
+				status = "unreachable"
+				slog.Warn("wl_check: entrada no contactable (fallo permanente, sin reintentos)",
+					"entry_id", entry.ID, "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
+			}
+			if uerr := m.wlChecker.UpdateStatus(ctx, entry.ID, status); uerr != nil {
+				slog.Warn("wl_check: update status tras fallo de envio", "entry_id", entry.ID, "status", status, "error", uerr)
 			}
 			continue
 		}
@@ -305,9 +314,13 @@ func groupCupsFromEntry(entry domain.WaitingListEntry) []string {
 	return out
 }
 
+// errRegisterPendingFailed: el template salió pero el pending no se pudo almacenar (transitorio:
+// el caller revierte el claim para re-ofrecer con un pending rastreable).
+var errRegisterPendingFailed = errors.New("register pending failed")
+
 // sendWaitingNotification envía el template de lista de espera, registra el pending y loguea el
-// evento. Devuelve false si el envío falló (el caller revierte el claim).
-func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry domain.WaitingListEntry) bool {
+// evento. Devuelve el error del envío (el caller decide revertir o marcar unreachable según su clase).
+func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry domain.WaitingListEntry) error {
 	tmpl := bird.TemplateConfig{
 		ProjectID: m.cfg.BirdTemplateWaitingListProjectID,
 		VersionID: m.cfg.BirdTemplateWaitingListVersionID,
@@ -320,11 +333,25 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		},
 	}
 	trace := observability.TraceWaitingList(entry.ID)
+	// Número con fallos de entrega confirmados: el template se cobraría sin llegar. Fallo
+	// permanente → el caller marca la entrada 'unreachable' (fuera del pool diario).
+	if !m.Deliverable(ctx, entry.PhoneNumber) {
+		slog.Warn("wl_check: envío suprimido (entregas fallando)",
+			"phone", utils.MaskPhone(entry.PhoneNumber), "entry_id", entry.ID)
+		observability.Emit(trace, "lista_espera", "notify_failed",
+			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "suppressed_no_whatsapp"})
+		return ErrSuppressedNoWhatsApp
+	}
 	msgID, err := m.birdClient.SendTemplate(entry.PhoneNumber, tmpl)
 	if err != nil {
 		slog.Error("wl_check: send template", "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
-		observability.Emit(trace, "lista_espera", "notify_failed", observability.EmitOpts{Phone: entry.PhoneNumber})
-		return false
+		reason := ""
+		if bird.IsPermanentSendError(err) {
+			reason = "permanent"
+		}
+		observability.Emit(trace, "lista_espera", "notify_failed",
+			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: reason})
+		return err
 	}
 
 	convID := m.birdClient.GetCachedConversationID(entry.PhoneNumber)
@@ -333,7 +360,7 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 	}
 
 	// L12: si el pending NO se almacena (timeout del lock), la respuesta del paciente se perdería
-	// (HandleResponse no encontraría pending). Devolver false → el caller revierte el claim a
+	// (HandleResponse no encontraría pending). Error transitorio → el caller revierte el claim a
 	// 'waiting' para re-ofrecer la entrada con un pending rastreable.
 	//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado para el Upsert; se llama igual desde webhooks/scheduler).
 	if !m.RegisterPending(PendingNotification{
@@ -345,7 +372,7 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 	}) {
 		observability.Emit(trace, "lista_espera", "notify_failed",
 			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "register_pending_failed"})
-		return false
+		return errRegisterPendingFailed
 	}
 
 	if m.tracker != nil {
@@ -367,5 +394,5 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		"phone", utils.MaskPhone(entry.PhoneNumber),
 		"entry_id", entry.ID,
 		"cups_code", entry.CupsCode)
-	return true
+	return nil
 }

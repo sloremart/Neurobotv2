@@ -120,6 +120,10 @@ var catalog = map[string]stepSpec{
 	// que el handoff FALLÓ aunque nada lance excepción. Mismo trato que escalacion/escalation_no_channel,
 	// su equivalente exacto: terminal con outcome de error, para que deje de ser un fallo invisible.
 	"notif_recordatorio/escalation_no_conversation": {LvOutcome, "error", ""},
+	// suppressed_no_whatsapp: el número acumula >=2 fallos de ENTREGA confirmados por el webhook
+	// de Bird — el template se cobraría sin llegar. Terminal tipo bloqueo (decisión deliberada,
+	// no un fallo); el call center debe contactar al paciente por otra vía.
+	"notif_recordatorio/suppressed_no_whatsapp": {LvOutcome, "blocked", ""},
 
 	// Identificación (§3A) — trace sess:<id>
 	"identificacion/patient_lookup":  {LvMilestone, "ok", ""},
@@ -184,6 +188,10 @@ var catalog = map[string]stepSpec{
 	// Infra / transversal (§3A)
 	"infra/session_abandoned":  {LvOutcome, "info", ""}, // trace sess:<id>
 	"infra/phone_lock_timeout": {LvError, "error", ""},  // trace infra:phone_lock_timeout
+	// non_contactable_identifier: el identificador del contacto no es un teléfono E.164 (nombres del
+	// workspace de Bird); ningún envío por Channels puede entregársele. Terminal con error: el
+	// paciente NO recibe respuesta por ese canal y el origen debe corregirse en Bird.
+	"infra/non_contactable_identifier": {LvOutcome, "error", ""}, // trace sess:<id>, 1 vez por sesión
 
 	// Reconciliación de invariantes (§4) — anomalía de "mal comportamiento silencioso".
 	"invariante/anomaly": {LvError, "error", ""},

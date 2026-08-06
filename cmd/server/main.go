@@ -458,6 +458,13 @@ func main() {
 	// Webhook handler (con NotificationManager para postbacks proactivos + WAL inbox)
 	webhookHandler := api.NewWebhookHandler(birdClient, workerPool, notifyManager, cfg)
 	webhookHandler.SetInboxRepo(inboxRepo)
+	// Supresión de templates a números sin WhatsApp: el webhook outbound registra los fallos de
+	// entrega y los recordatorios/lista de espera consultan el contador antes de enviar.
+	deliveryRepo := localrepo.NewDeliveryRepo(localDB)
+	webhookHandler.SetDeliveryTracker(deliveryRepo)
+	if notifyManager != nil {
+		notifyManager.SetDeliverability(deliveryRepo)
+	}
 	safeGo("gather-cleanup", func() { webhookHandler.StartGatherCleanup(ctx) })
 
 	// Fase 13+14: Internal API endpoints (protegidos con API key)

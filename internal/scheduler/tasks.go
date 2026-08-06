@@ -218,6 +218,21 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			continue
 		}
 
+		// Supresión por fallos de entrega (>=2 consecutivos confirmados por el webhook): el
+		// template a un número sin WhatsApp se cobra y jamás llega. El call center debe llamarlo.
+		if t.NotifyManager != nil && !t.NotifyManager.Deliverable(ctx, phone) {
+			skipped++
+			slog.Warn("skip reminder - entregas de WhatsApp fallando (llamar al paciente)",
+				"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
+			if t.Tracker != nil {
+				t.Tracker.LogEvent(ctx, "", phone, "reminder_suppressed_no_whatsapp",
+					map[string]interface{}{"appointment_id": firstAppt.ID})
+			}
+			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
+				observability.EmitOpts{Phone: phone})
+			continue
+		}
+
 		proceduresText := buildReminderProcedures(ctx, group, t.ProcedureRepo)
 		if groupRequiresCreatinine(ctx, group, t.ProcedureRepo) {
 			proceduresText = appendCreatinineNotice(proceduresText)
@@ -276,7 +291,14 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			observability.EmitOpts{Phone: phone, RefID: msgID})
 
 		// par.8.1 #8: preparacion del examen (si el catalogo la tiene) como texto aparte.
-		t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		// Texto libre: WhatsApp solo lo entrega con la ventana de servicio abierta (el paciente
+		// escribio hace <24h). Cerrada = Bird cobra el envio y no llega; se omite — la preparacion
+		// completa viaja en la respuesta al confirmar (handleConfirmation).
+		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, phone) {
+			t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		} else {
+			slog.Info("reminder prep skipped: ventana WA cerrada", "phone", utils.MaskPhone(phone))
+		}
 
 		sent++
 
@@ -367,6 +389,15 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 			skipped++
 			continue
 		}
+		// Supresión por fallos de entrega confirmados (mismo gate que el recordatorio de día-antes).
+		if t.NotifyManager != nil && !t.NotifyManager.Deliverable(ctx, phone) {
+			skipped++
+			slog.Warn("skip same-day reminder - entregas de WhatsApp fallando",
+				"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
+			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
+				observability.EmitOpts{Phone: phone})
+			continue
+		}
 		// Dedup contra el recordatorio de las 07:00 (o una corrida horaria previa): si la cita ya fue
 		// notificada, no se reenvía. Ante error de consulta, fail-closed (mejor no molestar).
 		notified, err := t.NotifHistory.WasAppointmentNotified(ctx, firstAppt.ID)
@@ -431,7 +462,12 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "same_day_reminder_sent",
 			observability.EmitOpts{Phone: phone, RefID: msgID})
 
-		t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		// Mismo gate de ventana WA que el recordatorio de dia-antes (texto libre no entregable).
+		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, phone) {
+			t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		} else {
+			slog.Info("same-day prep skipped: ventana WA cerrada", "phone", utils.MaskPhone(phone))
+		}
 
 		sent++
 		if err := sleepWithContext(ctx, 2*time.Second); err != nil {

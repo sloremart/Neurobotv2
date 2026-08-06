@@ -57,6 +57,7 @@ type InactiveSession struct {
 	ID             string
 	PhoneNumber    string
 	ConversationID string
+	CurrentState   string // estado actual — decide si el recordatorio de inactividad vale el envío
 	LastActivity   time.Time
 	Reminders      int // number of inactivity reminders already sent
 }
