@@ -40,6 +40,44 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("bird api error: status %d, body: %s", e.Status, e.Body)
 }
 
+// ownMsgTTL: cuánto se recuerda el ID de un mensaje enviado por el propio cliente. Los eventos de
+// estado de un mensaje llegan en segundos-minutos; 2h cubre reintentos de webhook con holgura.
+const ownMsgTTL = 2 * time.Hour
+
+// rememberOwnMessage registra el ID de un mensaje que ESTE cliente envió. El webhook outbound
+// recibe tanto los mensajes del bot como los de agentes humanos del Inbox: un evento cuyo ID no
+// está aquí lo escribió un humano (base de la pausa automática por intervención de agente).
+func (c *Client) rememberOwnMessage(id string) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ownMsgs == nil {
+		c.ownMsgs = make(map[string]time.Time)
+	}
+	c.ownMsgs[id] = time.Now()
+	if len(c.ownMsgs) > 4096 { // barrido perezoso: solo cuando crece de más
+		cutoff := time.Now().Add(-ownMsgTTL)
+		for k, ts := range c.ownMsgs {
+			if ts.Before(cutoff) {
+				delete(c.ownMsgs, k)
+			}
+		}
+	}
+}
+
+// IsOwnMessage reporta si el ID corresponde a un mensaje enviado por este cliente (ventana ownMsgTTL).
+func (c *Client) IsOwnMessage(id string) bool {
+	if id == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ts, ok := c.ownMsgs[id]
+	return ok && time.Since(ts) < ownMsgTTL
+}
+
 // IsPermanentSendError reporta si un error de envío es definitivo: reintentarlo con el mismo
 // payload/destinatario va a fallar igual (y Bird cobra el intento). 408/429 son transitorios.
 func IsPermanentSendError(err error) bool {
@@ -134,6 +172,9 @@ type Client struct {
 	mu          sync.RWMutex
 	convCache   map[string]string
 	convCacheTS map[string]time.Time
+	// ownMsgs: IDs de mensajes enviados por ESTE cliente (TTL ownMsgTTL) — distingue en el
+	// webhook outbound los mensajes del bot de los de agentes humanos del Inbox.
+	ownMsgs map[string]time.Time
 }
 
 func NewClient(cfg *config.Config) *Client {
@@ -373,6 +414,7 @@ func (c *Client) sendToConversation(conversationID string, body interface{}, dra
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		slog.Debug("could not parse conversation response", "body", string(respBody))
 	}
+	c.rememberOwnMessage(result.ID)
 	return result.ID, nil
 }
 
@@ -2117,6 +2159,7 @@ func (c *Client) sendMessage(url string, payload interface{}, phone ...string) (
 		c.CacheConversationID(phone[0], result.ConversationID)
 	}
 
+	c.rememberOwnMessage(result.ID)
 	return result.ID, nil
 }
 
