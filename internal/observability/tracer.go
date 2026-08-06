@@ -68,7 +68,11 @@ var catalog = map[string]stepSpec{
 	"lista_espera/response_schedule": {LvMilestone, "ok", ""},
 	"lista_espera/declined":          {LvOutcome, "info", ""},
 	"lista_espera/booked":            {LvOutcome, "ok", "cita"},
-	"lista_espera/expired":           {LvOutcome, "info", ""},
+	// slot_released: se disparó el chequeo de lista de espera por una LIBERACIÓN de slot
+	// (cancelación con release). Terminal de un solo evento en su propia traza (slotrel:...) con
+	// attrs {cod_medi, agenda_id, notified} — denominador del KPI de recuperación de cupos.
+	"lista_espera/slot_released": {LvOutcome, "info", ""},
+	"lista_espera/expired":       {LvOutcome, "info", ""},
 
 	// Agendamiento (§3.2 / §3A) — trace sess:<id>
 	"agendar/ocr_ok":              {LvMilestone, "ok", ""},

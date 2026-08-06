@@ -82,6 +82,9 @@ type WaitingListCreator interface {
 	Create(ctx context.Context, entry *domain.WaitingListEntry) error
 	HasActiveForPatientAndCups(ctx context.Context, patientID, cupsCode string) (bool, error)
 	UpdateStatus(ctx context.Context, id, status string) error
+	// MarkScheduled sella la entrada 'scheduled' con la cita creada (vínculo permanente del KPI
+	// de recuperación de cupos).
+	MarkScheduled(ctx context.Context, id, appointmentID string) error
 	GetActiveByPatient(ctx context.Context, patientID string) ([]domain.WaitingListEntry, error)
 	FindByID(ctx context.Context, id string) (*domain.WaitingListEntry, error)
 }
@@ -1566,14 +1569,20 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				"waiting_list_id": wlID,
 				"appointment_id":  apptID,
 			})
-			// Marcar la entrada como 'scheduled' (sella resolved_at): sin esto, la efectividad y el
-			// tiempo-a-agendar de la lista de espera quedaban en ~0 con datos reales. Best-effort.
-			if err := waitingListRepo.UpdateStatus(ctx, wlID, "scheduled"); err != nil {
+			// Marcar la entrada como 'scheduled' CON la cita creada (vínculo permanente del KPI de
+			// recuperación de cupos; flow_events se purga a 45 días). Best-effort.
+			if err := waitingListRepo.MarkScheduled(ctx, wlID, apptID); err != nil {
 				slog.Warn("waiting list mark scheduled failed", "wl_id", wlID, "appt_id", apptID, "error", err)
 			}
 			// Cierra el recorrido de lista de espera en su propia traza (pivote por ref cita_id).
+			// Reason = origen de la notificación (slot_release | daily_check): entra al rollup diario
+			// y permite al dashboard separar la efectividad de cada mecanismo tras la purga de crudos.
 			observability.Emit(observability.TraceWaitingList(wlID), "lista_espera", "booked",
-				observability.EmitOpts{Phone: sess.PhoneNumber, RefID: apptID})
+				observability.EmitOpts{
+					Phone:  sess.PhoneNumber,
+					RefID:  apptID,
+					Reason: sess.GetContext("waiting_list_trigger"),
+				})
 		}
 
 		return result, nil

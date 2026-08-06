@@ -612,8 +612,17 @@ type MockWaitingListCreator struct {
 	CreateFn                     func(ctx context.Context, entry *domain.WaitingListEntry) error
 	HasActiveForPatientAndCupsFn func(ctx context.Context, patientID, cupsCode string) (bool, error)
 	UpdateStatusFn               func(ctx context.Context, id, status string) error
+	MarkScheduledFn              func(ctx context.Context, id, appointmentID string) error
 	GetActiveByPatientFn         func(ctx context.Context, patientID string) ([]domain.WaitingListEntry, error)
 	FindByIDFn                   func(ctx context.Context, id string) (*domain.WaitingListEntry, error)
+}
+
+// MarkScheduled registra/simula el sellado 'scheduled' con la cita creada.
+func (m *MockWaitingListCreator) MarkScheduled(ctx context.Context, id, appointmentID string) error {
+	if m.MarkScheduledFn != nil {
+		return m.MarkScheduledFn(ctx, id, appointmentID)
+	}
+	return nil
 }
 
 // GetActiveByPatient simula las entradas activas de un paciente en lista de espera.
