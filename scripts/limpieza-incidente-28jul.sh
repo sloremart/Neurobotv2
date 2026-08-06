@@ -18,12 +18,28 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Instancia única (mkdir atómico — flock no existe en Git Bash): dos corridas simultáneas compiten
+# por los locks de InnoDB y la segunda muere con 'Lock wait timeout' a mitad (comprobado en el
+# ensayo). Si el script muere con kill -9 y el candado queda huérfano: rmdir el LOCKDIR a mano.
+# NO editar este archivo mientras una instancia corre: bash lo lee por offset durante la ejecución.
+LOCKDIR="${TMPDIR:-/tmp}/limpieza-incidente-28jul.lock.d"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  echo "ERROR: otra instancia ya está corriendo (o candado huérfano: rmdir $LOCKDIR)." >&2
+  exit 3
+fi
+trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
+
 ENV_FILE="${ENV_FILE:-.env}"
 CONTAINER="${DB_CONTAINER:-neuro_bot_db}"
-getenv(){ grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | sed -E 's/^[^=]+=//; s/[[:space:]]+#.*$//; s/[[:space:]]*$//'; }
+# `|| true`: con `set -e`, un grep sin coincidencia (variable ausente del .env) abortaría el script
+# en silencio en vez de caer al default.
+getenv(){ grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | sed -E 's/^[^=]+=//; s/[[:space:]]+#.*$//; s/[[:space:]]*$//' || true; }
 DB_NAME="$(getenv DB_DATABASE)"; DB_NAME="${DB_NAME:-neuro_bot}"
-DB_ROOT="$(getenv DB_ROOT_PASSWORD)"
-[ -z "$DB_ROOT" ] && { echo "ERROR: no pude leer DB_ROOT_PASSWORD de $ENV_FILE" >&2; exit 1; }
+# Contraseña de root: la VERDAD es el MYSQL_ROOT_PASSWORD del propio contenedor (mismo método que
+# el backup de prod documentado); fallback al DB_ROOT_PASSWORD del .env (entorno local).
+DB_ROOT="$(docker exec "$CONTAINER" sh -c 'printf %s "$MYSQL_ROOT_PASSWORD"' 2>/dev/null || true)"
+[ -z "$DB_ROOT" ] && DB_ROOT="$(getenv DB_ROOT_PASSWORD)"
+[ -z "$DB_ROOT" ] && { echo "ERROR: sin contraseña de root (ni contenedor $CONTAINER ni $ENV_FILE)" >&2; exit 1; }
 
 Q(){ docker exec -e MYSQL_PWD="$DB_ROOT" "$CONTAINER" mysql -uroot -N -e "$1" "$DB_NAME"; }
 
@@ -57,11 +73,14 @@ else
 fi
 
 # ── B) Traza-bomba: ~10.32M ai_recovery_started (conservar el primero) ──────────────────────
+# Cualquier conteo ENTRE 2 y el esperado = una corrida anterior quedó a medias (solo este script
+# borra estas filas) → se REANUDA. Un conteo MAYOR al esperado sí es anómalo → abortar.
 NB=$(Q "SELECT COUNT(*) FROM flow_events WHERE trace_id='$TR_BOMBA' AND step='ai_recovery_started';")
 echo ">> B) bomba: ai_recovery_started=$NB (esperado 10319979; limpio 1)"
 if [ "$NB" -le 1 ]; then
   echo "   B) ya está limpia — se salta."
-elif [ "$NB" -eq 10319979 ]; then
+elif [ "$NB" -le 10319979 ]; then
+  [ "$NB" -lt 10319979 ] && echo "   B) conteo parcial: REANUDANDO un borrado interrumpido ($((10319979-NB)) ya borradas)."
   if [ $APPLY -eq 1 ]; then
     KEEP=$(Q "SELECT MIN(id) FROM flow_events WHERE trace_id='$TR_BOMBA' AND step='ai_recovery_started';")
     START=$(date +%s); TOTAL=0
