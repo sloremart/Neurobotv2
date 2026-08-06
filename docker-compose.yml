@@ -99,6 +99,11 @@ services:
       - "bot:${PORT:-8080}"
       - "--hostname=${NGROK_HOSTNAME:-app.colibrixa.com}"
       - "--log=stdout"
+      # Sin buffer de inspección (UI :4040): guarda requests/responses EN MEMORIA y con el volumen
+      # de webhooks (5x tras la suscripción de estados de entrega, 06-ago) provocaba OOM-kills
+      # recurrentes del contenedor (límite 128M) = micro-caídas del ingreso de webhooks.
+      # El healthcheck usa /api/tunnels, que sigue disponible con inspect apagado.
+      - "--inspect=false"
     ports:
       - "14041:4040"
     healthcheck:
@@ -117,7 +122,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 128M
+          # 256M (antes 128M): colchón para el crecimiento de tráfico de webhooks; la causa raíz
+          # del OOM era el buffer de inspección, apagado arriba con --inspect=false.
+          memory: 256M
           cpus: '0.5'
 
   watcher:
