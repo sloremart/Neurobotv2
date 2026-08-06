@@ -26,6 +26,7 @@ type mockRepo struct {
 	markEscalatedFn      func(ctx context.Context, sessionID, teamID string) error
 	resumeSessionFn      func(ctx context.Context, sessionID, newState string, timeoutMinutes int) error
 	findEscalatedFn      func(ctx context.Context) ([]EscalatedSession, error)
+	findInactiveFn       func(ctx context.Context, idleMinutes int) ([]InactiveSession, error)
 	touchPatientFn       func(ctx context.Context, sessionID string, expiresAt time.Time) error
 	touchAgentFn         func(ctx context.Context, phone string) error
 	incrementRemFn       func(ctx context.Context, sessionID string) error
@@ -83,6 +84,9 @@ func (r *mockRepo) UpdateConversationIDByPhone(ctx context.Context, phone, conve
 }
 
 func (r *mockRepo) FindInactiveSessions(ctx context.Context, idleMinutes int) ([]InactiveSession, error) {
+	if r.findInactiveFn != nil {
+		return r.findInactiveFn(ctx, idleMinutes)
+	}
 	return nil, nil
 }
 

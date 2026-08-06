@@ -358,7 +358,7 @@ func (r *SessionRepo) MarkAbandoned(ctx context.Context, sessionID string) error
 // FindInactiveSessions returns active sessions idle for at least idleMinutes,
 // along with how many inactivity reminders have been sent.
 func (r *SessionRepo) FindInactiveSessions(ctx context.Context, idleMinutes int) ([]session.InactiveSession, error) {
-	query := `SELECT s.id, s.phone_number, COALESCE(s.conversation_id, ''),
+	query := `SELECT s.id, s.phone_number, COALESCE(s.conversation_id, ''), s.current_state,
 	          s.last_activity_at, COALESCE(sc.ctx_value, '0')
 	          FROM sessions s
 	          LEFT JOIN session_context sc ON sc.session_id = s.id AND sc.ctx_key = 'inactivity_reminders'
@@ -376,7 +376,7 @@ func (r *SessionRepo) FindInactiveSessions(ctx context.Context, idleMinutes int)
 	for rows.Next() {
 		var s session.InactiveSession
 		var remStr string
-		if err := rows.Scan(&s.ID, &s.PhoneNumber, &s.ConversationID, &s.LastActivity, &remStr); err != nil {
+		if err := rows.Scan(&s.ID, &s.PhoneNumber, &s.ConversationID, &s.CurrentState, &s.LastActivity, &remStr); err != nil {
 			return nil, fmt.Errorf("scan inactive session: %w", err)
 		}
 		fmt.Sscanf(remStr, "%d", &s.Reminders)

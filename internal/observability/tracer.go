@@ -120,6 +120,10 @@ var catalog = map[string]stepSpec{
 	// que el handoff FALLÓ aunque nada lance excepción. Mismo trato que escalacion/escalation_no_channel,
 	// su equivalente exacto: terminal con outcome de error, para que deje de ser un fallo invisible.
 	"notif_recordatorio/escalation_no_conversation": {LvOutcome, "error", ""},
+	// suppressed_no_whatsapp: el número acumula >=2 fallos de ENTREGA confirmados por el webhook
+	// de Bird — el template se cobraría sin llegar. Terminal tipo bloqueo (decisión deliberada,
+	// no un fallo); el call center debe contactar al paciente por otra vía.
+	"notif_recordatorio/suppressed_no_whatsapp": {LvOutcome, "blocked", ""},
 
 	// Identificación (§3A) — trace sess:<id>
 	"identificacion/patient_lookup":  {LvMilestone, "ok", ""},

@@ -415,6 +415,17 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 				})
 
 		} else if elapsedMin >= deps.ReminderMin && s.Reminders == 0 {
+			// El recordatorio solo vale el envío si el paciente estaba a mitad de un trámite. El 52%
+			// de los abandonos mueren en el MENÚ (vieron las opciones y se fueron): recordarles es un
+			// mensaje cobrado con valor ~cero. Se marca igual para no reevaluar cada minuto; el cierre
+			// por inactividad no cambia.
+			if !inactivityReminderWorthIt(s.CurrentState) {
+				if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
+					slog.Error("set reminder failed", "session_id", s.ID, "error", err)
+				}
+				slog.Debug("inactivity reminder skipped (sin progreso)", "session_id", s.ID, "state", s.CurrentState)
+				continue
+			}
 			// Single reminder with close warning
 			closeIn := deps.CloseMin - deps.ReminderMin
 			deps.BirdClient.SendText(s.PhoneNumber, s.ConversationID,
@@ -425,6 +436,27 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 			slog.Debug("inactivity reminder sent", "session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
 		}
 	}
+}
+
+// inactivityReminderSkipStates: estados SIN trámite iniciado — el paciente solo vio un menú y no
+// respondió; el "¿Sigues ahí?" ahí es un envío cobrado con valor ~cero. Los literales corresponden
+// a constantes de statemachine (no importable aquí: crearía ciclo); el test
+// TestInactivitySkipStates_MatchStateMachine en statemachine los mantiene sincronizados.
+var inactivityReminderSkipStates = map[string]bool{
+	"CHECK_BUSINESS_HOURS": true,
+	"GREETING":             true,
+	"MAIN_MENU":            true,
+	"OUT_OF_HOURS_MENU":    true,
+	"OUT_OF_HOURS":         true,
+	"FALLBACK_MENU":        true,
+	"SHOW_HELP":            true,
+}
+
+// InactivityReminderSkipStates expone el set para el test de sincronización en statemachine.
+func InactivityReminderSkipStates() map[string]bool { return inactivityReminderSkipStates }
+
+func inactivityReminderWorthIt(state string) bool {
+	return !inactivityReminderSkipStates[state]
 }
 
 // checkEscalatedSessions, por cada chat escalado, decide UNA de dos cosas:

@@ -162,6 +162,7 @@ type NotificationManager struct {
 	callTracker     CallTracker
 	tracker         EventLogger
 	escalations     EscalationRecorder
+	deliverability  DeliverabilityChecker // supresión de templates a números sin WhatsApp (nil = off)
 
 	// Cambio 13: real-time WL notification on cancellation
 	slotSearcher   SlotSearcher

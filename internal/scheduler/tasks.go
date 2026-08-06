@@ -218,6 +218,21 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			continue
 		}
 
+		// Supresión por fallos de entrega (>=2 consecutivos confirmados por el webhook): el
+		// template a un número sin WhatsApp se cobra y jamás llega. El call center debe llamarlo.
+		if t.NotifyManager != nil && !t.NotifyManager.Deliverable(ctx, phone) {
+			skipped++
+			slog.Warn("skip reminder - entregas de WhatsApp fallando (llamar al paciente)",
+				"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
+			if t.Tracker != nil {
+				t.Tracker.LogEvent(ctx, "", phone, "reminder_suppressed_no_whatsapp",
+					map[string]interface{}{"appointment_id": firstAppt.ID})
+			}
+			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
+				observability.EmitOpts{Phone: phone})
+			continue
+		}
+
 		proceduresText := buildReminderProcedures(ctx, group, t.ProcedureRepo)
 		if groupRequiresCreatinine(ctx, group, t.ProcedureRepo) {
 			proceduresText = appendCreatinineNotice(proceduresText)
@@ -372,6 +387,15 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		// Ya hay un pending vivo para este teléfono (p.ej. otro recordatorio en curso) → no duplicar.
 		if t.NotifyManager != nil && t.NotifyManager.HasPending(phone) {
 			skipped++
+			continue
+		}
+		// Supresión por fallos de entrega confirmados (mismo gate que el recordatorio de día-antes).
+		if t.NotifyManager != nil && !t.NotifyManager.Deliverable(ctx, phone) {
+			skipped++
+			slog.Warn("skip same-day reminder - entregas de WhatsApp fallando",
+				"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
+			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
+				observability.EmitOpts{Phone: phone})
 			continue
 		}
 		// Dedup contra el recordatorio de las 07:00 (o una corrida horaria previa): si la cita ya fue

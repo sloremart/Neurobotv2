@@ -50,14 +50,28 @@ type InboxPersister interface {
 }
 
 type WebhookHandler struct {
-	birdClient    *bird.Client
-	workerPool    *worker.MessageWorkerPool
-	notifyManager *notifications.NotificationManager
-	cfg           *config.Config
-	inboxRepo     InboxPersister // WAL for crash recovery (optional)
+	birdClient      *bird.Client
+	workerPool      *worker.MessageWorkerPool
+	notifyManager   *notifications.NotificationManager
+	cfg             *config.Config
+	inboxRepo       InboxPersister  // WAL for crash recovery (optional)
+	deliveryTracker DeliveryTracker // fallos de entrega WA por teléfono (optional)
 	// voiceGatherCmds maps callId → gatherEntry so we can query the DTMF result
 	// from GET /calls/{callId}/commands/{commandId} when the call completes.
 	voiceGatherCmds sync.Map
+}
+
+// DeliveryTracker registra el resultado de ENTREGA de los envíos salientes (webhook outbound).
+// Es la base de la supresión de templates a números sin WhatsApp: cada envío se cobra aunque
+// WhatsApp nunca lo entregue.
+type DeliveryTracker interface {
+	RecordFailure(ctx context.Context, phone, status string) error
+	RecordSuccess(ctx context.Context, phone string) error
+}
+
+// SetDeliveryTracker injects the delivery-failure tracker (optional).
+func (h *WebhookHandler) SetDeliveryTracker(t DeliveryTracker) {
+	h.deliveryTracker = t
 }
 
 type gatherEntry struct {
@@ -267,6 +281,11 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 		"body_type", event.Payload.Body.Type,
 	)
 
+	// Registrar el estado de ENTREGA (no los intermedios): delivery_failed acumula el contador
+	// del teléfono; delivered/read lo resetea. Con >=2 fallos consecutivos, los templates
+	// programados a ese número se suprimen (se cobraban sin llegar).
+	h.recordDeliveryStatus(phone, event.Payload.Status)
+
 	// Cache conversationId from ALL outbound messages and persist to DB
 	if event.Payload.ConversationID != "" && phone != "" {
 		h.birdClient.CacheConversationID(phone, event.Payload.ConversationID)
@@ -313,6 +332,28 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 	)
 
 	h.workerPool.EnqueueAgentCommand(cmd)
+}
+
+// recordDeliveryStatus registra fallos/éxitos de ENTREGA del webhook outbound. Solo estados
+// finales; los intermedios (accepted/sent) no dicen nada de si el número tiene WhatsApp.
+func (h *WebhookHandler) recordDeliveryStatus(phone, status string) {
+	if h.deliveryTracker == nil || phone == "" || status == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	switch strings.ToLower(status) {
+	case "delivery_failed", "failed", "rejected", "undeliverable", "sending_failed":
+		if err := h.deliveryTracker.RecordFailure(ctx, phone, status); err != nil {
+			slog.Warn("record delivery failure", "phone", utils.MaskPhone(phone), "error", err)
+		} else {
+			slog.Info("delivery failure recorded", "phone", utils.MaskPhone(phone), "status", status)
+		}
+	case "delivered", "read":
+		if err := h.deliveryTracker.RecordSuccess(ctx, phone); err != nil {
+			slog.Warn("record delivery success", "phone", utils.MaskPhone(phone), "error", err)
+		}
+	}
 }
 
 // extractConversationPhone extracts the phone from conversation participants.

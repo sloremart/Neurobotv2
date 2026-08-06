@@ -240,7 +240,7 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 		// devolverlo a 'waiting' sería pagar un envío condenado en cada ciclo, para siempre.
 		if err := m.sendWaitingNotification(ctx, entry); err != nil {
 			status := "waiting"
-			if bird.IsPermanentSendError(err) {
+			if bird.IsPermanentSendError(err) || errors.Is(err, ErrSuppressedNoWhatsApp) {
 				status = "unreachable"
 				slog.Warn("wl_check: entrada no contactable (fallo permanente, sin reintentos)",
 					"entry_id", entry.ID, "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
@@ -333,6 +333,15 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		},
 	}
 	trace := observability.TraceWaitingList(entry.ID)
+	// Número con fallos de entrega confirmados: el template se cobraría sin llegar. Fallo
+	// permanente → el caller marca la entrada 'unreachable' (fuera del pool diario).
+	if !m.Deliverable(ctx, entry.PhoneNumber) {
+		slog.Warn("wl_check: envío suprimido (entregas fallando)",
+			"phone", utils.MaskPhone(entry.PhoneNumber), "entry_id", entry.ID)
+		observability.Emit(trace, "lista_espera", "notify_failed",
+			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "suppressed_no_whatsapp"})
+		return ErrSuppressedNoWhatsApp
+	}
 	msgID, err := m.birdClient.SendTemplate(entry.PhoneNumber, tmpl)
 	if err != nil {
 		slog.Error("wl_check: send template", "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)

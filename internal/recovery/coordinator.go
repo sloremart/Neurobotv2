@@ -160,7 +160,7 @@ func (c *Coordinator) Handle(ctx context.Context, sess *session.Session, msg bir
 		// los flags.
 		esc := c.human.Try(ctx, Request{BlockedState: blockedState})
 		c.emit(sess, blockedState, "ai_failed", esc.Reason, res.Usage)
-		return sm.NewResult(sm.StateEscalateToAgent), true
+		return sm.NewResult(sm.StateEscalateToAgent).WithText(sm.EscalationNoticeText), true
 	}
 	// Aún hay presupuesto: segundo mensaje aclaratorio.
 	c.emit(sess, blockedState, "ai_clarified", res.Reason, res.Usage)

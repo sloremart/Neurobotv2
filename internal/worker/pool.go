@@ -1174,6 +1174,10 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 
 // sendAndSave sends result messages and persists state (shared between processMessage and agent commands).
 func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Session, phone string, result *statemachine.StateResult) {
+	// Coalescer: los mensajes acumulados del turno (auto-chain: texto de transición + prompt del
+	// siguiente estado) se fusionan en el mínimo de envíos — Bird cobra cada uno por separado.
+	result.Messages = statemachine.CoalesceMessages(result.Messages)
+
 	// Send messages — route via Conversations API when conversationID is available.
 	// Add a short delay between consecutive messages so WhatsApp preserves order
 	// (separate API calls have no delivery-order guarantee).
