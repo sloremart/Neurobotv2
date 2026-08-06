@@ -473,3 +473,34 @@ func nullFloat(f float64) sql.NullFloat64 {
 func nullBool(b bool) sql.NullBool {
 	return sql.NullBool{Bool: b, Valid: true}
 }
+
+// CountWLBookings cuenta cuántos de los IDs de cita dados nacieron de la lista de espera. Fuente
+// doble: waiting_list.appointment_id (vínculo permanente, migración 039) UNION flow_events
+// lista_espera/booked ref_id (puente para las citas anteriores a la columna; crudos con retención
+// de 45 días). Es el numerador "re-llenados vía lista de espera" del KPI de recuperación de cupos.
+func (r *WaitingListRepo) CountWLBookings(ctx context.Context, apptIDs []string) (int, error) {
+	if len(apptIDs) == 0 {
+		return 0, nil
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(apptIDs)), ",")
+	args := make([]interface{}, 0, len(apptIDs)*2)
+	for _, id := range apptIDs {
+		args = append(args, id)
+	}
+	for _, id := range apptIDs {
+		args = append(args, id)
+	}
+	var n int
+	err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+		    SELECT appointment_id AS id FROM waiting_list
+		    WHERE appointment_id IS NOT NULL AND appointment_id IN (%s)
+		    UNION
+		    SELECT ref_id FROM flow_events
+		    WHERE flow = 'lista_espera' AND step = 'booked' AND ref_id IN (%s)
+		) x`, ph, ph), args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count wl bookings: %w", err)
+	}
+	return n, nil
+}

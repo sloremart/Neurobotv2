@@ -62,3 +62,20 @@ type BotAppointmentCup struct {
 	Cups    string `json:"cups"`
 	Fecha   string `json:"fecha"` // YYYY-MM-DD (fecha de la cita)
 }
+
+// SlotRecoveryDay es el agregado por día (fecha de la CITA) del KPI "recuperación de cupos
+// cancelados": cuántos slots con cita quedaron cancelados ese día y cuántos de esos se volvieron
+// a ocupar con una cita nueva (mismo médico+fecha+hora, creada después).
+type SlotRecoveryDay struct {
+	Dia        string `json:"dia"` // YYYY-MM-DD (fecha de la cita/slot)
+	Canceladas int    `json:"canceladas"`
+	Rellenadas int    `json:"rellenadas"`
+}
+
+// SlotRecoveryData es el resultado SIESA del KPI: la serie por día y los IDs de las citas que
+// RE-OCUPARON un slot cancelado — el caller los cruza con la BD local para saber cuáles nacieron
+// de la lista de espera (waiting_list.appointment_id / flow_events lista_espera/booked).
+type SlotRecoveryData struct {
+	PorDia        []SlotRecoveryDay `json:"por_dia"`
+	RefillCitaIDs []string          `json:"-"`
+}

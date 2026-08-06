@@ -402,3 +402,79 @@ func (r *AnalyticsRepo) BotAppointmentsWithCups(ctx context.Context, botCedula s
 	r.store(key, out)
 	return out, nil
 }
+
+// SlotRecovery calcula el KPI "recuperación de cupos cancelados" sobre los últimos days días (por
+// fecha de la CITA): slots cuya cita quedó cancelada (estado='C') y cuántos se RE-OCUPARON con una
+// cita nueva sobre el mismo (médico, fecha, hora, meridiano) creada después. Devuelve además los
+// IDs de las citas que re-ocuparon, para que el caller los cruce con la lista de espera local.
+// Mismas reglas que el resto del repo: NOLOCK, agregación en servidor, rango sobre columna
+// indexada, MAXDOP 1, cache TTL.
+func (r *AnalyticsRepo) SlotRecovery(ctx context.Context, days int) (domain.SlotRecoveryData, error) {
+	key := fmt.Sprintf("slotrec|%d", days)
+	if v, ok := r.cached(key); ok {
+		return v.(domain.SlotRecoveryData), nil
+	}
+
+	var out domain.SlotRecoveryData
+	// Serie por día. La correlación "re-ocupado" exige igualdad exacta de slot; el par de citas se
+	// compara por fecha_solicitud (la nueva se creó después o al tiempo).
+	rows, err := r.db.QueryContext(ctx, `
+		WITH canc AS (
+		    SELECT c1.fecha, refill = CASE WHEN EXISTS (
+		            SELECT 1 FROM citas c2 WITH (NOLOCK)
+		            WHERE c2.cod_medi = c1.cod_medi AND c2.fecha = c1.fecha
+		              AND c2.hora = c1.hora AND c2.meridiano = c1.meridiano
+		              AND c2.estado <> 'C' AND c2.id <> c1.id
+		              AND c2.fecha_solicitud >= c1.fecha_solicitud) THEN 1 ELSE 0 END
+		    FROM citas c1 WITH (NOLOCK)
+		    WHERE c1.estado = 'C' AND c1.fecha >= DATEADD(DAY, -@p1, CAST(GETDATE() AS DATE))
+		)
+		SELECT CONVERT(VARCHAR(10), fecha, 23) AS dia, COUNT(*) AS canceladas, SUM(refill) AS rellenadas
+		FROM canc GROUP BY CONVERT(VARCHAR(10), fecha, 23)
+		ORDER BY dia
+		OPTION (MAXDOP 1)`, days)
+	if err != nil {
+		return out, fmt.Errorf("siesa slot recovery serie: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var d domain.SlotRecoveryDay
+		if err := rows.Scan(&d.Dia, &d.Canceladas, &d.Rellenadas); err != nil {
+			return out, fmt.Errorf("siesa slot recovery scan: %w", err)
+		}
+		out.PorDia = append(out.PorDia, d)
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("siesa slot recovery rows: %w", err)
+	}
+
+	// IDs de las citas que re-ocuparon un slot cancelado (decenas-cientos por ventana): el cruce
+	// con la lista de espera local decide cuáles nacieron de una notificación WL.
+	idRows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT c2.id
+		FROM citas c1 WITH (NOLOCK)
+		JOIN citas c2 WITH (NOLOCK)
+		  ON c2.cod_medi = c1.cod_medi AND c2.fecha = c1.fecha
+		 AND c2.hora = c1.hora AND c2.meridiano = c1.meridiano
+		 AND c2.estado <> 'C' AND c2.id <> c1.id
+		 AND c2.fecha_solicitud >= c1.fecha_solicitud
+		WHERE c1.estado = 'C' AND c1.fecha >= DATEADD(DAY, -@p1, CAST(GETDATE() AS DATE))
+		OPTION (MAXDOP 1)`, days)
+	if err != nil {
+		return out, fmt.Errorf("siesa slot recovery ids: %w", err)
+	}
+	defer func() { _ = idRows.Close() }()
+	for idRows.Next() {
+		var id string
+		if err := idRows.Scan(&id); err != nil {
+			return out, fmt.Errorf("siesa slot recovery id scan: %w", err)
+		}
+		out.RefillCitaIDs = append(out.RefillCitaIDs, id)
+	}
+	if err := idRows.Err(); err != nil {
+		return out, fmt.Errorf("siesa slot recovery id rows: %w", err)
+	}
+
+	r.store(key, out)
+	return out, nil
+}

@@ -205,6 +205,14 @@ type mockWaitingListReader struct {
 	getDistinctCupsFn  func(ctx context.Context) ([]string, error)
 	getWaitingByCupsFn func(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
 	listFn             func(ctx context.Context, filters domain.WaitingListFilters, page, pageSize int) ([]domain.WaitingListEntry, int, error)
+	countWLBookingsFn  func(ctx context.Context, apptIDs []string) (int, error)
+}
+
+func (m *mockWaitingListReader) CountWLBookings(ctx context.Context, apptIDs []string) (int, error) {
+	if m.countWLBookingsFn != nil {
+		return m.countWLBookingsFn(ctx, apptIDs)
+	}
+	return 0, nil
 }
 
 func (m *mockWaitingListReader) GetDistinctWaitingCups(ctx context.Context) ([]string, error) {
@@ -667,6 +675,14 @@ type mockSiesaAnalyticsReader struct {
 	botAppointmentsFn func(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
 	citasEstadoFn     func(ctx context.Context, from, to string) ([]domain.AppointmentStateRow, error)
 	noShowFn          func(ctx context.Context, from, to string) ([]domain.NoShowRow, error)
+	slotRecoveryFn    func(ctx context.Context, days int) (domain.SlotRecoveryData, error)
+}
+
+func (m *mockSiesaAnalyticsReader) SlotRecovery(ctx context.Context, days int) (domain.SlotRecoveryData, error) {
+	if m.slotRecoveryFn != nil {
+		return m.slotRecoveryFn(ctx, days)
+	}
+	return domain.SlotRecoveryData{}, nil
 }
 
 func (m *mockSiesaAnalyticsReader) Occupancy(_ context.Context, _ int) ([]domain.OccupancyRow, error) {
