@@ -328,6 +328,17 @@ func (r *WaitingListRepo) UpdateStatus(ctx context.Context, id, status string) e
 	return nil
 }
 
+// MarkScheduled sella la entrada como 'scheduled' CON la cita creada — el vínculo permanente
+// lista-de-espera→cita del KPI de recuperación de cupos (flow_events se purga a 45 días).
+func (r *WaitingListRepo) MarkScheduled(ctx context.Context, id, appointmentID string) error {
+	query := "UPDATE waiting_list SET status = 'scheduled', appointment_id = ?, resolved_at = NOW(), updated_at = NOW() WHERE id = ?"
+	_, err := r.db.ExecContext(ctx, query, appointmentID, id)
+	if err != nil {
+		return fmt.Errorf("mark waiting list scheduled: %w", err)
+	}
+	return nil
+}
+
 // MarkNotified marks an entry as notified with timestamp.
 // MarkNotified reclama la entrada para notificar: la marca 'notified' SOLO si sigue en 'waiting'
 // (claim-then-send). Devuelve true si ESTA llamada la reclamó (RowsAffected==1); false si otra

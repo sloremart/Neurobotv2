@@ -24,10 +24,14 @@ import (
 
 // PendingNotification tracks a proactive notification awaiting response.
 type PendingNotification struct {
-	Type           string // "confirmation", "reschedule", "cancellation", "waiting_list"
-	Phone          string
-	AppointmentID  string
-	WaitingListID  string // only for waiting_list type
+	Type          string // "confirmation", "reschedule", "cancellation", "waiting_list"
+	Phone         string
+	AppointmentID string
+	WaitingListID string // only for waiting_list type
+	// WLTrigger: origen de la notificación WL (WLTriggerSlotRelease | WLTriggerDailyCheck) — viaja
+	// al contexto de la sesión y al reason de lista_espera/booked (KPI recuperación de cupos).
+	// No se persiste: tras un reinicio, el booked de un pending restaurado queda sin reason (edge menor).
+	WLTrigger      string
 	BirdMessageID  string
 	ConversationID string
 	CallID         string // Bird IVR call ID (set after PlaceCall, persisted for restart recovery)

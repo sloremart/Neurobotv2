@@ -4,14 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
+)
+
+// Origen de una notificación de lista de espera (KPI recuperación de cupos cancelados). Viaja como
+// `reason` en lista_espera/notified y booked (entra al rollup diario → sobrevive la purga de crudos)
+// y como WLTrigger en el pending → contexto de sesión.
+const (
+	WLTriggerDailyCheck  = "daily_check"  // tarea diaria 06:00 (y chequeos manuales por CUP)
+	WLTriggerSlotRelease = "slot_release" // disparo en tiempo real al liberarse un slot por cancelación
 )
 
 // CheckWaitingListForCups empareja la oferta de cupos disponibles para un CUP contra la demanda de
@@ -50,7 +60,7 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 		return 0
 	}
 
-	notified := m.notifyWaitingEntries(ctx, entries, remaining)
+	notified := m.notifyWaitingEntries(ctx, entries, remaining, WLTriggerDailyCheck)
 	if notified > 0 {
 		slog.Info("wl_check: notifications sent", "cups_code", cupsCode, "notified", notified)
 	}
@@ -114,11 +124,18 @@ func (m *NotificationManager) CheckWaitingListForSlot(ctx context.Context, codMe
 		return 0
 	}
 
-	notified := m.notifyWaitingEntries(ctx, entries, remaining)
+	notified := m.notifyWaitingEntries(ctx, entries, remaining, WLTriggerSlotRelease)
 	if notified > 0 {
 		slog.Info("wl_slot: notifications sent",
 			"cod_medi", codMedi, "agenda_id", agendaID, "eligible_cups", len(eligible), "notified", notified)
 	}
+	// KPI recuperación de cupos: registrar el disparo por liberación (incluye los que notificaron 0,
+	// p.ej. lista vacía) para tener el denominador "liberaciones que dispararon chequeo". Terminal
+	// de un solo evento (outcome info): no deja trazas "estancadas" en la auditoría.
+	observability.Emit(fmt.Sprintf("slotrel:%d:%d:%d", codMedi, agendaID, time.Now().UnixMilli()),
+		"lista_espera", "slot_released", observability.EmitOpts{
+			Attrs: map[string]interface{}{"cod_medi": codMedi, "agenda_id": agendaID, "notified": notified},
+		})
 	return notified
 }
 
@@ -162,7 +179,7 @@ func entryQueryKey(e domain.WaitingListEntry) string {
 // Auditoría queries P2: hasta 200 entradas por corrida y muchas comparten CUP y restricciones →
 // las consultas idénticas (slots y cita-futura) se MEMOIZAN dentro de la corrida. Es seguro:
 // notificar no reserva cupos, así que el resultado de la misma consulta no cambia entre entradas.
-func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries []domain.WaitingListEntry, remaining int) int {
+func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries []domain.WaitingListEntry, remaining int, trigger string) int {
 	notified := 0
 	slotMemo := make(map[string][]services.AvailableSlot)
 	futureMemo := make(map[string]bool)
@@ -238,7 +255,7 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 		// Enviar; si falla TRANSITORIO se revierte a 'waiting' (el siguiente ciclo reintenta).
 		// Un fallo PERMANENTE (4xx de Bird / identificador no contactable) queda 'unreachable':
 		// devolverlo a 'waiting' sería pagar un envío condenado en cada ciclo, para siempre.
-		if err := m.sendWaitingNotification(ctx, entry); err != nil {
+		if err := m.sendWaitingNotification(ctx, entry, trigger); err != nil {
 			status := "waiting"
 			if bird.IsPermanentSendError(err) || errors.Is(err, ErrSuppressedNoWhatsApp) {
 				status = "unreachable"
@@ -318,9 +335,10 @@ func groupCupsFromEntry(entry domain.WaitingListEntry) []string {
 // el caller revierte el claim para re-ofrecer con un pending rastreable).
 var errRegisterPendingFailed = errors.New("register pending failed")
 
-// sendWaitingNotification envía el template de lista de espera, registra el pending y loguea el
-// evento. Devuelve el error del envío (el caller decide revertir o marcar unreachable según su clase).
-func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry domain.WaitingListEntry) error {
+// sendWaitingNotification envía el template de lista de espera, registra el pending (con su
+// trigger de origen) y loguea el evento. Devuelve el error del envío (el caller decide revertir o
+// marcar unreachable según su clase).
+func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry domain.WaitingListEntry, trigger string) error {
 	tmpl := bird.TemplateConfig{
 		ProjectID: m.cfg.BirdTemplateWaitingListProjectID,
 		VersionID: m.cfg.BirdTemplateWaitingListVersionID,
@@ -369,6 +387,7 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		WaitingListID:  entry.ID,
 		BirdMessageID:  msgID,
 		ConversationID: convID,
+		WLTrigger:      trigger,
 	}) {
 		observability.Emit(trace, "lista_espera", "notify_failed",
 			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "register_pending_failed"})
@@ -387,7 +406,7 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 	}
 
 	observability.Emit(trace, "lista_espera", "notified", observability.EmitOpts{
-		Phone: entry.PhoneNumber, RefID: msgID,
+		Phone: entry.PhoneNumber, RefID: msgID, Reason: trigger,
 		Attrs: map[string]interface{}{"cups": entry.CupsCode},
 	})
 	slog.Info("wl_check: notification sent",

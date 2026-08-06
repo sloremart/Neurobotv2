@@ -55,6 +55,9 @@ func (m *NotificationManager) handleWaitingList(phone, action string, pending *P
 			"current_procedure_idx": "0",
 			"menu_option":           "agendar",
 			"waiting_list_entry_id": entry.ID,
+			// Origen de la notificación (slot_release | daily_check) → reason de lista_espera/booked
+			// (KPI recuperación de cupos). Vacío si el pending se restauró tras un reinicio.
+			"waiting_list_trigger": pending.WLTrigger,
 		}
 
 		// GFR data
