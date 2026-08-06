@@ -151,10 +151,13 @@ var catalog = map[string]stepSpec{
 	"mis_citas/no_appointments":     {LvOutcome, "info", ""},
 
 	// Escalación a agente (§3A) — trace sess:<id>
-	"escalacion/escalated":             {LvOutcome, "escalated", ""},
-	"escalacion/agent_resumed":         {LvMilestone, "ok", ""},
-	"escalacion/agent_closed":          {LvOutcome, "ok", ""},
-	"escalacion/agent_reminder_sent":   {LvMilestone, "retry", ""},
+	"escalacion/escalated":           {LvOutcome, "escalated", ""},
+	"escalacion/agent_resumed":       {LvMilestone, "ok", ""},
+	"escalacion/agent_closed":        {LvOutcome, "ok", ""},
+	"escalacion/agent_reminder_sent": {LvMilestone, "retry", ""},
+	// agent_takeover: un agente respondió manualmente una sesión ACTIVA (sin escalación previa) y
+	// el bot se pausó solo para no interferir. Terminal escalated: la sesión queda en manos humanas.
+	"escalacion/agent_takeover":        {LvOutcome, "escalated", ""},
 	"escalacion/escalation_expired":    {LvOutcome, "info", ""},
 	"escalacion/agent_no_show":         {LvOutcome, "no_show", ""}, // agente nunca atendió → bot retoma
 	"escalacion/escalation_no_channel": {LvOutcome, "error", ""},   // no se pudo resolver conversación en Bird

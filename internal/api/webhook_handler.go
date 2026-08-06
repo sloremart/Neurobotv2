@@ -65,6 +65,8 @@ type WebhookHandler struct {
 	// texto para /bot, touch de actividad) corre UNA vez por mensaje. Valor: time.Time del store.
 	outboundSeen      sync.Map
 	outboundSeenCount atomic.Int64
+	// startedAt: gracia de arranque para la pausa por intervención de agente (ver takeoverStartupGrace).
+	startedAt time.Time
 }
 
 // DeliveryTracker registra el resultado de ENTREGA de los envíos salientes (webhook outbound).
@@ -111,6 +113,7 @@ func NewWebhookHandler(birdClient *bird.Client, workerPool *worker.MessageWorker
 		workerPool:    workerPool,
 		notifyManager: notifyManager,
 		cfg:           cfg,
+		startedAt:     time.Now(),
 	}
 }
 
@@ -325,13 +328,24 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 	}
 	text = strings.TrimSpace(text)
 
-	// Respuesta del agente: cualquier saliente humano hacia el paciente (no /bot, no mensaje-puente
-	// del propio bot) frena el recordatorio de la sesión escalada de este teléfono.
-	if phone != "" && !strings.HasPrefix(text, "/bot") && !worker.IsBotInterstitialMessage(text) {
+	// ¿Este saliente lo escribió el propio bot? El cliente recuerda los IDs de todo lo que envió.
+	ownMessage := h.birdClient.IsOwnMessage(event.Payload.ID)
+
+	// Respuesta del agente: cualquier saliente humano hacia el paciente (no propio, no /bot, no
+	// mensaje-puente del bot) frena el recordatorio de la sesión escalada de este teléfono.
+	if phone != "" && !ownMessage && !strings.HasPrefix(text, "/bot") && !worker.IsBotInterstitialMessage(text) {
 		h.workerPool.TouchAgentActivity(phone)
 	}
 
 	if !strings.HasPrefix(text, "/bot") {
+		// Pausa automática por intervención manual: un agente escribió en una conversación cuya
+		// sesión está ACTIVA → el bot se aparta (la sesión queda escalada; /bot resume la devuelve).
+		// Gracia de arranque: tras un reinicio la memoria de IDs propios está vacía y los eventos
+		// tardíos de mensajes pre-reinicio parecerían de agente.
+		if phone != "" && time.Since(h.startedAt) > takeoverStartupGrace &&
+			isForeignOutboundMessage(ownMessage, event.Payload.Status, text) {
+			h.workerPool.HandleAgentTakeover(phone)
+		}
 		return // Not an agent command — ignore
 	}
 
@@ -351,6 +365,34 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 	)
 
 	h.workerPool.EnqueueAgentCommand(cmd)
+}
+
+// takeoverStartupGrace: ventana tras el arranque en la que NO se dispara la pausa por intervención
+// de agente — la memoria de IDs propios arranca vacía y los eventos tardíos de mensajes enviados
+// antes del reinicio parecerían de un humano.
+const takeoverStartupGrace = 3 * time.Minute
+
+// isForeignOutboundMessage decide si un evento outbound lo escribió un AGENTE humano (no el bot).
+// Conservadora a propósito: un falso positivo pausaría el bot con sus propios mensajes.
+//   - own: el ID está registrado como enviado por el cliente → bot.
+//   - delivered/read: transiciones tardías (pueden ser de mensajes pre-reinicio) → nunca disparan.
+//   - /bot y mensajes-puente del bot → no son intervención.
+func isForeignOutboundMessage(ownMessage bool, status, text string) bool {
+	if ownMessage {
+		return false
+	}
+	switch strings.ToLower(status) {
+	case "delivered", "read":
+		return false
+	}
+	t := strings.TrimSpace(text)
+	if strings.HasPrefix(t, "/bot") {
+		return false
+	}
+	if worker.IsBotInterstitialMessage(t) {
+		return false
+	}
+	return true
 }
 
 // sweepOutboundSeen purga del dedupe los mensajes con más de 1h (los eventos de estado de un

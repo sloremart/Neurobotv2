@@ -1422,6 +1422,35 @@ func (p *MessageWorkerPool) retrySend(phone string, msg statemachine.OutboundMes
 	)
 }
 
+// HandleAgentTakeover pausa el bot cuando un agente humano responde manualmente una conversación
+// cuya sesión está ACTIVA (sin escalación previa): la marca escalada para que el bot deje de
+// procesar (los mensajes del paciente van al Inbox, como en cualquier escalación) y el agente
+// pueda devolverla con /bot resume. Sin esto, bot y agente respondían a la vez.
+func (p *MessageWorkerPool) HandleAgentTakeover(phone string) {
+	if p.sessionManager == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
+	sess, err := p.sessionManager.FindForAgentCommand(ctx, phone)
+	if err != nil || sess == nil || sess.Status != session.StatusActive {
+		return
+	}
+	if err := p.sessionManager.Escalate(ctx, sess, "manual_takeover"); err != nil {
+		slog.Error("agent takeover escalate failed", "phone", utils.MaskPhone(phone), "session_id", sess.ID, "error", err)
+		return
+	}
+	slog.Warn("agent takeover: bot pausado por intervención manual del agente",
+		"phone", utils.MaskPhone(phone), "session_id", sess.ID, "state", sess.CurrentState)
+	if p.tracker != nil {
+		p.tracker.LogEvent(ctx, sess.ID, phone, "agent_takeover_detected", map[string]interface{}{
+			"state": sess.CurrentState,
+		})
+	}
+	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "agent_takeover",
+		observability.EmitOpts{Phone: phone, Attrs: map[string]interface{}{"state": sess.CurrentState}})
+}
+
 // UpdateConversationID persists a conversationID to the active session for a phone.
 // Called from webhook handlers when conversation.created or outbound events arrive.
 func (p *MessageWorkerPool) UpdateConversationID(phone, conversationID string) {
