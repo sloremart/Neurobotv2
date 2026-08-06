@@ -56,6 +56,8 @@ type WaitingListReader interface {
 	GetDistinctWaitingCups(ctx context.Context) ([]string, error)
 	GetWaitingByCups(ctx context.Context, cupsCode string, limit int) ([]domain.WaitingListEntry, error)
 	List(ctx context.Context, filters domain.WaitingListFilters, page, pageSize int) ([]domain.WaitingListEntry, int, error)
+	// CountWLBookings: cuántos de esos IDs de cita nacieron de la lista de espera (KPI recuperación de cupos).
+	CountWLBookings(ctx context.Context, apptIDs []string) (int, error)
 }
 
 // SessionDebugReader provides read-only session queries for debug endpoints.
@@ -111,6 +113,8 @@ type SiesaAnalyticsReader interface {
 	BotCreatedByDay(ctx context.Context, botCedula, from, to string) ([]domain.BotCreatedRow, error)
 	CreatedByDay(ctx context.Context, from, to string) ([]domain.BotCreatedRow, error)
 	BotAppointmentsWithCups(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
+	// SlotRecovery: KPI recuperación de cupos cancelados (serie por día + IDs de citas que re-ocuparon).
+	SlotRecovery(ctx context.Context, days int) (domain.SlotRecoveryData, error)
 }
 
 // CupsMedicoReader devuelve los médicos habilitados para un CUPS (cups_medico, catálogo local).
@@ -548,6 +552,57 @@ func (h *InternalHandler) HandleSiesaNoShow(w http.ResponseWriter, r *http.Reque
 
 // HandleSiesaConciliacion cruza las citas creadas por el bot (SIESA) con cups_medico (local) y
 // reporta las que tienen un médico que NO realiza el CUPS (mide si el bug de mal-asignación reaparece).
+// HandleSiesaSlotRecovery — GET /api/internal/siesa/slot-recovery?dias=30
+// KPI "recuperación de cupos cancelados": slots con cita cancelada (SIESA, cualquier canal de
+// cancelación incluida la UI), cuántos se re-ocuparon con una cita nueva, y cuántos de esos
+// re-llenados nacieron de la lista de espera (cruce con la BD local). El dashboard lo proxea.
+func (h *InternalHandler) HandleSiesaSlotRecovery(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	dias := queryIntDefault(r, "dias", 30)
+	if dias < 1 {
+		dias = 1
+	} else if dias > 180 {
+		dias = 180
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), analyticsQueryTimeout)
+	defer cancel()
+
+	data, err := h.siesaAnalytics.SlotRecovery(ctx, dias)
+	if err != nil {
+		slog.Error("siesa slot recovery failed", "error", err)
+		http.Error(w, "failed to read slot recovery", http.StatusInternalServerError)
+		return
+	}
+
+	canceladas, rellenadas := 0, 0
+	for _, d := range data.PorDia {
+		canceladas += d.Canceladas
+		rellenadas += d.Rellenadas
+	}
+	rellenadasWL := 0
+	if len(data.RefillCitaIDs) > 0 && h.waitingListRepo != nil {
+		n, werr := h.waitingListRepo.CountWLBookings(ctx, data.RefillCitaIDs)
+		if werr != nil {
+			// Cruce best-effort: el agregado SIESA se entrega igual, con el numerador WL en 0 y log.
+			slog.Error("slot recovery wl cross failed", "error", werr)
+		} else {
+			rellenadasWL = n
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"dias":          dias,
+		"canceladas":    canceladas,
+		"rellenadas":    rellenadas,
+		"rellenadas_wl": rellenadasWL,
+		"por_dia":       data.PorDia,
+	})
+}
+
 // GET /api/internal/siesa/conciliacion?dias=4
 func (h *InternalHandler) HandleSiesaConciliacion(w http.ResponseWriter, r *http.Request) {
 	if h.siesaAnalytics == nil || h.cupsMedico == nil {

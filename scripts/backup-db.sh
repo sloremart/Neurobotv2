@@ -22,7 +22,10 @@ ENV_FILE="${ENV_FILE:-${ROOT}/.env}"
 
 # getenv: extrae una var del .env sin ejecutarlo (tolera comentarios inline). Mismo criterio que
 # scripts/restore-local-db.sh y auditoria/cycle.sh.
-getenv(){ grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | sed -E 's/^[^=]+=//; s/[[:space:]]+#.*$//; s/[[:space:]]*$//'; }
+# `|| true`: sin él, con `set -e` un grep sin coincidencia (variable ausente del .env) aborta el
+# script ANTES de poder caer al default de abajo — y en el cron eso es un backup que no se hace y
+# no deja rastro claro.
+getenv(){ grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | sed -E 's/^[^=]+=//; s/[[:space:]]+#.*$//; s/[[:space:]]*$//' || true; }
 
 DB_NAME="${DB_DATABASE:-$(getenv DB_DATABASE)}"; DB_NAME="${DB_NAME:-neuro_bot}"
 DB_USER="${DB_USER:-$(getenv DB_USER)}";         DB_USER="${DB_USER:-botuser}"
