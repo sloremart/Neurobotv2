@@ -705,6 +705,20 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
 	}
+	// Contacto sin E.164 (whatsappusername — privacidad de número de WhatsApp): la Channels API
+	// jamás puede entregarle; su ÚNICO canal es la conversación. Si tenía una y murió, último
+	// recurso: recrearla (mismo mecanismo que el handoff de escalación) y entregar por la nueva.
+	if conversationID != "" && !utils.IsE164(to) {
+		if created, cerr := c.CreateConversationForPhone(context.Background(), to); cerr == nil && created != "" && created != conversationID {
+			c.CacheConversationID(to, created)
+			if id, err := c.sendToConversation(created, body, false); err == nil {
+				slog.Info("text_delivered_via_recreated_conversation",
+					"phone", utils.MaskPhone(to), "conversation_id", created)
+				return id, nil
+			}
+		}
+		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+	}
 	// Fallback: Channels API
 	payload := map[string]interface{}{
 		"receiver": map[string]interface{}{
@@ -752,14 +766,16 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
 	}
-	// Fallback: Channels API — interactive buttons not supported, send as numbered text
+	// Fallback: botones como texto numerado. Se conserva la conversación: si los botones fueron
+	// rechazados por contenido/tipo pero la conversación vive, el texto sale por ahí (único canal
+	// posible para contactos whatsappusername); Channels queda de último recurso vía SendText.
 	slog.Info("send_buttons_text_fallback", "phone", utils.MaskPhone(to), "buttons", len(buttons))
 	var textFallback string
 	textFallback = text + "\n"
 	for i, btn := range buttons {
 		textFallback += fmt.Sprintf("\n%d. %s", i+1, btn.Text)
 	}
-	return c.SendText(to, "", textFallback)
+	return c.SendText(to, conversationID, textFallback)
 }
 
 // SendList envía un mensaje con lista interactiva.
@@ -819,7 +835,8 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
 		return id, nil
 	}
-	// Fallback: Channels API — interactive lists not supported, send as numbered text
+	// Fallback: lista como texto numerado. Se conserva la conversación (ver SendButtons): para
+	// contactos whatsappusername la conversación es el único canal que entrega.
 	slog.Info("send_list_text_fallback", "phone", utils.MaskPhone(to), "sections", len(sections))
 	var textFallback string
 	textFallback = body + "\n"
@@ -834,7 +851,7 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 			idx++
 		}
 	}
-	return c.SendText(to, "", textFallback)
+	return c.SendText(to, conversationID, textFallback)
 }
 
 // SendInternalText sends a text message visible only in Bird Inbox (not delivered to WhatsApp).
