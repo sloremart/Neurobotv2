@@ -120,10 +120,6 @@ var catalog = map[string]stepSpec{
 	// que el handoff FALLÓ aunque nada lance excepción. Mismo trato que escalacion/escalation_no_channel,
 	// su equivalente exacto: terminal con outcome de error, para que deje de ser un fallo invisible.
 	"notif_recordatorio/escalation_no_conversation": {LvOutcome, "error", ""},
-	// followup_skipped_no_window: texto libre con la ventana de servicio de WhatsApp cerrada (el
-	// paciente no ha escrito en 24h) — no se envía porque Bird lo cobra y WA no lo entrega. Es un
-	// hito informativo (la cadena sigue hacia IVR/escalación), no un fallo.
-	"notif_recordatorio/followup_skipped_no_window": {LvMilestone, "info", ""},
 
 	// Identificación (§3A) — trace sess:<id>
 	"identificacion/patient_lookup":  {LvMilestone, "ok", ""},

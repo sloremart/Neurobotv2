@@ -217,30 +217,16 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 			"phone", utils.MaskPhone(pending.Phone), "appointment_id", pending.AppointmentID)
 		return
 	}
-	// Palabra del día de la cita: "mañana" en todo el flujo preexistente (SameDay=false ⇒ textos
-	// idénticos a los de siempre); "hoy" solo para el recordatorio de corta antelación.
-	day := followupDayWord(pending.SameDay)
-
+	// Los TEXTOS de followup por WhatsApp fueron eliminados (06-ago-2026): eran texto libre que
+	// WhatsApp no entrega fuera de la ventana de servicio de 24h (el no-respondedor por definición
+	// la tiene cerrada), pero Bird cobraba cada envío. Los pasos 0/1 solo avanzan RetryCount y
+	// timers — la MISMA temporización de siempre — para que el IVR de las 15:00 (objetivo
+	// RetryCount==2) y la escalación a agente por no-respuesta sigan intactos.
 	switch pending.RetryCount {
 	case 0:
-		// Step 1: Follow-up #1 — friendly text, NO agent assignment.
-		// Texto libre: solo se entrega dentro de la ventana de servicio de WhatsApp (24h desde el
-		// último mensaje del paciente). Si no respondió al template, la ventana está cerrada: el
-		// envío se cobra y no llega. Se salta el texto y la cadena continúa (IVR sí funciona).
-		if m.WindowOpen(context.Background(), pending.Phone) {
-			if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
-				"¡Hola! Aún no recibimos tu respuesta sobre tu cita de "+day+". "+
-					"Por favor confirma, cancela o reprograma para que podamos gestionar tu espacio."); err != nil {
-				slog.Error("followup1_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
-			}
-			slog.Info("confirmation followup 1 sent", "phone", utils.MaskPhone(pending.Phone))
-		} else {
-			slog.Info("followup 1 skipped: ventana de WhatsApp cerrada (texto libre no entregable)",
-				"phone", utils.MaskPhone(pending.Phone))
-			observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio",
-				"followup_skipped_no_window",
-				observability.EmitOpts{Phone: pending.Phone, Attrs: map[string]interface{}{"followup": 1}})
-		}
+		// Step 1: avanzar cadena (sin texto WA)
+		slog.Info("followup step 1: sin texto WA (eliminado), cadena avanza",
+			"phone", utils.MaskPhone(pending.Phone))
 
 		pending.RetryCount = 1
 		duration := time.Duration(safeHours(m.cfg.ConfirmFollowup2Hours, 3)) * time.Hour
@@ -257,21 +243,9 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 		}
 
 	case 1:
-		// Step 2: Follow-up #2 — direct text, NO agent assignment (mismo gate de ventana que el #1)
-		if m.WindowOpen(context.Background(), pending.Phone) {
-			if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
-				"Recordatorio: Tu cita de "+day+" aún no ha sido confirmada. "+
-					"Si no recibimos respuesta, te llamaremos para confirmar."); err != nil {
-				slog.Error("followup2_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
-			}
-			slog.Info("confirmation followup 2 sent", "phone", utils.MaskPhone(pending.Phone))
-		} else {
-			slog.Info("followup 2 skipped: ventana de WhatsApp cerrada (texto libre no entregable)",
-				"phone", utils.MaskPhone(pending.Phone))
-			observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio",
-				"followup_skipped_no_window",
-				observability.EmitOpts{Phone: pending.Phone, Attrs: map[string]interface{}{"followup": 2}})
-		}
+		// Step 2: avanzar cadena (sin texto WA); el safety-net espera al IVR de las 15:00
+		slog.Info("followup step 2: sin texto WA (eliminado), cadena avanza hacia IVR",
+			"phone", utils.MaskPhone(pending.Phone))
 
 		pending.RetryCount = 2
 		// Safety-net timer: 2h (wait for 15:00 IVR task) + PostIVR minutes + 30min buffer
@@ -348,7 +322,9 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 
 	// 3. Message to patient — solo en el caso de no-respuesta. En el fallo de sistema el paciente
 	// ya recibió "Tuvimos un inconveniente..." y NO se le debe pedir confirmar lo ya confirmado.
-	if reason == escalationNoResponse {
+	// Gate de ventana WA: el no-respondedor casi siempre la tiene cerrada — el texto se cobraría
+	// sin entregarse. La escalación (nota interna + asignación de agente) ocurre igual.
+	if reason == escalationNoResponse && m.WindowOpen(ctx, pending.Phone) {
 		_, _ = m.birdClient.SendText(pending.Phone, pending.ConversationID,
 			"Un asistente del centro se comunicará contigo para confirmar tu cita de "+followupDayWord(pending.SameDay)+".")
 	}
