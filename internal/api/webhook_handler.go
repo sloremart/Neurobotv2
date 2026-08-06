@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -59,6 +60,11 @@ type WebhookHandler struct {
 	// voiceGatherCmds maps callId → gatherEntry so we can query the DTMF result
 	// from GET /calls/{callId}/commands/{commandId} when the call completes.
 	voiceGatherCmds sync.Map
+	// outboundSeen dedupea por Payload.ID: la suscripción con eventos de ESTADO entrega 4-5
+	// eventos por mensaje (accepted→processing→sent→delivered/read); el trabajo caro (fetch del
+	// texto para /bot, touch de actividad) corre UNA vez por mensaje. Valor: time.Time del store.
+	outboundSeen      sync.Map
+	outboundSeenCount atomic.Int64
 }
 
 // DeliveryTracker registra el resultado de ENTREGA de los envíos salientes (webhook outbound).
@@ -283,7 +289,8 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 
 	// Registrar el estado de ENTREGA (no los intermedios): delivery_failed acumula el contador
 	// del teléfono; delivered/read lo resetea. Con >=2 fallos consecutivos, los templates
-	// programados a ese número se suprimen (se cobraban sin llegar).
+	// programados a ese número se suprimen (se cobraban sin llegar). Corre POR EVENTO (los
+	// estados difieren); todo lo demás de este handler corre una vez por mensaje (dedupe abajo).
 	h.recordDeliveryStatus(phone, event.Payload.Status)
 
 	// Cache conversationId from ALL outbound messages and persist to DB
@@ -294,6 +301,18 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 			"phone", utils.MaskPhone(phone),
 			"conversation_id", event.Payload.ConversationID,
 		)
+	}
+
+	// Dedupe por mensaje: los eventos de estado posteriores del mismo Payload.ID no repiten el
+	// trabajo caro (FetchMessageText = GET a Bird por evento, TouchAgentActivity = UPDATE por
+	// evento). Sin esto, la suscripción de estados multiplica ~4× esas llamadas.
+	if id := event.Payload.ID; id != "" {
+		if _, seen := h.outboundSeen.LoadOrStore(id, time.Now()); seen {
+			return
+		}
+		if h.outboundSeenCount.Add(1)%512 == 0 {
+			h.sweepOutboundSeen()
+		}
 	}
 
 	// Check for agent /bot command
@@ -332,6 +351,18 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 	)
 
 	h.workerPool.EnqueueAgentCommand(cmd)
+}
+
+// sweepOutboundSeen purga del dedupe los mensajes con más de 1h (los eventos de estado de un
+// mensaje llegan en segundos/minutos; 1h cubre reintentos de webhook con margen holgado).
+func (h *WebhookHandler) sweepOutboundSeen() {
+	cutoff := time.Now().Add(-1 * time.Hour)
+	h.outboundSeen.Range(func(k, v interface{}) bool {
+		if ts, ok := v.(time.Time); ok && ts.Before(cutoff) {
+			h.outboundSeen.Delete(k)
+		}
+		return true
+	})
 }
 
 // recordDeliveryStatus registra fallos/éxitos de ENTREGA del webhook outbound. Solo estados
