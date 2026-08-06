@@ -403,8 +403,10 @@ func (r *AnalyticsRepo) BotAppointmentsWithCups(ctx context.Context, botCedula s
 	return out, nil
 }
 
-// SlotRecovery calcula el KPI "recuperación de cupos cancelados" sobre los últimos days días (por
-// fecha de la CITA): slots cuya cita quedó cancelada (estado='C') y cuántos se RE-OCUPARON con una
+// SlotRecovery calcula el KPI "recuperación de cupos cancelados" sobre los últimos days días por
+// fecha de la CITA, acotado a slots cuya fecha YA PASÓ (desenlace final: un slot futuro liberado
+// aún puede llenarse y contarlo subestimaría la tasa): slots cuya cita quedó cancelada
+// (estado='C') y cuántos se RE-OCUPARON con una
 // cita nueva sobre el mismo (médico, fecha, hora, meridiano) creada después. Devuelve además los
 // IDs de las citas que re-ocuparon, para que el caller los cruce con la lista de espera local.
 // Mismas reglas que el resto del repo: NOLOCK, agregación en servidor, rango sobre columna
@@ -428,6 +430,7 @@ func (r *AnalyticsRepo) SlotRecovery(ctx context.Context, days int) (domain.Slot
 		              AND c2.fecha_solicitud >= c1.fecha_solicitud) THEN 1 ELSE 0 END
 		    FROM citas c1 WITH (NOLOCK)
 		    WHERE c1.estado = 'C' AND c1.fecha >= DATEADD(DAY, -@p1, CAST(GETDATE() AS DATE))
+		      AND c1.fecha < CAST(GETDATE() AS DATE)
 		)
 		SELECT CONVERT(VARCHAR(10), fecha, 23) AS dia, COUNT(*) AS canceladas, SUM(refill) AS rellenadas
 		FROM canc GROUP BY CONVERT(VARCHAR(10), fecha, 23)
@@ -459,6 +462,7 @@ func (r *AnalyticsRepo) SlotRecovery(ctx context.Context, days int) (domain.Slot
 		 AND c2.estado <> 'C' AND c2.id <> c1.id
 		 AND c2.fecha_solicitud >= c1.fecha_solicitud
 		WHERE c1.estado = 'C' AND c1.fecha >= DATEADD(DAY, -@p1, CAST(GETDATE() AS DATE))
+		      AND c1.fecha < CAST(GETDATE() AS DATE)
 		OPTION (MAXDOP 1)`, days)
 	if err != nil {
 		return out, fmt.Errorf("siesa slot recovery ids: %w", err)
