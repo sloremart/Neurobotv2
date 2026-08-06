@@ -343,7 +343,7 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 		// Gracia de arranque: tras un reinicio la memoria de IDs propios está vacía y los eventos
 		// tardíos de mensajes pre-reinicio parecerían de agente.
 		if phone != "" && time.Since(h.startedAt) > takeoverStartupGrace &&
-			isForeignOutboundMessage(ownMessage, event.Payload.Status, text) {
+			isForeignOutboundMessage(ownMessage, event.Payload.Status, text, event.Payload.CreatedAt) {
 			h.workerPool.HandleAgentTakeover(phone)
 		}
 		return // Not an agent command — ignore
@@ -372,17 +372,28 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 // antes del reinicio parecerían de un humano.
 const takeoverStartupGrace = 3 * time.Minute
 
+// takeoverMaxMessageAge: frescura máxima del mensaje para considerarlo intervención de agente.
+// Caso real (06-ago 13:41): Bird RE-ENTREGÓ con backoff, 29 min después, el evento de un mensaje
+// del BOT enviado antes del reinicio (su ID no estaba en la memoria del proceso nuevo) y pausó
+// una sesión activa. Un agente de verdad genera el webhook en segundos.
+const takeoverMaxMessageAge = 2 * time.Minute
+
 // isForeignOutboundMessage decide si un evento outbound lo escribió un AGENTE humano (no el bot).
 // Conservadora a propósito: un falso positivo pausaría el bot con sus propios mensajes.
 //   - own: el ID está registrado como enviado por el cliente → bot.
 //   - delivered/read: transiciones tardías (pueden ser de mensajes pre-reinicio) → nunca disparan.
+//   - createdAt viejo, ausente o ilegible → sin prueba de frescura, no se pausa (reintentos de Bird).
 //   - /bot y mensajes-puente del bot → no son intervención.
-func isForeignOutboundMessage(ownMessage bool, status, text string) bool {
+func isForeignOutboundMessage(ownMessage bool, status, text, createdAt string) bool {
 	if ownMessage {
 		return false
 	}
 	switch strings.ToLower(status) {
 	case "delivered", "read":
+		return false
+	}
+	ts, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil || time.Since(ts) > takeoverMaxMessageAge {
 		return false
 	}
 	t := strings.TrimSpace(text)
