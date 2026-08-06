@@ -223,11 +223,23 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 
 	switch pending.RetryCount {
 	case 0:
-		// Step 1: Follow-up #1 — friendly text, NO agent assignment
-		if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
-			"¡Hola! Aún no recibimos tu respuesta sobre tu cita de "+day+". "+
-				"Por favor confirma, cancela o reprograma para que podamos gestionar tu espacio."); err != nil {
-			slog.Error("followup1_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
+		// Step 1: Follow-up #1 — friendly text, NO agent assignment.
+		// Texto libre: solo se entrega dentro de la ventana de servicio de WhatsApp (24h desde el
+		// último mensaje del paciente). Si no respondió al template, la ventana está cerrada: el
+		// envío se cobra y no llega. Se salta el texto y la cadena continúa (IVR sí funciona).
+		if m.WindowOpen(context.Background(), pending.Phone) {
+			if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
+				"¡Hola! Aún no recibimos tu respuesta sobre tu cita de "+day+". "+
+					"Por favor confirma, cancela o reprograma para que podamos gestionar tu espacio."); err != nil {
+				slog.Error("followup1_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
+			}
+			slog.Info("confirmation followup 1 sent", "phone", utils.MaskPhone(pending.Phone))
+		} else {
+			slog.Info("followup 1 skipped: ventana de WhatsApp cerrada (texto libre no entregable)",
+				"phone", utils.MaskPhone(pending.Phone))
+			observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio",
+				"followup_skipped_no_window",
+				observability.EmitOpts{Phone: pending.Phone, Attrs: map[string]interface{}{"followup": 1}})
 		}
 
 		pending.RetryCount = 1
@@ -244,14 +256,21 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 			}
 		}
 
-		slog.Info("confirmation followup 1 sent", "phone", utils.MaskPhone(pending.Phone))
-
 	case 1:
-		// Step 2: Follow-up #2 — direct text, NO agent assignment
-		if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
-			"Recordatorio: Tu cita de "+day+" aún no ha sido confirmada. "+
-				"Si no recibimos respuesta, te llamaremos para confirmar."); err != nil {
-			slog.Error("followup2_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
+		// Step 2: Follow-up #2 — direct text, NO agent assignment (mismo gate de ventana que el #1)
+		if m.WindowOpen(context.Background(), pending.Phone) {
+			if _, err := m.birdClient.SendText(pending.Phone, pending.ConversationID,
+				"Recordatorio: Tu cita de "+day+" aún no ha sido confirmada. "+
+					"Si no recibimos respuesta, te llamaremos para confirmar."); err != nil {
+				slog.Error("followup2_send_failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
+			}
+			slog.Info("confirmation followup 2 sent", "phone", utils.MaskPhone(pending.Phone))
+		} else {
+			slog.Info("followup 2 skipped: ventana de WhatsApp cerrada (texto libre no entregable)",
+				"phone", utils.MaskPhone(pending.Phone))
+			observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio",
+				"followup_skipped_no_window",
+				observability.EmitOpts{Phone: pending.Phone, Attrs: map[string]interface{}{"followup": 2}})
 		}
 
 		pending.RetryCount = 2
@@ -268,8 +287,6 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 				slog.Error("persist followup2", "phone", utils.MaskPhone(pending.Phone), "error", err)
 			}
 		}
-
-		slog.Info("confirmation followup 2 sent", "phone", utils.MaskPhone(pending.Phone))
 
 	case 2, 3:
 		// Step 3/4: Escalate to agent (step 2 = IVR didn't run, step 3 = post-IVR)

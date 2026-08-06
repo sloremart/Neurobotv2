@@ -276,7 +276,14 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			observability.EmitOpts{Phone: phone, RefID: msgID})
 
 		// par.8.1 #8: preparacion del examen (si el catalogo la tiene) como texto aparte.
-		t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		// Texto libre: WhatsApp solo lo entrega con la ventana de servicio abierta (el paciente
+		// escribio hace <24h). Cerrada = Bird cobra el envio y no llega; se omite — la preparacion
+		// completa viaja en la respuesta al confirmar (handleConfirmation).
+		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, phone) {
+			t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		} else {
+			slog.Info("reminder prep skipped: ventana WA cerrada", "phone", utils.MaskPhone(phone))
+		}
 
 		sent++
 
@@ -431,7 +438,12 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "same_day_reminder_sent",
 			observability.EmitOpts{Phone: phone, RefID: msgID})
 
-		t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		// Mismo gate de ventana WA que el recordatorio de dia-antes (texto libre no entregable).
+		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, phone) {
+			t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		} else {
+			slog.Info("same-day prep skipped: ventana WA cerrada", "phone", utils.MaskPhone(phone))
+		}
 
 		sent++
 		if err := sleepWithContext(ctx, 2*time.Second); err != nil {

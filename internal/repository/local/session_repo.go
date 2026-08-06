@@ -209,6 +209,23 @@ func (r *SessionRepo) CompleteActiveByPhone(ctx context.Context, phone string) e
 	return nil
 }
 
+// LastPatientMessageAt devuelve el último mensaje DEL paciente en cualquier sesión del teléfono
+// (abierta o cerrada), o nil si nunca escribió. Es la referencia de la ventana de servicio de 24h
+// de WhatsApp: fuera de ella el texto libre se cobra pero no se entrega.
+func (r *SessionRepo) LastPatientMessageAt(ctx context.Context, phone string) (*time.Time, error) {
+	var ts sql.NullTime
+	err := r.db.QueryRowContext(ctx,
+		"SELECT MAX(last_patient_msg_at) FROM sessions WHERE phone_number = ?", phone).Scan(&ts)
+	if err != nil {
+		return nil, fmt.Errorf("last patient message at: %w", err)
+	}
+	if !ts.Valid {
+		return nil, nil
+	}
+	t := ts.Time
+	return &t, nil
+}
+
 // UpdateConversationIDByPhone actualiza SOLO la columna conversation_id de la sesión activa/escalada
 // del teléfono. Es un UPDATE de una columna (no reescribe la fila), así que es seguro sin el
 // phone-lock y NO puede pisar current_state ni la PII del paciente — cierra el lost-update que tenía

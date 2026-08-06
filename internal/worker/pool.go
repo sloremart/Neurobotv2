@@ -37,6 +37,10 @@ const (
 	agentCmdQueueSize   = 50
 	maxDedupEntries     = 100000 // safety cap; fail-open if exceeded (allow potential dups)
 
+	// ctxNonContactable: clave de contexto de sesión — el identificador del contacto no es un
+	// teléfono E.164 y ningún envío por Channels API puede entregársele.
+	ctxNonContactable = "non_contactable"
+
 	// Re-replay del WAL (M7): recupera mensajes que quedaron 'pending' (p.ej. descartados por
 	// backpressure) sin esperar al reinicio. El umbral (> dedupTTL) evita reprocesar mensajes en
 	// vuelo y garantiza que el claim de dedup del intento previo ya expiró.
@@ -145,6 +149,9 @@ type MessageWorkerPool struct {
 
 	botEnabled bool // BOT_ENABLED=false → escala directo sin tocar SIESA/Antares
 
+	// retryDelay: espera antes del reintento de un envío fallido (solo errores transitorios).
+	retryDelay time.Duration
+
 	// Dependencias (inyectadas después de creación)
 	sessionManager  SessionManagement
 	birdClient      MessageSender
@@ -164,10 +171,11 @@ func NewMessageWorkerPool(workers, queueSize int) *MessageWorkerPool {
 		queueSize = defaultQueueSize
 	}
 	return &MessageWorkerPool{
-		queue:     make(chan bird.InboundMessage, queueSize),
-		agentCmds: make(chan AgentCommand, agentCmdQueueSize),
-		workers:   workers,
-		ctx:       context.Background(),
+		queue:      make(chan bird.InboundMessage, queueSize),
+		agentCmds:  make(chan AgentCommand, agentCmdQueueSize),
+		workers:    workers,
+		ctx:        context.Background(),
+		retryDelay: 10 * time.Second,
 	}
 }
 
@@ -1196,7 +1204,26 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 				)
 				convID = ""
 			}
-			// E6: async retry after 10s via Channels API (L16: wg-tracked → el shutdown lo espera/cancela)
+			// Errores PERMANENTES (4xx salvo 408/429, identificador no-E.164): reintentar es pagar
+			// otro envío a Bird condenado al mismo fallo — se omite el retry.
+			if bird.IsPermanentSendError(err) {
+				slog.Warn("send retry skipped (permanent error)",
+					"phone", utils.MaskPhone(phone), "type", outMsg.Type(), "error", err)
+				// Identificador no contactable: marcar la sesión UNA vez (contexto persistido) y
+				// emitir el flow_event para que dashboard/auditoría vean al paciente inalcanzable.
+				if errors.Is(err, bird.ErrNonContactable) && sess.GetContext(ctxNonContactable) != "1" {
+					sess.SetContext(ctxNonContactable, "1")
+					if result.UpdateCtx == nil {
+						result.UpdateCtx = map[string]string{}
+					}
+					result.UpdateCtx[ctxNonContactable] = "1"
+					observability.Emit(observability.TraceSession(sess.ID), "infra", "non_contactable_identifier",
+						observability.EmitOpts{Phone: phone})
+				}
+				continue
+			}
+			// E6: async retry (retryDelay) via Channels API para errores transitorios
+			// (L16: wg-tracked → el shutdown lo espera/cancela)
 			p.wg.Add(1)
 			go func(m statemachine.OutboundMessage) {
 				defer p.wg.Done()
@@ -1369,7 +1396,7 @@ func (p *MessageWorkerPool) sendMessage(phone, conversationID string, msg statem
 func (p *MessageWorkerPool) retrySend(phone string, msg statemachine.OutboundMessage) {
 	// L16: sleep cancelable por el app-ctx para no re-entregar un mensaje tras el shutdown.
 	select {
-	case <-time.After(10 * time.Second):
+	case <-time.After(p.retryDelay):
 	case <-p.ctx.Done():
 		return
 	}

@@ -24,6 +24,39 @@ import (
 // request because the conversation is closed/inactive (HTTP 422).
 var ErrConversationNotActive = errors.New("conversation not active")
 
+// ErrNonContactable señala que el identificador del contacto no es un teléfono E.164, así que la
+// Channels API lo rechazará SIEMPRE (422 invalid identifierValue). El gate corta antes de la
+// llamada HTTP: cada intento contra Bird se cobra, falle o no.
+var ErrNonContactable = errors.New("non-contactable identifier (not E.164)")
+
+// APIError preserva el status HTTP de un error de la API de Bird, para que los callers puedan
+// distinguir fallos permanentes (4xx: reintentar es pagar otro envío condenado) de transitorios.
+type APIError struct {
+	Status int
+	Body   string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("bird api error: status %d, body: %s", e.Status, e.Body)
+}
+
+// IsPermanentSendError reporta si un error de envío es definitivo: reintentarlo con el mismo
+// payload/destinatario va a fallar igual (y Bird cobra el intento). 408/429 son transitorios.
+func IsPermanentSendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNonContactable) {
+		return true
+	}
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.Status >= 400 && ae.Status < 500 &&
+			ae.Status != http.StatusRequestTimeout && ae.Status != http.StatusTooManyRequests
+	}
+	return false
+}
+
 // Límites duros de WhatsApp para listas interactivas (error 131009 si se exceden). WhatsApp mide la
 // longitud en UNIDADES UTF-16 (como la Graph API de Facebook), no en runas: un emoji fuera del BMP
 // (💉 = 2 unidades) cuenta doble. Truncamos por eso para nunca romper el envío, aunque el título venga
@@ -2021,6 +2054,12 @@ func (c *Client) TagConversation(conversationID, tag string) error {
 
 // sendMessage envía un payload JSON a la API de Bird con retry.
 func (c *Client) sendMessage(url string, payload interface{}, phone ...string) (string, error) {
+	// Gate de contactabilidad: la Channels API usa el identificador como receiver; si no es un
+	// teléfono E.164 el 422 está garantizado. Cortar aquí cubre texto, botones, listas y templates.
+	if len(phone) > 0 && phone[0] != "" && !utils.IsE164(phone[0]) {
+		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(phone[0]))
+	}
+
 	jsonBody, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal payload: %w", err)
@@ -2042,7 +2081,7 @@ func (c *Client) sendMessage(url string, payload interface{}, phone ...string) (
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("bird api error: status %d, body: %s", resp.StatusCode, string(respBody))
+		return "", &APIError{Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	slog.Debug("bird_api_response", "status", resp.StatusCode, "body", string(respBody))

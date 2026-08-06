@@ -64,6 +64,9 @@ type SessionCreator interface {
 	SetContextBatch(ctx context.Context, sessionID string, kvs map[string]string) error
 	UpdateStatus(ctx context.Context, sessionID, status string) error
 	CompleteActiveByPhone(ctx context.Context, phone string) error
+	// LastPatientMessageAt: último mensaje DEL paciente en cualquier sesión del teléfono (nil si
+	// nunca escribió) — la referencia de la ventana de servicio de 24h de WhatsApp.
+	LastPatientMessageAt(ctx context.Context, phone string) (*time.Time, error)
 }
 
 // VirtualEnqueuer enqueues virtual messages for the worker pool.
@@ -208,6 +211,29 @@ func (m *NotificationManager) unlockPhone(phone string) {
 	if m.phoneLock != nil {
 		m.phoneLock.Unlock(phone)
 	}
+}
+
+// waServiceWindow: margen bajo las 24h de la ventana de servicio de WhatsApp, para no enviar al
+// filo del cierre (el mensaje podría llegar a Bird con la ventana ya vencida).
+const waServiceWindow = 23*time.Hour + 30*time.Minute
+
+// WindowOpen reporta si la ventana de servicio de WhatsApp del teléfono está abierta (el paciente
+// escribió hace menos de ~24h). Fuera de ella WhatsApp NO entrega texto libre (solo templates),
+// pero Bird cobra el intento igual. Fail-open ante falta de repo o error de BD: un fallo de
+// infraestructura no debe silenciar los followups.
+func (m *NotificationManager) WindowOpen(ctx context.Context, phone string) bool {
+	if m.sessionRepo == nil {
+		return true
+	}
+	ts, err := m.sessionRepo.LastPatientMessageAt(ctx, phone)
+	if err != nil {
+		slog.Warn("wa window check failed (fail-open)", "phone", utils.MaskPhone(phone), "error", err)
+		return true
+	}
+	if ts == nil {
+		return false
+	}
+	return time.Since(*ts) < waServiceWindow
 }
 
 // SetWaitingListDeps injects Phase 13 dependencies after construction.

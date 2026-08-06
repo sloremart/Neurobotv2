@@ -875,14 +875,15 @@ func (m *mockWaitingListFinder) ResolveIfNotified(ctx context.Context, id, statu
 }
 
 type mockSessionCreator struct {
-	mu             sync.Mutex
-	createFn       func(ctx context.Context, s *session.Session) error
-	setCtxBatchFn  func(ctx context.Context, sessionID string, kvs map[string]string) error
-	findCurrentFn  func(ctx context.Context, phone string) (*session.Session, error)
-	createdSession *session.Session
-	batchSessionID string
-	batchKVs       map[string]string
-	completedPhone string // teléfono cuyo cupo se liberó con CompleteActiveByPhone
+	mu               sync.Mutex
+	createFn         func(ctx context.Context, s *session.Session) error
+	setCtxBatchFn    func(ctx context.Context, sessionID string, kvs map[string]string) error
+	findCurrentFn    func(ctx context.Context, phone string) (*session.Session, error)
+	createdSession   *session.Session
+	batchSessionID   string
+	batchKVs         map[string]string
+	completedPhone   string     // teléfono cuyo cupo se liberó con CompleteActiveByPhone
+	lastPatientMsgAt *time.Time // ventana de servicio WA (nil = el paciente nunca escribió)
 }
 
 func (m *mockSessionCreator) Create(ctx context.Context, s *session.Session) error {
@@ -926,6 +927,12 @@ func (m *mockSessionCreator) CompleteActiveByPhone(ctx context.Context, phone st
 	defer m.mu.Unlock()
 	m.completedPhone = phone
 	return nil
+}
+
+func (m *mockSessionCreator) LastPatientMessageAt(_ context.Context, _ string) (*time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastPatientMsgAt, nil
 }
 
 type mockVirtualEnqueuer struct {
