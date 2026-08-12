@@ -80,10 +80,18 @@ func registerMedicalRecovery(m *sm.Machine) {
 
 // isContrastable determina si un CUPS puede ser contrastado (resonancias, tomografías).
 // 883xxx = Resonancia Magnética, 871xxx/879xxx = Tomografía (TAC).
+// 921xxx = PET/CT — usa radiotrazadores, NUNCA contraste yodado → excluido.
 func isContrastable(cupsCode string) bool {
 	return strings.HasPrefix(cupsCode, "883") ||
 		strings.HasPrefix(cupsCode, "871") ||
 		strings.HasPrefix(cupsCode, "879")
+}
+
+// isPETCT retorna true para estudios PET/CT (921xxx): usan radiotrazadores, nunca contraste yodado.
+// Aunque el OCR marque ocr_is_contrasted=1 (confunde "CON 18-FLUOR"/"CON PSMA" con contraste),
+// el flujo de creatinina/GFR no aplica y debe saltarse.
+func isPETCT(cupsCode string) bool {
+	return strings.HasPrefix(cupsCode, "921")
 }
 
 // isSedatable determina si un CUPS puede requerir sedación (resonancias).
@@ -104,7 +112,11 @@ func askContrastedHandler() sm.StateHandler {
 		// Antes se salía solo por el prefijo del cups_code, descartando ocr_is_contrasted=1: si el
 		// código representativo del grupo no era contrastable (p.ej. sedación 998702) en una orden de
 		// resonancia CONTRASTADA, se saltaban los gates de seguridad (función renal/TFG y embarazo).
-		if !isContrastable(cupsCode) && sess.GetContext("ocr_is_contrasted") != "1" {
+		//
+		// Excepción PET/CT (921xxx): usan radiotrazadores (18-F FDG, PSMA…), NUNCA contraste yodado.
+		// El OCR puede marcar ocr_is_contrasted=1 al ver "CON 18-FLUOR"/"CON PSMA" en el nombre —
+		// esa señal se ignora y siempre se salta el flujo de contraste/creatinina.
+		if isPETCT(cupsCode) || (!isContrastable(cupsCode) && sess.GetContext("ocr_is_contrasted") != "1") {
 			return sm.NewResult(sm.StateAskSedation).
 				WithContext("is_contrasted", "0").
 				WithClearCtx("ocr_is_contrasted").

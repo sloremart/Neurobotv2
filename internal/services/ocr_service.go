@@ -185,7 +185,10 @@ DATOS POR PROCEDIMIENTO:
   2) Señales afirmativas en descripción u observaciones: "sedación", "sedacion", "bajo sedación",
      "bajo anestesia", "con anestesia", "anestesia general", "sedado", "sedada", "anestesiado", "anestesiada" → true.
   3) Si no hay ninguna señal → false.
-- is_contrasted: indica si ESE examen usa MEDIO DE CONTRASTE. Decide en este orden (lo de arriba manda):
+- is_contrasted: indica si ESE examen usa MEDIO DE CONTRASTE YODADO O PARAMAGNÉTICO. Decide en este orden (lo de arriba manda):
+  0) REGLA PREVIA ABSOLUTA — estudios que NUNCA usan contraste yodado, independientemente de lo que diga la orden:
+     - PET/CT o PET-TC (tomografía por emisión de positrones): usan RADIOTRAZADORES (18-F FDG, PSMA, etc.), NO contraste.
+       "CON 18-FLUOR", "CON PSMA", "CON FDG", "CON F18" en el nombre → is_contrasted = false SIEMPRE.
   1) POR NOMBRE DEL PROCEDIMIENTO (lo más confiable):
      - Contiene "CON CONTRASTE" o "SIMPLE Y CON CONTRASTE" → true (el estudio ya es contrastado por definición).
      - Contiene "SIMPLE" (sin "CON CONTRASTE"), o "SIN contraste", "SIN medio de contraste", "NO contrastado" → false.
