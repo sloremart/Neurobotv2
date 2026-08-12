@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,12 +16,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 	"github.com/neuro-bot/neuro-bot/internal/worker"
 )
+
+// pipelinePhoneCapacity: capacidad de la columna phone/phone_number en TODA la tubería local
+// (message_inbox, sessions, chat_events, escalations… — VARCHAR(20) en migrations/). Un
+// identificador más largo no puede persistirse en ningún punto: se dropea en el borde.
+const pipelinePhoneCapacity = 20
 
 // recoverLog logs panics from background goroutines without crashing the process.
 func recoverLog(name string) {
@@ -146,6 +155,22 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Identificador que NO cabe en la tubería (H138-2/H139-1): message_inbox.phone, sessions,
+	// chat_events, escalations… son todos VARCHAR(20). Un identifierValue whatsappusername largo
+	// (ID anónimo CO.xxx de la privacidad de número de WhatsApp) reventaba el INSERT con 1406, el
+	// handler respondía 500 y Bird reintentaba ETERNO — cada vuelta una alerta Telegram, y el
+	// mensaje jamás iba a entrar. Se corta EN EL BORDE con 200 (drop explícito y medible): reintentar
+	// un error de FORMA de dato es garantía de bucle. flow_event al funnel (no dispara Telegram);
+	// atender a estos contactos requiere ampliar el esquema completo (decisión aparte, no un retry).
+	if len(msg.Phone) > pipelinePhoneCapacity {
+		slog.Warn("inbound dropped: identifier exceeds pipeline capacity (whatsappusername)",
+			"id", msg.ID, "identifier_masked", utils.MaskPhone(msg.Phone), "identifier_len", len(msg.Phone))
+		observability.Emit("nophone:"+msg.ID, "infra", "non_contactable_identifier",
+			observability.EmitOpts{Phone: msg.Phone, Reason: "oversized_identifier"})
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// Actividad entrante REAL del paciente → resetea su cuota del tope anti-emisor-desbocado
 	// (send_rate_limit.go): una conversación viva nunca choca con el límite.
 	h.birdClient.RecordInbound(msg.Phone)
@@ -155,8 +180,21 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 	if h.inboxRepo != nil && msg.ID != "" {
 		inserted, err := h.inboxRepo.InsertIfNotExists(r.Context(), msg.ID, msg.Phone, string(body), msg.MessageType, msg.ReceivedAt)
 		if err != nil {
+			// 1406 (Data too long) = error PERMANENTE de forma de dato (cualquier columna): el
+			// reintento de Bird produciría el MISMO 1406 para siempre (36 vueltas/16h medidas en
+			// H138-2). Se reconoce con 200 y se dropea, logueando la longitud del identificador —
+			// que era in-diagnosticable desde los endpoints porque el propio INSERT que lo
+			// guardaría es lo que falla.
+			var myErr *mysql.MySQLError
+			if errors.As(err, &myErr) && myErr.Number == 1406 {
+				slog.Error("inbox persist failed (1406 permanente, mensaje dropeado — no se reintenta)",
+					"id", msg.ID, "identifier_masked", utils.MaskPhone(msg.Phone),
+					"identifier_len", len(msg.Phone), "error", err)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			slog.Error("inbox persist failed", "id", msg.ID, "error", err)
-			// DB falla → responder 500 → Bird reintenta (fail-safe)
+			// DB falla (transitorio) → responder 500 → Bird reintenta (fail-safe)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
