@@ -39,34 +39,36 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 	m.Register(sm.StateShowHelp, showHelpHandler())
 }
 
+// businessHoursOpen reporta si el centro está abierto AHORA (L-V 7:00-17:59, Sáb 7:00-11:59,
+// reloj America/Bogota vía nowFunc). TESTING_ALWAYS_OPEN lo fuerza a true. Compartido por
+// CHECK_BUSINESS_HOURS y el gate de escalación (una escalación nocturna nace condenada al
+// no-show — nadie la va a atender — y fue una de las condiciones del incidente 11/12-ago-2026).
+func businessHoursOpen(cfg *config.Config) bool {
+	if cfg != nil && cfg.TestingAlwaysOpen {
+		return true
+	}
+	now := nowFunc()
+	switch now.Weekday() {
+	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
+		return now.Hour() >= 7 && now.Hour() < 18
+	case time.Saturday:
+		return now.Hour() >= 7 && now.Hour() < 12
+	default:
+		return false
+	}
+}
+
 // CHECK_BUSINESS_HOURS (automático)
 func checkBusinessHoursHandler(cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		// Testing bypass: TESTING_ALWAYS_OPEN=true skips business hours check
-		if cfg.TestingAlwaysOpen {
-			return sm.NewResult(sm.StateGreeting), nil
-		}
-
-		now := nowFunc() // Ya en timezone America/Bogota
-		weekday := now.Weekday()
-		hour := now.Hour()
-
-		inHours := false
-		switch weekday {
-		case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
-			inHours = hour >= 7 && hour < 18
-		case time.Saturday:
-			inHours = hour >= 7 && hour < 12
-		}
-
-		if !inHours {
+		if !businessHoursOpen(cfg) {
+			now := nowFunc()
 			return sm.NewResult(sm.StateOutOfHours).
 				WithEvent("out_of_hours", map[string]interface{}{
-					"day":  weekday.String(),
-					"hour": hour,
+					"day":  now.Weekday().String(),
+					"hour": now.Hour(),
 				}), nil
 		}
-
 		return sm.NewResult(sm.StateGreeting), nil
 	}
 }

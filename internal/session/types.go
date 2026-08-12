@@ -78,4 +78,5 @@ type EscalatedSession struct {
 	LastPatientMsg time.Time  // last inbound from the patient
 	LastAgentMsg   *time.Time // last reply from the agent (nil = agent never replied)
 	RemindersSent  int        // agent reminders already sent in this waiting window
+	EscalatedAt    time.Time  // when THIS escalation happened (anchors the no-show clock; zero = legacy row)
 }

@@ -391,7 +391,11 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 		elapsed := time.Since(s.LastActivity)
 		elapsedMin := int(elapsed.Minutes())
 
-		if elapsedMin >= deps.CloseMin && s.Reminders >= 1 {
+		// Cierre: normalmente exige que el recordatorio ya se marcó (Reminders>=1). FALLBACK
+		// anti-sesión-inmortal (misma clase que el incidente 11/12-ago-2026): si la marca nunca se
+		// pudo persistir (SetContext fallando), sin este OR la sesión no cerraba NUNCA y se
+		// reevaluaba cada minuto; pasada una ventana extra de ReminderMin se cierra igual.
+		if elapsedMin >= deps.CloseMin && (s.Reminders >= 1 || elapsedMin >= deps.CloseMin+deps.ReminderMin) {
 			// Cierre por inactividad = ABANDONO (no "completada"): el paciente dejó de responder.
 			// Antes se marcaba 'completed', mezclando abandono con finalización real en sessions.status.
 			if err := m.repo.UpdateStatus(ctx, s.ID, StatusAbandoned); err != nil {
@@ -426,13 +430,19 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 				slog.Debug("inactivity reminder skipped (sin progreso)", "session_id", s.ID, "state", s.CurrentState)
 				continue
 			}
-			// Single reminder with close warning
+			// Single reminder with close warning.
+			// CLAIM-THEN-SEND (anti-bucle, misma clase que el incidente 11/12-ago-2026): la marca se
+			// persiste ANTES de enviar. Al revés, un SetContext fallando persistentemente reenviaba
+			// el "¿Sigues ahí?" CADA MINUTO (tick del checker) sin cota. Fail-closed: si la marca no
+			// persiste, se omite el envío — perder un recordatorio de cortesía es barato; un envío
+			// por minuto sin tope no.
+			if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
+				slog.Error("set reminder failed (recordatorio omitido, anti-bucle)", "session_id", s.ID, "error", err)
+				continue
+			}
 			closeIn := deps.CloseMin - deps.ReminderMin
 			deps.BirdClient.SendText(s.PhoneNumber, s.ConversationID,
 				fmt.Sprintf("¿Sigues ahí? Si no respondes en %s se cerrará la sesión.\n\nPuedes volver al menú principal enviando *0* o *menú*.", formatMinutes(closeIn)))
-			if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
-				slog.Error("set reminder failed", "session_id", s.ID, "error", err)
-			}
 			slog.Debug("inactivity reminder sent", "session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
 		}
 	}
@@ -481,8 +491,21 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 		// recordatorio de los 225). NO es abandono del paciente
 		// (estaba esperando una respuesta que no llegó) → se DEVUELVE al bot en su paso (el worker
 		// re-promptea) y se marca 'agent_no_show' para la métrica del agente. Requiere el resumer.
+		//
+		// ANCLA DOBLE (incidente 11/12-ago-2026): la ventana debe haber pasado desde el último
+		// mensaje del paciente Y desde que ESTA escalación se creó (escalated_at). Con solo
+		// last_patient_msg, una re-escalación heredaba un silencio ya >300min y el no-show
+		// re-disparaba al MINUTO (tick del checker) → bucle no-show↔re-escalación, 1 WhatsApp/min
+		// por paciente toda la noche. MarkEscalated sella escalated_at=NOW() en cada escalación,
+		// así toda escalación nueva obtiene su ventana completa. Fallback a last_patient_msg si
+		// la fila es vieja y no tiene escalated_at.
+		noShowWindow := time.Duration(deps.AgentReminderMin*(deps.AgentReminderMax+1)) * time.Minute
+		escalationAnchor := s.EscalatedAt
+		if escalationAnchor.IsZero() {
+			escalationAnchor = s.LastPatientMsg
+		}
 		if !agentEverReplied && deps.Resumer != nil && deps.AgentReminderMin > 0 &&
-			patientSilent >= time.Duration(deps.AgentReminderMin*(deps.AgentReminderMax+1))*time.Minute {
+			patientSilent >= noShowWindow && now.Sub(escalationAnchor) >= noShowWindow {
 			deps.Resumer.ResumeEscalationNoShow(s.PhoneNumber)
 			slog.Info("escalation no-show: agente nunca atendió, devolviendo al bot",
 				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
@@ -569,6 +592,14 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 				continue
 			}
 			slog.Error("agent reminder send failed", "session_id", s.ID, "conversation_id", s.ConversationID, "error", err)
+			// ENDURECIMIENTO anti-retry-1/min (cacería 12-ago-2026): un error GENÉRICO persistente
+			// (Bird caído, 403, conversación borrada…) reintentaba cada tick del checker sin avanzar
+			// el contador — hasta ~300 intentos por sesión. El fallo CONSUME el intento: el siguiente
+			// espera su ventana normal y el total queda acotado a AgentReminderMax, como los éxitos.
+			// (BUG-005 arriba maneja aparte el caso conversación-inactiva, que cierra la escalación.)
+			if ierr := m.repo.IncrementAgentReminders(ctx, s.ID); ierr != nil {
+				slog.Error("increment agent reminders (tras fallo de envío) failed", "session_id", s.ID, "error", ierr)
+			}
 			continue
 		}
 		if err := m.repo.IncrementAgentReminders(ctx, s.ID); err != nil {

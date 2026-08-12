@@ -146,6 +146,10 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Actividad entrante REAL del paciente → resetea su cuota del tope anti-emisor-desbocado
+	// (send_rate_limit.go): una conversación viva nunca choca con el límite.
+	h.birdClient.RecordInbound(msg.Phone)
+
 	// WAL: persistir mensaje a DB ANTES de responder 200 a Bird.
 	// Si el bot crashea después de esto, el mensaje se replayea al reiniciar.
 	if h.inboxRepo != nil && msg.ID != "" {

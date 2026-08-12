@@ -150,6 +150,10 @@ type Config struct {
 	TestingAlwaysOpen bool // Bypasses business hours check when true
 	MaxRetries        int  // Max invalid response attempts before fallback menu
 
+	// Tope de envíos salientes por teléfono/hora SIN inbound del paciente (0 = off).
+	// Última defensa contra emisores desbocados (incidente 11/12-ago-2026: 1 msg/min toda la noche).
+	SendRateLimitPerHour int
+
 	// CUPS group limits
 	CupsGroupLimitsEnabled bool // Monthly CUPS group limits for Sanitas MRC (contracts 5/6)
 	TeamRoutingEnabled     bool // Route to specialty teams (Grupo A/B); false → all to Call Center
@@ -272,6 +276,10 @@ func Load() *Config {
 		AIRecoveryEnabled:            getEnvBool("AI_RECOVERY_ENABLED", true),
 		AIRecoveryMaxPatientAttempts: getEnvInt("AI_RECOVERY_MAX_PATIENT_ATTEMPTS", 2),
 		AIRecoveryMonthlyLimit:       getEnvInt("AI_RECOVERY_MONTHLY_LIMIT", 0),
+
+		// Tope anti-emisor-desbocado (send_rate_limit.go). 30/h por teléfono: una conversación real
+		// nunca lo toca (cada inbound del paciente resetea la cuota); un bucle sin paciente sí.
+		SendRateLimitPerHour: getEnvInt("SEND_RATE_LIMIT_PER_HOUR", 30),
 
 		// Bot kill switch
 		BotEnabled:                   getEnvBool("BOT_ENABLED", true),

@@ -172,6 +172,10 @@ type Client struct {
 	mu          sync.RWMutex
 	convCache   map[string]string
 	convCacheTS map[string]time.Time
+
+	// Tope de envíos salientes por teléfono sin inbound del paciente (send_rate_limit.go).
+	sendRate      map[string]*sendRateEntry
+	sendRateLimit int // 0 = desactivado
 	// ownMsgs: IDs de mensajes enviados por ESTE cliente (TTL ownMsgTTL) — distingue en el
 	// webhook outbound los mensajes del bot de los de agentes humanos del Inbox.
 	ownMsgs map[string]time.Time
@@ -203,6 +207,8 @@ func NewClient(cfg *config.Config) *Client {
 		notifIVRDisabled:      !cfg.IVRNotificationsEnabled,
 		convCache:             make(map[string]string),
 		convCacheTS:           make(map[string]time.Time),
+		sendRate:              make(map[string]*sendRateEntry),
+		sendRateLimit:         cfg.SendRateLimitPerHour,
 	}
 }
 
@@ -278,6 +284,7 @@ func (c *Client) StartCacheCleanup(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.evictStaleCache(4 * time.Hour)
+			c.evictStaleSendRate()
 		}
 	}
 }
@@ -740,6 +747,9 @@ func whatsAppContentError(err error) (string, bool) {
 // If conversationID is provided, routes via Conversations API (WhatsApp + Inbox).
 // Falls back to Channels API (WhatsApp only) if conversationID is empty or Conversations API fails.
 func (c *Client) SendText(to, conversationID, text string) (string, error) {
+	if !c.allowSend(to) {
+		return "", ErrSendRateLimited
+	}
 	body := map[string]interface{}{
 		"type": "text",
 		"text": map[string]string{"text": text},
@@ -774,6 +784,9 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 // SendButtons envía un mensaje con botones postback (máx 3).
 // Routes via Conversations API when conversationID is available.
 func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) (string, error) {
+	if !c.allowSend(to) {
+		return "", ErrSendRateLimited
+	}
 	actions := make([]map[string]interface{}, len(buttons))
 	for i, btn := range buttons {
 		// Misma guarda dura que en SendList: WhatsApp rechaza (131009) un título de botón > 20.
@@ -823,6 +836,9 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 // SendList envía un mensaje con lista interactiva.
 // Routes via Conversations API when conversationID is available.
 func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections []ListSection) (string, error) {
+	if !c.allowSend(to) {
+		return "", ErrSendRateLimited
+	}
 	totalRows := 0
 	for _, s := range sections {
 		totalRows += len(s.Rows)
@@ -917,6 +933,9 @@ func (c *Client) SendTemplate(to string, tmpl TemplateConfig) (string, error) {
 		slog.Info("whatsapp notifications disabled — skipping template", "to", utils.MaskPhone(to))
 		return "", ErrWhatsAppNotificationsDisabled
 	}
+	if !c.allowSend(to) {
+		return "", ErrSendRateLimited
+	}
 
 	params := make([]map[string]string, len(tmpl.Params))
 	for i, p := range tmpl.Params {
@@ -976,6 +995,9 @@ func (c *Client) PlaceCall(to string, params map[string]string) (string, error) 
 	if c.notifIVRDisabled {
 		slog.Info("ivr notifications disabled — skipping call", "to", utils.MaskPhone(to))
 		return "", ErrIVRNotificationsDisabled
+	}
+	if !c.allowSend(to) {
+		return "", ErrSendRateLimited
 	}
 	if c.voiceChannelID == "" {
 		return "", fmt.Errorf("voice channel not configured (BIRD_VOICE_CHANNEL_ID missing)")

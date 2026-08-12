@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,11 @@ import (
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
+
+// escalationSessionCap: máximo de escalaciones por sesión (cortacircuito anti-bucle,
+// incidente 11/12-ago-2026). Una conversación real rara vez necesita más de 3; a partir
+// de ahí se asume lazo (recovery↔escalación, no-show↔re-escalación, etc.) y se corta.
+const escalationSessionCap = 3
 
 // EscalationCreator registra una fila por escalación (tabla escalations). Opcional (nil = no registra).
 type EscalationCreator interface {
@@ -42,6 +48,50 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		}
 		sess.SetContext("pre_escalation_state", preState)
 
+		// CORTACIRCUITO ANTI-BUCLE (incidente 11/12-ago-2026: 18 pacientes con 1 WhatsApp/min
+		// toda la noche, ~10.800 envíos). El no-show devolvía la sesión a un estado AUTOMÁTICO
+		// determinista (VALIDATE_OCR→cups_none, bloqueo SANITAS…) que re-escalaba en el mismo
+		// Process, y el checker re-disparaba el no-show al minuto. Dos guardas, ANTES de la capa
+		// de recuperación y del gate de agentes (ninguna vía puede saltárselas):
+		//
+		// (1) Un __resume__ virtual (retorno de no-show o resume de agente, pool.go) NUNCA
+		//     re-escala: no es un paciente pidiendo asesor, es el propio bot volviendo. Sin input
+		//     nuevo, un estado automático produce la MISMA escalación → lazo cerrado. Se corta
+		//     aquí y la sesión queda en menú esperando al paciente (la inactividad la cierra sola).
+		if msg.Text == "__resume__" {
+			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_suppressed_resume",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: preState})
+			slog.Info("escalation suppressed (virtual __resume__, anti-loop)",
+				"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "pre_state", preState)
+			r := sm.NewResult(sm.StateMainMenu).
+				WithText("Por ahora no fue posible conectarte con un asesor. Puedes elegir una opción del menú o escribirnos de nuevo más tarde. 😊").
+				WithEvent("escalation_suppressed_resume", map[string]interface{}{"pre_state": preState})
+			r.Messages = append(r.Messages, buildMainMenuList())
+			return r, nil
+		}
+		//
+		// (2) Tope duro por sesión: a la (escalationSessionCap+1)-ésima escalación de una MISMA
+		//     sesión se corta, venga por donde venga (keyword, recovery, estado automático nuevo).
+		//     Garantiza que NINGÚN mecanismo futuro pueda cerrar un lazo de escalaciones infinitas:
+		//     el peor caso queda acotado a escalationSessionCap avisos por sesión.
+		if n, _ := strconv.Atoi(sess.GetContext("escalation_count")); n >= escalationSessionCap {
+			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_reached",
+				observability.EmitOpts{
+					Phone: sess.PhoneNumber, Reason: preState,
+					Attrs: map[string]interface{}{"count": n},
+				})
+			slog.Warn("escalation suppressed (session cap reached)",
+				"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "count", n, "pre_state", preState)
+			return sm.NewResult(sm.StateFallbackMenu).
+				WithButtons(
+					"Ya intentamos conectarte con un asesor varias veces en esta conversación. "+
+						"Un miembro de nuestro equipo revisará tu caso. ¿Deseas volver al inicio o terminar el chat?",
+					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
+					sm.Button{Text: "Terminar chat", Payload: "action:end"},
+				).
+				WithEvent("escalation_cap_reached", map[string]interface{}{"pre_state": preState, "count": n}), nil
+		}
+
 		// Capa de recuperación IA (§2.1): antes de escalar de verdad, darle la oportunidad de
 		// desbloquear el input. Solo si el estado es opt-in y NO estamos ya en recuperación (si ya
 		// lo estamos, llegamos aquí por presupuesto agotado o keyword del paciente → escalar).
@@ -51,17 +101,29 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 		}
 
-		// Gate de disponibilidad: si NO hay agentes disponibles (a cualquier hora), NO crear una
-		// escalación destinada a no-show/expiración. Se avisa el horario y se vuelve al menú (no se
-		// pierde al paciente). Cubre todas las vías de escalación (keyword, reintentos agotados, etc.)
-		// en un solo punto. Mismo criterio que POST_ACTION_MENU (auditoría: escalaciones nocturnas al
-		// vacío → agent_no_show=275, escalation_expired=534/7d).
+		// Gate de disponibilidad: si NO hay agentes disponibles O el centro está CERRADO, NO crear
+		// una escalación destinada a no-show/expiración. Se avisa el horario y se vuelve al menú (no
+		// se pierde al paciente). Cubre todas las vías de escalación (keyword, reintentos agotados,
+		// etc.) en un solo punto. Mismo criterio que POST_ACTION_MENU (auditoría: escalaciones
+		// nocturnas al vacío → agent_no_show=275, escalation_expired=534/7d).
+		// El chequeo de HORARIO existe porque HasAvailableAgents confía en la presencia de Bird, y
+		// un agente que deja su estado encendido al irse mantiene el gate abierto toda la noche —
+		// así pasó el bucle del 11/12-ago-2026 a las 4 a.m. El reloj del centro no depende de nadie.
+		gate := ""
 		if birdClient != nil && !birdClient.HasAvailableAgents() {
+			gate = "no_agents"
+		} else if !businessHoursOpen(cfg) {
+			gate = "out_of_hours"
+		}
+		if gate != "" {
 			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_no_agents",
-				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: preState})
+				observability.EmitOpts{
+					Phone: sess.PhoneNumber, Reason: preState,
+					Attrs: map[string]interface{}{"gate": gate},
+				})
 			r := sm.NewResult(sm.StateMainMenu).
 				WithText("En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.* Por favor escríbenos en ese horario y con gusto te ayudamos. 😊").
-				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState})
+				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState, "gate": gate})
 			r.Messages = append(r.Messages, buildMainMenuList())
 			return r, nil
 		}
@@ -255,6 +317,9 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		sess.EscalatedTeam = teamID
 		sess.AgentID = assignedAgentID
 		sess.AgentName = assignedAgentName
+		// Contador del tope anti-bucle (guard (2) arriba): una escalación exitosa más en esta sesión.
+		prevCount, _ := strconv.Atoi(sess.GetContext("escalation_count"))
+		sess.SetContext("escalation_count", strconv.Itoa(prevCount+1))
 		// Registrar la escalación (una fila por escalación, con el paso del chat donde se escaló).
 		if escRepo != nil {
 			if err := escRepo.Create(ctx, sess.ID, msg.Phone, preState, teamID, assignedAgentID, assignedAgentName); err != nil {

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -20,6 +21,7 @@ func testEscalationConfig() *config.Config {
 		BirdTeamGrupoB:     "team-grupo-b",
 		BirdTeamFallback:   "team-fallback",
 		BirdAgentFallback:  "agent-fallback",
+		TestingAlwaysOpen:  true, // el gate de horario de escalateHandler usa el reloj real; los tests no dependen de la hora de la corrida
 	}
 }
 
@@ -271,5 +273,162 @@ func TestEscalateHandler_TeamRouting(t *testing.T) {
 	}
 	if result.NextState != sm.StateEscalated {
 		t.Errorf("expected ESCALATED, got %s", result.NextState)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Anti-bucle de escalación (incidente 11/12-ago-2026): un no-show devolvía la
+// sesión a un estado AUTOMÁTICO determinista (VALIDATE_OCR→cups_none, bloqueo
+// SANITAS…) que re-escalaba en el mismo Process, y el checker re-disparaba el
+// no-show al minuto (ancla en last_patient_msg, que nunca avanza sin paciente).
+// Resultado: 18 pacientes con 1 WhatsApp/min toda la noche (~10.800 envíos).
+// ---------------------------------------------------------------------------
+
+// escalationTestServer levanta un Bird fake CON agentes disponibles (el gate de
+// disponibilidad pasa, como pasó en el incidente: presencia encendida de noche).
+func escalationTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/workspaces/ws-test/agents":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"agent-1","displayName":"Test Agent","teams":[{"id":"team-fallback","name":"CC"}],"availability":{"status":"active","activity":"available"},"rootItemAssignedCount":0}]}`))
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/search/feed-items"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"results":[{"id":"fi-conv-test","feedId":"channel:ch-test","closed":false}]}`))
+		default:
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"msg-ok"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestEscalateHandler_ResumeVirtualNeverReescalates: el __resume__ virtual (retorno de
+// no-show o resume de agente) NUNCA debe re-escalar, aunque haya agentes disponibles.
+// Es la vuelta 2 del bucle: sin este corte, VALIDATE_OCR re-evalúa el mismo contexto,
+// vuelve a cups_none y re-escala → lazo cerrado con el checker de no-show.
+func TestEscalateHandler_ResumeVirtualNeverReescalates(t *testing.T) {
+	srv := escalationTestServer(t)
+
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), testEscalationConfig(), nil)
+
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+
+	result, err := m.Process(context.Background(), sess, textM("__resume__"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState == sm.StateEscalated {
+		t.Error("un __resume__ virtual NO debe re-escalar (bucle no-show↔escalación)")
+	}
+	if sess.Status == session.StatusEscalated {
+		t.Error("la sesión NO debe quedar escalada tras un __resume__")
+	}
+	if result.NextState != sm.StateMainMenu {
+		t.Errorf("esperaba MAIN_MENU, got %s", result.NextState)
+	}
+	found := false
+	for _, ev := range result.Events {
+		if ev.Type == "escalation_suppressed_resume" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("esperaba evento escalation_suppressed_resume, got %+v", result.Events)
+	}
+}
+
+// TestEscalateHandler_SessionCap: tope duro de escalaciones por sesión. A la 4ª
+// (contador ya en 3) se corta pase lo que pase — cortacircuito independiente del
+// mecanismo que genere las escalaciones ("los flujos infinitos sin escape deben
+// evitarse en todo lugar").
+func TestEscalateHandler_SessionCap(t *testing.T) {
+	srv := escalationTestServer(t)
+
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), testEscalationConfig(), nil)
+
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+	sess.Context["escalation_count"] = "3"
+
+	result, err := m.Process(context.Background(), sess, textM("quiero un asesor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState == sm.StateEscalated {
+		t.Error("con el tope alcanzado NO debe escalar")
+	}
+	found := false
+	for _, ev := range result.Events {
+		if ev.Type == "escalation_cap_reached" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("esperaba evento escalation_cap_reached, got %+v", result.Events)
+	}
+}
+
+// TestEscalateHandler_CountsEscalations: cada escalación exitosa incrementa el contador
+// de la sesión (alimenta el tope duro del test anterior).
+func TestEscalateHandler_CountsEscalations(t *testing.T) {
+	srv := escalationTestServer(t)
+
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), testEscalationConfig(), nil)
+
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+
+	if _, err := m.Process(context.Background(), sess, textM("asesor")); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.GetContext("escalation_count"); got != "1" {
+		t.Errorf("esperaba escalation_count=1 tras escalar, got %q", got)
+	}
+}
+
+// TestEscalateHandler_OutOfHoursGate: con el centro CERRADO no se escala aunque Bird diga que
+// hay agentes "disponibles" (presencia encendida de noche — condición del incidente 11/12-ago:
+// el bucle escalaba a las 4 a.m. porque HasAvailableAgents devolvía true).
+func TestEscalateHandler_OutOfHoursGate(t *testing.T) {
+	srv := escalationTestServer(t) // agentes DISPONIBLES
+
+	old := nowFunc
+	nowFunc = func() time.Time { return time.Date(2026, 8, 12, 4, 0, 0, 0, time.UTC) } // miércoles 4 a.m.
+	defer func() { nowFunc = old }()
+
+	cfg := testEscalationConfig()
+	cfg.TestingAlwaysOpen = false // activar el reloj real (stubbeado)
+
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), cfg, nil)
+
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+
+	result, err := m.Process(context.Background(), sess, textM("quiero un asesor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState == sm.StateEscalated {
+		t.Error("con el centro cerrado NO debe escalar aunque Bird reporte agentes activos")
+	}
+	if result.NextState != sm.StateMainMenu {
+		t.Errorf("esperaba MAIN_MENU, got %s", result.NextState)
+	}
+	found := false
+	for _, ev := range result.Events {
+		if ev.Type == "escalation_no_agents" && ev.Data["gate"] == "out_of_hours" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("esperaba evento escalation_no_agents con gate=out_of_hours, got %+v", result.Events)
 	}
 }

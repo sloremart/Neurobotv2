@@ -171,6 +171,12 @@ var catalog = map[string]stepSpec{
 	// reportado como cosmético en el ciclo 121).
 	"escalacion/ack_sent":             {LvMilestone, "info", ""},
 	"escalacion/escalation_no_agents": {LvOutcome, "blocked", ""},
+	// Cortacircuitos anti-bucle (incidente 11/12-ago-2026, no-show↔re-escalación). Ambos son
+	// terminales del intento de escalar: blocked = regla de protección, no error del paciente.
+	// Si suppressed_resume crece sostenido = hay estados automáticos re-escalando tras no-show
+	// (el bucle que el guard corta); si cap_reached aparece = una sesión pidió >3 escalaciones.
+	"escalacion/escalation_suppressed_resume": {LvOutcome, "blocked", ""},
+	"escalacion/escalation_cap_reached":       {LvOutcome, "blocked", ""},
 
 	// Recuperación asistida por IA (§11) — trace sess:<id>. Concepto distinto de escalación.
 	"recuperacion/ai_recovery_started":  {LvMilestone, "info", ""},    // 3.ª falla del bot → arranca IA

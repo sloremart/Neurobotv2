@@ -756,11 +756,13 @@ func TestPhoneMutex_Returns(t *testing.T) {
 // mockInactivityBird records calls for the escalated-session checker tests.
 type mockInactivityBird struct {
 	internalTexts   []string
+	sentTexts       []string // textos al PACIENTE (SendText) — para asertar recordatorios
 	closedFeeds     int
 	internalSendErr error // si != nil, SendInternalText lo devuelve (no agrega a internalTexts)
 }
 
-func (m *mockInactivityBird) SendText(_, _, _ string) (string, error) {
+func (m *mockInactivityBird) SendText(_, _, text string) (string, error) {
+	m.sentTexts = append(m.sentTexts, text)
 	return "", nil
 }
 
@@ -1194,5 +1196,142 @@ func TestFindOrCreate_DuplicateActiveButExpired_RereadsWithCurrentView(t *testin
 	}
 	if s != nil && s.Context["k"] != "v" {
 		t.Error("expected context cargado de la fantasma")
+	}
+}
+
+// TestCheckEscalatedSessions_NoShowAnchorsToEscalatedAt: el reloj del no-show debe anclarse
+// a CUÁNDO SE ESCALÓ (escalated_at), no solo al último mensaje del paciente. Incidente
+// 11/12-ago-2026: una re-escalación heredaba el last_patient_msg viejo (>300min) y el
+// no-show re-disparaba al MINUTO (tick del checker), cerrando el bucle no-show↔escalación
+// (1 WhatsApp/min por paciente toda la noche). Una escalación RECIENTE, aunque el paciente
+// lleve horas callado, debe esperar su ventana completa.
+func TestCheckEscalatedSessions_NoShowAnchorsToEscalatedAt(t *testing.T) {
+	escalatedRecently := time.Now().Add(-1 * time.Minute) // re-escalada hace 1 min
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-10 * time.Hour), // paciente callado hace 10h
+				LastAgentMsg:   nil,
+				RemindersSent:  3,
+				EscalatedAt:    escalatedRecently,
+			}}, nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.SetEscalationRecorder(&mockEscalationRecorder{})
+	resumer := &mockResumer{}
+	deps := escalationDeps(&mockInactivityBird{})
+	deps.Resumer = resumer
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if len(resumer.phones) != 0 {
+		t.Fatalf("escalación de hace 1min NO debe disparar no-show aunque el paciente lleve 10h callado (bucle), got %v", resumer.phones)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Anti-bucle del recordatorio de inactividad (misma clase que el incidente
+// 11/12-ago-2026): el "¿Sigues ahí?" se enviaba ANTES de marcar
+// inactivity_reminders=1; si el SetContext fallaba persistentemente, el checker
+// (tick de 1 min) reenviaba el texto CADA MINUTO y, como el cierre exigía la
+// marca (Reminders >= 1), la sesión tampoco se cerraba nunca: envío sin cota.
+// ---------------------------------------------------------------------------
+
+// TestCheckInactiveSessions_MarkBeforeSend: claim-then-send. Si la marca NO se
+// puede persistir, NO se envía (fail-closed): perder un recordatorio de cortesía
+// es barato; un reenvío por minuto sin tope no.
+func TestCheckInactiveSessions_MarkBeforeSend(t *testing.T) {
+	bird := &mockInactivityBird{}
+	repo := &mockRepo{
+		findInactiveFn: func(_ context.Context, _ int) ([]InactiveSession, error) {
+			return []InactiveSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				CurrentState: "UPLOAD_MEDICAL_ORDER", // estado con trámite → recordatorio "vale"
+				LastActivity: time.Now().Add(-20 * time.Minute),
+				Reminders:    0,
+			}}, nil
+		},
+		setContextFn: func(_ context.Context, _, _, _ string) error {
+			return context.DeadlineExceeded // la marca NO persiste
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.checkInactiveSessions(context.Background(), InactivityDeps{
+		BirdClient: bird, ReminderMin: 15, CloseMin: 120,
+	})
+
+	if len(bird.sentTexts) != 0 {
+		t.Fatalf("si la marca no persiste NO se debe enviar (fail-closed, anti-bucle); enviados: %v", bird.sentTexts)
+	}
+}
+
+// TestCheckInactiveSessions_FallbackCloseWithoutMark: si la marca nunca se logró
+// persistir (Reminders==0), la sesión igual debe cerrarse al pasar
+// CloseMin+ReminderMin — sin esto quedaba inmortal y reevaluada cada minuto.
+func TestCheckInactiveSessions_FallbackCloseWithoutMark(t *testing.T) {
+	closed := ""
+	bird := &mockInactivityBird{}
+	repo := &mockRepo{
+		findInactiveFn: func(_ context.Context, _ int) ([]InactiveSession, error) {
+			return []InactiveSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				CurrentState: "UPLOAD_MEDICAL_ORDER",
+				LastActivity: time.Now().Add(-140 * time.Minute), // > CloseMin+ReminderMin (135)
+				Reminders:    0,                                  // la marca nunca se persistió
+			}}, nil
+		},
+		setContextFn: func(_ context.Context, _, _, _ string) error {
+			return context.DeadlineExceeded
+		},
+		updateStatusFn: func(_ context.Context, sessionID, status string) error {
+			if status == StatusAbandoned {
+				closed = sessionID
+			}
+			return nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.checkInactiveSessions(context.Background(), InactivityDeps{
+		BirdClient: bird, ReminderMin: 15, CloseMin: 120,
+	})
+
+	if closed != "s1" {
+		t.Fatal("la sesión debe cerrarse por inactividad aunque la marca del recordatorio nunca se haya podido persistir (sesión inmortal)")
+	}
+	if len(bird.sentTexts) != 0 {
+		t.Fatalf("pasado CloseMin no debe enviarse recordatorio, got %v", bird.sentTexts)
+	}
+}
+
+// TestCheckEscalatedSessions_ReminderFailureConsumesAttempt (endurecimiento anti-retry-1/min):
+// si SendInternalText falla con un error GENÉRICO persistente, el checker (tick 1 min) reintentaba
+// cada minuto sin avanzar RemindersSent (BUG-005 solo cubrió ErrConversationNotActive). El fallo
+// debe CONSUMIR el intento: el siguiente espera su ventana (ReminderMin) y el total queda acotado
+// a AgentReminderMax, igual que los éxitos.
+func TestCheckEscalatedSessions_ReminderFailureConsumesAttempt(t *testing.T) {
+	incremented := 0
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-16 * time.Minute), // vencido el 1er recordatorio (15)
+				LastAgentMsg:   nil,
+				RemindersSent:  0,
+				EscalatedAt:    time.Now().Add(-16 * time.Minute),
+			}}, nil
+		},
+		incrementRemFn: func(_ context.Context, _ string) error { incremented++; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.SetEscalationRecorder(&mockEscalationRecorder{})
+	bird := &mockInactivityBird{internalSendErr: fmt.Errorf("bird 500 persistente")}
+	deps := escalationDeps(bird)
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if incremented != 1 {
+		t.Fatalf("el fallo genérico del recordatorio debe consumir el intento (IncrementAgentReminders), got %d", incremented)
 	}
 }

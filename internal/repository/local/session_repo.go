@@ -311,7 +311,8 @@ func (r *SessionRepo) TouchAgentActivity(ctx context.Context, phone string) erro
 func (r *SessionRepo) FindEscalatedSessions(ctx context.Context) ([]session.EscalatedSession, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, phone_number, COALESCE(conversation_id, ''),
-		 COALESCE(last_patient_msg_at, last_activity_at), last_agent_msg_at, agent_reminders_sent
+		 COALESCE(last_patient_msg_at, last_activity_at), last_agent_msg_at, agent_reminders_sent,
+		 escalated_at
 		 FROM sessions WHERE status = 'escalated'`)
 	if err != nil {
 		return nil, fmt.Errorf("find escalated sessions: %w", err)
@@ -321,13 +322,16 @@ func (r *SessionRepo) FindEscalatedSessions(ctx context.Context) ([]session.Esca
 	var result []session.EscalatedSession
 	for rows.Next() {
 		var s session.EscalatedSession
-		var lastAgent sql.NullTime
+		var lastAgent, escalatedAt sql.NullTime
 		if err := rows.Scan(&s.ID, &s.PhoneNumber, &s.ConversationID,
-			&s.LastPatientMsg, &lastAgent, &s.RemindersSent); err != nil {
+			&s.LastPatientMsg, &lastAgent, &s.RemindersSent, &escalatedAt); err != nil {
 			return nil, fmt.Errorf("scan escalated session: %w", err)
 		}
 		if lastAgent.Valid {
 			s.LastAgentMsg = &lastAgent.Time
+		}
+		if escalatedAt.Valid {
+			s.EscalatedAt = escalatedAt.Time
 		}
 		result = append(result, s)
 	}
