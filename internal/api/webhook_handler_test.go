@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -343,8 +344,8 @@ func inboundEvent(id, identifier string) []byte {
 }
 
 // TestHandleWhatsApp_OversizedIdentifierDroppedAtEdge: un identificador que excede la
-// capacidad de la tubería (VARCHAR(20) en message_inbox, sessions, chat_events…) se
-// descarta EN EL BORDE con 200: ni WAL, ni encolado, ni 500 que dispare reintentos.
+// capacidad de la tubería (VARCHAR(63) desde la migración 040) se descarta EN EL BORDE
+// con 200: ni WAL, ni encolado, ni 500 que dispare reintentos.
 func TestHandleWhatsApp_OversizedIdentifierDroppedAtEdge(t *testing.T) {
 	secret := "test-secret"
 	birdClient := &bird.Client{WebhookSecret: secret}
@@ -353,7 +354,7 @@ func TestHandleWhatsApp_OversizedIdentifierDroppedAtEdge(t *testing.T) {
 	inbox := &mockInbox{}
 	h.SetInboxRepo(inbox)
 
-	body := inboundEvent("msg-oversized", "CO.a1b2c3d4e5f6g7h8i9j0k1l2m3n4") // 30 chars
+	body := inboundEvent("msg-oversized", "CO."+strings.Repeat("x", 70)) // 73 chars > 63
 	req := signedRequest("POST", "/api/webhooks/whatsapp", body, secret)
 	rec := httptest.NewRecorder()
 
@@ -410,5 +411,35 @@ func TestHandleWhatsApp_InboxPersistTransient_Still500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("error transitorio de BD debe seguir en 500 (fail-safe de reintento), got %d", rec.Code)
+	}
+}
+
+// TestHandleWhatsApp_UsernameIdentifierFlows (H139→fix definitivo): un identificador
+// whatsappusername de largo realista (~30 chars, ID anónimo CO.xxx) DEBE entrar al WAL y
+// encolarse — la migración 040 amplió toda la tubería a VARCHAR(63). Estos pacientes se
+// atienden vía Conversations API (PR#35), igual que los de ID corto.
+func TestHandleWhatsApp_UsernameIdentifierFlows(t *testing.T) {
+	secret := "test-secret"
+	birdClient := &bird.Client{WebhookSecret: secret}
+	pool := worker.NewMessageWorkerPool(1, 10)
+	h := NewWebhookHandler(birdClient, pool, nil, &config.Config{})
+	inbox := &mockInbox{}
+	h.SetInboxRepo(inbox)
+
+	username := "CO.a1b2c3d4e5f6g7h8i9j0k1l2m3n4" // 30 chars — no cabía en VARCHAR(20)
+	body := inboundEvent("msg-username-ok", username)
+	req := signedRequest("POST", "/api/webhooks/whatsapp", body, secret)
+	rec := httptest.NewRecorder()
+
+	h.HandleWhatsApp(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("username de 30 chars debe procesarse, got %d", rec.Code)
+	}
+	if inbox.calls != 1 || inbox.lastLen != len(username) {
+		t.Errorf("debe persistirse en el WAL completo (calls=%d len=%d)", inbox.calls, inbox.lastLen)
+	}
+	if size, _ := pool.QueueStats(); size != 1 {
+		t.Errorf("debe encolarse para el bot, got %d", size)
 	}
 }

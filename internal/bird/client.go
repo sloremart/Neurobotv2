@@ -611,13 +611,24 @@ func (c *Client) CreateConversationForPhone(ctx context.Context, phone string) (
 	// list-lookup (defecto conocido de Bird), la creación devuelve 409 y el body trae en
 	// details.conversationId el ID de la conversación EXISTENTE. Se extrae y se usa como éxito (abajo):
 	// cierra el residual de "empty conversation ID" que caía a PICKUP MANUAL.
+	//
+	// Contactos whatsappusername (privacidad de número de WhatsApp, migración 040): su identificador
+	// NO es un teléfono — declararlo como "phonenumber" garantiza el fallo. Se usa la MISMA
+	// identifierKey con la que Bird los entrega en el webhook. Nota: a diferencia del schema con
+	// phonenumber (validado en vivo 2026-07-23), esta variante aún no se ha probado contra Bird real;
+	// es un último recurso — estos contactos llegan siempre con su conversación viva del webhook, y
+	// para ellos el 409 con details.conversationId resuelve igual que para los recurrentes.
+	identifierKey := "phonenumber"
+	if !utils.IsE164(phone) {
+		identifierKey = "whatsappusername"
+	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name":      "Neuro-Bot escalación",
 		"channelId": c.channelID,
 		"participants": []map[string]interface{}{
 			{
 				"type":            "contact",
-				"identifierKey":   "phonenumber",
+				"identifierKey":   identifierKey,
 				"identifierValue": phone,
 			},
 		},

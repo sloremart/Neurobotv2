@@ -1204,3 +1204,36 @@ func TestParseRetryAfter(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateConversation_UsernameIdentifierKey (migración 040): para un contacto
+// whatsappusername (identificador no-E.164) la creación de conversación debe declarar
+// identifierKey=whatsappusername — la misma con la que Bird lo entrega en el webhook.
+// Declararlo "phonenumber" garantizaba el fallo del último recurso del handoff.
+func TestCreateConversation_UsernameIdentifierKey(t *testing.T) {
+	var gotPayload map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotPayload)
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"id":"conv-user-1"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	username := "CO.a1b2c3d4e5f6g7h8i9j0k1l2m3n4"
+	id, err := c.CreateConversationForPhone(context.Background(), username)
+	if err != nil {
+		t.Fatalf("no esperaba error: %v", err)
+	}
+	if id != "conv-user-1" {
+		t.Errorf("esperaba conv-user-1, got %q", id)
+	}
+	parts, _ := gotPayload["participants"].([]interface{})
+	if len(parts) != 1 {
+		t.Fatalf("esperaba 1 participante, got %v", gotPayload["participants"])
+	}
+	p, _ := parts[0].(map[string]interface{})
+	if p["identifierKey"] != "whatsappusername" || p["identifierValue"] != username {
+		t.Errorf("participante inesperado para username: %v", p)
+	}
+}

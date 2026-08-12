@@ -27,9 +27,12 @@ import (
 )
 
 // pipelinePhoneCapacity: capacidad de la columna phone/phone_number en TODA la tubería local
-// (message_inbox, sessions, chat_events, escalations… — VARCHAR(20) en migrations/). Un
-// identificador más largo no puede persistirse en ningún punto: se dropea en el borde.
-const pipelinePhoneCapacity = 20
+// (message_inbox, sessions, chat_events, escalations… — VARCHAR(63) desde la migración 040,
+// que amplió el esquema para los identificadores whatsappusername de la privacidad de número
+// de WhatsApp). Un identificador aún más largo no puede persistirse en ningún punto: se dropea
+// en el borde con evento medible, jamás con 500+reintento (H138-2). Mantener SINCRONIZADO con
+// la migración vigente.
+const pipelinePhoneCapacity = 63
 
 // recoverLog logs panics from background goroutines without crashing the process.
 func recoverLog(name string) {
