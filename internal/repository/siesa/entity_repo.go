@@ -173,20 +173,38 @@ func (r *EntityRepo) FindActiveByCategory(ctx context.Context, category string) 
 }
 
 func (r *EntityRepo) FindByCode(ctx context.Context, code string) (*domain.Entity, error) {
-	var query string
-	var param interface{}
-
 	if codigoInt, err := strconv.Atoi(code); err == nil {
-		// código numérico de contrato: buscar por codigo
-		query = `SELECT ` + entitySelectCols + ` FROM contratos c WITH (NOLOCK) WHERE c.codigo = @p1`
-		param = codigoInt
-	} else {
-		// código empresa (e.g. "EPS005" de sis_paci.entidad): primer contrato activo
-		query = `SELECT TOP 1 ` + entitySelectCols + ` FROM contratos c WITH (NOLOCK) WHERE c.empresa = @p1 AND c.activo = 1 ORDER BY c.codigo`
-		param = code
+		// Numeric: try by contratos.codigo first.
+		// If not found, fall through to empresa lookup — some entities have numeric empresa
+		// codes (e.g. ARL POSITIVA empresa="1423", codigo=39) that must not be mistaken for
+		// a contratos.codigo, or the session may carry the raw empresa code instead of codigo.
+		rows, err := r.db.QueryContext(ctx,
+			`SELECT `+entitySelectCols+` FROM contratos c WITH (NOLOCK) WHERE c.codigo = @p1`,
+			codigoInt)
+		if err != nil {
+			return nil, fmt.Errorf("entity FindByCode %s: %w", code, err)
+		}
+		found := rows.Next()
+		if found {
+			e, scanErr := scanEntity(rows)
+			rows.Close()
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			return &e, nil
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			rows.Close()
+			return nil, rowsErr
+		}
+		rows.Close()
+		// Not found by codigo — fall through: might be a numeric empresa code.
 	}
 
-	rows, err := r.db.QueryContext(ctx, query, param)
+	// Non-numeric code, or numeric that yielded no codigo match: try by empresa.
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT TOP 1 `+entitySelectCols+` FROM contratos c WITH (NOLOCK) WHERE c.empresa = @p1 AND c.activo = 1 ORDER BY c.codigo`,
+		code)
 	if err != nil {
 		return nil, fmt.Errorf("entity FindByCode %s: %w", code, err)
 	}
