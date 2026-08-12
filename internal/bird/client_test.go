@@ -1246,6 +1246,10 @@ func TestSendList_UsernameSinConversacion_ResuelveYEntrega(t *testing.T) {
 	username := "lucy.bosa"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "PATCH" && strings.HasPrefix(r.URL.Path, "/workspaces/ws-test/contacts/identifiers/"):
+			// Contacto SIN identifier BSUID → la vía primaria no aplica → cae a la conversación.
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"contact-x","featuredIdentifiers":[{"key":"whatsappusername","value":"` + username + `"}]}`))
 		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations":
 			w.WriteHeader(409)
 			_, _ = w.Write([]byte(`{"code":"ContactAlreadyInConversation","details":{"conversationId":"conv-lucy"}}`))
@@ -1278,6 +1282,10 @@ func TestSendText_UsernameSinConversacion_ResuelveYEntrega(t *testing.T) {
 	username := "CO.a1b2c3d4e5f6g7h8i9j0k1l2m3n4"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "PATCH" && strings.HasPrefix(r.URL.Path, "/workspaces/ws-test/contacts/identifiers/"):
+			// Resolución BSUID falla (p.ej. contactos legados) → cae a la conversación.
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"code":"NotFound"}`))
 		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations":
 			w.WriteHeader(201)
 			_, _ = w.Write([]byte(`{"id":"conv-nueva"}`))
@@ -1298,5 +1306,75 @@ func TestSendText_UsernameSinConversacion_ResuelveYEntrega(t *testing.T) {
 	}
 	if id != "msg-text-1" {
 		t.Errorf("esperaba msg-text-1, got %q", id)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Entrega por BSUID (validada EN VIVO 12-ago-2026: Channels+whatsapp_<portfolio>
+// = delivered; la vía por conversación postea 201 pero Bird nunca entrega).
+// ---------------------------------------------------------------------------
+
+// bsuidTestServer: PATCH de resolución de contacto (devuelve el BSUID) + POST de
+// Channels que captura el receiver.
+func bsuidTestServer(t *testing.T, username string, gotReceiver *map[string]interface{}) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "PATCH" && r.URL.Path == "/workspaces/ws-test/contacts/identifiers/whatsappusername/"+username:
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"contact-1","featuredIdentifiers":[{"key":"whatsappusername","value":"` + username + `"},{"key":"whatsapp_193596046348777","value":"CO.bsuid123456705"}]}`))
+		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/channels/ch-test/messages":
+			body, _ := io.ReadAll(r.Body)
+			var p map[string]interface{}
+			_ = json.Unmarshal(body, &p)
+			*gotReceiver, _ = p["receiver"].(map[string]interface{})
+			w.WriteHeader(202)
+			_, _ = w.Write([]byte(`{"id":"msg-bsuid-1","status":"accepted"}`))
+		default:
+			t.Errorf("request inesperado: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestSendText_Username_EntregaPorBsuid: la vía primaria para un username es Channels
+// con la key cruda whatsapp_<portfolio> y el BSUID del contacto (resolución vía PATCH).
+func TestSendText_Username_EntregaPorBsuid(t *testing.T) {
+	var gotReceiver map[string]interface{}
+	srv := bsuidTestServer(t, "lucy.bosa", &gotReceiver)
+
+	c := NewClientForTest(srv.URL)
+	id, err := c.SendText("lucy.bosa", "", "Hola")
+	if err != nil {
+		t.Fatalf("no esperaba error: %v", err)
+	}
+	if id != "msg-bsuid-1" {
+		t.Errorf("esperaba msg-bsuid-1, got %q", id)
+	}
+	contacts, _ := gotReceiver["contacts"].([]interface{})
+	if len(contacts) != 1 {
+		t.Fatalf("receiver sin contacts: %v", gotReceiver)
+	}
+	ct, _ := contacts[0].(map[string]interface{})
+	if ct["identifierKey"] != "whatsapp_193596046348777" || ct["identifierValue"] != "CO.bsuid123456705" {
+		t.Errorf("receiver debe direccionar al BSUID crudo, got %v", ct)
+	}
+}
+
+// TestSendList_Username_EntregaPorBsuid: la LISTA interactiva real también sale por BSUID.
+func TestSendList_Username_EntregaPorBsuid(t *testing.T) {
+	var gotReceiver map[string]interface{}
+	srv := bsuidTestServer(t, "erika.r.56", &gotReceiver)
+
+	c := NewClientForTest(srv.URL)
+	id, err := c.SendList("erika.r.56", "", "Elige", "Opciones",
+		[]ListSection{{Title: "Menú", Rows: []ListRow{{ID: "op1", Title: "Opción 1"}}}})
+	if err != nil {
+		t.Fatalf("no esperaba error: %v", err)
+	}
+	if id != "msg-bsuid-1" {
+		t.Errorf("esperaba msg-bsuid-1, got %q", id)
 	}
 }

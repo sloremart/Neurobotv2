@@ -796,8 +796,12 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
 	}
-	// Contacto sin E.164: resolver/crear su conversación y entregar por ella (único canal posible).
+	// Contacto sin E.164: la vía que ENTREGA de verdad es Channels+BSUID (validada en vivo
+	// 12-ago: la vía por conversación postea 201 pero Bird nunca la entrega — bsuid.go).
 	if !utils.IsE164(to) {
+		if id, err := c.sendViaBsuid(to, body); err == nil {
+			return id, nil
+		}
 		return c.sendViaUsernameConversation(to, conversationID, body)
 	}
 	// Fallback: Channels API
@@ -850,9 +854,12 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
 	}
-	// Contacto sin E.164: resolver/crear su conversación y entregar los BOTONES reales por ella.
-	// Si falla, degrada al texto de abajo (SendText repite la escalera con el ID ya cacheado).
+	// Contacto sin E.164: BSUID primero (única vía que entrega, bsuid.go); conversación como
+	// respaldo de visibilidad; si ambas fallan degrada al texto de abajo.
 	if !utils.IsE164(to) {
+		if id, err := c.sendViaBsuid(to, body); err == nil {
+			return id, nil
+		}
 		if id, err := c.sendViaUsernameConversation(to, conversationID, body); err == nil {
 			return id, nil
 		}
@@ -929,10 +936,12 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
 		return id, nil
 	}
-	// Contacto sin E.164: resolver/crear su conversación y entregar la LISTA real por ella (única
-	// vía que le llega). Si aun así falla (p.ej. contenido rechazado), degrada al texto de abajo,
-	// cuyo SendText repite la escalera con la conversación ya cacheada.
+	// Contacto sin E.164: BSUID primero (única vía que entrega la LISTA real, bsuid.go);
+	// conversación como respaldo; si ambas fallan degrada al texto de abajo.
 	if !utils.IsE164(to) {
+		if id, err := c.sendViaBsuid(to, msgBody); err == nil {
+			return id, nil
+		}
 		if id, err := c.sendViaUsernameConversation(to, conversationID, msgBody); err == nil {
 			return id, nil
 		}
