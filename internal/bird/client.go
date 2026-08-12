@@ -754,6 +754,34 @@ func whatsAppContentError(err error) (string, bool) {
 	return "", false
 }
 
+// sendViaUsernameConversation entrega a un contacto SIN E.164 (whatsappusername — privacidad de
+// número de WhatsApp): la Channels API jamás puede alcanzarlo (el identificador no es un teléfono),
+// su ÚNICO canal es la Conversations API. Resuelve el conversationId con la escalera
+// caché → crear-conversación (identifierKey=whatsappusername; el 409 devuelve en
+// details.conversationId la conversación EXISTENTE — el caso normal: el paciente acaba de
+// escribir) → enviar por él. failedConvID es la conversación que ya falló (no reintentarla).
+//
+// Incidente H141-1 (12-ago, lucy***bosa): el paciente username entró al bot (migración 040) pero
+// llegaba aquí con conversationID vacío y el único fallback existía en SendText y solo con
+// convID != "" → caía al gate E.164 y no recibía NADA. Este helper cubre texto, botones y listas,
+// con o sin conversación previa.
+func (c *Client) sendViaUsernameConversation(to, failedConvID string, body interface{}) (string, error) {
+	if cached := c.GetCachedConversationID(to); cached != "" && cached != failedConvID {
+		if id, err := c.sendToConversation(cached, body, false); err == nil {
+			return id, nil
+		}
+	}
+	if resolved, cerr := c.CreateConversationForPhone(context.Background(), to); cerr == nil && resolved != "" && resolved != failedConvID {
+		c.CacheConversationID(to, resolved)
+		if id, err := c.sendToConversation(resolved, body, false); err == nil {
+			slog.Info("delivered_via_resolved_conversation",
+				"phone", utils.MaskPhone(to), "conversation_id", resolved)
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+}
+
 // SendText envía un mensaje de texto simple.
 // If conversationID is provided, routes via Conversations API (WhatsApp + Inbox).
 // Falls back to Channels API (WhatsApp only) if conversationID is empty or Conversations API fails.
@@ -768,19 +796,9 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
 	}
-	// Contacto sin E.164 (whatsappusername — privacidad de número de WhatsApp): la Channels API
-	// jamás puede entregarle; su ÚNICO canal es la conversación. Si tenía una y murió, último
-	// recurso: recrearla (mismo mecanismo que el handoff de escalación) y entregar por la nueva.
-	if conversationID != "" && !utils.IsE164(to) {
-		if created, cerr := c.CreateConversationForPhone(context.Background(), to); cerr == nil && created != "" && created != conversationID {
-			c.CacheConversationID(to, created)
-			if id, err := c.sendToConversation(created, body, false); err == nil {
-				slog.Info("text_delivered_via_recreated_conversation",
-					"phone", utils.MaskPhone(to), "conversation_id", created)
-				return id, nil
-			}
-		}
-		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+	// Contacto sin E.164: resolver/crear su conversación y entregar por ella (único canal posible).
+	if !utils.IsE164(to) {
+		return c.sendViaUsernameConversation(to, conversationID, body)
 	}
 	// Fallback: Channels API
 	payload := map[string]interface{}{
@@ -831,6 +849,13 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
+	}
+	// Contacto sin E.164: resolver/crear su conversación y entregar los BOTONES reales por ella.
+	// Si falla, degrada al texto de abajo (SendText repite la escalera con el ID ya cacheado).
+	if !utils.IsE164(to) {
+		if id, err := c.sendViaUsernameConversation(to, conversationID, body); err == nil {
+			return id, nil
+		}
 	}
 	// Fallback: botones como texto numerado. Se conserva la conversación: si los botones fueron
 	// rechazados por contenido/tipo pero la conversación vive, el texto sale por ahí (único canal
@@ -903,6 +928,14 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 
 	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
 		return id, nil
+	}
+	// Contacto sin E.164: resolver/crear su conversación y entregar la LISTA real por ella (única
+	// vía que le llega). Si aun así falla (p.ej. contenido rechazado), degrada al texto de abajo,
+	// cuyo SendText repite la escalera con la conversación ya cacheada.
+	if !utils.IsE164(to) {
+		if id, err := c.sendViaUsernameConversation(to, conversationID, msgBody); err == nil {
+			return id, nil
+		}
 	}
 	// Fallback: lista como texto numerado. Se conserva la conversación (ver SendButtons): para
 	// contactos whatsappusername la conversación es el único canal que entrega.

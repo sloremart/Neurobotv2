@@ -1237,3 +1237,66 @@ func TestCreateConversation_UsernameIdentifierKey(t *testing.T) {
 		t.Errorf("participante inesperado para username: %v", p)
 	}
 }
+
+// TestSendList_UsernameSinConversacion_ResuelveYEntrega (H141-1, caso real lucy***bosa):
+// un contacto whatsappusername SIN conversationID conocido debe RESOLVER su conversación
+// (crear → 409 devuelve la existente, el caso normal: acaba de escribir) y entregar por
+// ella — antes caía directo al gate E.164 y el paciente no recibía NADA.
+func TestSendList_UsernameSinConversacion_ResuelveYEntrega(t *testing.T) {
+	username := "lucy.bosa"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations":
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"code":"ContactAlreadyInConversation","details":{"conversationId":"conv-lucy"}}`))
+		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations/conv-lucy/messages":
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"id":"msg-list-lucy"}`))
+		default:
+			t.Errorf("request inesperado: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	id, err := c.SendList(username, "", "Elige una opción", "Ver opciones",
+		[]ListSection{{Title: "Menú", Rows: []ListRow{{ID: "op1", Title: "Opción 1"}}}})
+	if err != nil {
+		t.Fatalf("el username debe entregarse vía conversación resuelta, got err: %v", err)
+	}
+	if id != "msg-list-lucy" {
+		t.Errorf("esperaba msg-list-lucy, got %q", id)
+	}
+	if cached := c.GetCachedConversationID(username); cached != "conv-lucy" {
+		t.Errorf("la conversación resuelta debe quedar cacheada, got %q", cached)
+	}
+}
+
+// TestSendText_UsernameSinConversacion_ResuelveYEntrega: mismo comportamiento para texto.
+func TestSendText_UsernameSinConversacion_ResuelveYEntrega(t *testing.T) {
+	username := "CO.a1b2c3d4e5f6g7h8i9j0k1l2m3n4"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations":
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"id":"conv-nueva"}`))
+		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations/conv-nueva/messages":
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"id":"msg-text-1"}`))
+		default:
+			t.Errorf("request inesperado: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	id, err := c.SendText(username, "", "Hola")
+	if err != nil {
+		t.Fatalf("no esperaba error: %v", err)
+	}
+	if id != "msg-text-1" {
+		t.Errorf("esperaba msg-text-1, got %q", id)
+	}
+}
