@@ -34,7 +34,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1024M
+          # 2048M: valor que prod corría a mano desde el incidente 28-jul (el repo decía 1024M y
+          # cada pull chocaba con esa edición local). Se adopta en el repo para que prod haga pull
+          # limpio sin ediciones locales al yml.
+          memory: 2048M
           cpus: '2.0'
         reservations:
           memory: 256M
