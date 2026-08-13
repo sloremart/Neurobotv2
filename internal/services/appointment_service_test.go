@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -172,7 +173,7 @@ func TestConsolidateIntoAppointment_InPlaceAddsDependent(t *testing.T) {
 	svc := NewAppointmentService(repo, &config.Config{})
 	appt := apptWithProcs("18234", proc("930860", 2), proc("891509", 8)) // EMG×2 + NC×8
 
-	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891514", "Onda F", 1)})
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891514", "Onda F", 1)}, "13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestConsolidateIntoAppointment_NCAlreadyPresent(t *testing.T) {
 	svc := NewAppointmentService(repo, &config.Config{})
 	appt := apptWithProcs("18234", proc("930860", 2), proc("891509", 8)) // EMG×2 + NC×8
 
-	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891509", "NC", 1)})
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891509", "NC", 1)}, "13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,7 @@ func TestConsolidateIntoAppointment_SuffixNCNotDuplicated(t *testing.T) {
 	svc := NewAppointmentService(repo, &config.Config{})
 	appt := apptWithProcs("18235", proc("930860", 2), proc("891509-8", 1)) // EMG×2 + NC como 891509-8
 
-	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891514", "Onda F", 1)})
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("891514", "Onda F", 1)}, "13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +281,7 @@ func TestConsolidateIntoAppointment_GrowsToReschedule(t *testing.T) {
 	svc := NewAppointmentService(repo, &config.Config{})
 	appt := apptWithProcs("18234", proc("930860", 2)) // EMG×2 (1 slot)
 
-	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("29120", "EMG", 2)})
+	res, err := svc.ConsolidateIntoAppointment(context.Background(), appt, []CUPSEntry{cup("29120", "EMG", 2)}, "13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1057,4 +1058,56 @@ func TestCreateWithConsecutive_Multiple(t *testing.T) {
 
 func (m *mockAppointmentRepo) CancelBatchAndBlockSlots(_ context.Context, _ []string, _, _, _ string) error {
 	return nil
+}
+
+// TestConsolidateIntoAppointment_RespetaTopeMRC (H145): la consolidación agrega cantidades a
+// una cita existente — NO puede saltarse el tope mensual del grupo MRC. Al tope: no agrega,
+// devuelve ErrMRCLimitReached y la cita original queda intacta.
+func TestConsolidateIntoAppointment_RespetaTopeMRC(t *testing.T) {
+	batchCalled := false
+	repo := &mockAppointmentRepo{
+		slotCountFn: func(_ context.Context, _ string) (int, error) { return 4, nil },
+		countMonthlyByGroupFn: func(_ context.Context, _ []string, _, _ int) (int, error) {
+			return 930, nil // 930 de 932 (otros_procedimientos)
+		},
+		createProcBatchFn: func(_ context.Context, _ []domain.CreateAppointmentProcedureInput) error {
+			batchCalled = true
+			return nil
+		},
+	}
+	svc := NewAppointmentService(repo, &config.Config{CupsGroupLimitsEnabled: true})
+	appt := apptWithProcs("5001", proc("930860", 2)) // EMG×2 ya en la cita
+
+	// Orden dependiente (Onda F): applyFisiatriaRules sintetiza NC 891509×8 (EMG×4) → la
+	// demanda NUEVA del grupo otros_procedimientos supera el tope (930 + demanda > 932).
+	_, err := svc.ConsolidateIntoAppointment(context.Background(), appt,
+		[]CUPSEntry{cup("891514", "Onda F", 1)}, "5") // paciente MRC subsidiado
+	if !errors.Is(err, ErrMRCLimitReached) {
+		t.Fatalf("al tope debe devolver ErrMRCLimitReached, got %v", err)
+	}
+	if batchCalled {
+		t.Error("NO debe insertar procedimientos cuando el tope está alcanzado")
+	}
+}
+
+// TestConsolidateIntoAppointment_NoMRC_NoConsultaTope: contrato no-MRC no consulta el conteo.
+func TestConsolidateIntoAppointment_NoMRC_NoConsultaTope(t *testing.T) {
+	countCalled := false
+	repo := &mockAppointmentRepo{
+		slotCountFn: func(_ context.Context, _ string) (int, error) { return 4, nil },
+		countMonthlyByGroupFn: func(_ context.Context, _ []string, _, _ int) (int, error) {
+			countCalled = true
+			return 0, nil
+		},
+		createProcBatchFn: func(_ context.Context, _ []domain.CreateAppointmentProcedureInput) error { return nil },
+	}
+	svc := NewAppointmentService(repo, &config.Config{CupsGroupLimitsEnabled: true})
+	appt := apptWithProcs("5002", proc("930860", 2))
+	if _, err := svc.ConsolidateIntoAppointment(context.Background(), appt,
+		[]CUPSEntry{cup("891514", "Onda F", 1)}, "13"); err != nil {
+		t.Fatalf("no esperaba error: %v", err)
+	}
+	if countCalled {
+		t.Error("contrato no-MRC no debe consultar el conteo mensual")
+	}
 }

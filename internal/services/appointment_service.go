@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -154,6 +155,56 @@ var mrcGroups = map[string]struct {
 	"polisomnografia":      {MaxPerMonth: 57, CupsCodes: []string{"891704", "891703", "891704-1", "891704PED", "891703-1", "891703PED"}},
 	"otros_procedimientos": {MaxPerMonth: 932, CupsCodes: []string{"891515", "891514", "930820", "891511", "891509", "930860", "891530", "952303", "954626", "952302", "930103", "930821", "954624", "954625", "952301", "930801", "891503", "891508"}},
 }
+
+// MRCGroupDemand describe la demanda de UNA cita sobre un grupo MRC: el CUP representativo del
+// grupo dentro de la cita y la cantidad AGREGADA que la cita consume de ese grupo. Una cita
+// multi-CUP puede demandar de varios grupos (o varios CUPS del mismo grupo: 891509-8 + 891515
+// suman 9 en otros_procedimientos) — validar solo el CUP "principal" subcontaba la demanda.
+type MRCGroupDemand struct {
+	GroupName string
+	RepCup    string
+	Quantity  int
+}
+
+// MRCGroupDemands agrega las cantidades de los CUPS de una cita por grupo MRC. CUPS fuera de
+// grupos MRC no aportan. Quantity<1 en la entrada cae al sufijo del código (CupQuantity).
+func MRCGroupDemands(cups []CUPSEntry) []MRCGroupDemand {
+	byGroup := map[string]*MRCGroupDemand{}
+	var order []string
+	for _, c := range cups {
+		group, _, found := IsMRCGroupCups(c.Code)
+		if !found {
+			continue
+		}
+		d, ok := byGroup[group]
+		if !ok {
+			d = &MRCGroupDemand{GroupName: group, RepCup: c.Code}
+			byGroup[group] = d
+			order = append(order, group)
+		}
+		d.Quantity += orderQuantity(c.Code, c.Quantity)
+	}
+	out := make([]MRCGroupDemand, 0, len(order))
+	for _, g := range order {
+		out = append(out, *byGroup[g])
+	}
+	return out
+}
+
+// MRCGroupsCatalog expone el catálogo de grupos MRC (nombre → tope y CUPS) para auditoría y
+// endpoints de solo lectura. Devuelve una copia superficial (los slices no deben mutarse).
+func MRCGroupsCatalog() map[string]struct {
+	MaxPerMonth int
+	CupsCodes   []string
+} {
+	return mrcGroups
+}
+
+// ErrMRCLimitReached señala que la operación agregaría consumo de un grupo MRC por encima del tope mensual.
+// Regla de negocio ABSOLUTA (12-ago-2026, reporte de la entidad: se agendó por encima del tope):
+// NINGÚN camino — flujo principal, lista de espera, reprogramación, consolidación EMG — puede
+// agendar superado el límite.
+var ErrMRCLimitReached = errors.New("limite mensual MRC alcanzado")
 
 // IsMRCPatient determina si un paciente está sujeto a validación MRC según su contrato.
 // MRC = contratos 5 (SANITAS MRC SUBSIDIADO) y 6 (SANITAS MRC CONTRIBUTIVO).
@@ -420,7 +471,7 @@ type ConsolidateResult struct {
 // trae EMG y sube el conteo) → NO muta nada y devuelve NeedsReschedule=true; el flujo de agendamiento
 // reprograma el bloque completo con la maquinaria de reserva. El Servicio/tabla de cada CUP lo resuelve
 // el repo (resolveProcServicio).
-func (s *AppointmentService) ConsolidateIntoAppointment(ctx context.Context, appt *domain.Appointment, newCups []CUPSEntry) (ConsolidateResult, error) {
+func (s *AppointmentService) ConsolidateIntoAppointment(ctx context.Context, appt *domain.Appointment, newCups []CUPSEntry, contractCode string) (ConsolidateResult, error) {
 	if appt == nil {
 		return ConsolidateResult{}, fmt.Errorf("cita nil")
 	}
@@ -492,6 +543,31 @@ func (s *AppointmentService) ConsolidateIntoAppointment(ctx context.Context, app
 		// El bloque ya cubría todos los CUPS nuevos (p.ej. la NC ya estaba sintetizada).
 		return ConsolidateResult{Espacios: finalGroup.Espacios}, nil
 	}
+
+	// GATE MRC (H145: la consolidación agregaba cantidades — NC-8/16 — a la cita SIN validar el
+	// tope mensual del grupo). La demanda son SOLO los CUPS que se van a AGREGAR (los existentes
+	// ya cuentan en el consumo del mes); el mes evaluado es el de la CITA ancla. Regla absoluta:
+	// superado el tope, no se agrega — el flujo informa al paciente.
+	if IsMRCPatient(contractCode) {
+		addEntries := make([]CUPSEntry, 0, len(toAdd))
+		for _, p := range toAdd {
+			addEntries = append(addEntries, CUPSEntry{Code: p.CupCode, Quantity: p.Quantity})
+		}
+		for _, d := range MRCGroupDemands(addEntries) {
+			blocked, cerr := s.CheckMRCLimitForMonth(ctx, d.RepCup, contractCode, d.Quantity,
+				appt.Date.Year(), int(appt.Date.Month()), "")
+			if cerr != nil {
+				// Fail-CLOSED: una consolidación es opcional (el paciente conserva su cita EMG);
+				// ante la duda no se agrega consumo de un grupo con tope contractual.
+				return ConsolidateResult{}, fmt.Errorf("verificando tope MRC (%s): %w", d.GroupName, cerr)
+			}
+			if blocked {
+				return ConsolidateResult{}, fmt.Errorf("%w: grupo %s en %04d-%02d",
+					ErrMRCLimitReached, d.GroupName, appt.Date.Year(), int(appt.Date.Month()))
+			}
+		}
+	}
+
 	if err := s.repo.CreateAppointmentProcedureBatch(ctx, toAdd); err != nil {
 		return ConsolidateResult{}, fmt.Errorf("agregar procedimientos a la cita %d: %w", apptID, err)
 	}

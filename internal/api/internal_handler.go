@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,6 +116,10 @@ type SiesaAnalyticsReader interface {
 	BotAppointmentsWithCups(ctx context.Context, botCedula string, days int) ([]domain.BotAppointmentCup, error)
 	// SlotRecovery: KPI recuperación de cupos cancelados (serie por día + IDs de citas que re-ocuparon).
 	SlotRecovery(ctx context.Context, days int) (domain.SlotRecoveryData, error)
+	// MRCGroupMonthlyConsumption: consumo del mes de un grupo MRC (misma métrica del gate del bot)
+	// + cuánto de ese consumo creó el BOT (cod_user_asigna_cita = cédula del bot). Para validar
+	// reportes de sobrecupo de la entidad y para el monitoreo del auditor (H145).
+	MRCGroupMonthlyConsumption(ctx context.Context, cupsCodes []string, year, month int, botCedula string) (total, bot int, err error)
 }
 
 // CupsMedicoReader devuelve los médicos habilitados para un CUPS (cups_medico, catálogo local).
@@ -2456,4 +2461,75 @@ func groupAppointmentsByPatientID(appointments []domain.Appointment) map[string]
 		groups[appt.PatientID] = append(groups[appt.PatientID], appt)
 	}
 	return groups
+}
+
+// HandleMRCConsumption expone el consumo mensual por grupo MRC con la MISMA métrica del gate del
+// bot, desglosado en total vs creado-por-el-bot. Valida reportes de sobrecupo de la entidad
+// (¿sucedió? ¿cuánto fue del bot?) sin entrar a la BD a mano, y le da al auditor una vigilancia
+// permanente del tope (H145). GET /api/internal/siesa/mrc-consumption?year=YYYY&month=M
+func (h *InternalHandler) HandleMRCConsumption(w http.ResponseWriter, r *http.Request) {
+	if h.siesaAnalytics == nil {
+		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
+		return
+	}
+	now := time.Now()
+	year, month := now.Year(), int(now.Month())
+	if y := r.URL.Query().Get("year"); y != "" {
+		if n, err := strconv.Atoi(y); err == nil && n >= 2020 && n <= 2100 {
+			year = n
+		}
+	}
+	if m := r.URL.Query().Get("month"); m != "" {
+		if n, err := strconv.Atoi(m); err == nil && n >= 1 && n <= 12 {
+			month = n
+		}
+	}
+	botCedula := ""
+	if h.cfg != nil {
+		botCedula = h.cfg.SIESAAssignUserCedula
+	}
+
+	type groupOut struct {
+		Group    string `json:"group"`
+		Limit    int    `json:"limit"`
+		Consumed int    `json:"consumed"`
+		Bot      int    `json:"bot_consumed"`
+		Others   int    `json:"others_consumed"`
+		Over     int    `json:"over"` // consumido - tope (0 si no hay exceso)
+	}
+	catalog := services.MRCGroupsCatalog()
+	names := make([]string, 0, len(catalog))
+	for name := range catalog {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]groupOut, 0, len(names))
+	sctx, cancel := context.WithTimeout(r.Context(), analyticsQueryTimeout)
+	defer cancel()
+	for _, name := range names {
+		g := catalog[name]
+		total, bot, err := h.siesaAnalytics.MRCGroupMonthlyConsumption(sctx, g.CupsCodes, year, month, botCedula)
+		if err != nil {
+			if isClientAbort(err) {
+				slog.Info("mrc consumption abortado por el cliente")
+				return
+			}
+			slog.Error("mrc consumption failed", "group", name, "error", err)
+			http.Error(w, "failed to read mrc consumption", http.StatusInternalServerError)
+			return
+		}
+		over := total - g.MaxPerMonth
+		if over < 0 {
+			over = 0
+		}
+		out = append(out, groupOut{
+			Group: name, Limit: g.MaxPerMonth, Consumed: total,
+			Bot: bot, Others: total - bot, Over: over,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"year": year, "month": month, "bot_cedula_masked": utils.MaskPhone(botCedula), "groups": out,
+	})
 }

@@ -26,32 +26,97 @@ import (
 // leída de procedures_json + current_procedure_idx. La orden llega con el CUP base y la cantidad
 // real (del OCR, notación "(#N)") vive en CUPSEntry.Quantity. Se suma sobre los CUPS del grupo
 // (mín. 1). Se usa para que el tope mensual MRC sume la cantidad real de esta orden, no 1.
-// mrcMonthFilter arma el filtro de tope mensual MRC para la búsqueda de slots. Aplica cuando el flujo
-// normal marcó mrc_limit_check, o SIEMPRE en reprogramación (reschedule_appt_id presente): al reprogramar
-// el tope debe RE-EVALUARSE. Excluye del conteo la cita que se reprograma: si el slot elegido cae en el
-// MISMO mes de esa cita, su cantidad no se cuenta (es un movimiento, no consumo nuevo); si cae en OTRO
-// mes, la cita no está en ese conteo y la evaluación es la normal. Devuelve nil si no aplica.
-// CheckMRCLimitForMonth se auto-protege (retorna no-bloqueado para no-MRC), así que activarlo de más
-// es inofensivo. La lista de espera NO usa este helper (arma su propio filtro sin exclusión: es alta nueva).
+// mrcMonthFilter arma el filtro de tope mensual MRC para la búsqueda de slots.
+//
+// H145 (12-ago-2026, reporte de la entidad: se agendó por encima del tope): antes SOLO se activaba
+// si el flujo normal había pasado por CHECK_MRC_LIMIT (flag mrc_limit_check) o en reprogramación.
+// Los caminos de LISTA DE ESPERA (wl_schedule proactivo y preselección) entran DIRECTO a
+// SEARCH_SLOTS sin ese flag → agendaban SIN tope. Regla absoluta del negocio: NINGÚN camino puede
+// agendar superado el límite → el filtro se activa SIEMPRE que el paciente sea MRC y la cita
+// demande de algún grupo MRC, sin depender de flags de ruta. CheckMRCLimitForMonth es barato para
+// no-MRC (corta antes de tocar la BD), así que no hay costo para el resto de pacientes.
+//
+// Además valida TODOS los grupos MRC que la cita demanda con su cantidad AGREGADA (una cita
+// 891509-8 + 891515 demanda 9 de otros_procedimientos; validar solo el CUP "principal" subcontaba).
+// En reprogramación excluye del conteo la cita que se mueve (reschedule_appt_id).
 func mrcMonthFilter(ctx context.Context, apptSvc *services.AppointmentService, sess *session.Session, code string) func(int, int) (bool, error) {
 	if apptSvc == nil {
 		return nil
 	}
-	rescheduleID := sess.GetContext("reschedule_appt_id")
-	if sess.GetContext("mrc_limit_check") != "1" && rescheduleID == "" {
+	contract := sess.GetContext("patient_contract")
+	if !services.IsMRCPatient(contract) {
 		return nil
 	}
-	contract := sess.GetContext("patient_contract")
-	qty := currentProcQuantity(sess)
-	return func(year, month int) (bool, error) {
-		blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, code, contract, qty, year, month, rescheduleID)
-		if err != nil {
-			// N-30: fail-open (no bloquear el mes ante un error transitorio) pero loguear.
-			slog.Warn("mrc_month_filter_error_fail_open", "cups_code", code, "year", year, "month", month, "error", err)
-			return true, nil
-		}
-		return !blocked, nil
+	demands := currentMRCDemands(sess, code)
+	if len(demands) == 0 {
+		return nil // la cita no consume de ningún grupo MRC
 	}
+	rescheduleID := sess.GetContext("reschedule_appt_id")
+	return func(year, month int) (bool, error) {
+		for _, d := range demands {
+			blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, d.RepCup, contract, d.Quantity, year, month, rescheduleID)
+			if err != nil {
+				// N-30: fail-open (no bloquear el mes ante un error transitorio) pero loguear.
+				// El gate FINAL de createAppointmentHandler re-valida fail-closed antes de crear.
+				slog.Warn("mrc_month_filter_error_fail_open", "cups_code", d.RepCup, "year", year, "month", month, "error", err)
+				continue
+			}
+			if blocked {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+}
+
+// currentMRCDemands calcula la demanda por grupo MRC del grupo de procedimientos ACTUAL de la
+// sesión. Si procedures_json no parsea O viene vacío/sin CUPS (contextos legados o degradados),
+// cae al CUP dado con la cantidad derivable — defensivo: mejor validar de menos que no validar.
+func currentMRCDemands(sess *session.Session, fallbackCode string) []services.MRCGroupDemand {
+	var groups []services.CUPSGroup
+	if err := json.Unmarshal([]byte(sess.GetContext("procedures_json")), &groups); err == nil {
+		idx, _ := strconv.Atoi(sess.GetContext("current_procedure_idx"))
+		if idx >= 0 && idx < len(groups) && len(groups[idx].Cups) > 0 {
+			return services.MRCGroupDemands(groups[idx].Cups)
+		}
+	}
+	return services.MRCGroupDemands([]services.CUPSEntry{{Code: fallbackCode, Quantity: currentProcQuantity(sess)}})
+}
+
+// mrcFinalGateBlocked es el CANDADO FINAL antes de crear la cita: re-valida el tope MRC contra el
+// MES DEL SLOT ELEGIDO. Cubre todo camino del bot que llegue a CREATE_APPOINTMENT (flujo normal,
+// lista de espera, reprogramaciones) y el TOCTOU entre mostrar slots y confirmar. A diferencia del
+// filtro de búsqueda (fail-open), aquí es FAIL-CLOSED: en la duda no se crea consumo de un grupo
+// con tope contractual. Devuelve el nombre del grupo bloqueado ("" = puede crear).
+func mrcFinalGateBlocked(ctx context.Context, apptSvc *services.AppointmentService, sess *session.Session, slotDate string) string {
+	if apptSvc == nil {
+		return ""
+	}
+	contract := sess.GetContext("patient_contract")
+	if !services.IsMRCPatient(contract) {
+		return ""
+	}
+	demands := currentMRCDemands(sess, sess.GetContext("cups_code"))
+	if len(demands) == 0 {
+		return ""
+	}
+	dt, err := time.Parse("2006-01-02", slotDate)
+	if err != nil {
+		slog.Warn("mrc_final_gate_bad_date", "slot_date", slotDate, "error", err)
+		return "" // sin fecha parseable no hay mes que validar; el filtro de búsqueda ya actuó
+	}
+	rescheduleID := sess.GetContext("reschedule_appt_id")
+	for _, d := range demands {
+		blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, d.RepCup, contract, d.Quantity, dt.Year(), int(dt.Month()), rescheduleID)
+		if err != nil {
+			slog.Error("mrc_final_gate_error_fail_closed", "group", d.GroupName, "error", err)
+			return d.GroupName
+		}
+		if blocked {
+			return d.GroupName
+		}
+	}
+	return ""
 }
 
 func currentProcQuantity(sess *session.Session) int {
@@ -1183,6 +1248,29 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			)
 			return sm.NewResult(sm.StateBookingFailed).
 				WithContext("booking_failure_reason", "slot_not_found"), nil
+		}
+
+		// CANDADO FINAL MRC (H145): re-validar el tope contra el MES del slot elegido antes de
+		// crear. Cubre los caminos que no pasaron por el filtro de búsqueda (lista de espera,
+		// entradas directas) y el TOCTOU entre mostrar y confirmar. FAIL-CLOSED.
+		if group := mrcFinalGateBlocked(ctx, apptSvc, sess, slot.Date); group != "" {
+			slog.Warn("mrc_final_gate_blocked (un camino llegó a crear sin filtro previo o el cupo se agotó en el interín)",
+				"session_id", sess.ID, "group", group, "slot_date", slot.Date,
+				"from_waiting_list", sess.GetContext("from_waiting_list"),
+				"reschedule_appt_id", sess.GetContext("reschedule_appt_id"))
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "mrc_limit_blocked",
+				observability.EmitOpts{
+					Phone: sess.PhoneNumber, Reason: group,
+					Attrs: map[string]interface{}{"slot_date": slot.Date},
+				})
+			return sm.NewResult(sm.StateFallbackMenu).
+				WithButtons(
+					"No fue posible agendar esta cita: se alcanzó el límite mensual autorizado para este tipo de procedimiento con tu convenio. "+
+						"Por favor comunícate con la clínica para más información. ¿Deseas volver al inicio o terminar el chat?",
+					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
+					sm.Button{Text: "Terminar chat", Payload: "action:end"},
+				).
+				WithEvent("mrc_limit_blocked", map[string]interface{}{"group": group, "slot_date": slot.Date}), nil
 		}
 
 		// Build observations

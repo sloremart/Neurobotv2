@@ -1180,3 +1180,7 @@ func TestIsClientAbort(t *testing.T) {
 		t.Error("nil no es abort")
 	}
 }
+
+func (m *mockSiesaAnalyticsReader) MRCGroupMonthlyConsumption(_ context.Context, _ []string, _, _ int, _ string) (int, int, error) {
+	return 0, 0, nil
+}

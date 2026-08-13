@@ -482,3 +482,38 @@ func (r *AnalyticsRepo) SlotRecovery(ctx context.Context, days int) (domain.Slot
 	r.store(key, out)
 	return out, nil
 }
+
+// MRCGroupMonthlyConsumption devuelve el consumo del mes de un grupo MRC — la MISMA métrica que
+// usa el gate del bot (CountMonthlyByGroup: SUM de cantidad por sufijo o Cantidad, contratos 5/6,
+// estado<>'C') — y cuánto de ese consumo tiene al BOT como creador (cod_user_asigna_cita = su
+// cédula). Para validar reportes de sobrecupo de la entidad y monitoreo del auditor (H145).
+// Solo lectura; sin NOLOCK deliberadamente: es la métrica de cupo, debe coincidir con el gate.
+func (r *AnalyticsRepo) MRCGroupMonthlyConsumption(ctx context.Context, cupsCodes []string, year, month int, botCedula string) (total, bot int, err error) {
+	if len(cupsCodes) == 0 {
+		return 0, 0, nil
+	}
+	startDate := fmt.Sprintf("%04d-%02d-01", year, month)
+	endDate := time.Date(year, time.Month(month)+1, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+	clause, cupsArgs := mrcGroupPredicate(cupsCodes, 4)
+	allArgs := append([]interface{}{startDate, endDate, botCedula}, cupsArgs...)
+
+	err = r.db.QueryRowContext(ctx, fmt.Sprintf(`
+	SELECT
+	  ISNULL(SUM(qty.n), 0) AS total,
+	  ISNULL(SUM(CASE WHEN LTRIM(RTRIM(ISNULL(c.cod_user_asigna_cita,''))) = @p3 THEN qty.n ELSE 0 END), 0) AS bot
+	FROM citas c
+	JOIN citas_procedimientos cp ON cp.id_cita = c.id
+	CROSS APPLY (SELECT CASE WHEN CHARINDEX('-', cp.id_procedimiento) > 0
+	          AND TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10)) IS NOT NULL
+	     THEN TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10))
+	     ELSE ISNULL(cp.Cantidad, 1) END AS n) qty
+	WHERE c.fecha >= @p1 AND c.fecha < @p2
+	  AND c.contrato IN ('5', '6')
+	  AND %s
+	  AND c.estado <> 'C'`, clause), allArgs...,
+	).Scan(&total, &bot)
+	if err != nil {
+		return 0, 0, fmt.Errorf("siesa mrc consumption: %w", err)
+	}
+	return total, bot, nil
+}

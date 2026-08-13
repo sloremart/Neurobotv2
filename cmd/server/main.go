@@ -557,6 +557,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/agents/bird", internalHandler.HandleBirdAgents)
 		internalMux.HandleFunc("GET /api/internal/agents/bird-calls", internalHandler.HandleBirdAgentCalls)
 		internalMux.HandleFunc("GET /api/internal/siesa/conversion", internalHandler.HandleSiesaConversion)
+		internalMux.HandleFunc("GET /api/internal/siesa/mrc-consumption", internalHandler.HandleMRCConsumption)
 		internalMux.HandleFunc("GET /api/internal/siesa/bot-share", internalHandler.HandleSiesaBotShare)
 		internalMux.HandleFunc("GET /api/internal/siesa/conciliacion", internalHandler.HandleSiesaConciliacion)
 		internalMux.HandleFunc("GET /api/internal/siesa/slot-recovery", internalHandler.HandleSiesaSlotRecovery)

@@ -177,6 +177,10 @@ var catalog = map[string]stepSpec{
 	// (el bucle que el guard corta); si cap_reached aparece = una sesión pidió >3 escalaciones.
 	"escalacion/escalation_suppressed_resume": {LvOutcome, "blocked", ""},
 	"escalacion/escalation_cap_reached":       {LvOutcome, "blocked", ""},
+	// H145 (12-ago-2026, reporte de la entidad): tope mensual MRC. Es el CANDADO FINAL disparándose
+	// (create/consolidación) — cada ocurrencia con reason=grupo; si crece sostenido con
+	// from_waiting_list, algún camino upstream sigue entrando sin filtro de búsqueda.
+	"agendar/mrc_limit_blocked": {LvOutcome, "blocked", ""},
 
 	// Recuperación asistida por IA (§11) — trace sess:<id>. Concepto distinto de escalación.
 	"recuperacion/ai_recovery_started":  {LvMilestone, "info", ""},    // 3.ª falla del bot → arranca IA

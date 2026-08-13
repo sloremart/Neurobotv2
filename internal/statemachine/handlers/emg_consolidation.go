@@ -3,10 +3,12 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -88,8 +90,16 @@ func confirmConsolidateHandler(apptSvc *services.AppointmentService) sm.StateHan
 				//nolint:nilerr // se maneja escalando a agente, no se propaga el error a la FSM.
 				return escalateEmg("No pudimos procesar los procedimientos. Te comunico con un agente."), nil
 			}
-			res, err := apptSvc.ConsolidateIntoAppointment(ctx, appt, newCups)
+			res, err := apptSvc.ConsolidateIntoAppointment(ctx, appt, newCups, sess.GetContext("patient_contract"))
 			if err != nil {
+				// H145: tope mensual MRC alcanzado — regla ABSOLUTA: no se agrega consumo. El
+				// paciente conserva su cita EMG original; se informa el límite (no es error técnico).
+				if errors.Is(err, services.ErrMRCLimitReached) {
+					observability.Emit(observability.TraceSession(sess.ID), "agendar", "mrc_limit_blocked",
+						observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "emg_consolidation"})
+					return buildAutoCloseResult("No fue posible agregar estos procedimientos: se alcanzó el límite mensual autorizado para este tipo de procedimiento con tu convenio. Tu cita original se mantiene. Por favor comunícate con la clínica para más información.").
+						WithEvent("mrc_limit_blocked", map[string]interface{}{"appt_id": apptID, "source": "emg_consolidation"}), nil
+				}
 				slog.Warn("emg_consolidation: consolidate failed", "appt_id", apptID, "error", err)
 				return escalateEmg("No pudimos agregar los procedimientos a tu cita. Te comunico con un agente."), nil
 			}
