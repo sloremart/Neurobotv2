@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -58,14 +59,19 @@ func TestIsPermanentSendError_Classification(t *testing.T) {
 	}
 }
 
-// Un identificador que no es E.164 (nombres como "felipe.rubio") NUNCA puede entregarse por la
-// Channels API: el gate debe cortar ANTES de la llamada HTTP (cero costo) con ErrNonContactable.
+// Un identificador que no es E.164 (nombres como "felipe.rubio") NUNCA se envía por la Channels
+// API con el valor crudo. Desde el fix BSUID (1a0c89e) SÍ se intenta resolver el contacto (PATCH)
+// y su conversación; si NINGUNA vía existe, termina en ErrNonContactable y la Channels API de
+// mensajes jamás recibe el identificador crudo.
 func TestSendText_NonE164_NoHTTPCall(t *testing.T) {
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"id":"x"}`))
+	var channelHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/channels/") {
+			channelHits.Add(1)
+		}
+		// Resolución BSUID y creación de conversación fallan (contacto irresoluble).
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"code":"NotFound"}`))
 	}))
 	defer srv.Close()
 
@@ -74,8 +80,8 @@ func TestSendText_NonE164_NoHTTPCall(t *testing.T) {
 	if !errors.Is(err, ErrNonContactable) {
 		t.Fatalf("esperaba ErrNonContactable, got %v", err)
 	}
-	if hits.Load() != 0 {
-		t.Errorf("no debe haber llamada HTTP para identificador no-E.164, hubo %d", hits.Load())
+	if channelHits.Load() != 0 {
+		t.Errorf("la Channels API no debe recibir el identificador crudo, hubo %d llamadas", channelHits.Load())
 	}
 }
 
@@ -98,14 +104,16 @@ func TestSendTemplate_NonE164_NoHTTPCall(t *testing.T) {
 	}
 }
 
-// La lista interactiva sin conversación cae al fallback de texto por Channels: con identificador
-// no-E.164 el fallback también debe cortar sin llamada HTTP.
+// La lista interactiva con identificador no-E.164 irresoluble (sin BSUID ni conversación)
+// termina en ErrNonContactable; la Channels API de mensajes jamás recibe el valor crudo.
 func TestSendList_NonE164Fallback_NoHTTPCall(t *testing.T) {
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"id":"x"}`))
+	var channelHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/channels/") {
+			channelHits.Add(1)
+		}
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"code":"NotFound"}`))
 	}))
 	defer srv.Close()
 
@@ -115,7 +123,7 @@ func TestSendList_NonE164Fallback_NoHTTPCall(t *testing.T) {
 	if !errors.Is(err, ErrNonContactable) {
 		t.Fatalf("esperaba ErrNonContactable, got %v", err)
 	}
-	if hits.Load() != 0 {
-		t.Errorf("no debe haber llamada HTTP para identificador no-E.164, hubo %d", hits.Load())
+	if channelHits.Load() != 0 {
+		t.Errorf("la Channels API no debe recibir el identificador crudo, hubo %d llamadas", channelHits.Load())
 	}
 }
