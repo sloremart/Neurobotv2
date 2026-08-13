@@ -92,12 +92,13 @@ func confirmConsolidateHandler(apptSvc *services.AppointmentService) sm.StateHan
 			}
 			res, err := apptSvc.ConsolidateIntoAppointment(ctx, appt, newCups, sess.GetContext("patient_contract"))
 			if err != nil {
-				// H145: tope mensual MRC alcanzado — regla ABSOLUTA: no se agrega consumo. El
-				// paciente conserva su cita EMG original; se informa el límite (no es error técnico).
+				// H145: tope mensual MRC alcanzado — regla ABSOLUTA: no se agrega consumo. Al
+				// paciente NO se le habla de límites: solo que por ahora no hay disponibilidad y
+				// que su cita original sigue intacta. El motivo real queda en el flow_event.
 				if errors.Is(err, services.ErrMRCLimitReached) {
 					observability.Emit(observability.TraceSession(sess.ID), "agendar", "mrc_limit_blocked",
 						observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "emg_consolidation"})
-					return buildAutoCloseResult("No fue posible agregar estos procedimientos: se alcanzó el límite mensual autorizado para este tipo de procedimiento con tu convenio. Tu cita original se mantiene. Por favor comunícate con la clínica para más información.").
+					return buildAutoCloseResult("Por ahora no hay disponibilidad para agregar estos procedimientos a tu cita. Tu cita original se mantiene sin cambios. Puedes intentarlo de nuevo más adelante.").
 						WithEvent("mrc_limit_blocked", map[string]interface{}{"appt_id": apptID, "source": "emg_consolidation"}), nil
 				}
 				slog.Warn("emg_consolidation: consolidate failed", "appt_id", apptID, "error", err)

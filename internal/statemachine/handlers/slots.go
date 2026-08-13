@@ -1253,6 +1253,11 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 		// CANDADO FINAL MRC (H145): re-validar el tope contra el MES del slot elegido antes de
 		// crear. Cubre los caminos que no pasaron por el filtro de búsqueda (lista de espera,
 		// entradas directas) y el TOCTOU entre mostrar y confirmar. FAIL-CLOSED.
+		// AL PACIENTE NO SE LE HABLA DE LÍMITES (regla de negocio): el bloqueo se enruta al
+		// flujo estándar de no-disponibilidad (noSlotsHandler), que ya resuelve cada caso —
+		// desde lista de espera → "sigues en espera"; reprogramación → "tu cita original sigue
+		// vigente"; flujo normal → ofrece lista de espera. El motivo real queda SOLO en el log
+		// WARN y en el flow_event para operación/auditoría.
 		if group := mrcFinalGateBlocked(ctx, apptSvc, sess, slot.Date); group != "" {
 			slog.Warn("mrc_final_gate_blocked (un camino llegó a crear sin filtro previo o el cupo se agotó en el interín)",
 				"session_id", sess.ID, "group", group, "slot_date", slot.Date,
@@ -1263,13 +1268,7 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 					Phone: sess.PhoneNumber, Reason: group,
 					Attrs: map[string]interface{}{"slot_date": slot.Date},
 				})
-			return sm.NewResult(sm.StateFallbackMenu).
-				WithButtons(
-					"No fue posible agendar esta cita: se alcanzó el límite mensual autorizado para este tipo de procedimiento con tu convenio. "+
-						"Por favor comunícate con la clínica para más información. ¿Deseas volver al inicio o terminar el chat?",
-					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
-					sm.Button{Text: "Terminar chat", Payload: "action:end"},
-				).
+			return sm.NewResult(sm.StateNoSlotsAvailable).
 				WithEvent("mrc_limit_blocked", map[string]interface{}{"group": group, "slot_date": slot.Date}), nil
 		}
 
