@@ -3,10 +3,12 @@ package bird
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1238,74 +1240,75 @@ func TestCreateConversation_UsernameIdentifierKey(t *testing.T) {
 	}
 }
 
-// TestSendList_UsernameSinConversacion_ResuelveYEntrega (H141-1, caso real lucy***bosa):
-// un contacto whatsappusername SIN conversationID conocido debe RESOLVER su conversación
-// (crear → 409 devuelve la existente, el caso normal: acaba de escribir) y entregar por
-// ella — antes caía directo al gate E.164 y el paciente no recibía NADA.
-func TestSendList_UsernameSinConversacion_ResuelveYEntrega(t *testing.T) {
+// TestSendList_UsernameSinBsuid_CortaSinGastar (política de COSTO, 13-ago): un username cuyo
+// contacto NO tiene BSUID no tiene NINGUNA vía que entregue — cualquier POST a conversación se
+// COBRA en Bird y su entrega falla siempre (validado en vivo). El cliente debe cortar con
+// ErrNonContactable sin postear NI UN mensaje (ni Channels ni Conversations).
+func TestSendList_UsernameSinBsuid_CortaSinGastar(t *testing.T) {
 	username := "lucy.bosa"
+	var paidPosts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "PATCH" && strings.HasPrefix(r.URL.Path, "/workspaces/ws-test/contacts/identifiers/"):
-			// Contacto SIN identifier BSUID → la vía primaria no aplica → cae a la conversación.
+			// Contacto SIN identifier BSUID.
 			w.WriteHeader(200)
 			_, _ = w.Write([]byte(`{"id":"contact-x","featuredIdentifiers":[{"key":"whatsappusername","value":"` + username + `"}]}`))
-		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations":
-			w.WriteHeader(409)
-			_, _ = w.Write([]byte(`{"code":"ContactAlreadyInConversation","details":{"conversationId":"conv-lucy"}}`))
-		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations/conv-lucy/messages":
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "/messages"):
+			paidPosts.Add(1) // cualquier POST de mensaje = envío cobrado
 			w.WriteHeader(201)
-			_, _ = w.Write([]byte(`{"id":"msg-list-lucy"}`))
+			_, _ = w.Write([]byte(`{"id":"paid"}`))
 		default:
-			t.Errorf("request inesperado: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(500)
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"code":"NotFound"}`))
 		}
 	}))
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	id, err := c.SendList(username, "", "Elige una opción", "Ver opciones",
+	_, err := c.SendList(username, "conv-vieja", "Elige una opción", "Ver opciones",
 		[]ListSection{{Title: "Menú", Rows: []ListRow{{ID: "op1", Title: "Opción 1"}}}})
-	if err != nil {
-		t.Fatalf("el username debe entregarse vía conversación resuelta, got err: %v", err)
+	if !errors.Is(err, ErrNonContactable) {
+		t.Fatalf("sin BSUID debe cortar con ErrNonContactable, got %v", err)
 	}
-	if id != "msg-list-lucy" {
-		t.Errorf("esperaba msg-list-lucy, got %q", id)
-	}
-	if cached := c.GetCachedConversationID(username); cached != "conv-lucy" {
-		t.Errorf("la conversación resuelta debe quedar cacheada, got %q", cached)
+	if paidPosts.Load() != 0 {
+		t.Errorf("NO debe postearse ningún mensaje cobrable, hubo %d", paidPosts.Load())
 	}
 }
 
-// TestSendText_UsernameSinConversacion_ResuelveYEntrega: mismo comportamiento para texto.
-func TestSendText_UsernameSinConversacion_ResuelveYEntrega(t *testing.T) {
+// TestSendText_UsernameConConvID_UsaBsuidNoConversacion (bug de costo corregido 13-ago): para un
+// username CON conversationID guardado, el POST a la conversación devolvía 201 (cobrado) sin
+// entregar jamás — y como parecía éxito, nunca se llegaba al BSUID. El BSUID debe ir PRIMERO.
+func TestSendText_UsernameConConvID_UsaBsuidNoConversacion(t *testing.T) {
 	username := "CO.a1b2c3d4e5f6g7h8i9j0k1l2m3n4"
+	var convPosts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "PATCH" && strings.HasPrefix(r.URL.Path, "/workspaces/ws-test/contacts/identifiers/"):
-			// Resolución BSUID falla (p.ej. contactos legados) → cae a la conversación.
-			w.WriteHeader(404)
-			_, _ = w.Write([]byte(`{"code":"NotFound"}`))
-		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"c1","featuredIdentifiers":[{"key":"whatsapp_193596046348777","value":"CO.bsuid1"}]}`))
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "/conversations/"):
+			convPosts.Add(1) // POST a conversación = cobrado y jamás entrega para usernames
 			w.WriteHeader(201)
-			_, _ = w.Write([]byte(`{"id":"conv-nueva"}`))
-		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations/conv-nueva/messages":
-			w.WriteHeader(201)
-			_, _ = w.Write([]byte(`{"id":"msg-text-1"}`))
+			_, _ = w.Write([]byte(`{"id":"paid-dead"}`))
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "/channels/"):
+			w.WriteHeader(202)
+			_, _ = w.Write([]byte(`{"id":"msg-bsuid-ok"}`))
 		default:
-			t.Errorf("request inesperado: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(500)
+			w.WriteHeader(404)
 		}
 	}))
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
-	id, err := c.SendText(username, "", "Hola")
+	id, err := c.SendText(username, "conv-guardada", "Hola")
 	if err != nil {
 		t.Fatalf("no esperaba error: %v", err)
 	}
-	if id != "msg-text-1" {
-		t.Errorf("esperaba msg-text-1, got %q", id)
+	if id != "msg-bsuid-ok" {
+		t.Errorf("debe entregar por BSUID, got %q", id)
+	}
+	if convPosts.Load() != 0 {
+		t.Errorf("NO debe postear a la conversación (201 cobrado sin entrega), hubo %d", convPosts.Load())
 	}
 }
 

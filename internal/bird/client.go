@@ -754,33 +754,11 @@ func whatsAppContentError(err error) (string, bool) {
 	return "", false
 }
 
-// sendViaUsernameConversation entrega a un contacto SIN E.164 (whatsappusername — privacidad de
-// número de WhatsApp): la Channels API jamás puede alcanzarlo (el identificador no es un teléfono),
-// su ÚNICO canal es la Conversations API. Resuelve el conversationId con la escalera
-// caché → crear-conversación (identifierKey=whatsappusername; el 409 devuelve en
-// details.conversationId la conversación EXISTENTE — el caso normal: el paciente acaba de
-// escribir) → enviar por él. failedConvID es la conversación que ya falló (no reintentarla).
-//
-// Incidente H141-1 (12-ago, lucy***bosa): el paciente username entró al bot (migración 040) pero
-// llegaba aquí con conversationID vacío y el único fallback existía en SendText y solo con
-// convID != "" → caía al gate E.164 y no recibía NADA. Este helper cubre texto, botones y listas,
-// con o sin conversación previa.
-func (c *Client) sendViaUsernameConversation(to, failedConvID string, body interface{}) (string, error) {
-	if cached := c.GetCachedConversationID(to); cached != "" && cached != failedConvID {
-		if id, err := c.sendToConversation(cached, body, false); err == nil {
-			return id, nil
-		}
-	}
-	if resolved, cerr := c.CreateConversationForPhone(context.Background(), to); cerr == nil && resolved != "" && resolved != failedConvID {
-		c.CacheConversationID(to, resolved)
-		if id, err := c.sendToConversation(resolved, body, false); err == nil {
-			slog.Info("delivered_via_resolved_conversation",
-				"phone", utils.MaskPhone(to), "conversation_id", resolved)
-			return id, nil
-		}
-	}
-	return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
-}
+// NOTA DE COSTO (13-ago-2026): existió aquí un fallback sendViaUsernameConversation
+// (entrega a usernames vía Conversations API). SE ELIMINÓ: cada POST a la conversación devuelve
+// 201 — Bird lo COBRA — pero su entrega a WhatsApp falla SIEMPRE para usernames (validado en
+// vivo: el puente usa el username como teléfono → sending_failed). Era pagar mensajes muertos.
+// La ÚNICA vía que entrega es Channels+BSUID (bsuid.go); sin BSUID, se corta sin gastar.
 
 // SendText envía un mensaje de texto simple.
 // If conversationID is provided, routes via Conversations API (WhatsApp + Inbox).
@@ -793,16 +771,19 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 		"type": "text",
 		"text": map[string]string{"text": text},
 	}
-	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
-		return id, nil
-	}
-	// Contacto sin E.164: la vía que ENTREGA de verdad es Channels+BSUID (validada en vivo
-	// 12-ago: la vía por conversación postea 201 pero Bird nunca la entrega — bsuid.go).
+	// Contacto sin E.164: BSUID ANTES que cualquier POST a conversación. La vía por conversación
+	// devuelve 201 (Bird la COBRA) pero su entrega falla SIEMPRE para usernames (validado en vivo
+	// 12-ago: puente usa el username como teléfono → sending_failed). Ir primero a la conversación
+	// era pagar un mensaje muerto Y nunca llegar al BSUID que sí entrega. Sin BSUID no hay canal
+	// que entregue: cortar sin gastar (el caller marca non_contactable y suprime reintentos).
 	if !utils.IsE164(to) {
 		if id, err := c.sendViaBsuid(to, body); err == nil {
 			return id, nil
 		}
-		return c.sendViaUsernameConversation(to, conversationID, body)
+		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+	}
+	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
+		return id, nil
 	}
 	// Fallback: Channels API
 	payload := map[string]interface{}{
@@ -844,6 +825,15 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 			"actions": actions,
 		},
 	}
+	// Contacto sin E.164: SOLO BSUID (bsuid.go) — cualquier POST a conversación se COBRA y su
+	// entrega falla siempre para usernames; y degradar a texto repetiría la misma escalera pagando
+	// de nuevo. Sin BSUID: cortar sin gastar.
+	if !utils.IsE164(to) {
+		if id, err := c.sendViaBsuid(to, body); err == nil {
+			return id, nil
+		}
+		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+	}
 	// If no conversationID, try a fresh lookup before falling back to text
 	if conversationID == "" {
 		if fresh, err := c.LookupConversationByPhone(to); err == nil && fresh != "" {
@@ -853,16 +843,6 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
-	}
-	// Contacto sin E.164: BSUID primero (única vía que entrega, bsuid.go); conversación como
-	// respaldo de visibilidad; si ambas fallan degrada al texto de abajo.
-	if !utils.IsE164(to) {
-		if id, err := c.sendViaBsuid(to, body); err == nil {
-			return id, nil
-		}
-		if id, err := c.sendViaUsernameConversation(to, conversationID, body); err == nil {
-			return id, nil
-		}
 	}
 	// Fallback: botones como texto numerado. Se conserva la conversación: si los botones fueron
 	// rechazados por contenido/tipo pero la conversación vive, el texto sale por ahí (único canal
@@ -933,21 +913,20 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 		}
 	}
 
-	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
-		return id, nil
-	}
-	// Contacto sin E.164: BSUID primero (única vía que entrega la LISTA real, bsuid.go);
-	// conversación como respaldo; si ambas fallan degrada al texto de abajo.
+	// Contacto sin E.164: SOLO BSUID — la LISTA real entrega por ahí; cualquier POST a
+	// conversación se COBRA sin entregar, y degradar a texto repetiría la escalera pagando otra
+	// vez. Sin BSUID: cortar sin gastar.
 	if !utils.IsE164(to) {
 		if id, err := c.sendViaBsuid(to, msgBody); err == nil {
 			return id, nil
 		}
-		if id, err := c.sendViaUsernameConversation(to, conversationID, msgBody); err == nil {
-			return id, nil
-		}
+		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
 	}
-	// Fallback: lista como texto numerado. Se conserva la conversación (ver SendButtons): para
-	// contactos whatsappusername la conversación es el único canal que entrega.
+	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
+		return id, nil
+	}
+	// Fallback: lista como texto numerado. Se conserva la conversación (contactos con teléfono
+	// cuya lista fue rechazada por contenido/tipo: el texto sale por la misma conversación).
 	slog.Info("send_list_text_fallback", "phone", utils.MaskPhone(to), "sections", len(sections))
 	var textFallback string
 	textFallback = body + "\n"

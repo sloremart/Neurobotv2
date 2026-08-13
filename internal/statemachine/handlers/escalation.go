@@ -63,8 +63,10 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: preState})
 			slog.Info("escalation suppressed (virtual __resume__, anti-loop)",
 				"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "pre_state", preState)
+			// AHORRO: solo el menú (1 mensaje cobrado, no 2). El aviso "No pudimos conectarte…"
+			// ya salió en handleAgentNoShow justo antes de este __resume__; repetirlo con otro
+			// texto era pagar un mensaje redundante en cada no-show (~decenas/día).
 			r := sm.NewResult(sm.StateMainMenu).
-				WithText("Por ahora no fue posible conectarte con un asesor. Puedes elegir una opción del menú o escribirnos de nuevo más tarde. 😊").
 				WithEvent("escalation_suppressed_resume", map[string]interface{}{"pre_state": preState})
 			r.Messages = append(r.Messages, buildMainMenuList())
 			return r, nil
