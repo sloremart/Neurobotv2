@@ -69,18 +69,55 @@ func mrcMonthFilter(ctx context.Context, apptSvc *services.AppointmentService, s
 	}
 }
 
-// currentMRCDemands calcula la demanda por grupo MRC del grupo de procedimientos ACTUAL de la
-// sesión. Si procedures_json no parsea O viene vacío/sin CUPS (contextos legados o degradados),
-// cae al CUP dado con la cantidad derivable — defensivo: mejor validar de menos que no validar.
-func currentMRCDemands(sess *session.Session, fallbackCode string) []services.MRCGroupDemand {
+// currentGroupCups devuelve los CUPS del grupo de procedimientos ACTUAL de la sesión. Si
+// procedures_json no parsea O viene vacío (contextos legados o degradados), cae al CUP dado —
+// defensivo: mejor validar de menos que no validar.
+func currentGroupCups(sess *session.Session, fallbackCode string) []services.CUPSEntry {
 	var groups []services.CUPSGroup
 	if err := json.Unmarshal([]byte(sess.GetContext("procedures_json")), &groups); err == nil {
 		idx, _ := strconv.Atoi(sess.GetContext("current_procedure_idx"))
 		if idx >= 0 && idx < len(groups) && len(groups[idx].Cups) > 0 {
-			return services.MRCGroupDemands(groups[idx].Cups)
+			return groups[idx].Cups
 		}
 	}
-	return services.MRCGroupDemands([]services.CUPSEntry{{Code: fallbackCode, Quantity: currentProcQuantity(sess)}})
+	return []services.CUPSEntry{{Code: fallbackCode, Quantity: currentProcQuantity(sess)}}
+}
+
+// currentMRCDemands calcula la demanda por grupo MRC del grupo de procedimientos ACTUAL.
+func currentMRCDemands(sess *session.Session, fallbackCode string) []services.MRCGroupDemand {
+	return services.MRCGroupDemands(currentGroupCups(sess, fallbackCode))
+}
+
+// sanitasBloqueoInCurrentGroup devuelve el CUP de BLOQUEO presente en el grupo actual si el
+// paciente es SANITAS ("" = no aplica). Regla de negocio: los bloqueos SANITAS los agenda un
+// AGENTE, jamás el bot. El gate original vivía SOLO en VALIDATE_OCR y los caminos que no pasan
+// por ahí (lista de espera proactiva/preselección, reprogramaciones, auto-add tras cancelación
+// admin) lo saltaban — validado en prod 13-ago: 4 unidades de bloqueos creadas por el bot bajo
+// contratos 5/6 (H146). Igual que con el tope MRC: la regla se aplica en TODOS los caminos.
+func sanitasBloqueoInCurrentGroup(sess *session.Session) string {
+	if !services.IsSanitasContract(sess.GetContext("patient_contract")) {
+		return ""
+	}
+	for _, c := range currentGroupCups(sess, sess.GetContext("cups_code")) {
+		if services.IsBloqueoCups(c.Code) {
+			return c.Code
+		}
+	}
+	return ""
+}
+
+// sanitasBloqueoEscalation arma el resultado estándar de la regla: derivar a un asesor (mismo
+// texto que VALIDATE_OCR — hablar de un asesor está bien; de límites/reglas internas, no).
+func sanitasBloqueoEscalation(sess *session.Session, cup, source string) *sm.StateResult {
+	observability.Emit(observability.TraceSession(sess.ID), "agendar", "bloqueo_sanitas_escalated",
+		observability.EmitOpts{
+			Phone:  sess.PhoneNumber,
+			Reason: "bloqueo_sanitas",
+			Attrs:  map[string]interface{}{"cups_code": cup, "source": source},
+		})
+	return sm.NewResult(sm.StateEscalateToAgent).
+		WithText("Tu orden incluye un *bloqueo*, que se agenda directamente con un asesor. Te comunico con un agente para gestionar tu cita.").
+		WithEvent("bloqueo_sanitas_escalated", map[string]interface{}{"cups_code": cup, "source": source})
 }
 
 // mrcFinalGateBlocked es el CANDADO FINAL antes de crear la cita: re-valida el tope MRC contra el
@@ -481,6 +518,14 @@ func coverageNoConvenioHandler() sm.StateHandler {
 // SEARCH_SLOTS (automático) — busca slots disponibles con todos los filtros.
 func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, priceRepo repository.PriceRepository, entityRepo repository.EntityRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		// GATE BLOQUEOS SANITAS (H146): antes vivía solo en VALIDATE_OCR; los caminos que entran
+		// directo aquí (lista de espera, reprogramaciones, auto-add tras cancelación admin) lo
+		// saltaban — 4 unidades de bloqueos creadas por el bot bajo 5/6 medidas en prod. La regla
+		// es del NEGOCIO, no de la ruta: se valida en la puerta de toda búsqueda.
+		if cup := sanitasBloqueoInCurrentGroup(sess); cup != "" {
+			return sanitasBloqueoEscalation(sess, cup, "search_slots"), nil
+		}
+
 		cupsCode := sess.GetContext("cups_code")
 		alternativeCodes := sess.GetContext("alternative_cups_codes")
 		age, _ := strconv.Atoi(sess.GetContext("patient_age"))
@@ -1248,6 +1293,15 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			)
 			return sm.NewResult(sm.StateBookingFailed).
 				WithContext("booking_failure_reason", "slot_not_found"), nil
+		}
+
+		// CANDADO FINAL BLOQUEOS SANITAS (H146): backstop del gate de búsqueda — si algún camino
+		// llegó aquí con un bloqueo bajo contrato SANITAS, se deriva a asesor, jamás se crea.
+		if cup := sanitasBloqueoInCurrentGroup(sess); cup != "" {
+			slog.Warn("bloqueo_sanitas_final_gate (un camino llegó a crear sin el gate de búsqueda)",
+				"session_id", sess.ID, "cups_code", cup,
+				"from_waiting_list", sess.GetContext("from_waiting_list"))
+			return sanitasBloqueoEscalation(sess, cup, "create_appointment"), nil
 		}
 
 		// CANDADO FINAL MRC (H145): re-validar el tope contra el MES del slot elegido antes de

@@ -98,3 +98,57 @@ func TestMrcFinalGate_BloqueaPorMesDelSlot(t *testing.T) {
 		t.Errorf("bajo el tope no debe bloquear, got %q", group)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// H146: bloqueos SANITAS agendados por el bot (4 unidades medidas en prod bajo
+// contratos 5/6). El gate vivía solo en VALIDATE_OCR; lista de espera,
+// reprogramaciones y auto-add lo saltaban. La regla es del negocio, no de la
+// ruta: gate en la puerta de SEARCH_SLOTS + candado en CREATE.
+// ---------------------------------------------------------------------------
+
+// TestSearchSlots_BloqueoSanitas_EscalaSinBuscar: una sesión tipo lista-de-espera (sin pasar
+// por VALIDATE_OCR) con un CUP de bloqueo y contrato SANITAS escala a asesor en la puerta.
+func TestSearchSlots_BloqueoSanitas_EscalaSinBuscar(t *testing.T) {
+	h := searchSlotsHandler(nil, nil, nil, nil, nil) // el gate corre antes de tocar servicios
+	sess := testSess(sm.StateSearchSlots)
+	sess.Context["patient_contract"] = "5" // SANITAS MRC
+	sess.Context["cups_code"] = "053105"   // bloqueo
+	sess.Context["procedures_json"] = `[{"service":"general","cups":[{"cups_code":"053105","quantity":1}],"espacios":1}]`
+	sess.Context["current_procedure_idx"] = "0"
+
+	res, err := h(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalateToAgent {
+		t.Errorf("bloqueo SANITAS debe escalar a asesor, got %s", res.NextState)
+	}
+}
+
+// TestSearchSlots_BloqueoNoSanitas_NoAplica: el mismo bloqueo con contrato NO Sanitas sigue
+// el flujo normal (la regla es solo para SANITAS).
+func TestSearchSlots_BloqueoNoSanitas_NoAplica(t *testing.T) {
+	sess := testSess(sm.StateSearchSlots)
+	sess.Context["patient_contract"] = "13" // Salud Total
+	sess.Context["cups_code"] = "053105"
+	sess.Context["procedures_json"] = `[{"service":"general","cups":[{"cups_code":"053105","quantity":1}],"espacios":1}]`
+	sess.Context["current_procedure_idx"] = "0"
+
+	if cup := sanitasBloqueoInCurrentGroup(sess); cup != "" {
+		t.Errorf("contrato no-SANITAS no debe activar el gate, got %q", cup)
+	}
+}
+
+// TestSanitasBloqueo_DetectaEnGrupoMultiCup: el bloqueo escondido entre otros CUPS del grupo
+// también se detecta (no solo el primario).
+func TestSanitasBloqueo_DetectaEnGrupoMultiCup(t *testing.T) {
+	sess := testSess(sm.StateSearchSlots)
+	sess.Context["patient_contract"] = "6"
+	sess.Context["cups_code"] = "891509" // primario NO bloqueo
+	sess.Context["procedures_json"] = `[{"service":"general","cups":[{"cups_code":"891509","quantity":8},{"cups_code":"053111","quantity":1}],"espacios":1}]`
+	sess.Context["current_procedure_idx"] = "0"
+
+	if cup := sanitasBloqueoInCurrentGroup(sess); cup != "053111" {
+		t.Errorf("debe detectar el bloqueo del grupo, got %q", cup)
+	}
+}

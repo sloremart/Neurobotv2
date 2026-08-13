@@ -75,3 +75,53 @@ func TestNotifyWaitingEntries_MemoizesIdenticalQueries(t *testing.T) {
 		t.Errorf("HasFutureForCup llamadas = %d, want 3 (pares paciente-CUP distintos)", got)
 	}
 }
+
+// TestNotifyWaitingEntries_BloqueoSanitasNoSeOfrece (H146 + principio de costo): una entrada
+// de lista de espera con CUP de BLOQUEO bajo contrato SANITAS jamás puede terminar en cita del
+// bot (los gates la cortarían) — ofrecerla sería pagar un template condenado. Se salta sin
+// claim, sin template, y la entrada queda 'waiting' para gestión del agente.
+func TestNotifyWaitingEntries_BloqueoSanitasNoSeOfrece(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	defer srv.Close()
+
+	cfg := &config.Config{
+		BirdTemplateWaitingListProjectID: "proj-wl-123",
+		BirdTemplateWaitingListVersionID: "ver-wl-456",
+		BirdTemplateWaitingListLocale:    "es-CO",
+	}
+	mgr := NewNotificationManager(birdClient, nil, cfg)
+
+	entries := []domain.WaitingListEntry{
+		// Bloqueo + SANITAS MRC → NO ofrecer.
+		{ID: "wl-blq", PhoneNumber: "+573005550001", PatientID: "P1", CupsCode: "053105", ContractCode: "5", PatientAge: 40, Espacios: 1},
+		// Bloqueo + contrato NO Sanitas → se ofrece normal.
+		{ID: "wl-ok", PhoneNumber: "+573005550002", PatientID: "P2", CupsCode: "053105", ContractCode: "13", PatientAge: 40, Espacios: 1},
+	}
+	claimed := []string{}
+	wlChecker := &mockWLChecker{
+		getWaitingFn: func(_ context.Context, _ string, _ int) ([]domain.WaitingListEntry, error) {
+			return entries, nil
+		},
+		markNotifiedFn: func(_ context.Context, id string) (bool, error) {
+			claimed = append(claimed, id)
+			return true, nil
+		},
+	}
+	slotSearcher := &mockSlotSearcher{
+		getSlotsFn: func(_ context.Context, _ services.SlotQuery) ([]services.AvailableSlot, error) {
+			return []services.AvailableSlot{{TimeSlot: "202609201000"}, {TimeSlot: "202609201030"}}, nil
+		},
+	}
+	apptChecker := &mockFutureApptChecker{
+		hasFutureFn: func(_ context.Context, _, _ string) (bool, error) { return false, nil },
+	}
+	mgr.SetWaitingListCheckDeps(slotSearcher, apptChecker, wlChecker, nil, nil)
+
+	count := mgr.CheckWaitingListForCups(context.Background(), "053105")
+	if count != 1 {
+		t.Fatalf("notificados = %d, want 1 (solo la entrada no-Sanitas)", count)
+	}
+	if len(claimed) != 1 || claimed[0] != "wl-ok" {
+		t.Errorf("solo wl-ok debe reclamarse/ofrecerse, got %v", claimed)
+	}
+}

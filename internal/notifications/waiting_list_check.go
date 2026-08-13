@@ -191,6 +191,15 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 			continue
 		}
 		trace := observability.TraceWaitingList(entry.ID)
+		// BLOQUEOS SANITAS (H146): el bot JAMÁS agenda bloqueos a contratos SANITAS — los gates de
+		// búsqueda/creación lo cortarían de todas formas, así que OFRECER esta entrada sería pagar
+		// un template condenado (principio de costo: ni un envío que no puede terminar en cita).
+		// La entrada queda 'waiting' para gestión del agente; solo se emite el skip medible.
+		if services.IsSanitasContract(entry.ContractCode) && entryHasBloqueo(entry) {
+			observability.Emit(trace, "lista_espera", "skipped",
+				observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "bloqueo_sanitas"})
+			continue
+		}
 		// FIFO con skip: si no cabe en la capacidad restante, intentar el siguiente (más chico).
 		if entry.Espacios > remaining {
 			observability.Emit(trace, "lista_espera", "skipped", observability.EmitOpts{
@@ -308,6 +317,21 @@ func (m *NotificationManager) entrySlotQuery(ctx context.Context, entry domain.W
 		}
 	}
 	return q
+}
+
+// entryHasBloqueo indica si la cita en espera incluye algún CUP de BLOQUEO (el primario o
+// cualquiera del ProceduresJSON). Entradas así pueden existir en el pool: auto-add tras
+// cancelación admin de una cita creada por un agente, o entradas previas al gate de VALIDATE_OCR.
+func entryHasBloqueo(entry domain.WaitingListEntry) bool {
+	if services.IsBloqueoCups(entry.CupsCode) {
+		return true
+	}
+	for _, c := range groupCupsFromEntry(entry) {
+		if services.IsBloqueoCups(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // groupCupsFromEntry reconstruye el conjunto de CUPS de la cita en espera desde ProceduresJSON (un
