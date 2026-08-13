@@ -442,7 +442,13 @@ func main() {
 		// Reconciliación de invariantes (Fase 2 observabilidad): checks locales + SIESA (bot-filtered).
 		reconciler := observability.NewReconciler()
 		reconciler.Register("wl_stuck", observability.StuckWaitingListCheck(localDB, 25))
-		reconciler.Register("zombie_escalated", observability.ZombieEscalatedCheck(localDB, 1))
+		// graceHours=6: la vida legítima MÁXIMA de una escalada sin agente es último-mensaje-del-
+		// paciente + 5h (no-show = AgentReminderMin 75 × (Max 3 + 1)), es decir expires_at + ~3h.
+		// Con la gracia vieja (1h) el reconcile de las 02:00 marcaba "zombie" escalaciones nocturnas
+		// EN CURSO que el no-show cerraba solo 45 min después (falso positivo del 13-ago-2026,
+		// sess:11c0af50 — nació al extender el no-show la vida de la escalada sin actualizar esto).
+		// 6h = 3h de brecha real + margen; un zombie que sobreviva 6h tras expirar sí es un atasco real.
+		reconciler.Register("zombie_escalated", observability.ZombieEscalatedCheck(localDB, 6))
 		if externalDB != nil {
 			reconciler.Register("orphan_slot", observability.OrphanSlotCheck(externalDB, 4, cfg.SIESAAssignUserCedula))
 			reconciler.Register("consulta_valor_cero", observability.ConsultaValorCeroCheck(externalDB, 4, cfg.SIESAAssignUserCedula))
