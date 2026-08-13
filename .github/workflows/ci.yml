@@ -26,7 +26,11 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
+          # check-latest: sin él, setup-go resuelve "1.25" desde su caché local del runner y puede
+          # quedarse en un parche viejo; govulncheck falla al salir un security release de la
+          # stdlib (13-ago-2026: GO-2026-5972/6089/6090/6218, corregidas en go1.25.12/13).
           go-version: "1.25"
+          check-latest: true
           cache: true
 
       - name: Build
