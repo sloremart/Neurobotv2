@@ -284,6 +284,37 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// RESOLUCIÓN DE CANAL antes de rendirse (H130-1/H142-2: ~60/día de escalation_no_conversation —
+	// casi la MITAD de estas escalaciones no llegaban al agente). Este pipeline es anterior al fix
+	// del handoff del state machine y solo intentaba caché+lookup (que fallan justo para el
+	// no-respondedor típico, que jamás ha escrito). Escalera portada de allá, ambas capas VALIDADAS
+	// EN VIVO: (b) resolver el conversationId del PROPIO template enviado (pending.BirdMessageID se
+	// persiste y sobrevive reinicios; a esta altura, ~9h después del envío, Bird ya lo asoció);
+	// (d) crear la conversación explícitamente — el 409 devuelve la existente en details.
+	if pending.ConversationID == "" {
+		if cached := m.birdClient.GetCachedConversationID(pending.Phone); cached != "" {
+			pending.ConversationID = cached
+		}
+	}
+	if pending.ConversationID == "" && pending.BirdMessageID != "" {
+		if resolved := m.birdClient.FetchMessageConversationID(ctx, pending.BirdMessageID); resolved != "" {
+			pending.ConversationID = resolved
+			m.birdClient.CacheConversationID(pending.Phone, resolved)
+			slog.Info("notif escalation: conversation resuelta del propio template",
+				"phone", utils.MaskPhone(pending.Phone), "conversation_id", resolved)
+		}
+	}
+	if pending.ConversationID == "" {
+		if created, cerr := m.birdClient.CreateConversationForPhone(ctx, pending.Phone); cerr == nil && created != "" {
+			pending.ConversationID = created
+			slog.Info("notif escalation: conversation creada como ultimo recurso",
+				"phone", utils.MaskPhone(pending.Phone), "conversation_id", created)
+		} else if cerr != nil {
+			slog.Warn("notif escalation: crear conversation fallo",
+				"phone", utils.MaskPhone(pending.Phone), "error", cerr)
+		}
+	}
+
 	// 1. Look up appointment details for the note
 	appt, _, _ := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
 
