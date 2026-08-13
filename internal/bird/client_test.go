@@ -1381,3 +1381,45 @@ func TestSendList_Username_EntregaPorBsuid(t *testing.T) {
 		t.Errorf("esperaba msg-bsuid-1, got %q", id)
 	}
 }
+
+// TestSendViaBsuid_ApiURLConRutaCompleta (H148, 13-ago: 16 'send message error' en prod — 6
+// pacientes username sin respuesta): en prod BIRD_API_URL trae la ruta COMPLETA del canal
+// (https://api.bird.com/workspaces/{id}/channels/{id}); sendViaBsuid concatenaba
+// /workspaces/.../channels/... OTRA VEZ → URL duplicada → 404 → ninguna entrega BSUID
+// funcionó jamás en prod. Debe usar messagesURL(), que maneja ambos formatos.
+func TestSendViaBsuid_ApiURLConRutaCompleta(t *testing.T) {
+	username := "paki.perez"
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "PATCH" && strings.Contains(r.URL.Path, "/contacts/identifiers/"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"c1","featuredIdentifiers":[{"key":"whatsapp_193596046348777","value":"CO.b9"}]}`))
+		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-prod/channels/ch-prod/messages":
+			hits.Add(1) // la ruta CORRECTA, una sola vez
+			w.WriteHeader(202)
+			_, _ = w.Write([]byte(`{"id":"msg-bsuid-full"}`))
+		default:
+			// Cualquier otra ruta (p.ej. la duplicada .../channels/ch-prod/workspaces/...) es el bug.
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"code":"NotFound"}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	// Replica el formato de prod: apiURL YA incluye workspaces/{id}/channels/{id}.
+	c.apiURL = srv.URL + "/workspaces/ws-prod/channels/ch-prod"
+	c.conversationsAPIURL = srv.URL // contacts PATCH sigue en la raíz
+
+	id, err := c.SendText(username, "", "Hola")
+	if err != nil {
+		t.Fatalf("con apiURL de ruta completa la entrega BSUID debe funcionar: %v", err)
+	}
+	if id != "msg-bsuid-full" {
+		t.Errorf("esperaba msg-bsuid-full, got %q", id)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("el POST debe ir UNA vez a la ruta correcta, hubo %d", hits.Load())
+	}
+}

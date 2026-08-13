@@ -84,9 +84,16 @@ func (c *Client) sendViaBsuid(to string, body interface{}) (string, error) {
 	defer cancel()
 	bsuidKey, bsuidVal, err := c.resolveBsuid(ctx, to)
 	if err != nil {
+		// Visibilidad (H148): el caller degrada a ErrNonContactable, que enmascara la causa;
+		// sin este WARN el diagnóstico de "por qué no salió" es a ciegas.
+		slog.Warn("bsuid_resolve_failed", "phone", utils.MaskPhone(to), "error", err)
 		return "", err
 	}
-	url := fmt.Sprintf("%s/workspaces/%s/channels/%s/messages", c.apiURL, c.workspaceID, c.channelID)
+	// H148: URL vía messagesURL() — BIRD_API_URL en prod trae la ruta COMPLETA del canal
+	// (…/workspaces/{id}/channels/{id}); concatenarla a mano la DUPLICABA → 404 → ninguna
+	// entrega BSUID funcionó en prod (16 'send message error' el 13-ago). messagesURL()
+	// maneja ambos formatos (raíz y ruta completa).
+	url := c.messagesURL()
 	payload := map[string]interface{}{
 		"receiver": map[string]interface{}{
 			"contacts": []map[string]string{{
@@ -98,6 +105,7 @@ func (c *Client) sendViaBsuid(to string, body interface{}) (string, error) {
 	}
 	id, err := c.sendMessage(url, payload) // sin arg phone → sin gate E.164 (intencional)
 	if err != nil {
+		slog.Warn("bsuid_send_failed", "phone", utils.MaskPhone(to), "bsuid_key", bsuidKey, "error", err)
 		return "", fmt.Errorf("send via bsuid: %w", err)
 	}
 	slog.Info("delivered_via_bsuid",
