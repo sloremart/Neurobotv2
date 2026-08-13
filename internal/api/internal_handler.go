@@ -777,6 +777,17 @@ func (h *InternalHandler) HandleSiesaBotShare(w http.ResponseWriter, r *http.Req
 // REALES creadas por el bot en SIESA (cod_user_asigna_cita = cédula del bot), no el evento
 // appointment_created (que es solo lo que el bot CREYÓ hacer). Expone ambas tasas y la discrepancia
 // (citas registradas por el bot que no aterrizaron en SIESA). GET /api/internal/siesa/conversion?from&to
+// isClientAbort reporta si el error viene de que el CLIENTE cerró la request (context.Canceled
+// del r.Context() al desconectarse el dashboard: pestaña cerrada, navegación, refresh o timeout
+// del lado del cliente). No es un fallo del servidor: la query se aborta porque ya nadie espera
+// la respuesta. Se loguea en Info — como ERROR generaba una alerta Telegram falsa por cada
+// abandono del módulo Conversión (firma 'siesa conversion funnel failed: context canceled',
+// ciclos 100/126/133/143 de auditoría). OJO: context.DeadlineExceeded NO es abort del cliente
+// (es el timeout propio del servidor = query realmente lenta) y sigue siendo ERROR.
+func isClientAbort(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
 func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.Request) {
 	if h.siesaAnalytics == nil || h.eventRepo == nil {
 		http.Error(w, "siesa analytics not available", http.StatusServiceUnavailable)
@@ -806,6 +817,10 @@ func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.R
 	// Funnel local: sesiones (denominador) y appointment_created (lo que el bot creyó).
 	funnel, err := h.eventRepo.GetFunnel(r.Context(), from, to)
 	if err != nil {
+		if isClientAbort(err) {
+			slog.Info("siesa conversion funnel abortado por el cliente (dashboard cerró la request)")
+			return
+		}
 		slog.Error("siesa conversion funnel failed", "error", err)
 		http.Error(w, "failed to read funnel", http.StatusInternalServerError)
 		return
@@ -821,6 +836,10 @@ func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.R
 	defer cancel()
 	rows, err := h.siesaAnalytics.BotCreatedByDay(sctx, botCedula, fromStr, toExclusive)
 	if err != nil {
+		if isClientAbort(err) {
+			slog.Info("siesa conversion created abortado por el cliente (dashboard cerró la request)")
+			return
+		}
 		slog.Error("siesa conversion created failed", "error", err)
 		http.Error(w, "failed to read citas reales", http.StatusInternalServerError)
 		return
@@ -836,6 +855,10 @@ func (h *InternalHandler) HandleSiesaConversion(w http.ResponseWriter, r *http.R
 	// produce una discrepancia negativa espuria.
 	botCreated, err := h.eventRepo.CountAppointmentsCreated(r.Context(), from, to)
 	if err != nil {
+		if isClientAbort(err) {
+			slog.Info("siesa conversion count abortado por el cliente (dashboard cerró la request)")
+			return
+		}
 		slog.Error("siesa conversion count created failed", "error", err)
 		http.Error(w, "failed to count appointments created", http.StatusInternalServerError)
 		return

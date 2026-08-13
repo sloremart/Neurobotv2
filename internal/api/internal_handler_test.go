@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1160,5 +1161,22 @@ func TestHandleCancelAppointment_NotFound(t *testing.T) {
 	h.HandleCancelAppointment(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("esperaba 404, got %d", rec.Code)
+	}
+}
+
+// TestIsClientAbort: solo context.Canceled (cliente desconectado) es abort; el
+// DeadlineExceeded (timeout propio del servidor = query lenta real) sigue siendo ERROR.
+func TestIsClientAbort(t *testing.T) {
+	if !isClientAbort(fmt.Errorf("get funnel: %w", context.Canceled)) {
+		t.Error("context.Canceled envuelto debe ser abort del cliente")
+	}
+	if isClientAbort(context.DeadlineExceeded) {
+		t.Error("DeadlineExceeded NO es abort del cliente (timeout del servidor)")
+	}
+	if isClientAbort(fmt.Errorf("db down")) {
+		t.Error("un error real no es abort del cliente")
+	}
+	if isClientAbort(nil) {
+		t.Error("nil no es abort")
 	}
 }
