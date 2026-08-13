@@ -1403,6 +1403,13 @@ func (r *AppointmentRepo) FindLastDoctorForCups(ctx context.Context, patientID s
 // Sustituye al antiguo LEFT(...CHARINDEX...) IN (...), que aplicaba funciones sobre la columna
 // en cada fila del mes (auditoría queries P7).
 func mrcGroupPredicate(cupsCodes []string, startAt int) (clause string, args []interface{}) {
+	return mrcGroupPredicateCol("cp.id_procedimiento", cupsCodes, startAt)
+}
+
+// mrcGroupPredicateCol es mrcGroupPredicate con la COLUMNA parametrizable: el mismo grupo se
+// evalúa sobre citas_procedimientos.id_procedimiento (procedimientos/imágenes) y sobre
+// citas_procedimientos_asuntos.CodProcedimiento (CONSULTAS — H147: eran invisibles al conteo).
+func mrcGroupPredicateCol(col string, cupsCodes []string, startAt int) (clause string, args []interface{}) {
 	seen := make(map[string]bool, len(cupsCodes))
 	var sb strings.Builder
 	sb.WriteString("(")
@@ -1418,8 +1425,8 @@ func mrcGroupPredicate(cupsCodes []string, startAt int) (clause string, args []i
 		if len(args) > 0 {
 			sb.WriteString(" OR ")
 		}
-		fmt.Fprintf(&sb, "cp.id_procedimiento = @p%d OR cp.id_procedimiento LIKE @p%d",
-			startAt+len(args), startAt+len(args)+1)
+		fmt.Fprintf(&sb, "%s = @p%d OR %s LIKE @p%d",
+			col, startAt+len(args), col, startAt+len(args)+1)
 		args = append(args, base, base+"-%")
 	}
 	sb.WriteString(")")
@@ -1451,26 +1458,43 @@ func (r *AppointmentRepo) CountMonthlyByGroup(ctx context.Context, cupsCodes []s
 		excludeID = n
 	}
 	clause, cupsArgs := mrcGroupPredicate(cupsCodes, 4)
+	clauseCpa, cupsArgsCpa := mrcGroupPredicateCol("cpa.CodProcedimiento", cupsCodes, 4+len(cupsArgs))
 	allArgs := append([]interface{}{startDate, endDate, excludeID}, cupsArgs...)
+	allArgs = append(allArgs, cupsArgsCpa...)
 
+	// H147: las CONSULTAS guardan sus CUPS en citas_procedimientos_asuntos (no en
+	// citas_procedimientos) — el grupo consulta_neurologia (890274/890374, tope 397) era
+	// INVISIBLE al conteo: siempre 0, jamás bloqueaba. Se suman AMBAS tablas. CPA no tiene
+	// Cantidad (una consulta = 1) y sus códigos no llevan sufijo numérico.
 	var count int
 	err := r.db.QueryRowContext(
 		ctx, fmt.Sprintf(`
-	SELECT ISNULL(SUM(
-	    CASE WHEN CHARINDEX('-', cp.id_procedimiento) > 0
-	              AND TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10)) IS NOT NULL
-	         THEN TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10))
-	         ELSE ISNULL(cp.Cantidad, 1)
-	    END), 0)
-	-- #8 (auditoría): sin NOLOCK — es una decisión de CUPO (tope mensual MRC); una lectura sucia
-	-- podría contar/omitir citas no confirmadas y pasar/bloquear el tope erróneamente.
-	FROM citas c
-	JOIN citas_procedimientos cp ON cp.id_cita = c.id
-	WHERE c.fecha >= @p1 AND c.fecha < @p2
-	  AND c.contrato IN ('5', '6')
-	  AND %s
-	  AND c.estado <> 'C'
-	  AND (@p3 = 0 OR c.id <> @p3)`, clause), allArgs...,
+	SELECT (
+	  SELECT ISNULL(SUM(
+	      CASE WHEN CHARINDEX('-', cp.id_procedimiento) > 0
+	                AND TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10)) IS NOT NULL
+	           THEN TRY_CONVERT(INT, SUBSTRING(cp.id_procedimiento, CHARINDEX('-', cp.id_procedimiento) + 1, 10))
+	           ELSE ISNULL(cp.Cantidad, 1)
+	      END), 0)
+	  -- #8 (auditoría): sin NOLOCK — es una decisión de CUPO (tope mensual MRC); una lectura sucia
+	  -- podría contar/omitir citas no confirmadas y pasar/bloquear el tope erróneamente.
+	  FROM citas c
+	  JOIN citas_procedimientos cp ON cp.id_cita = c.id
+	  WHERE c.fecha >= @p1 AND c.fecha < @p2
+	    AND c.contrato IN ('5', '6')
+	    AND %s
+	    AND c.estado <> 'C'
+	    AND (@p3 = 0 OR c.id <> @p3)
+	) + (
+	  SELECT ISNULL(COUNT(*), 0)
+	  FROM citas c
+	  JOIN citas_procedimientos_asuntos cpa ON cpa.IdCita = c.id
+	  WHERE c.fecha >= @p1 AND c.fecha < @p2
+	    AND c.contrato IN ('5', '6')
+	    AND %s
+	    AND c.estado <> 'C'
+	    AND (@p3 = 0 OR c.id <> @p3)
+	)`, clause, clauseCpa), allArgs...,
 	).Scan(&count)
 	return count, err
 }
