@@ -983,18 +983,27 @@ func (c *Client) SendTemplate(to string, tmpl TemplateConfig) (string, error) {
 		version = "latest"
 	}
 
+	template := map[string]interface{}{
+		"projectId":  tmpl.ProjectID,
+		"version":    version,
+		"locale":     tmpl.Locale,
+		"parameters": params,
+	}
+
+	// Contacto sin E.164 (whatsappusername): direccionar al BSUID, igual que los mensajes de
+	// sesión (H148). Antes el gate cortaba aquí y estos pacientes NO recibían NINGUNA
+	// notificación proactiva. Si la vía no aplica, el caller conserva la supresión sin costo.
+	if !utils.IsE164(to) {
+		return c.sendTemplateViaBsuid(to, template)
+	}
+
 	payload := map[string]interface{}{
 		"receiver": map[string]interface{}{
 			"contacts": []map[string]string{
 				{"identifierValue": to},
 			},
 		},
-		"template": map[string]interface{}{
-			"projectId":  tmpl.ProjectID,
-			"version":    version,
-			"locale":     tmpl.Locale,
-			"parameters": params,
-		},
+		"template": template,
 	}
 
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {

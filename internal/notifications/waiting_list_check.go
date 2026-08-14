@@ -386,7 +386,16 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 	}
 	msgID, err := m.birdClient.SendTemplate(entry.PhoneNumber, tmpl)
 	if err != nil {
-		slog.Error("wl_check: send template", "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
+		// H148: un contacto no alcanzable (username sin BSUID resoluble) es un RESULTADO
+		// esperado del gate, no un fallo del servidor — va en WARN. Si sonara en ERROR, cada
+		// corrida diaria de la lista de espera dispararía alertas Telegram por comportamiento
+		// correcto (regla del ciclo 133). El flow_event de abajo lo deja igualmente medible.
+		if errors.Is(err, bird.ErrNonContactable) {
+			slog.Warn("wl_check: contacto no alcanzable, oferta suprimida (sin costo)",
+				"phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
+		} else {
+			slog.Error("wl_check: send template", "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
+		}
 		reason := ""
 		if bird.IsPermanentSendError(err) {
 			reason = "permanent"

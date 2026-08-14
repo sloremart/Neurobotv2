@@ -71,20 +71,25 @@ func TestCheckWaitingListForCups_Permanent422_MarksUnreachable(t *testing.T) {
 }
 
 // Identificador no-E.164 en la lista: ni siquiera debe llamar a Bird, y la entrada queda 'unreachable'.
+// H148: el contacto SÍ se intenta resolver a BSUID (PATCH) para poder notificarlo; lo que se
+// garantiza es que NO se postea ningún template cobrable con el identificador crudo y que, al no
+// haber BSUID, la entrada queda 'unreachable' (permanente) — fuera del pool diario.
 func TestCheckWaitingListForCups_NonE164_MarksUnreachableWithoutHTTP(t *testing.T) {
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			posts.Add(1) // cualquier POST = envío cobrable
+		}
 		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"id":"x"}`))
+		_, _ = w.Write([]byte(`{"id":"x"}`)) // sin featuredIdentifiers => sin BSUID
 	}))
 	defer srv.Close()
 
 	mgr, wlChecker := wlTestManager(t, bird.NewClientForTest(srv.URL), wlEntry("laura.perez"))
 	mgr.CheckWaitingListForCups(context.Background(), "890271")
 
-	if hits.Load() != 0 {
-		t.Errorf("no debe haber llamada HTTP para identificador no-E.164, hubo %d", hits.Load())
+	if posts.Load() != 0 {
+		t.Errorf("no debe postearse ningún template cobrable, hubo %d", posts.Load())
 	}
 	wlChecker.mu.Lock()
 	defer wlChecker.mu.Unlock()

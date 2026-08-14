@@ -1423,3 +1423,120 @@ func TestSendViaBsuid_ApiURLConRutaCompleta(t *testing.T) {
 		t.Errorf("el POST debe ir UNA vez a la ruta correcta, hubo %d", hits.Load())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// H148: notificaciones PROACTIVAS (templates) a contactos whatsappusername.
+// Antes el gate E.164 las cortaba y esos pacientes no recibían ni ofertas de
+// cupo ni recordatorios. Ahora se direccionan al BSUID, igual que los mensajes
+// de sesión. Si Bird no lo admite, falla ANTES de entregar (no cobrado) y el
+// caller conserva la supresión.
+// ---------------------------------------------------------------------------
+
+// TestSendTemplate_Username_VaPorBsuid: el template de un username se direcciona al BSUID
+// crudo del contacto y sale por el endpoint de templates.
+func TestSendTemplate_Username_VaPorBsuid(t *testing.T) {
+	var gotReceiver map[string]interface{}
+	var gotTemplate map[string]interface{}
+	var rutas []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "PATCH" && strings.Contains(r.URL.Path, "/contacts/identifiers/"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"c1","featuredIdentifiers":[{"key":"whatsapp_193596046348777","value":"CO.tmpl1"}]}`))
+		case r.Method == "POST":
+			rutas = append(rutas, r.URL.Path)
+			body, _ := io.ReadAll(r.Body)
+			var p map[string]interface{}
+			_ = json.Unmarshal(body, &p)
+			gotReceiver, _ = p["receiver"].(map[string]interface{})
+			gotTemplate, _ = p["template"].(map[string]interface{})
+			w.WriteHeader(202)
+			_, _ = w.Write([]byte(`{"id":"msg-tmpl-bsuid"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	id, err := c.SendTemplate("kari.perez", TemplateConfig{
+		ProjectID: "proj-wl", VersionID: "v1", Locale: "es-CO",
+		Params: []TemplateParam{{Type: "string", Key: "patient_name", Value: "Karina"}},
+	})
+	if err != nil {
+		t.Fatalf("el template a un username debe intentarse por BSUID: %v", err)
+	}
+	if id != "msg-tmpl-bsuid" {
+		t.Errorf("esperaba msg-tmpl-bsuid, got %q", id)
+	}
+	contacts, _ := gotReceiver["contacts"].([]interface{})
+	if len(contacts) != 1 {
+		t.Fatalf("receiver sin contacts: %v", gotReceiver)
+	}
+	ct, _ := contacts[0].(map[string]interface{})
+	if ct["identifierKey"] != "whatsapp_193596046348777" || ct["identifierValue"] != "CO.tmpl1" {
+		t.Errorf("debe direccionar al BSUID, got %v", ct)
+	}
+	if gotTemplate["projectId"] != "proj-wl" {
+		t.Errorf("el payload debe conservar el template, got %v", gotTemplate)
+	}
+	if len(rutas) != 1 || !strings.Contains(rutas[0], "/messages") {
+		t.Errorf("un solo POST al endpoint de templates, got %v", rutas)
+	}
+}
+
+// TestSendTemplate_UsernameSinBsuid_NoGastaNada (contrato de COSTO): si el contacto no
+// resuelve a BSUID, el template NO se postea (cero envíos cobrables) y el error es
+// ErrNonContactable — el caller suprime la notificación como hoy.
+func TestSendTemplate_UsernameSinBsuid_NoGastaNada(t *testing.T) {
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			posts.Add(1)
+		}
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"code":"NotFound"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	_, err := c.SendTemplate("kari.perez", TemplateConfig{ProjectID: "proj-wl"})
+	if err == nil {
+		t.Fatal("sin BSUID el template debe fallar, no entregarse")
+	}
+	if posts.Load() != 0 {
+		t.Errorf("NO debe postearse ningún template cobrable, hubo %d", posts.Load())
+	}
+}
+
+// TestSendTemplate_E164_SinCambios: para un teléfono normal el camino no cambia (receiver
+// por identifierValue, sin tocar contactos).
+func TestSendTemplate_E164_SinCambios(t *testing.T) {
+	var gotReceiver map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PATCH" {
+			t.Error("un teléfono E.164 NO debe resolver contacto/BSUID")
+		}
+		body, _ := io.ReadAll(r.Body)
+		var p map[string]interface{}
+		_ = json.Unmarshal(body, &p)
+		gotReceiver, _ = p["receiver"].(map[string]interface{})
+		w.WriteHeader(202)
+		_, _ = w.Write([]byte(`{"id":"msg-e164"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	id, err := c.SendTemplate("+573001234567", TemplateConfig{ProjectID: "proj-wl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "msg-e164" {
+		t.Errorf("esperaba msg-e164, got %q", id)
+	}
+	contacts, _ := gotReceiver["contacts"].([]interface{})
+	ct, _ := contacts[0].(map[string]interface{})
+	if ct["identifierValue"] != "+573001234567" || ct["identifierKey"] != nil {
+		t.Errorf("el camino E.164 no debe cambiar, got %v", ct)
+	}
+}

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -257,7 +258,15 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 		msgID, err := t.BirdClient.SendTemplate(phone, tmpl)
 		if err != nil {
-			slog.Error("send reminder failed", "phone", utils.MaskPhone(phone), "error", err)
+			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
+			// En WARN para no disparar una alerta Telegram por cada paciente username en la
+			// corrida diaria; el conteo queda en el evento suppressed_no_whatsapp/funnel.
+			if errors.Is(err, bird.ErrNonContactable) {
+				slog.Warn("recordatorio suprimido: contacto no alcanzable (sin costo)",
+					"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
+			} else {
+				slog.Error("send reminder failed", "phone", utils.MaskPhone(phone), "error", err)
+			}
 			continue
 		}
 		slog.Info("reminder template sent", "phone", utils.MaskPhone(phone), "bird_msg_id", msgID)

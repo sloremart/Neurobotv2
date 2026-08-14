@@ -85,22 +85,27 @@ func TestSendText_NonE164_NoHTTPCall(t *testing.T) {
 	}
 }
 
+// Un template a un identificador no-E.164 irresoluble (sin BSUID) no se postea NUNCA con el
+// valor crudo: desde H148 se intenta resolver el contacto (PATCH) para direccionar al BSUID, y
+// si no hay BSUID se corta sin postear ni un mensaje cobrable.
 func TestSendTemplate_NonE164_NoHTTPCall(t *testing.T) {
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"id":"x"}`))
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			posts.Add(1) // cualquier POST = envío cobrable
+		}
+		w.WriteHeader(404) // contacto irresoluble
+		_, _ = w.Write([]byte(`{"code":"NotFound"}`))
 	}))
 	defer srv.Close()
 
 	c := NewClientForTest(srv.URL)
 	_, err := c.SendTemplate("maria.gomez", TemplateConfig{ProjectID: "p"})
-	if !errors.Is(err, ErrNonContactable) {
-		t.Fatalf("esperaba ErrNonContactable, got %v", err)
+	if err == nil {
+		t.Fatal("esperaba error para identificador irresoluble")
 	}
-	if hits.Load() != 0 {
-		t.Errorf("no debe haber llamada HTTP para identificador no-E.164, hubo %d", hits.Load())
+	if posts.Load() != 0 {
+		t.Errorf("no debe postearse ningún template cobrable, hubo %d", posts.Load())
 	}
 }
 

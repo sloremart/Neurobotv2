@@ -76,39 +76,85 @@ func (c *Client) resolveBsuid(ctx context.Context, identifier string) (key, valu
 	return "", "", fmt.Errorf("contact %s has no BSUID identifier", contact.ID)
 }
 
+// bsuidReceiver resuelve el bloque `receiver` direccionado al BSUID del contacto, junto con la
+// key usada (para logs). Compartido por el envío de mensajes de sesión y el de templates.
+func (c *Client) bsuidReceiver(to string) (receiver map[string]interface{}, bsuidKey string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	key, val, err := c.resolveBsuid(ctx, to)
+	if err != nil {
+		// Visibilidad (H148): sin este WARN el diagnóstico de "por qué no salió" es a ciegas.
+		slog.Warn("bsuid_resolve_failed", "phone", utils.MaskPhone(to), "error", err)
+		// Se envuelve en ErrNonContactable (PERMANENTE) a propósito: un contacto que no resuelve
+		// a BSUID no tiene ninguna vía de entrega, así que reintentarlo mañana es trabajo (y
+		// ruido) inútil. Con esta clasificación la lista de espera lo marca 'unreachable' y sale
+		// del pool diario, en vez de volver a 'waiting' y reintentarse para siempre.
+		return nil, "", fmt.Errorf("%w: %s (sin BSUID: %w)", ErrNonContactable, utils.MaskPhone(to), err)
+	}
+	return map[string]interface{}{
+		"contacts": []map[string]string{{
+			"identifierKey":   key,
+			"identifierValue": val,
+		}},
+	}, key, nil
+}
+
 // sendViaBsuid entrega un mensaje a un contacto username por la ÚNICA vía que llega de verdad
 // (validada en vivo): Channels API direccionando al BSUID del contacto. No pasa por el gate
 // E.164 de sendMessage (el BSUID no es un teléfono y este payload es correcto por diseño).
 func (c *Client) sendViaBsuid(to string, body interface{}) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	bsuidKey, bsuidVal, err := c.resolveBsuid(ctx, to)
+	receiver, bsuidKey, err := c.bsuidReceiver(to)
 	if err != nil {
-		// Visibilidad (H148): el caller degrada a ErrNonContactable, que enmascara la causa;
-		// sin este WARN el diagnóstico de "por qué no salió" es a ciegas.
-		slog.Warn("bsuid_resolve_failed", "phone", utils.MaskPhone(to), "error", err)
 		return "", err
 	}
 	// H148: URL vía messagesURL() — BIRD_API_URL en prod trae la ruta COMPLETA del canal
 	// (…/workspaces/{id}/channels/{id}); concatenarla a mano la DUPLICABA → 404 → ninguna
 	// entrega BSUID funcionó en prod (16 'send message error' el 13-ago). messagesURL()
 	// maneja ambos formatos (raíz y ruta completa).
-	url := c.messagesURL()
-	payload := map[string]interface{}{
-		"receiver": map[string]interface{}{
-			"contacts": []map[string]string{{
-				"identifierKey":   bsuidKey,
-				"identifierValue": bsuidVal,
-			}},
-		},
-		"body": body,
-	}
-	id, err := c.sendMessage(url, payload) // sin arg phone → sin gate E.164 (intencional)
+	id, err := c.sendMessage(c.messagesURL(), map[string]interface{}{
+		"receiver": receiver,
+		"body":     body,
+	}) // sin arg phone → sin gate E.164 (intencional)
 	if err != nil {
 		slog.Warn("bsuid_send_failed", "phone", utils.MaskPhone(to), "bsuid_key", bsuidKey, "error", err)
 		return "", fmt.Errorf("send via bsuid: %w", err)
 	}
 	slog.Info("delivered_via_bsuid",
+		"phone", utils.MaskPhone(to), "bsuid_key", bsuidKey, "bird_msg_id", id)
+	return id, nil
+}
+
+// sendTemplateViaBsuid intenta entregar un TEMPLATE (notificación proactiva: oferta de cupo de
+// lista de espera, recordatorio del día anterior…) a un contacto whatsappusername, direccionando
+// al BSUID igual que los mensajes de sesión.
+//
+// H148: hasta ahora estos pacientes NO recibían NINGUNA notificación proactiva — el gate E.164
+// cortaba el template (correctamente: el identificador crudo da 422 cobrado) y la entrada de
+// lista de espera quedaba 'unreachable'. Con BSUID la entrega de mensajes de sesión ya está
+// validada en vivo; esta vía aplica el mismo direccionamiento al endpoint de templates.
+//
+// SEGURO POR CONSTRUCCIÓN: si Meta/Bird no admite templates direccionados al BSUID, el POST
+// falla ANTES de entregar (422, no aceptado = no cobrado) y el caller conserva el comportamiento
+// actual: suprimir sin costo. El primer caso real lo confirma en los logs
+// (`delivered_template_via_bsuid` vs `bsuid_send_failed`).
+//
+// OJO canal: el BSUID es scoped al número. Si BIRD_CHANNEL_ID_TEMPLATES apunta a un número
+// DISTINTO al que recibió al paciente, el envío fallará y se caerá a la supresión (hoy ambos
+// canales son el mismo).
+func (c *Client) sendTemplateViaBsuid(to string, template map[string]interface{}) (string, error) {
+	receiver, bsuidKey, err := c.bsuidReceiver(to)
+	if err != nil {
+		return "", err
+	}
+	id, err := c.sendMessage(c.templatesURL(), map[string]interface{}{
+		"receiver": receiver,
+		"template": template,
+	}) // sin arg phone → sin gate E.164 (intencional)
+	if err != nil {
+		slog.Warn("bsuid_template_send_failed", "phone", utils.MaskPhone(to), "bsuid_key", bsuidKey, "error", err)
+		return "", fmt.Errorf("send template via bsuid: %w", err)
+	}
+	slog.Info("delivered_template_via_bsuid",
 		"phone", utils.MaskPhone(to), "bsuid_key", bsuidKey, "bird_msg_id", id)
 	return id, nil
 }
