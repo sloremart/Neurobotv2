@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
+
+// errNoBsuid: el contacto SÍ se resolvió pero no tiene identifier whatsapp_* — no hay ninguna vía
+// de entrega para él. Es un fallo PERMANENTE de verdad (a diferencia de un 500 de Bird).
+var errNoBsuid = errors.New("contact has no BSUID identifier")
 
 // Entrega a contactos whatsappusername/BSUID (privacidad de número de WhatsApp).
 //
@@ -62,7 +67,10 @@ func (c *Client) resolveBsuid(ctx context.Context, identifier string) (key, valu
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("resolve bsuid: status %d", resp.StatusCode)
+		// APIError (no un error plano) para que IsPermanentSendError distinga: un 404/422 significa
+		// "este contacto no existe" (permanente), pero un 500/429/408 es Bird teniendo un mal
+		// momento — y NO debe condenar al paciente. Ver bsuidReceiver.
+		return "", "", &APIError{Status: resp.StatusCode, Body: string(body)}
 	}
 	var contact contactIdentifiersResp
 	if err := json.Unmarshal(body, &contact); err != nil {
@@ -73,7 +81,7 @@ func (c *Client) resolveBsuid(ctx context.Context, identifier string) (key, valu
 			return id.Key, id.Value, nil
 		}
 	}
-	return "", "", fmt.Errorf("contact %s has no BSUID identifier", contact.ID)
+	return "", "", fmt.Errorf("%w (contact %s)", errNoBsuid, contact.ID)
 }
 
 // bsuidReceiver resuelve el bloque `receiver` direccionado al BSUID del contacto, junto con la
@@ -85,11 +93,19 @@ func (c *Client) bsuidReceiver(to string) (receiver map[string]interface{}, bsui
 	if err != nil {
 		// Visibilidad (H148): sin este WARN el diagnóstico de "por qué no salió" es a ciegas.
 		slog.Warn("bsuid_resolve_failed", "phone", utils.MaskPhone(to), "error", err)
-		// Se envuelve en ErrNonContactable (PERMANENTE) a propósito: un contacto que no resuelve
-		// a BSUID no tiene ninguna vía de entrega, así que reintentarlo mañana es trabajo (y
-		// ruido) inútil. Con esta clasificación la lista de espera lo marca 'unreachable' y sale
-		// del pool diario, en vez de volver a 'waiting' y reintentarse para siempre.
-		return nil, "", fmt.Errorf("%w: %s (sin BSUID: %w)", ErrNonContactable, utils.MaskPhone(to), err)
+		// H149: la clasificación IMPORTA y no todo fallo es igual.
+		//   - PERMANENTE (contacto inexistente 4xx, o existe pero sin identifier whatsapp_*): no hay
+		//     ninguna vía de entrega. Se envuelve en ErrNonContactable para que la lista de espera lo
+		//     marque 'unreachable' y no pague un envío condenado cada día.
+		//   - TRANSITORIO (500 de Bird, 429, timeout de red): el contacto probablemente SÍ es
+		//     alcanzable; solo falló la consulta. Devolverlo como permanente sacaba al paciente del
+		//     pool de la lista de espera PARA SIEMPRE por un hipo de 30 segundos. Se devuelve un error
+		//     sin clasificar → la entrada vuelve a 'waiting' y se reintenta mañana (el PATCH de
+		//     resolución no es un envío: reintentarlo no cuesta mensajes).
+		if IsPermanentSendError(err) || errors.Is(err, errNoBsuid) {
+			return nil, "", fmt.Errorf("%w: %s (sin BSUID: %w)", ErrNonContactable, utils.MaskPhone(to), err)
+		}
+		return nil, "", fmt.Errorf("resolver BSUID de %s (transitorio): %w", utils.MaskPhone(to), err)
 	}
 	return map[string]interface{}{
 		"contacts": []map[string]string{{

@@ -777,10 +777,11 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 	// era pagar un mensaje muerto Y nunca llegar al BSUID que sí entrega. Sin BSUID no hay canal
 	// que entregue: cortar sin gastar (el caller marca non_contactable y suprime reintentos).
 	if !utils.IsE164(to) {
-		if id, err := c.sendViaBsuid(to, body); err == nil {
-			return id, nil
-		}
-		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+		// H149: se propaga el error TAL CUAL viene de la vía BSUID. Aplastarlo a ErrNonContactable
+		// convertía un 500 de Bird en "este paciente no existe" (permanente) y lo sacaba del pool
+		// de lista de espera para siempre. sendViaBsuid ya clasifica: permanente sin BSUID,
+		// transitorio si solo falló la llamada.
+		return c.sendViaBsuid(to, body)
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
@@ -827,12 +828,9 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 	}
 	// Contacto sin E.164: SOLO BSUID (bsuid.go) — cualquier POST a conversación se COBRA y su
 	// entrega falla siempre para usernames; y degradar a texto repetiría la misma escalera pagando
-	// de nuevo. Sin BSUID: cortar sin gastar.
+	// de nuevo. Sin BSUID: cortar sin gastar. (H149: error propagado con su clase — ver SendText.)
 	if !utils.IsE164(to) {
-		if id, err := c.sendViaBsuid(to, body); err == nil {
-			return id, nil
-		}
-		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+		return c.sendViaBsuid(to, body)
 	}
 	// If no conversationID, try a fresh lookup before falling back to text
 	if conversationID == "" {
@@ -915,12 +913,9 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 
 	// Contacto sin E.164: SOLO BSUID — la LISTA real entrega por ahí; cualquier POST a
 	// conversación se COBRA sin entregar, y degradar a texto repetiría la escalera pagando otra
-	// vez. Sin BSUID: cortar sin gastar.
+	// vez. Sin BSUID: cortar sin gastar. (H149: error propagado con su clase — ver SendText.)
 	if !utils.IsE164(to) {
-		if id, err := c.sendViaBsuid(to, msgBody); err == nil {
-			return id, nil
-		}
-		return "", fmt.Errorf("%w: %s", ErrNonContactable, utils.MaskPhone(to))
+		return c.sendViaBsuid(to, msgBody)
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
 		return id, nil

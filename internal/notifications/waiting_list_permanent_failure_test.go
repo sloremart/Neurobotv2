@@ -98,6 +98,35 @@ func TestCheckWaitingListForCups_NonE164_MarksUnreachableWithoutHTTP(t *testing.
 	}
 }
 
+// H149 — EL CASO QUE MOTIVA EL FIX: paciente con identificador whatsappusername y Bird respondiendo
+// 500 al resolver su BSUID. Antes, CUALQUIER fallo de resolución se clasificaba permanente y la
+// entrada quedaba 'unreachable', estado del que ninguna consulta del pool la rescata (todas filtran
+// status='waiting'): el paciente salía de la lista de espera para siempre por una caída pasajera.
+// Debe volver a 'waiting' y reintentarse mañana — el PATCH de resolución no es un envío cobrable.
+func TestCheckWaitingListForCups_UsernameTransientResolve_RevertsToWaiting(t *testing.T) {
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			posts.Add(1)
+		}
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte(`{"code":"InternalError"}`))
+	}))
+	defer srv.Close()
+
+	mgr, wlChecker := wlTestManager(t, bird.NewClientForTest(srv.URL), wlEntry("laura.perez"))
+	mgr.CheckWaitingListForCups(context.Background(), "890271")
+
+	if posts.Load() != 0 {
+		t.Errorf("un fallo de resolución no debe postear nada cobrable, hubo %d", posts.Load())
+	}
+	wlChecker.mu.Lock()
+	defer wlChecker.mu.Unlock()
+	if wlChecker.updatedStatus != "waiting" {
+		t.Errorf("un 500 al resolver el BSUID debe devolver la entrada a 'waiting', got %q", wlChecker.updatedStatus)
+	}
+}
+
 // Un error transitorio (429 sostenido) conserva el comportamiento actual: revertir a 'waiting'
 // para que el siguiente ciclo lo reintente.
 func TestCheckWaitingListForCups_Transient429_RevertsToWaiting(t *testing.T) {
