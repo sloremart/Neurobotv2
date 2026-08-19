@@ -491,19 +491,19 @@ func gfrResultHandler(gfrSvc *services.GFRService, procRepo repository.Procedure
 
 		result := gfrSvc.Calculate(age, gender, diseaseType, babyWeightCat, creatinine, heightCm, weightKg)
 
-		msg := result.Message
+		resultMsg := result.Message
 
 		// TFG 31-49 en tomografía (asunto_id=3): añadir protocolo de nefroprotección.
 		if result.Eligible && result.Value >= 31 && result.Value <= 49 && procRepo != nil {
 			cupsCode := sess.GetContext("cups_code")
 			if asuntoID, err := procRepo.FindSubjectTypeForCups(ctx, cupsCode); err == nil && asuntoID == 3 {
-				msg += nephroprotectionMsg
+				resultMsg += nephroprotectionMsg
 			}
 		}
 
 		r := sm.NewResult("").
 			WithContext("gfr_calculated", fmt.Sprintf("%.1f", result.Value)).
-			WithText(msg).
+			WithText(resultMsg).
 			WithEvent("gfr_calculated", map[string]interface{}{
 				"value":    result.Value,
 				"formula":  result.Formula,
