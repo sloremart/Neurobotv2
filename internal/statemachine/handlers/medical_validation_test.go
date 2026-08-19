@@ -118,7 +118,7 @@ func TestAskContrasted_NotContrastable_Skip(t *testing.T) {
 	apptSvc := services.NewAppointmentService(&mockApptRepo{}, nil)
 
 	m := sm.NewMachine()
-	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc)
+	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc, nil)
 
 	sess := testSess(sm.StateAskContrasted)
 	sess.Context["cups_code"] = "890271" // Not a contrastable CUPS
@@ -226,7 +226,7 @@ func TestAskPregnancy_MaleSkip(t *testing.T) {
 	apptSvc := services.NewAppointmentService(&mockApptRepo{}, nil)
 
 	m := sm.NewMachine()
-	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc)
+	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc, nil)
 
 	sess := testSess(sm.StateAskPregnancy)
 	sess.Context["patient_gender"] = "M"
@@ -271,7 +271,7 @@ func TestGfrCreatinine_InvalidInput(t *testing.T) {
 	apptSvc := services.NewAppointmentService(&mockApptRepo{}, nil)
 
 	m := sm.NewMachine()
-	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc)
+	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc, nil)
 
 	sess := testSess(sm.StateGfrCreatinine)
 	sess.Context["patient_age"] = "50"

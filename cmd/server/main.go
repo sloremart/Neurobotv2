@@ -241,7 +241,11 @@ func main() {
 	// Fase 9: Validaciones Médicas
 	gfrSvc := services.NewGFRService()
 	if appointmentSvc != nil {
-		handlers.RegisterMedicalValidationHandlers(machine, gfrSvc, appointmentSvc)
+		var procRepoForGFR repository.ProcedureRepository
+		if repos != nil {
+			procRepoForGFR = repos.Procedure
+		}
+		handlers.RegisterMedicalValidationHandlers(machine, gfrSvc, appointmentSvc, procRepoForGFR)
 	}
 	// Fase 10 + 13: Búsqueda de Slots y Agendamiento + Lista de Espera
 	var slotSvc *services.SlotService
