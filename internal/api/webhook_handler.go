@@ -184,6 +184,13 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 	// (send_rate_limit.go): una conversación viva nunca choca con el límite.
 	h.birdClient.RecordInbound(msg.Phone)
 
+	// …y también su contador de fallos de ENTREGA. Un mensaje entrante es la prueba mas barata de
+	// que el número tiene WhatsApp: no cuesta ningún envío. Sin esto el contador no tenía marcha
+	// atrás — al cruzar el umbral se suprimen los templates programados, así que deja de salir
+	// cualquier saliente, no llega ningún delivered/read, y el paciente queda excluido de sus
+	// recordatorios en silencio y para siempre.
+	h.recordInboundDeliveryProof(r.Context(), msg.Phone)
+
 	// WAL: persistir mensaje a DB ANTES de responder 200 a Bird.
 	// Si el bot crashea después de esto, el mensaje se replayea al reiniciar.
 	if h.inboxRepo != nil && msg.ID != "" {
@@ -467,6 +474,20 @@ func (h *WebhookHandler) sweepOutboundSeen() {
 		}
 		return true
 	})
+}
+
+// recordInboundDeliveryProof resetea el contador de fallos de entrega del teléfono: si nos escribe,
+// su WhatsApp funciona. Best-effort y fuera del camino crítico del webhook (un fallo aquí no puede
+// costarle el mensaje al paciente).
+func (h *WebhookHandler) recordInboundDeliveryProof(parent context.Context, phone string) {
+	if h.deliveryTracker == nil || phone == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	if err := h.deliveryTracker.RecordSuccess(ctx, phone); err != nil {
+		slog.Warn("reset delivery failures on inbound", "phone", utils.MaskPhone(phone), "error", err)
+	}
 }
 
 // sweepDeliverySeen purga la memoria anti-replica del contador de entrega. El TTL es la ventana

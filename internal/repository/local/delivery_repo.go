@@ -32,7 +32,11 @@ func (r *DeliveryRepo) RecordFailure(ctx context.Context, phone, status string) 
 	return nil
 }
 
-// RecordSuccess resetea el contador (entregado/leído, o el número escribió — prueba de WhatsApp).
+// RecordSuccess resetea el contador. Dos disparadores, y los DOS hacen falta: el delivered/read de
+// un saliente, y un mensaje ENTRANTE del paciente (webhook_handler.recordInboundDeliveryProof) —
+// que nos escriba prueba que su WhatsApp funciona y no cuesta ningún envío. Sin el segundo, un
+// teléfono suprimido no vuelve nunca: al suprimirlo dejan de salir templates, así que ya no puede
+// llegar ningún delivered que lo rescate.
 // UPDATE puro: si el teléfono nunca falló no crea fila (la tabla solo guarda problemáticos).
 func (r *DeliveryRepo) RecordSuccess(ctx context.Context, phone string) error {
 	_, err := r.db.ExecContext(ctx,
