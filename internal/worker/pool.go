@@ -778,11 +778,13 @@ func (p *MessageWorkerPool) handleAgentNoShow(ctx context.Context, sess *session
 		slog.Warn("no_show unassign feed item failed", "error", err, "conversation_id", sess.ConversationID)
 	}
 
-	// Avisar al paciente y re-promptear el paso (virtual __resume__ → la state machine re-muestra el prompt).
-	if _, err := p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
-		"No pudimos conectarte con un agente en este momento. Sigamos por aquí para continuar tu solicitud."); err != nil {
-		slog.Warn("no_show patient notice failed", "error", err, "phone", utils.MaskPhone(sess.PhoneNumber))
-	}
+	// Avisar al paciente y re-promptear el paso (virtual __resume__ → la state machine re-muestra el
+	// prompt). El aviso NO se envía aparte: se antepone a los mensajes del turno para que el
+	// coalescer de sendAndSave lo funda con el primero (el menú, en la inmensa mayoría de no-shows).
+	// Enviarlo suelto costaba un mensaje cobrado extra en CADA no-show —531 en 7 días— sin que el
+	// paciente leyera nada distinto. Si el turno no produce mensajes, el aviso sale solo: es lo
+	// único que le dice que el bot volvió a atenderle.
+	const noShowNotice = "No pudimos conectarte con un agente en este momento. Sigamos por aquí para continuar tu solicitud."
 	virtualMsg := bird.InboundMessage{
 		ID:          fmt.Sprintf("no-show-%s-%d", sess.PhoneNumber, time.Now().UnixNano()),
 		Phone:       sess.PhoneNumber,
@@ -790,11 +792,16 @@ func (p *MessageWorkerPool) handleAgentNoShow(ctx context.Context, sess *session
 		MessageType: "text",
 		ReceivedAt:  time.Now(),
 	}
-	if result, err := p.machine.Process(ctx, sess, virtualMsg); err != nil {
+	result, err := p.machine.Process(ctx, sess, virtualMsg)
+	if err != nil {
 		slog.Error("no_show re-prompt failed", "error", err, "phone", utils.MaskPhone(sess.PhoneNumber), "session_id", sess.ID)
-	} else if result != nil {
-		p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
+		result = nil
 	}
+	if result == nil {
+		result = statemachine.NewResult(sess.CurrentState)
+	}
+	result.Messages = append([]statemachine.OutboundMessage{&statemachine.TextMessage{Text: noShowNotice}}, result.Messages...)
+	p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
 
 	if p.tracker != nil {
 		p.tracker.LogEvent(ctx, sess.ID, sess.PhoneNumber, "escalation_agent_no_show", map[string]interface{}{
