@@ -735,7 +735,13 @@ func TestGfrCreatinine_YoungAdult(t *testing.T) {
 }
 
 // TestGfrExamDate_ValidComputesLimitAndBranches: la fecha de toma calcula la vigencia (toma+30d),
-// la guarda y ramifica por edad (aquí 50 → GFR_WEIGHT).
+// la guarda y ramifica por edad. Las TRES ramas, porque antes solo se cubría una:
+//
+//	<=14  → GFR_HEIGHT   (Schwartz necesita la altura)
+//	15-39 → GFR_DISEASE  (la enfermedad decide entre CKD-EPI y Cockcroft-Gault)
+//	>=40  → GFR_RESULT   (CKD-EPI: solo creatinina, edad y género — NO se pregunta el peso)
+//
+// La última cambió: hasta el paso a CKD-EPI para >=40, un paciente de 50 pasaba por GFR_WEIGHT.
 func TestGfrExamDate_ValidComputesLimitAndBranches(t *testing.T) {
 	m := sm.NewMachine()
 	m.Register(sm.StateGfrExamDate, gfrExamDateHandler())
@@ -756,8 +762,32 @@ func TestGfrExamDate_ValidComputesLimitAndBranches(t *testing.T) {
 	if result.UpdateCtx["gfr_creatinine_limit"] != wantLimit {
 		t.Errorf("límite=%q, esperaba %q (toma+30d)", result.UpdateCtx["gfr_creatinine_limit"], wantLimit)
 	}
-	if result.NextState != sm.StateGfrWeight {
-		t.Errorf("edad 50 → GFR_WEIGHT, got %s", result.NextState)
+	if result.NextState != sm.StateGfrResult {
+		t.Errorf("edad 50 → GFR_RESULT (CKD-EPI no necesita peso), got %s", result.NextState)
+	}
+	// La rama >=40 fija la enfermedad a 'ninguna': no se le pregunta, porque no cambia la fórmula.
+	if result.UpdateCtx["gfr_disease_type"] != "disease_none" {
+		t.Errorf("edad 50 → gfr_disease_type=disease_none, got %q", result.UpdateCtx["gfr_disease_type"])
+	}
+
+	// Las otras dos ramas, para que un cambio de umbral no pase inadvertido otra vez.
+	for _, tc := range []struct {
+		age  string
+		want string
+	}{
+		{"14", sm.StateGfrHeight},
+		{"39", sm.StateGfrDisease},
+		{"40", sm.StateGfrResult}, // el borde exacto del cambio
+	} {
+		s2 := testSess(sm.StateGfrExamDate)
+		s2.Context["patient_age"] = tc.age
+		r2, err := m.Process(context.Background(), s2, textM(recent))
+		if err != nil {
+			t.Fatalf("edad %s: %v", tc.age, err)
+		}
+		if r2.NextState != tc.want {
+			t.Errorf("edad %s → %s, got %s", tc.age, tc.want, r2.NextState)
+		}
 	}
 }
 

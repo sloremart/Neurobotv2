@@ -87,24 +87,59 @@ func TestGFR_CKDEPI_WithDisease(t *testing.T) {
 	}
 }
 
+// Cockcroft-Gault ya NO es la formula de los >= 40: desde el cambio a CKD-EPI para esa franja, la
+// unica via que la selecciona es 15-39 CON enfermedad renal o diabetica (gfr_service.go:36). El
+// caso de 50 anos que probaba este test antes ahora es CKD-EPI, asi que se reapunta a la via
+// vigente para no perder la cobertura de la formula.
 func TestGFR_CockcroftGault(t *testing.T) {
 	svc := NewGFRService()
 
-	// Male, 50 years, 70kg, creatinine 1.2
-	// CG = ((140 - 50) * 70) / (72 * 1.2) = 6300 / 86.4 = 72.916...
-	result := svc.Calculate(50, "M", "", "", 1.2, 0, 70)
+	// Male, 30 years, renal disease, 70kg, creatinine 1.2
+	// CG = ((140 - 30) * 70) / (72 * 1.2) = 7700 / 86.4 = 89.12...
+	result := svc.Calculate(30, "M", "disease_renal", "", 1.2, 0, 70)
 	if result.Formula != "Cockcroft-Gault" {
 		t.Errorf("expected Cockcroft-Gault formula, got %s", result.Formula)
 	}
-	if !almostEqual(result.Value, 72.9, 0.2) {
-		t.Errorf("expected GFR ~72.9, got %.1f", result.Value)
+	if !almostEqual(result.Value, 89.1, 0.2) {
+		t.Errorf("expected GFR ~89.1, got %.1f", result.Value)
 	}
 
-	// Female, 50 years, 60kg, creatinine 1.2 → multiply by 0.85
-	// CG = ((140-50) * 60) / (72 * 1.2) * 0.85 = 5400/86.4 * 0.85 = 53.125
-	resultF := svc.Calculate(50, "F", "", "", 1.2, 0, 60)
-	if !almostEqual(resultF.Value, 53.1, 0.2) {
-		t.Errorf("expected GFR ~53.1, got %.1f", resultF.Value)
+	// Female, 30 years, diabetic disease, 60kg, creatinine 1.2 → multiply by 0.85
+	// CG = ((140-30) * 60) / (72 * 1.2) * 0.85 = 6600/86.4 * 0.85 = 64.93
+	resultF := svc.Calculate(30, "F", "disease_diabetica", "", 1.2, 0, 60)
+	if resultF.Formula != "Cockcroft-Gault" {
+		t.Errorf("expected Cockcroft-Gault formula, got %s", resultF.Formula)
+	}
+	if !almostEqual(resultF.Value, 64.9, 0.2) {
+		t.Errorf("expected GFR ~64.9, got %.1f", resultF.Value)
+	}
+}
+
+// Guardarrail de la regla que cambio y que nadie cubria: a partir de 40 anos se usa CKD-EPI,
+// tenga o no enfermedad declarada. Es lo que permite no preguntar el peso (CKD-EPI no lo usa).
+func TestGFR_FortyOrOlderUsesCKDEPI(t *testing.T) {
+	svc := NewGFRService()
+
+	for _, tc := range []struct {
+		name    string
+		age     int
+		gender  string
+		disease string
+	}{
+		{"40 justo, sin enfermedad", 40, "M", ""},
+		{"50 sin enfermedad", 50, "F", ""},
+		{"50 con enfermedad renal", 50, "M", "disease_renal"},
+		{"70 con diabetes", 70, "F", "disease_diabetica"},
+	} {
+		// El peso se pasa a 0 a proposito: si alguna de estas vias volviera a Cockcroft-Gault,
+		// que necesita peso, el resultado se desplomaria y este test lo delataria.
+		got := svc.Calculate(tc.age, tc.gender, tc.disease, "", 1.2, 0, 0)
+		if got.Formula != "CKD-EPI" {
+			t.Errorf("%s: esperaba CKD-EPI, got %s", tc.name, got.Formula)
+		}
+		if got.Value <= 0 {
+			t.Errorf("%s: esperaba TFG positiva sin necesitar el peso, got %.1f", tc.name, got.Value)
+		}
 	}
 }
 

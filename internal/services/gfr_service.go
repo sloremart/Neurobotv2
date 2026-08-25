@@ -141,7 +141,8 @@ func ckdEPI(age int, gender string, creatinine float64) float64 {
 	return base * term1 * math.Pow(0.993, float64(age))
 }
 
-// Cockcroft-Gault (>= 40 años o 15-39 con enfermedad renal/diabética)
+// Cockcroft-Gault (15-39 CON enfermedad renal/diabética — es la única vía que la selecciona).
+// Los >= 40 pasaron a CKD-EPI: decía ">= 40" y contradecía al selector de Calculate.
 // ((140 - edad) × peso_kg) / (72 × creatinina) [× 0.85 si mujer]
 func cockcroftGault(age int, gender string, weightKg, creatinine float64) float64 {
 	if creatinine <= 0 {
