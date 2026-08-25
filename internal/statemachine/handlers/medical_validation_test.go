@@ -292,7 +292,7 @@ func TestGfrResult_Above60(t *testing.T) {
 
 	// Only register the single handler to avoid auto-chain
 	m := sm.NewMachine()
-	m.Register(sm.StateGfrResult, gfrResultHandler(gfrSvc))
+	m.Register(sm.StateGfrResult, gfrResultHandler(gfrSvc, nil)) // nil: el protocolo de nefroproteccion se salta con procRepo == nil, que es justo lo que estos casos ejercitan
 
 	sess := testSess(sm.StateGfrResult)
 	sess.Context["patient_age"] = "50"
@@ -319,7 +319,7 @@ func TestGfrResult_Below30(t *testing.T) {
 
 	// Only register the single handler
 	m := sm.NewMachine()
-	m.Register(sm.StateGfrResult, gfrResultHandler(gfrSvc))
+	m.Register(sm.StateGfrResult, gfrResultHandler(gfrSvc, nil)) // nil: el protocolo de nefroproteccion se salta con procRepo == nil, que es justo lo que estos casos ejercitan
 
 	sess := testSess(sm.StateGfrResult)
 	sess.Context["patient_age"] = "70"
