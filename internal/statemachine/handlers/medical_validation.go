@@ -389,10 +389,9 @@ func gfrExamDateHandler() sm.StateHandler {
 				sm.Button{Text: "Diabetes", Payload: "disease_diabetica"},
 			)
 		default:
-			// >= 40: Cockcroft-Gault necesita peso
-			r.NextState = sm.StateGfrWeight
+			// >= 40: CKD-EPI (solo creatinina + edad + género, no necesita peso)
+			r.NextState = sm.StateGfrResult
 			r.WithContext("gfr_disease_type", "disease_none")
-			r.WithText("Ingresa tu *peso* en kilogramos.\n\nEjemplo: 70")
 		}
 
 		return r, nil
@@ -493,8 +492,8 @@ func gfrResultHandler(gfrSvc *services.GFRService, procRepo repository.Procedure
 
 		resultMsg := result.Message
 
-		// TFG 31-49 en tomografía (asunto_id=3): añadir protocolo de nefroprotección.
-		if result.Eligible && result.Value >= 31 && result.Value <= 49 && procRepo != nil {
+		// TFG 31-49 (< 50) en tomografía (asunto_id=3): añadir protocolo de nefroprotección.
+		if result.Eligible && result.Value >= 31 && result.Value < 50 && procRepo != nil {
 			cupsCode := sess.GetContext("cups_code")
 			if asuntoID, err := procRepo.FindSubjectTypeForCups(ctx, cupsCode); err == nil && asuntoID == 3 {
 				resultMsg += nephroprotectionMsg
@@ -697,8 +696,8 @@ type gestationalRange struct {
 }
 
 var pregnancyUltrasoundCups = map[string]gestationalRange{
-	"881436": {label: "11 y 13 semanas + 6 días", min: 110, max: 136}, // Translucencia nucal
-	"881437": {label: "18 y 24 semanas", min: 180, max: 240},          // Detalle anatómico
+	"881436": {label: "11 y 14 semanas", min: 110, max: 140}, // Translucencia nucal
+	"881437": {label: "22 y 24 semanas", min: 220, max: 240}, // Detalle anatómico
 }
 
 // Sleep study CUPS codes (polisomnografía / estudios del sueño)

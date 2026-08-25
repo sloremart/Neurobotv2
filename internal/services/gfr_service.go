@@ -30,8 +30,8 @@ func (s *GFRService) Calculate(age int, gender, diseaseType, babyWeightCat strin
 		formula = "Schwartz"
 
 	case age >= 40:
-		value = cockcroftGault(age, gender, weightKg, creatinine)
-		formula = "Cockcroft-Gault"
+		value = ckdEPI(age, gender, creatinine)
+		formula = "CKD-EPI"
 
 	default: // 15-39
 		if diseaseType == "disease_renal" || diseaseType == "disease_diabetica" {

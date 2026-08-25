@@ -1150,7 +1150,7 @@ func TestAskGestationalWeeks_PatientDigitIsButton(t *testing.T) {
 	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
 
 	sess := testSess(sm.StateAskGestationalWeeks)
-	// cups 881436: rango 110-136 (×10); _prompted_weeks=1 → la pregunta ya se mostró.
+	// cups 881436: rango 110-140 (×10); _prompted_weeks=1 → la pregunta ya se mostró.
 	sess.Context["cups_code"] = "881436"
 	sess.Context["_prompted_weeks"] = "1"
 
@@ -1179,7 +1179,7 @@ func TestAskGestationalWeeks_AgentNumberInRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.NextState != sm.StateAskContrasted {
-		t.Errorf("agente '12' (en rango 110-136) debe continuar a ASK_CONTRASTED, got %s", result.NextState)
+		t.Errorf("agente '12' (en rango 110-140) debe continuar a ASK_CONTRASTED, got %s", result.NextState)
 	}
 }
 
