@@ -10,6 +10,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
+	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -17,7 +18,7 @@ import (
 )
 
 // RegisterMedicalValidationHandlers registra los handlers de validaciones médicas (Fase 9).
-func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRService, apptSvc *services.AppointmentService) {
+func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRService, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) {
 	m.Register(sm.StateCheckSpecialCups, checkSpecialCupsHandler())
 	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
 	m.Register(sm.StateAskContrasted, askContrastedHandler())
@@ -34,7 +35,7 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 		ErrorMsg:     "Peso no válido. Ingresa tu peso en kilogramos (ejemplo: 70).",
 		Handler:      gfrWeightHandler(),
 	})
-	m.Register(sm.StateGfrResult, gfrResultHandler(gfrSvc))
+	m.Register(sm.StateGfrResult, gfrResultHandler(gfrSvc, procRepo))
 	m.Register(sm.StateGfrNotEligible, gfrNotEligibleHandler())
 	m.Register(sm.StateAskSedation, askSedationHandler())
 	m.Register(sm.StateCheckExisting, checkExistingHandler(apptSvc))
@@ -388,10 +389,9 @@ func gfrExamDateHandler() sm.StateHandler {
 				sm.Button{Text: "Diabetes", Payload: "disease_diabetica"},
 			)
 		default:
-			// >= 40: Cockcroft-Gault necesita peso
-			r.NextState = sm.StateGfrWeight
+			// >= 40: CKD-EPI (solo creatinina + edad + género, no necesita peso)
+			r.NextState = sm.StateGfrResult
 			r.WithContext("gfr_disease_type", "disease_none")
-			r.WithText("Ingresa tu *peso* en kilogramos.\n\nEjemplo: 70")
 		}
 
 		return r, nil
@@ -469,8 +469,16 @@ func gfrWeightHandler() sm.StateHandler {
 	}
 }
 
+// nephroprotectionMsg es el protocolo de N-Acetilcisteína para tomografías con TFG 31-49.
+// Solo aplica a estudios con contraste yodado (TAC, asunto_id=3); no aplica a resonancia.
+const nephroprotectionMsg = "\n\n⚠️ *PROTOCOLO DE NEFROPROTECCIÓN CON N-ACETILCISTEÍNA*\n\n" +
+	"*N-ACETILCISTEÍNA SOBRES X 600MG*\n" +
+	"Diluir *dos sobres* de N-Acetilcisteína (dosis 1200 mg) en un vaso con agua y tomar *cada 12 horas*. " +
+	"Iniciar la toma *24 horas antes* del estudio y continuar *24 horas posterior* al estudio."
+
 // GFR_RESULT (automático) — calcula GFR y decide si procede.
-func gfrResultHandler(gfrSvc *services.GFRService) sm.StateHandler {
+// Para tomografías (asunto_id=3) con TFG 31-49, añade el protocolo de nefroprotección.
+func gfrResultHandler(gfrSvc *services.GFRService, procRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		age, _ := strconv.Atoi(sess.GetContext("patient_age"))
 		gender := sess.GetContext("patient_gender")
@@ -482,9 +490,19 @@ func gfrResultHandler(gfrSvc *services.GFRService) sm.StateHandler {
 
 		result := gfrSvc.Calculate(age, gender, diseaseType, babyWeightCat, creatinine, heightCm, weightKg)
 
+		resultMsg := result.Message
+
+		// TFG 31-49 (< 50) en tomografía (asunto_id=3): añadir protocolo de nefroprotección.
+		if result.Eligible && result.Value >= 31 && result.Value < 50 && procRepo != nil {
+			cupsCode := sess.GetContext("cups_code")
+			if asuntoID, err := procRepo.FindSubjectTypeForCups(ctx, cupsCode); err == nil && asuntoID == 3 {
+				resultMsg += nephroprotectionMsg
+			}
+		}
+
 		r := sm.NewResult("").
 			WithContext("gfr_calculated", fmt.Sprintf("%.1f", result.Value)).
-			WithText(result.Message).
+			WithText(resultMsg).
 			WithEvent("gfr_calculated", map[string]interface{}{
 				"value":    result.Value,
 				"formula":  result.Formula,
@@ -678,8 +696,8 @@ type gestationalRange struct {
 }
 
 var pregnancyUltrasoundCups = map[string]gestationalRange{
-	"881436": {label: "11 y 13 semanas + 6 días", min: 110, max: 136}, // Translucencia nucal
-	"881437": {label: "18 y 24 semanas", min: 180, max: 240},          // Detalle anatómico
+	"881436": {label: "11 y 14 semanas", min: 110, max: 140}, // Translucencia nucal
+	"881437": {label: "22 y 24 semanas", min: 220, max: 240}, // Detalle anatómico
 }
 
 // Sleep study CUPS codes (polisomnografía / estudios del sueño)

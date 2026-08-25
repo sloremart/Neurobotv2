@@ -118,7 +118,7 @@ func TestAskContrasted_NotContrastable_Skip(t *testing.T) {
 	apptSvc := services.NewAppointmentService(&mockApptRepo{}, nil)
 
 	m := sm.NewMachine()
-	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc)
+	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc, nil)
 
 	sess := testSess(sm.StateAskContrasted)
 	sess.Context["cups_code"] = "890271" // Not a contrastable CUPS
@@ -226,7 +226,7 @@ func TestAskPregnancy_MaleSkip(t *testing.T) {
 	apptSvc := services.NewAppointmentService(&mockApptRepo{}, nil)
 
 	m := sm.NewMachine()
-	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc)
+	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc, nil)
 
 	sess := testSess(sm.StateAskPregnancy)
 	sess.Context["patient_gender"] = "M"
@@ -271,7 +271,7 @@ func TestGfrCreatinine_InvalidInput(t *testing.T) {
 	apptSvc := services.NewAppointmentService(&mockApptRepo{}, nil)
 
 	m := sm.NewMachine()
-	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc)
+	RegisterMedicalValidationHandlers(m, gfrSvc, apptSvc, nil)
 
 	sess := testSess(sm.StateGfrCreatinine)
 	sess.Context["patient_age"] = "50"
@@ -1150,7 +1150,7 @@ func TestAskGestationalWeeks_PatientDigitIsButton(t *testing.T) {
 	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
 
 	sess := testSess(sm.StateAskGestationalWeeks)
-	// cups 881436: rango 110-136 (×10); _prompted_weeks=1 → la pregunta ya se mostró.
+	// cups 881436: rango 110-140 (×10); _prompted_weeks=1 → la pregunta ya se mostró.
 	sess.Context["cups_code"] = "881436"
 	sess.Context["_prompted_weeks"] = "1"
 
@@ -1179,7 +1179,7 @@ func TestAskGestationalWeeks_AgentNumberInRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.NextState != sm.StateAskContrasted {
-		t.Errorf("agente '12' (en rango 110-136) debe continuar a ASK_CONTRASTED, got %s", result.NextState)
+		t.Errorf("agente '12' (en rango 110-140) debe continuar a ASK_CONTRASTED, got %s", result.NextState)
 	}
 }
 

@@ -236,6 +236,7 @@ func inParamsAsInt(ids []string, startAt int) (clause string, args []interface{}
 //   - the patient's own contract (sis_paci.contrato, e.g. "6") → direct lookup (preferred)
 //   - a numeric contract code ("4") → direct lookup by contratos.codigo
 //   - a company code ("EPS005") → first active contract for that company
+//   - a numeric company code ("1423") → first active contract by empresa (mirrors FindByCode)
 //
 // BUG-10: preferring patientContract is what books MRC patients (contract 5/6, manual 8)
 // correctly. The company-code fallback uses ORDER BY codigo, which always returned the
@@ -261,14 +262,19 @@ func lookupContract(ctx context.Context, db *sql.DB, entityInput, patientContrac
 			`SELECT ISNULL(empresa,''), CAST(codigo AS VARCHAR(20)), ISNULL(regimen,1) FROM contratos WITH (NOLOCK) WHERE codigo = @p1`,
 			codeInt,
 		).Scan(&company, &contractCode, &regime)
-	} else {
-		// company code (e.g. "EPS005") → first active contract
-		err = db.QueryRowContext(
-			ctx,
-			`SELECT TOP 1 ISNULL(empresa,''), CAST(codigo AS VARCHAR(20)), ISNULL(regimen,1) FROM contratos WITH (NOLOCK) WHERE empresa = @p1 AND activo = 1 ORDER BY codigo`,
-			entityInput,
-		).Scan(&company, &contractCode, &regime)
+		// Mirrors FindByCode: numeric code that didn't match contratos.codigo may be a
+		// numeric empresa code (e.g. ARL POSITIVA empresa="1423"). Fall through to empresa lookup.
+		if !errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		err = nil
 	}
+	// company code (e.g. "EPS005") or numeric empresa code (e.g. "1423") → first active contract
+	err = db.QueryRowContext(
+		ctx,
+		`SELECT TOP 1 ISNULL(empresa,''), CAST(codigo AS VARCHAR(20)), ISNULL(regimen,1) FROM contratos WITH (NOLOCK) WHERE empresa = @p1 AND activo = 1 ORDER BY codigo`,
+		entityInput,
+	).Scan(&company, &contractCode, &regime)
 	if errors.Is(err, sql.ErrNoRows) {
 		return entityInput, entityInput, 1, nil
 	}

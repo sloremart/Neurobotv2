@@ -311,6 +311,14 @@ func routeAfterContactInfo(ctx context.Context, sess *session.Session, r *sm.Sta
 			r.WithContext("patient_contract", "")
 		}
 
+		// ARL / PÓLIZA: el paciente puede estar registrado en SIESA con un contrato
+		// EPS diferente al que aplica para este trámite. Limpiar patient_contract para
+		// que tanto el gate de cobertura como lookupContract usen el entity_code (empresa)
+		// de la ARL/póliza seleccionada — igual que PARTICULAR.
+		if category := sess.GetContext("entity_category"); category == "ARL" || category == "POLIZA" || category == "PÓLIZA" {
+			r.WithContext("patient_contract", "")
+		}
+
 		r.NextState = sm.StateAskMedicalOrder
 	default:
 		r.NextState = sm.StateTerminated
