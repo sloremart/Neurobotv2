@@ -55,8 +55,12 @@ func VerifySignatureWithKey(secret, signature, timestamp, requestURL string, bod
 		return false
 	}
 
-	// Step 1: Decode the signature from the header
-	actualSignature, err := base64.StdEncoding.DecodeString(signature)
+	// Step 1: Decode the signature from the header.
+	// Strict(): sin el, una firma de 32 bytes (43 caracteres de datos + relleno) tiene 2 bits sin
+	// usar en el ultimo caracter, asi que CUATRO cadenas distintas decodifican a los mismos bytes y
+	// las cuatro se aceptan. No cambia nada para una firma legitima -Bird emite la canonica-, pero
+	// cierra la puerta a cualquier memoria anti-replica que algun dia se indexe por la cadena.
+	actualSignature, err := base64.StdEncoding.Strict().DecodeString(signature)
 	if err != nil {
 		slog.Debug("webhook signature base64 decode failed", "error", err)
 		return false
