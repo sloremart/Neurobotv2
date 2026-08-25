@@ -77,6 +77,12 @@ type WebhookHandler struct {
 	// texto para /bot, touch de actividad) corre UNA vez por mensaje. Valor: time.Time del store.
 	outboundSeen      sync.Map
 	outboundSeenCount atomic.Int64
+	// deliverySeen dedupea por (Payload.ID, estado) los eventos que MUEVEN el contador de fallos
+	// de entrega. No sirve el dedupe por ID a secas de arriba: el primer evento de cada mensaje es
+	// accepted/sent, asi que delivery_failed y delivered -que llegan despues con el MISMO ID- no
+	// contarian nunca y la supresion moriria entera. Valor: time.Time del store.
+	deliverySeen      sync.Map
+	deliverySeenCount atomic.Int64
 	// startedAt: gracia de arranque para la pausa por intervención de agente (ver takeoverStartupGrace).
 	startedAt time.Time
 }
@@ -339,7 +345,7 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 	// del teléfono; delivered/read lo resetea. Con >=2 fallos consecutivos, los templates
 	// programados a ese número se suprimen (se cobraban sin llegar). Corre POR EVENTO (los
 	// estados difieren); todo lo demás de este handler corre una vez por mensaje (dedupe abajo).
-	h.recordDeliveryStatus(phone, event.Payload.Status)
+	h.recordDeliveryStatus(event.Payload.ID, phone, event.Payload.Status)
 
 	// Cache conversationId from ALL outbound messages and persist to DB
 	if event.Payload.ConversationID != "" && phone != "" {
@@ -463,11 +469,38 @@ func (h *WebhookHandler) sweepOutboundSeen() {
 	})
 }
 
+// sweepDeliverySeen purga la memoria anti-replica del contador de entrega. El TTL es la ventana
+// EFECTIVA de la firma de Bird (maxTimestampAge=24h con math.Abs alrededor = 48h): mas alla de eso
+// una repeticion ya no pasa la verificacion, asi que recordarla no aporta nada.
+func (h *WebhookHandler) sweepDeliverySeen() {
+	cutoff := time.Now().Add(-48 * time.Hour)
+	h.deliverySeen.Range(func(k, v interface{}) bool {
+		if ts, ok := v.(time.Time); ok && ts.Before(cutoff) {
+			h.deliverySeen.Delete(k)
+		}
+		return true
+	})
+}
+
 // recordDeliveryStatus registra fallos/éxitos de ENTREGA del webhook outbound. Solo estados
 // finales; los intermedios (accepted/sent) no dicen nada de si el número tiene WhatsApp.
-func (h *WebhookHandler) recordDeliveryStatus(phone, status string) {
+func (h *WebhookHandler) recordDeliveryStatus(msgID, phone, status string) {
 	if h.deliveryTracker == nil || phone == "" || status == "" {
 		return
+	}
+	// Anti-replica: el MISMO estado del MISMO mensaje solo cuenta una vez. Sin esto, dos copias de
+	// un unico delivery_failed cruzan el umbral (=2) y suprimen los templates programados a ese
+	// numero: el paciente se queda sin recordatorios de cita, en silencio, y si nunca escribe nada
+	// reinicia el contador. La firma no lo impide -es valida durante la ventana de bird/webhook.go-,
+	// asi que bastan los bytes de una peticion legitima reenviados.
+	if msgID != "" {
+		if _, seen := h.deliverySeen.LoadOrStore(msgID+"|"+strings.ToLower(status), time.Now()); seen {
+			slog.Debug("delivery status replay ignored", "phone", utils.MaskPhone(phone), "status", status)
+			return
+		}
+		if h.deliverySeenCount.Add(1)%512 == 0 {
+			h.sweepDeliverySeen()
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
