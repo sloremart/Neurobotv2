@@ -54,7 +54,7 @@ func mrcMonthFilter(ctx context.Context, apptSvc *services.AppointmentService, s
 	rescheduleID := sess.GetContext("reschedule_appt_id")
 	return func(year, month int) (bool, error) {
 		for _, d := range demands {
-			blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, d.RepCup, contract, d.Quantity, year, month, rescheduleID)
+			blocked, consumed, err := apptSvc.CheckMRCLimitForMonth(ctx, d.RepCup, contract, d.Quantity, year, month, rescheduleID)
 			if err != nil {
 				// N-30: fail-open (no bloquear el mes ante un error transitorio) pero loguear.
 				// El gate FINAL de createAppointmentHandler re-valida fail-closed antes de crear.
@@ -62,6 +62,21 @@ func mrcMonthFilter(ctx context.Context, apptSvc *services.AppointmentService, s
 				continue
 			}
 			if blocked {
+				// El paciente solo verá "no hay citas" (regla de negocio: no se le habla de topes),
+				// pero el descarte SÍ queda registrado. Sin esto el tope trabajaba a ciegas: en la
+				// auditoría del 01-sep-2026 no se pudo saber cuánto estaba protegiendo ni si algún
+				// camino agendó con el cupo ya cruzado.
+				_, limit, _ := services.IsMRCGroupCups(d.RepCup)
+				observability.Emit(observability.TraceSession(sess.ID), "agendar", "mrc_month_filtered",
+					observability.EmitOpts{
+						Phone: sess.PhoneNumber, Reason: d.GroupName,
+						Attrs: map[string]interface{}{
+							"month":    fmt.Sprintf("%04d-%02d", year, month),
+							"consumed": consumed,
+							"limit":    limit,
+							"qty":      d.Quantity,
+						},
+					})
 				return false, nil
 			}
 		}
@@ -86,6 +101,19 @@ func currentGroupCups(sess *session.Session, fallbackCode string) []services.CUP
 // currentMRCDemands calcula la demanda por grupo MRC del grupo de procedimientos ACTUAL.
 func currentMRCDemands(sess *session.Session, fallbackCode string) []services.MRCGroupDemand {
 	return services.MRCGroupDemands(currentGroupCups(sess, fallbackCode))
+}
+
+// mrcGroupNames extrae los nombres de grupo MRC de las demandas de una cita (vacío = la cita no
+// consume de ningún grupo con tope).
+func mrcGroupNames(demands []services.MRCGroupDemand) []string {
+	if len(demands) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(demands))
+	for _, d := range demands {
+		out = append(out, d.GroupName)
+	}
+	return out
 }
 
 // sanitasBloqueoInCurrentGroup devuelve el CUP de BLOQUEO presente en el grupo actual si el
@@ -144,12 +172,14 @@ func mrcFinalGateBlocked(ctx context.Context, apptSvc *services.AppointmentServi
 	}
 	rescheduleID := sess.GetContext("reschedule_appt_id")
 	for _, d := range demands {
-		blocked, err := apptSvc.CheckMRCLimitForMonth(ctx, d.RepCup, contract, d.Quantity, dt.Year(), int(dt.Month()), rescheduleID)
+		blocked, consumed, err := apptSvc.CheckMRCLimitForMonth(ctx, d.RepCup, contract, d.Quantity, dt.Year(), int(dt.Month()), rescheduleID)
 		if err != nil {
 			slog.Error("mrc_final_gate_error_fail_closed", "group", d.GroupName, "error", err)
 			return d.GroupName
 		}
 		if blocked {
+			_, limit, _ := services.IsMRCGroupCups(d.RepCup)
+			slog.Warn("mrc_final_gate_detail", "group", d.GroupName, "consumed", consumed, "limit", limit, "qty", d.Quantity)
 			return d.GroupName
 		}
 	}
@@ -1702,8 +1732,15 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				"reschedule_from": rescheduleApptID,
 			})
 
+		// Atributos para poder auditar el tope MRC desde flow_events SIN cruzar con SIESA: el mes
+		// al que fue la cita y los grupos MRC que consume. Antes solo iba el RefID, así que no se
+		// podía saber qué agendamientos cayeron en un grupo/mes pasado de tope.
+		bookAttrs := map[string]interface{}{"date": slot.Date}
+		if groups := mrcGroupNames(currentMRCDemands(sess, sess.GetContext("cups_code"))); len(groups) > 0 {
+			bookAttrs["mrc_groups"] = strings.Join(groups, ",")
+		}
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "booking_success",
-			observability.EmitOpts{Phone: sess.PhoneNumber, RefID: apptID})
+			observability.EmitOpts{Phone: sess.PhoneNumber, RefID: apptID, Attrs: bookAttrs})
 
 		if wlID := sess.GetContext("waiting_list_entry_id"); wlID != "" {
 			result.WithEvent("waiting_list_booking_success", map[string]interface{}{

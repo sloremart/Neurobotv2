@@ -366,26 +366,30 @@ func (s *AppointmentService) CheckMRCLimit(ctx context.Context, cupsCode, contra
 // Retorna true si está bloqueado (al límite). Solo aplica a pacientes MRC (contrato 5/6).
 // excludeApptID (si != "") descuenta esa cita del conteo del mes: se usa al REPROGRAMAR para no contar
 // la cita que se está moviendo (mismo mes → su cantidad no cuenta; otro mes → no está en ese conteo).
-func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, contractCode string, quantity, year, month int, excludeApptID string) (bool, error) {
+// Devuelve tambien el CONSUMIDO del grupo en ese mes: sin ese numero, un evento de bloqueo dice
+// "algo se freno" pero no cuanto nos pasamos del tope, que es justo lo que no se pudo responder en
+// la auditoria del 01-sep-2026. consumed es 0 cuando la comprobacion no aplica (flag apagado, no
+// MRC, o CUPS fuera de grupo).
+func (s *AppointmentService) CheckMRCLimitForMonth(ctx context.Context, cupsCode, contractCode string, quantity, year, month int, excludeApptID string) (blocked bool, consumed int, err error) {
 	if s.cfg != nil && !s.cfg.CupsGroupLimitsEnabled {
-		return false, nil
+		return false, 0, nil
 	}
 	if !IsMRCPatient(contractCode) {
-		return false, nil
+		return false, 0, nil
 	}
 
 	groupName, maxPerMonth, found := IsMRCGroupCups(cupsCode)
 	if !found {
-		return false, nil
+		return false, 0, nil
 	}
 
 	count, err := s.repo.CountMonthlyByGroup(ctx, mrcGroups[groupName].CupsCodes, year, month, excludeApptID)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	// Cabe en el mes solo si consumido + cantidad de esta orden no supera el tope (ver CheckMRCLimit).
-	return count+orderQuantity(cupsCode, quantity) > maxPerMonth, nil
+	return count+orderQuantity(cupsCode, quantity) > maxPerMonth, count, nil
 }
 
 // HasExistingAppointment verifica si el paciente ya tiene una cita futura para el CUPS.
@@ -554,7 +558,7 @@ func (s *AppointmentService) ConsolidateIntoAppointment(ctx context.Context, app
 			addEntries = append(addEntries, CUPSEntry{Code: p.CupCode, Quantity: p.Quantity})
 		}
 		for _, d := range MRCGroupDemands(addEntries) {
-			blocked, cerr := s.CheckMRCLimitForMonth(ctx, d.RepCup, contractCode, d.Quantity,
+			blocked, _, cerr := s.CheckMRCLimitForMonth(ctx, d.RepCup, contractCode, d.Quantity,
 				appt.Date.Year(), int(appt.Date.Month()), "")
 			if cerr != nil {
 				// Fail-CLOSED: una consolidación es opcional (el paciente conserva su cita EMG);

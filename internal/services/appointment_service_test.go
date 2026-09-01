@@ -462,7 +462,7 @@ func TestCheckMRCLimitForMonth_ExcludesRescheduledAppt(t *testing.T) {
 	svc := NewAppointmentService(repo, nil)
 
 	// MRC (6) + CUP de grupo MRC (861411) + excludeApptID → se propaga al conteo del mes.
-	if _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 7, "APT-RESCH-9"); err != nil {
+	if _, _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 7, "APT-RESCH-9"); err != nil {
 		t.Fatal(err)
 	}
 	if repo.lastExcludeApptID != "APT-RESCH-9" {
@@ -471,7 +471,7 @@ func TestCheckMRCLimitForMonth_ExcludesRescheduledAppt(t *testing.T) {
 
 	// Contrato Evento (4): ni siquiera consulta el conteo → no se pasa exclusión.
 	repo.lastExcludeApptID = ""
-	if _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 7, "APT-X"); err != nil {
+	if _, _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 7, "APT-X"); err != nil {
 		t.Fatal(err)
 	}
 	if repo.lastExcludeApptID != "" {
@@ -570,7 +570,7 @@ func TestCheckMRCLimitForMonth_WithinLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 4, "")
+	blocked, _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 4, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +587,7 @@ func TestCheckMRCLimitForMonth_AtLimit(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 3, "")
+	blocked, _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "6", 1, 2026, 3, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +605,7 @@ func TestCheckMRCLimitForMonth_NonMRCContract(t *testing.T) {
 	}
 	svc := NewAppointmentService(repo, nil)
 
-	blocked, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 3, "")
+	blocked, _, err := svc.CheckMRCLimitForMonth(context.Background(), "861411", "4", 1, 2026, 3, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -181,6 +181,11 @@ var catalog = map[string]stepSpec{
 	// (create/consolidación) — cada ocurrencia con reason=grupo; si crece sostenido con
 	// from_waiting_list, algún camino upstream sigue entrando sin filtro de búsqueda.
 	"agendar/mrc_limit_blocked": {LvOutcome, "blocked", ""},
+	// mrc_month_filtered: el filtro de busqueda DESCARTA un mes por tope MRC alcanzado. No es
+	// terminal (el paciente sigue viendo otros meses, o acaba en no_slots): milestone. Es el unico
+	// rastro de que el tope esta trabajando — sin el, la proteccion era invisible y no se podia
+	// auditar cuanto frena ni si algun camino agendo con el cupo cruzado.
+	"agendar/mrc_month_filtered": {LvMilestone, "blocked", ""},
 
 	// Recuperación asistida por IA (§11) — trace sess:<id>. Concepto distinto de escalación.
 	"recuperacion/ai_recovery_started":  {LvMilestone, "info", ""},    // 3.ª falla del bot → arranca IA
@@ -245,6 +250,11 @@ var allowedAttrKeys = map[string]bool{
 	// stash_reason: por qué NO se guardó (no_media / already_read / already_stashed). Con `stashed`
 	// solo se sabe QUE no se guardó; el motivo era una inferencia desde fuera (ciclo 130).
 	"stash_reason": true,
+	// Tope MRC (auditoría 01-sep-2026). `consumed`/`limit`/`qty` convierten un "algo se bloqueó"
+	// en "el grupo va 1372/932 y esta cita pedía 8": sin ellos no se puede medir cuánto protege el
+	// tope. `date` y `mrc_groups` van en booking_success para saber a qué mes y a qué grupo con
+	// tope fue cada cita SIN tener que cruzar con SIESA. Todo agregado, sin PII.
+	"consumed": true, "limit": true, "qty": true, "date": true, "mrc_groups": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

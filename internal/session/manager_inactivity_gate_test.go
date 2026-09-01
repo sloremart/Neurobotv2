@@ -7,9 +7,12 @@ import (
 	"time"
 )
 
-// El "¿Sigues ahí?" solo vale la pena si el paciente estaba a mitad de un trámite. El 52% de las
-// sesiones abandonadas mueren en MAIN_MENU (vieron el menú y se fueron): recordarles es un envío
-// cobrado con valor ~cero (~1.500-1.900/sem). El cierre por inactividad NO cambia.
+// El "¿Sigues ahí?" se ELIMINÓ por completo (decisión del 2026-08-31). Antes se filtraba por estado
+// —solo se enviaba si el paciente estaba a mitad de un trámite—; ahora no se envía en NINGÚN caso.
+// Motivo medido: buena parte de esos envíos ni siquiera se podían entregar (la ventana de servicio
+// de 24 h ya había cerrado) y Bird los rechazaba con "no active session… use an approved template",
+// cobrando el intento. El cierre por inactividad NO cambia, y sigue siendo silencioso: no existe
+// ningún mensaje posterior que le anuncie al paciente que su sesión se cerró.
 
 type inactivityBirdMock struct {
 	mu    sync.Mutex
@@ -60,26 +63,52 @@ func runInactivityCheck(t *testing.T, sessions []InactiveSession) (*inactivityBi
 	return birdMock, repo
 }
 
-// Sesión estancada en el MENÚ (sin trámite iniciado): NO se envía el recordatorio.
-func TestInactivityReminder_SkippedInMenuStates(t *testing.T) {
+// NINGÚN estado recibe ya el "¿Sigues ahí?": ni los de menú (que antes se saltaban) ni los que
+// están a mitad de un trámite (que antes sí lo recibían). Cero envíos, en todos los escenarios.
+func TestInactivityReminder_NeverSentInAnyState(t *testing.T) {
 	bird, _ := runInactivityCheck(t, []InactiveSession{
+		// Antes se SALTABAN.
 		inactiveSess("s-menu", "MAIN_MENU", 15),
 		inactiveSess("s-ooh", "OUT_OF_HOURS_MENU", 15),
 		inactiveSess("s-fallback", "FALLBACK_MENU", 15),
+		inactiveSess("s-greeting", "GREETING", 15),
+		// Antes SÍ lo recibían: son los que este cambio elimina.
+		inactiveSess("s-upload", "UPLOAD_MEDICAL_ORDER", 15),
+		inactiveSess("s-slots", "SHOW_SLOTS", 15),
+		inactiveSess("s-confirm", "CONFIRM_BOOKING", 15),
+		inactiveSess("s-doc", "ASK_DOCUMENT", 15),
 	})
 	if got := bird.sentCount(); got != 0 {
-		t.Errorf("estados sin progreso no deben recibir recordatorio, hubo %d envíos", got)
+		t.Errorf("el recordatorio de inactividad está eliminado: esperaba 0 envíos, hubo %d (%v)",
+			got, bird.texts)
 	}
 }
 
-// Sesión a mitad de un trámite real: el recordatorio SÍ se envía (recuperarla vale el mensaje).
-func TestInactivityReminder_SentForInFlowStates(t *testing.T) {
-	bird, _ := runInactivityCheck(t, []InactiveSession{
-		inactiveSess("s-upload", "UPLOAD_MEDICAL_ORDER", 15),
-		inactiveSess("s-slots", "SHOW_SLOTS", 15),
+// La marca se sigue poniendo aunque ya no se envíe nada: es lo que mantiene el cierre en CloseMin.
+// Sin ella, el fallback anti-sesión-inmortal retrasaría cada cierre hasta CloseMin+ReminderMin.
+func TestInactivityReminder_StillMarksSoCloseTimingIsUnchanged(t *testing.T) {
+	marks := map[string]string{}
+	repo := &mockRepo{}
+	repo.findInactiveFn = func(_ context.Context, _ int) ([]InactiveSession, error) {
+		return []InactiveSession{
+			inactiveSess("s-upload", "UPLOAD_MEDICAL_ORDER", 15),
+			inactiveSess("s-menu", "MAIN_MENU", 15),
+		}, nil
+	}
+	repo.setContextFn = func(_ context.Context, sessionID, key, value string) error {
+		if key == "inactivity_reminders" {
+			marks[sessionID] = value
+		}
+		return nil
+	}
+	m := NewSessionManager(repo, 30)
+	m.checkInactiveSessions(context.Background(), InactivityDeps{
+		BirdClient:  &inactivityBirdMock{},
+		ReminderMin: 10,
+		CloseMin:    30,
 	})
-	if got := bird.sentCount(); got != 2 {
-		t.Errorf("estados con trámite en curso deben recibir recordatorio, hubo %d envíos", got)
+	if marks["s-upload"] != "1" || marks["s-menu"] != "1" {
+		t.Errorf("ambas sesiones debían quedar marcadas para no retrasar el cierre, got %v", marks)
 	}
 }
 

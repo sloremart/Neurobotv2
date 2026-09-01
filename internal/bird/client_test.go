@@ -187,10 +187,21 @@ func TestSendMessage_4xxError(t *testing.T) {
 	}
 }
 
+// isSendAttempt distingue un intento de ENVÍO (lo que Bird cobra) de las consultas auxiliares que
+// el cliente hace alrededor — hoy, la búsqueda de la conversación activa cuando no se le pasa una.
+func isSendAttempt(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages")
+}
+
 func TestSendMessage_5xxRetries(t *testing.T) {
 	attempts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
+		// Solo cuentan los INTENTOS DE ENVÍO. Con conversationID vacío, SendText primero busca la
+		// conversación activa (GET .../conversations, 9e9916d): es una consulta, no un mensaje, y
+		// Bird no la cobra. Contarla haría que este test midiese la latencia, no la factura.
+		if isSendAttempt(r) {
+			attempts++
+		}
 		w.WriteHeader(500)
 	}))
 	defer srv.Close()
@@ -1170,7 +1181,9 @@ func TestSendMessage_429Retries(t *testing.T) {
 func TestSendMessage_429ExhaustedRetries(t *testing.T) {
 	attempts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
+		if isSendAttempt(r) { // ver TestSendMessage_5xxRetries: la búsqueda de conversación no es un envío
+			attempts++
+		}
 		w.WriteHeader(429)
 	}))
 	defer srv.Close()
