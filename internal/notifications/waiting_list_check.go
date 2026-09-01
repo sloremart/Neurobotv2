@@ -307,7 +307,7 @@ func (m *NotificationManager) entrySlotQuery(ctx context.Context, entry domain.W
 		if _, _, found := services.IsMRCGroupCups(entry.CupsCode); found {
 			q.MonthFilter = func(year, month int) (bool, error) {
 				// Lista de espera = alta nueva (el paciente no tiene esta cita aún) → sin exclusión.
-				blocked, err := m.apptSvc.CheckMRCLimitForMonth(ctx, entry.CupsCode, entry.ContractCode, 0, year, month, "")
+				blocked, _, err := m.apptSvc.CheckMRCLimitForMonth(ctx, entry.CupsCode, entry.ContractCode, 0, year, month, "")
 				if err != nil {
 					slog.Warn("wl_check: mrc month filter error (fail-open)", "cups_code", entry.CupsCode, "year", year, "month", month, "error", err)
 					return true, nil // fail-open
