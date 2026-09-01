@@ -348,9 +348,8 @@ func isAbdomenTAC(cupsCode string) bool {
 // Los TOPES SUPERIORES de cada franja son de FINALIZACIÓN: la cita debe TERMINAR (startMin+blockDuration)
 // dentro de la franja, no solo empezar en ella; así una cita de varios slots no se sale del límite.
 // Franjas confirmadas por la clínica (cota inferior = inicio; cota superior = fin):
-//   - TAC (asunto 3): mañana inicio ≥ 07:40 y fin ≤ 13:00; tarde inicio ≥ 14:00 y fin ≤ 16:00.
-//     Abdomen no antes de 10:00 → mañana inicio ≥ 10:00. (El tope de la tarde es 16:00, no 16:40: el
-//     resumen del documento de reglas decía 16:40 pero la TABLA —la fuente— define 14:00–16:00.)
+//   - TAC (asunto 3): mañana inicio ≥ 07:40 y fin ≤ 13:00; tarde inicio ≥ 14:00 y fin ≤ 15:00.
+//     Abdomen no antes de 10:00 → mañana inicio ≥ 10:00.
 //   - RNM (asunto 4): mañana inicio ≥ 07:40 y fin ≤ 12:00; tarde inicio ≥ 14:00 y fin ≤ 16:20.
 //   - Otras modalidades: RX y demás no tienen estudios contrastados; si aun así llegara uno, se mantiene
 //     la regla amplia previa (inicio ≥ 07:00, fin ≤ 17:00) para no bloquear de más.
@@ -363,7 +362,7 @@ func contrastWindowAllows(subjectType int, abdomen bool, startMin, blockDuration
 			morningStart = 10 * 60
 		}
 		return (startMin >= morningStart && endMin <= 13*60) ||
-			(startMin >= 14*60 && endMin <= 16*60)
+			(startMin >= 14*60 && endMin <= 15*60)
 	case 4: // RNM
 		return (startMin >= 7*60+40 && endMin <= 12*60) ||
 			(startMin >= 14*60 && endMin <= 16*60+20)
