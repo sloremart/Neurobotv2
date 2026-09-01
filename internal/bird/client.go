@@ -172,6 +172,10 @@ type Client struct {
 	mu          sync.RWMutex
 	convCache   map[string]string
 	convCacheTS map[string]time.Time
+	// convMiss: teléfonos para los que el lookup por lista NO encontró conversación, con el momento
+	// del fallo. Evita repetir el barrido de hasta 10 páginas (500 conversaciones) en cada envío al
+	// mismo número. Solo lo consultan las vías de ENVÍO; la escalación sigue consultando siempre.
+	convMiss map[string]time.Time
 
 	// Tope de envíos salientes por teléfono sin inbound del paciente (send_rate_limit.go).
 	sendRate      map[string]*sendRateEntry
@@ -253,6 +257,11 @@ func (c *Client) CacheConversationID(phone, conversationID string) {
 		c.convCache = make(map[string]string)
 		c.convCacheTS = make(map[string]time.Time)
 	}
+
+	// Conocemos la conversación → el fallo recordado deja de valer al instante. Esto es lo que impide
+	// que el recuerdo deje ciego al bot: el webhook de Bird que crea/actualiza la conversación pasa
+	// por aquí, así que el siguiente envío ya la usa.
+	delete(c.convMiss, phone)
 
 	// Evict oldest entry if at capacity (skip if overwriting existing key)
 	if _, exists := c.convCache[phone]; !exists && len(c.convCache) >= maxConvCacheEntries {
@@ -784,10 +793,7 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 		return c.sendViaBsuid(to, body)
 	}
 	if conversationID == "" {
-		if fresh, err := c.LookupConversationByPhone(to); err == nil && fresh != "" {
-			conversationID = fresh
-			c.CacheConversationID(to, fresh)
-		}
+		conversationID = c.resolveConversationForSend(to)
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
@@ -838,12 +844,8 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 	if !utils.IsE164(to) {
 		return c.sendViaBsuid(to, body)
 	}
-	// If no conversationID, try a fresh lookup before falling back to text
 	if conversationID == "" {
-		if fresh, err := c.LookupConversationByPhone(to); err == nil && fresh != "" {
-			conversationID = fresh
-			c.CacheConversationID(to, fresh)
-		}
+		conversationID = c.resolveConversationForSend(to)
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
@@ -924,10 +926,7 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 		return c.sendViaBsuid(to, msgBody)
 	}
 	if conversationID == "" {
-		if fresh, err := c.LookupConversationByPhone(to); err == nil && fresh != "" {
-			conversationID = fresh
-			c.CacheConversationID(to, fresh)
-		}
+		conversationID = c.resolveConversationForSend(to)
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
 		return id, nil
@@ -1856,6 +1855,61 @@ func pickLeastLoadedAgent(agents []AgentInfo, teamID string) *AgentInfo {
 		return best
 	}
 	return bestFallback
+}
+
+// convMissTTL: cuánto se recuerda que un teléfono NO tiene conversación. No hace falta que sea
+// corto para no quedarse ciego —CacheConversationID borra el recuerdo en cuanto Bird nos dice que
+// la conversación existe—, pero se acota igual para que un cambio no observado se corrija solo.
+const convMissTTL = 10 * time.Minute
+
+// resolveConversationForSend obtiene el conversationID de un teléfono para un ENVÍO, por orden de
+// coste: caché en memoria → fallo recordado → lookup por lista (hasta 10 páginas de 50).
+// El orden importa: el propio código documenta la caché como la fuente FIABLE y el lookup por lista
+// como poco fiable para pacientes recurrentes o en picos de tráfico (ver EscalateToAgent).
+//
+// La ESCALACIÓN no usa esta función: llama a LookupConversationByPhone directamente y consulta
+// siempre. Un fallo recordado nunca debe poder devolverle una conversación vacía — ese fue el bug
+// de "empty conversation ID".
+func (c *Client) resolveConversationForSend(phone string) string {
+	if phone == "" {
+		return ""
+	}
+	if cached := c.GetCachedConversationID(phone); cached != "" {
+		return cached
+	}
+
+	c.mu.RLock()
+	missedAt, missed := c.convMiss[phone]
+	c.mu.RUnlock()
+	if missed && time.Since(missedAt) < convMissTTL {
+		return "" // ya sabemos que no la hay; el envío sale por Channels API sin barrer la lista
+	}
+
+	fresh, err := c.LookupConversationByPhone(phone)
+	if err != nil || fresh == "" {
+		c.mu.Lock()
+		if c.convMiss == nil {
+			c.convMiss = make(map[string]time.Time)
+		}
+		c.convMiss[phone] = time.Now()
+		c.sweepConvMissLocked()
+		c.mu.Unlock()
+		return ""
+	}
+	c.CacheConversationID(phone, fresh)
+	return fresh
+}
+
+// sweepConvMissLocked purga los fallos vencidos. Se llama con c.mu tomado.
+func (c *Client) sweepConvMissLocked() {
+	if len(c.convMiss) < maxConvCacheEntries {
+		return
+	}
+	for k, ts := range c.convMiss {
+		if time.Since(ts) >= convMissTTL {
+			delete(c.convMiss, k)
+		}
+	}
 }
 
 // LookupConversationByPhone queries Bird's Conversations API to find the active
