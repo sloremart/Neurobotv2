@@ -783,6 +783,12 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 		// transitorio si solo falló la llamada.
 		return c.sendViaBsuid(to, body)
 	}
+	if conversationID == "" {
+		if fresh, err := c.LookupConversationByPhone(to); err == nil && fresh != "" {
+			conversationID = fresh
+			c.CacheConversationID(to, fresh)
+		}
+	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, body); ok {
 		return id, nil
 	}
@@ -916,6 +922,12 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 	// vez. Sin BSUID: cortar sin gastar. (H149: error propagado con su clase — ver SendText.)
 	if !utils.IsE164(to) {
 		return c.sendViaBsuid(to, msgBody)
+	}
+	if conversationID == "" {
+		if fresh, err := c.LookupConversationByPhone(to); err == nil && fresh != "" {
+			conversationID = fresh
+			c.CacheConversationID(to, fresh)
+		}
 	}
 	if id, _, ok := c.trySendToConversation(to, conversationID, msgBody); ok {
 		return id, nil
