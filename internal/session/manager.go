@@ -419,54 +419,21 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 				})
 
 		} else if elapsedMin >= deps.ReminderMin && s.Reminders == 0 {
-			// El recordatorio solo vale el envío si el paciente estaba a mitad de un trámite. El 52%
-			// de los abandonos mueren en el MENÚ (vieron las opciones y se fueron): recordarles es un
-			// mensaje cobrado con valor ~cero. Se marca igual para no reevaluar cada minuto; el cierre
-			// por inactividad no cambia.
-			if !inactivityReminderWorthIt(s.CurrentState) {
-				if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
-					slog.Error("set reminder failed", "session_id", s.ID, "error", err)
-				}
-				slog.Debug("inactivity reminder skipped (sin progreso)", "session_id", s.ID, "state", s.CurrentState)
-				continue
-			}
-			// Single reminder with close warning.
-			// CLAIM-THEN-SEND (anti-bucle, misma clase que el incidente 11/12-ago-2026): la marca se
-			// persiste ANTES de enviar. Al revés, un SetContext fallando persistentemente reenviaba
-			// el "¿Sigues ahí?" CADA MINUTO (tick del checker) sin cota. Fail-closed: si la marca no
-			// persiste, se omite el envío — perder un recordatorio de cortesía es barato; un envío
-			// por minuto sin tope no.
+			// El "¿Sigues ahí?" se ELIMINÓ (2026-08-31): no se envía en ningún estado. Buena parte de
+			// esos avisos ni siquiera se podían entregar —la ventana de servicio de 24 h del paciente
+			// ya había cerrado— y Bird los rechazaba con "no active session… use an approved template",
+			// cobrando el intento igual. Al que seguía dentro de la ventana tampoco le aportaba nada:
+			// si volvía, volvía solo.
+			//
+			// La MARCA se conserva aunque ya no se envíe nada: es la que mantiene el cierre en
+			// CloseMin. Sin ella, el fallback anti-sesión-inmortal de arriba retrasaría cada cierre
+			// hasta CloseMin+ReminderMin. El cierre sigue siendo SILENCIOSO: no hay ningún mensaje
+			// que le anuncie al paciente que su sesión se cerró, ni aquí ni después.
 			if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
-				slog.Error("set reminder failed (recordatorio omitido, anti-bucle)", "session_id", s.ID, "error", err)
-				continue
+				slog.Error("set reminder mark failed", "session_id", s.ID, "error", err)
 			}
-			closeIn := deps.CloseMin - deps.ReminderMin
-			deps.BirdClient.SendText(s.PhoneNumber, s.ConversationID,
-				fmt.Sprintf("¿Sigues ahí? Si no respondes en %s se cerrará la sesión.\n\nPuedes volver al menú principal enviando *0* o *menú*.", formatMinutes(closeIn)))
-			slog.Debug("inactivity reminder sent", "session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
 		}
 	}
-}
-
-// inactivityReminderSkipStates: estados SIN trámite iniciado — el paciente solo vio un menú y no
-// respondió; el "¿Sigues ahí?" ahí es un envío cobrado con valor ~cero. Los literales corresponden
-// a constantes de statemachine (no importable aquí: crearía ciclo); el test
-// TestInactivitySkipStates_MatchStateMachine en statemachine los mantiene sincronizados.
-var inactivityReminderSkipStates = map[string]bool{
-	"CHECK_BUSINESS_HOURS": true,
-	"GREETING":             true,
-	"MAIN_MENU":            true,
-	"OUT_OF_HOURS_MENU":    true,
-	"OUT_OF_HOURS":         true,
-	"FALLBACK_MENU":        true,
-	"SHOW_HELP":            true,
-}
-
-// InactivityReminderSkipStates expone el set para el test de sincronización en statemachine.
-func InactivityReminderSkipStates() map[string]bool { return inactivityReminderSkipStates }
-
-func inactivityReminderWorthIt(state string) bool {
-	return !inactivityReminderSkipStates[state]
 }
 
 // checkEscalatedSessions, por cada chat escalado, decide UNA de dos cosas:
