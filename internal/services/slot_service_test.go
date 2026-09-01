@@ -452,15 +452,15 @@ func rnmRepo() *mockProcedureRepo {
 	return &mockProcedureRepo{findSubjectTypeForCupsFn: func(_ context.Context, _ string) (int, error) { return 4, nil }}
 }
 
-// TestGetAvailableSlots_ContrastTACAfternoonEnds16 verifica el ajuste de la clínica: la cita
-// contrastada TAC de la tarde debe TERMINAR a más tardar 16:00 (no iniciar hasta 16:40). Slot único
-// de 30 min: 15:30 termina 16:00 → VÁLIDO; 16:00 termina 16:30 → INVÁLIDO (antes se ofrecía).
-func TestGetAvailableSlots_ContrastTACAfternoonEnds16(t *testing.T) {
+// TestGetAvailableSlots_ContrastTACAfternoonEnds15 verifica el ajuste de la clínica: la cita
+// contrastada TAC de la tarde debe TERMINAR a más tardar 15:00. Slot único
+// de 30 min: 14:30 termina 15:00 → VÁLIDO; 15:00 termina 15:30 → INVÁLIDO.
+func TestGetAvailableSlots_ContrastTACAfternoonEnds15(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
 		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return []domain.AvailableSlotRow{
-				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "15:30", 1, 30),
-				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "16:00", 1, 30),
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "14:30", 1, 30),
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "15:00", 1, 30),
 			}, nil
 		},
 	}
@@ -470,21 +470,21 @@ func TestGetAvailableSlots_ContrastTACAfternoonEnds16(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(slots) != 1 || slots[0].TimeSlot != "202603161530" {
-		t.Errorf("esperaba solo 15:30 (termina 16:00), got %+v", slots)
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161430" {
+		t.Errorf("esperaba solo 14:30 (termina 15:00), got %+v", slots)
 	}
 }
 
-// TestGetAvailableSlots_ContrastTACAfternoonCountsDuration verifica que el tope 16:00 considera
-// duración×cantidad de slots: con Espacios=2 (bloque de 60 min), el último inicio válido es 15:00
-// (termina 16:00). 15:30 terminaría 16:30 → INVÁLIDO.
+// TestGetAvailableSlots_ContrastTACAfternoonCountsDuration verifica que el tope 15:00 considera
+// duración×cantidad de slots: con Espacios=2 (bloque de 60 min), el último inicio válido es 14:00
+// (termina 15:00). 14:30 terminaría 15:30 → INVÁLIDO.
 func TestGetAvailableSlots_ContrastTACAfternoonCountsDuration(t *testing.T) {
 	scheduleRepo := &mockScheduleRepo{
 		findAvailableSlotsFn: func(_ context.Context, _ int, _ string, _ []int) ([]domain.AvailableSlotRow, error) {
 			return []domain.AvailableSlotRow{
+				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "14:00", 1, 30),
 				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "14:30", 1, 30),
 				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "15:00", 1, 30),
-				slotRow("doc1", "Dr. TAC", "S-doc1", "2026-03-16", "15:30", 1, 30),
 			}, nil
 		},
 	}
@@ -493,8 +493,8 @@ func TestGetAvailableSlots_ContrastTACAfternoonCountsDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(slots) != 2 || slots[0].TimeSlot != "202603161430" || slots[1].TimeSlot != "202603161500" {
-		t.Errorf("esperaba 14:30 y 15:00 (bloque de 60 min termina ≤16:00), got %+v", slots)
+	if len(slots) != 1 || slots[0].TimeSlot != "202603161400" {
+		t.Errorf("esperaba solo 14:00 (bloque de 60 min termina ≤15:00), got %+v", slots)
 	}
 }
 
@@ -862,25 +862,26 @@ func TestContrastWindowAllows(t *testing.T) {
 		dur     int
 		want    bool
 	}{
-		// TAC no-abdomen: mañana inicio≥07:40 y fin≤13:00; tarde inicio≥14:00 y fin≤16:00.
+		// TAC no-abdomen: mañana inicio≥07:40 y fin≤13:00; tarde inicio≥14:00 y fin≤15:00.
 		{"TAC 07:20 antes", 3, false, hm(7, 20), 30, false},
 		{"TAC 07:40 ok", 3, false, hm(7, 40), 30, true},
 		{"TAC 12:30 termina 13:00 ok", 3, false, hm(12, 30), 30, true},
 		{"TAC 12:31 cruza almuerzo", 3, false, hm(12, 31), 30, false},
 		{"TAC 13:00 almuerzo", 3, false, hm(13, 0), 30, false},
 		{"TAC 14:00 ok", 3, false, hm(14, 0), 30, true},
-		{"TAC 15:30 termina 16:00 ok", 3, false, hm(15, 30), 30, true},
-		{"TAC 15:31 pasa de 16:00", 3, false, hm(15, 31), 30, false},
-		{"TAC 16:00 pasa de 16:00", 3, false, hm(16, 0), 30, false}, // antes válido (16:00<16:40)
-		// TAC abdomen: no antes de 10:00 (mismo tope tarde 16:00).
+		{"TAC 14:30 termina 15:00 ok", 3, false, hm(14, 30), 30, true},
+		{"TAC 15:00 pasa de 15:00", 3, false, hm(15, 0), 30, false},
+		{"TAC 15:30 pasa de 15:00", 3, false, hm(15, 30), 30, false},
+		// TAC abdomen: no antes de 10:00 (mismo tope tarde 15:00).
 		{"TAC abd 07:40 no", 3, true, hm(7, 40), 30, false},
 		{"TAC abd 09:59 no", 3, true, hm(9, 59), 30, false},
 		{"TAC abd 10:00 ok", 3, true, hm(10, 0), 30, true},
 		{"TAC abd 14:00 ok", 3, true, hm(14, 0), 30, true},
-		{"TAC abd 15:31 pasa de 16:00", 3, true, hm(15, 31), 30, false},
-		// TAC duración: bloque de 60 min → último inicio válido 15:00.
-		{"TAC tarde 60min 15:00 ok", 3, false, hm(15, 0), 60, true},
-		{"TAC tarde 60min 15:01 no", 3, false, hm(15, 1), 60, false},
+		{"TAC abd 14:30 termina 15:00 ok", 3, true, hm(14, 30), 30, true},
+		{"TAC abd 15:00 pasa de 15:00", 3, true, hm(15, 0), 30, false},
+		// TAC duración: bloque de 60 min → último inicio válido 14:00 (termina 15:00).
+		{"TAC tarde 60min 14:00 ok", 3, false, hm(14, 0), 60, true},
+		{"TAC tarde 60min 14:01 no", 3, false, hm(14, 1), 60, false},
 		// RNM: mañana inicio≥07:40 y fin≤12:00; tarde inicio≥14:00 y fin≤16:20.
 		{"RNM 07:40 ok", 4, false, hm(7, 40), 20, true},
 		{"RNM 11:40 termina 12:00 ok", 4, false, hm(11, 40), 20, true},
