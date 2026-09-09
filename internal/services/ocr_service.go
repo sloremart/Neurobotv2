@@ -153,6 +153,12 @@ DOCUMENTO DEL PACIENTE (solo dígitos):
 - Si no es visible, usa null.
 
 PROCEDIMIENTOS — PROCESO DE DECISIÓN (OBLIGATORIO):
+REGLA CERO — ANTI-ALUCINACIÓN (tiene prioridad sobre todo lo demás):
+- Solo incluye en el resultado procedimientos que estén CLARAMENTE VISIBLES en la imagen.
+- NUNCA uses el contenido de los ejemplos de estas instrucciones como si fuera contenido del documento.
+- Si un código o nombre no es legible con certeza, OMITE ese procedimiento del resultado.
+- Un código que NO está en la LISTA DE REFERENCIA NO es motivo para inventar otro que sí esté. Devuelve el código y nombre tal como aparecen en la imagen, aunque no estén en la lista.
+
 1) PRIORIDAD ABSOLUTA: CÓDIGO EN LA ORDEN
    - Si en la fila del procedimiento existe un número de 4 a 6 dígitos, ese ES el cups_code.
    - Si el código tiene cualquier sufijo tras un guion (ej: "891509-16", "891509-1", "891509-4"), usa SOLO los dígitos del código base: "891509". El número del sufijo indica cantidad; captúrala usando (#N) o la regla 2, nunca en cups_code.
