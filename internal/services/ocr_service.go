@@ -163,8 +163,16 @@ REGLA CERO — ANTI-ALUCINACIÓN (tiene prioridad sobre todo lo demás):
    - Si en la fila del procedimiento existe un número de 4 a 6 dígitos, ese ES el cups_code.
    - Si el código tiene cualquier sufijo tras un guion (ej: "891509-16", "891509-1", "891509-4"), usa SOLO los dígitos del código base: "891509". El número del sufijo indica cantidad; captúrala usando (#N) o la regla 2, nunca en cups_code.
    - Copia la descripción tal cual de la orden en cups_name.
-   - VERIFICACIÓN CRÍTICA DE DÍGITOS: Los códigos CUPS son identificadores únicos donde cada dígito importa. Dígitos que suelen confundirse: 0/6, 3/8, 1/7, 2/4. Verifica cada dígito individualmente. Si la descripción menciona "OTORRINOLARINGOLOGIA" pero el código que lees existe en tu lista como "FISIATRIA", has leído mal el código — vuelve a leerlo con cuidado.
-   - VERIFICACIÓN CRUZADA: Si el cups_code que leíste existe en la LISTA DE REFERENCIA y su descripción en la lista corresponde a UNA ESPECIALIDAD DISTINTA a la que menciona la descripción de la orden (ej: la orden dice "OTORRINOLARINGOLOGIA" pero la lista tiene ese código como "MEDICINA FISICA"), indica el código tal como está en la imagen (puede ser un código fuera de la lista) y deja cups_name con la descripción exacta de la orden.
+   - VERIFICACIÓN CRÍTICA DE DÍGITOS: Los códigos CUPS son identificadores únicos donde cada dígito importa. Dígitos que suelen confundirse: 0/6, 3/8, 1/7, 2/4, 5/6. Verifica cada dígito individualmente.
+     PARES CONFUSABLES CRÍTICOS — si la descripción de la orden no coincide con la especialidad del código que leíste, RE-LEE el código:
+       * 890364 = FISIATRIA (MEDICINA FISICA Y REHABILITACION) CONTROL
+       * 890374 = NEUROLOGÍA adultos CONTROL
+       * 890375 = NEUROLOGÍA PEDIÁTRICA CONTROL  ← si la orden dice "NEUROLOGIA PEDIATRICA" el código termina en 75, NO en 64
+       * 890264 = FISIATRIA (MEDICINA FISICA Y REHABILITACION) PRIMERA VEZ
+       * 890274 = NEUROLOGÍA adultos PRIMERA VEZ
+       * 890275 = NEUROLOGÍA PEDIÁTRICA PRIMERA VEZ  ← si la orden dice "NEUROLOGIA PEDIATRICA" el código termina en 75, NO en 64
+   - VERIFICACIÓN CRUZADA OBLIGATORIA: Después de leer el código, compara la especialidad del código con la especialidad mencionada en la descripción de la orden.
+     * Si NO coinciden (ej: código apunta a "MEDICINA FISICA" pero descripción dice "NEUROLOGIA PEDIATRICA") → has leído mal el código. Usa el código de la imagen tal cual Y cups_name = descripción exacta de la orden (no uses el nombre de la lista).
 
 2) SOLO SI NO HAY CÓDIGO EN LA ORDEN:
    - Compara la descripción de la orden con la LISTA DE REFERENCIA (al final).
