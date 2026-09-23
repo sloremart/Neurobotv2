@@ -281,10 +281,10 @@ func IsSanitasContract(contractCode string) bool {
 }
 
 // IsMedicationAllowedContract indica si el contrato tiene acceso al servicio de Aplicación de
-// medicamentos. Incluye Sanitas (4/5/6/7), Capital Salud (14) y FOMAG (21).
+// medicamentos. Incluye Sanitas (4/5/6/7), Capital Salud contributivo (14) + subsidiado (15) y FOMAG (21).
 func IsMedicationAllowedContract(contractCode string) bool {
 	switch contractCode {
-	case "4", "5", "6", "7", "14", "21":
+	case "4", "5", "6", "7", "14", "15", "21":
 		return true
 	}
 	return false
