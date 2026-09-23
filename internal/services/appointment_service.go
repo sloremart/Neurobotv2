@@ -280,6 +280,16 @@ func IsSanitasContract(contractCode string) bool {
 	return false
 }
 
+// IsMedicationAllowedContract indica si el contrato tiene acceso al servicio de Aplicación de
+// medicamentos. Incluye Sanitas (4/5/6/7), Capital Salud (14) y FOMAG (21).
+func IsMedicationAllowedContract(contractCode string) bool {
+	switch contractCode {
+	case "4", "5", "6", "7", "14", "21":
+		return true
+	}
+	return false
+}
+
 // Restricciones de edad por doctor (hardcoded por negocio)
 var doctorAgeRestrictions = map[string]struct {
 	MinAge int

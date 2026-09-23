@@ -252,16 +252,16 @@ func startAgendarFlow(r *sm.StateResult) *sm.StateResult {
 }
 
 // MEDICATION_CHECK_SANITAS (automático) — se llega tras identificar/crear al paciente (flujo de
-// agendar reutilizado). Valida el contrato SANITAS REAL (4/5/6/7), no autodeclarado:
-//   - No SANITAS → informa y vuelve al menú.
-//   - SANITAS → indica los documentos a tener listos y bifurca:
+// agendar reutilizado). Valida el contrato permitido (Sanitas 4/5/6/7, Capital Salud 14, FOMAG 21):
+//   - Contrato no permitido → informa y vuelve al menú.
+//   - Contrato permitido → indica los documentos a tener listos y bifurca:
 //     · si hay canal externo (MEDICATION_EXTERNAL_WA_NUMBER) → envía el link wa.me (no escala);
 //     · si no → escala a un agente como antes.
 func medicationCheckSanitasHandler(cfg *config.Config) sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
-		if !services.IsSanitasContract(sess.GetContext("patient_contract")) {
+		if !services.IsMedicationAllowedContract(sess.GetContext("patient_contract")) {
 			list := buildMainMenuList()
-			list.Body = "Por ahora el servicio de *Aplicación de medicamentos* solo está disponible para afiliados a *SANITAS*.\n\n" + list.Body
+			list.Body = "Por ahora el servicio de *Aplicación de medicamentos* está disponible para afiliados a *SANITAS*, *CAPITAL SALUD* y *FOMAG*.\n\n" + list.Body
 			r := sm.NewResult(sm.StateMainMenu).
 				WithClearCtx("medication_flow").
 				WithEvent("medication_not_sanitas", map[string]interface{}{"contract": sess.GetContext("patient_contract")})
