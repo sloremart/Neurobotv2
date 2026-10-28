@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func openAIHandler(response string) http.HandlerFunc {
@@ -336,9 +337,9 @@ func newDownloadSvc(rt http.RoundTripper) *OCRService {
 func TestDownloadMedia_NectarHostSignsRequest(t *testing.T) {
 	rt := &capturingTransport{}
 	s := newDownloadSvc(rt)
-	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
 
-	if _, err := s.downloadMedia(context.Background(), "https://aom.colibrixa.com/api/bot/attachments/7"); err != nil {
+	if _, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7"); err != nil {
 		t.Fatalf("downloadMedia: %v", err)
 	}
 	if got := rt.last.Header.Get("X-Bot-Service-Key"); got != "service-key" {
@@ -355,9 +356,9 @@ func TestDownloadMedia_NectarHostSignsRequest(t *testing.T) {
 func TestDownloadMedia_NectarHostWrongSchemeNoCredential(t *testing.T) {
 	rt := &capturingTransport{}
 	s := newDownloadSvc(rt)
-	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
 
-	if _, err := s.downloadMedia(context.Background(), "http://aom.colibrixa.com/api/bot/attachments/7"); err != nil {
+	if _, err := s.downloadMedia(context.Background(), "http://nectar.colibrixa.com/api/bot/attachments/7"); err != nil {
 		t.Fatalf("downloadMedia: %v", err)
 	}
 	h := rt.last.Header
@@ -369,7 +370,7 @@ func TestDownloadMedia_NectarHostWrongSchemeNoCredential(t *testing.T) {
 func TestDownloadMedia_BirdHostUnchanged(t *testing.T) {
 	rt := &capturingTransport{}
 	s := newDownloadSvc(rt)
-	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
 
 	if _, err := s.downloadMedia(context.Background(), "https://media.api.bird.com/x.jpg"); err != nil {
 		t.Fatalf("downloadMedia: %v", err)
@@ -385,7 +386,7 @@ func TestDownloadMedia_BirdHostUnchanged(t *testing.T) {
 func TestDownloadMedia_OtherHostNoCredential(t *testing.T) {
 	rt := &capturingTransport{}
 	s := newDownloadSvc(rt)
-	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
 
 	if _, err := s.downloadMedia(context.Background(), "https://evil.example.com/x.jpg"); err != nil {
 		t.Fatalf("downloadMedia: %v", err)
@@ -393,5 +394,88 @@ func TestDownloadMedia_OtherHostNoCredential(t *testing.T) {
 	h := rt.last.Header
 	if h.Get("Authorization") != "" || h.Get("X-Bot-Service-Key") != "" || h.Get("X-Nectar-Signature") != "" {
 		t.Errorf("ningún anfitrión ajeno recibe credencial: %v", h)
+	}
+}
+
+// statusSeqTransport responde la secuencia de códigos dada (el último se repite) y cuenta los GET.
+type statusSeqTransport struct {
+	statuses []int
+	calls    int
+}
+
+func (c *statusSeqTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	status := c.statuses[len(c.statuses)-1]
+	if c.calls < len(c.statuses) {
+		status = c.statuses[c.calls]
+	}
+	c.calls++
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(strings.NewReader("data")),
+		Header:     http.Header{},
+		Request:    r,
+	}, nil
+}
+
+// newRetrySvc arma el servicio con esperas nulas entre reintentos (los tests no esperan ~17 s).
+func newRetrySvc(rt http.RoundTripper) *OCRService {
+	s := newDownloadSvc(rt)
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
+	s.mediaRetryDelays = []time.Duration{0, 0, 0}
+	return s
+}
+
+// TestDownloadMedia_NectarRetriesOn404: Néctar responde 404 mientras termina de bajar el archivo
+// de WhatsApp; el bot reintenta y se queda con el adjunto cuando aparece.
+func TestDownloadMedia_NectarRetriesOn404(t *testing.T) {
+	rt := &statusSeqTransport{statuses: []int{404, 404, 200}}
+	s := newRetrySvc(rt)
+
+	data, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7")
+	if err != nil {
+		t.Fatalf("debía recuperarse tras dos 404: %v", err)
+	}
+	if string(data) != "data" || rt.calls != 3 {
+		t.Fatalf("data=%q calls=%d, want data y 3 GET", data, rt.calls)
+	}
+}
+
+// TestDownloadMedia_NectarGivesUpAfterRetries: 404 persistente = fallo permanente; el número de
+// GET queda acotado a 1 + len(delays).
+func TestDownloadMedia_NectarGivesUpAfterRetries(t *testing.T) {
+	rt := &statusSeqTransport{statuses: []int{404}}
+	s := newRetrySvc(rt)
+
+	if _, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7"); err == nil {
+		t.Fatal("un 404 persistente debe terminar en error")
+	}
+	if rt.calls != 4 {
+		t.Fatalf("calls=%d, want 4 (1 + 3 reintentos)", rt.calls)
+	}
+}
+
+// TestDownloadMedia_NectarNoRetryOnOtherStatus: solo el 404 se reintenta (un 401 es de credencial).
+func TestDownloadMedia_NectarNoRetryOnOtherStatus(t *testing.T) {
+	rt := &statusSeqTransport{statuses: []int{401, 200}}
+	s := newRetrySvc(rt)
+
+	if _, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7"); err == nil {
+		t.Fatal("un 401 debe fallar sin reintentar")
+	}
+	if rt.calls != 1 {
+		t.Fatalf("calls=%d, want 1", rt.calls)
+	}
+}
+
+// TestDownloadMedia_BirdNoRetryOn404: Bird queda como estaba, un 404 falla al primer GET.
+func TestDownloadMedia_BirdNoRetryOn404(t *testing.T) {
+	rt := &statusSeqTransport{statuses: []int{404, 200}}
+	s := newRetrySvc(rt)
+
+	if _, err := s.downloadMedia(context.Background(), "https://media.api.bird.com/x.jpg"); err == nil {
+		t.Fatal("en Bird un 404 debe fallar sin reintentar")
+	}
+	if rt.calls != 1 {
+		t.Fatalf("calls=%d, want 1", rt.calls)
 	}
 }

@@ -50,6 +50,10 @@ type OCRService struct {
 	nectarRequestSecret string
 	// analyzeTimeout es el techo de UN análisis completo (download + Vision + reintentos). 0 = default.
 	analyzeTimeout time.Duration
+	// mediaRetryDelays son las esperas entre reintentos de la descarga de un adjunto de Néctar ante
+	// un 404 (ver downloadMedia). nil = defaultMediaRetryDelays; inyectable para que los tests no
+	// esperen los ~17 s reales.
+	mediaRetryDelays []time.Duration
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
@@ -464,11 +468,52 @@ func (s *OCRService) SetNectarCredentials(baseURL, serviceKey, requestSecret str
 	s.nectarRequestSecret = requestSecret
 }
 
+// defaultMediaRetryDelays son las esperas de producción entre reintentos ante un 404 de un adjunto
+// de Néctar: ~2 s, ~5 s, ~10 s (≈17 s en total, 4 GET como máximo).
+var defaultMediaRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+
+// isNectarURL dice si la URL es del Néctar configurado (mismo anfitrión Y mismo esquema).
+func (s *OCRService) isNectarURL(u *url.URL) bool {
+	return s.nectarHost != "" && strings.ToLower(u.Host) == s.nectarHost && strings.ToLower(u.Scheme) == s.nectarScheme
+}
+
 // downloadMedia baja el adjunto (cap 20 MB) con la credencial que corresponde a su anfitrión.
+//
+// Solo para adjuntos de Néctar, un 404 se reintenta: en los primeros segundos tras el aviso,
+// Néctar puede seguir bajando el archivo del lado de WhatsApp y su endpoint responde 404 aunque
+// todo esté bien (contrato de avisos, ver internal/nectar/notice.go). Normalmente queda listo en
+// 1-5 s; a los ~17 s sin resolver es un fallo permanente y reintentar más no ayuda. Bird no cambia:
+// un 404 suyo falla al primer GET.
 func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]byte, error) {
+	var delays []time.Duration
+	if u, err := url.Parse(documentURL); err == nil && s.isNectarURL(u) {
+		delays = s.mediaRetryDelays
+		if delays == nil {
+			delays = defaultMediaRetryDelays
+		}
+	}
+	for attempt := 0; ; attempt++ {
+		fileData, status, err := s.downloadMediaOnce(ctx, documentURL)
+		if err == nil {
+			return fileData, nil
+		}
+		if status != http.StatusNotFound || attempt >= len(delays) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delays[attempt]):
+		}
+	}
+}
+
+// downloadMediaOnce hace UN GET al adjunto. status queda en 0 cuando el error es previo a tener
+// una respuesta (armar el request, fallo de red): esos casos no se reintentan.
+func (s *OCRService) downloadMediaOnce(ctx context.Context, documentURL string) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", documentURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create download request: %w", err)
+		return nil, 0, fmt.Errorf("create download request: %w", err)
 	}
 	// #3 (auditoría): cada credencial sale SOLO hacia su anfitrión. El documentURL viene del webhook
 	// (firmado), pero por defensa en profundidad no se filtra ninguna a un host arbitrario
@@ -476,7 +521,7 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 	if u, perr := url.Parse(documentURL); perr == nil {
 		host := strings.ToLower(u.Hostname())
 		switch {
-		case s.nectarHost != "" && strings.ToLower(u.Host) == s.nectarHost && strings.ToLower(u.Scheme) == s.nectarScheme:
+		case s.isNectarURL(u):
 			// Néctar: SUS credenciales, nunca la de Bird. Se firma al enviar (ventana de 5 min del
 			// otro lado); un GET sin cuerpo firma SHA256("").
 			req.Header.Set(nectar.ServiceKeyHeader, s.nectarServiceKey)
@@ -489,12 +534,12 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("download document: %w", err)
+		return nil, 0, fmt.Errorf("download document: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download document status %d", resp.StatusCode)
+		return nil, resp.StatusCode, fmt.Errorf("download document status %d", resp.StatusCode)
 	}
 
 	// L6: acotar la lectura de la media (cap 20 MB). Sin límite, un archivo enorme infla memoria
@@ -502,12 +547,12 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 	const maxMediaBytes = 20 << 20 // 20 MB
 	fileData, err := io.ReadAll(io.LimitReader(resp.Body, maxMediaBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read document body: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("read document body: %w", err)
 	}
 	if len(fileData) > maxMediaBytes {
-		return nil, fmt.Errorf("document too large (> %d MB)", maxMediaBytes>>20)
+		return nil, resp.StatusCode, fmt.Errorf("document too large (> %d MB)", maxMediaBytes>>20)
 	}
-	return fileData, nil
+	return fileData, resp.StatusCode, nil
 }
 
 // AnalyzeDocument downloads a document (PDF), converts the first page to JPEG
