@@ -6,6 +6,15 @@ el bot local habla con un **stub** (`cmd/nectar-stub`) y se le inyectan avisos f
 pruebas (`nectar.IsStubHost`: `localhost`, `127.0.0.1`, `::1`, `nectar-stub`, `nectar_stub`): el
 incidente del 2026-09-08 fue un bot local apuntando al Néctar real.
 
+> **ADVERTENCIA: `.env` se carga solo.** `config.Load` ejecuta `godotenv.Load()` sobre el `.env`
+> del repo como respaldo, AUNQUE pases `--env-file`: toda variable que tu archivo no defina se
+> rellena con la de `.env`. En la primera pasada de esta receta eso arrastró claves REALES
+> (Telegram, Bird, OpenAI): el bot llegó a loguear «telegram error alerts enabled» y un `ERROR`
+> pudo mandar una alerta al Telegram real. Mitigación obligatoria (sección 2 y 3): montar un
+> `/app/.env` VACÍO (`-v …/empty.env:/app/.env:ro`), dar valores ficticios a las variables
+> obligatorias (`BIRD_WORKSPACE_ID`, `BIRD_CHANNEL_ID`, `BIRD_TEAM_FALLBACK`, `OPENAI_API_KEY`)
+> y apuntar `BIRD_API_URL` a un host muerto (`http://127.0.0.1:1`) para que ningún envío pueda salir.
+
 Todos los secretos de esta receta valen `stub`. No uses ni copies secretos reales.
 
 ## Qué NO hace falta
@@ -106,8 +115,8 @@ Notas:
 - **URL firmada.** El bot reconstruye la URL con `X-Forwarded-Proto` (por defecto `https`, como
   detrás del túnel). La sonda lo manda en `http` cuando el destino es `http://`; sin eso, el
   bot local contesta `401 invalid signature`.
-- `GET /api/internal/sessions?phone=nectar:1` antepone `+` al teléfono y no encuentra las
-  sesiones de Néctar (su clave es `nectar:<id>`): léelas por BD o por `?id=`.
+- `GET /api/internal/sessions?phone=nectar:1` (cabecera `X-API-Key`) devuelve la sesión de
+  Néctar: las claves `nectar:` se usan tal cual, sin normalizar a E.164.
 
 ## 5. Limpieza
 
