@@ -358,4 +358,25 @@ const (
 	// turnos posteriores: el tope por sesión del handler, el checker de sesiones escaladas
 	// (session.EscalationQueuedForNextDayKey) y el retorno del agente (worker), que la borra.
 	CtxEscalationNextDay = "escalacion_proximo_dia"
+
+	// CtxEscalationLastInput es lo último que el paciente escribió antes de que se agotaran los
+	// reintentos (ya enmascarado por maskInputForLog y recortado a 120 runas). Lo escriben los
+	// helpers de validación al agotar, lo lee el resumen del agente (grupo `intento`) y
+	// escalationExit lo borra: describe SIEMPRE la escalación en curso.
+	CtxEscalationLastInput = "escalation_last_input"
+
+	// CtxOCRFailureCause es por qué falló la lectura de la orden (el error del OCR, o `ocr_error` /
+	// `ocr_timeout`). Lo escribe processOrderMedia al fallar, lo borra al leer con éxito y lo lee el
+	// resumen del agente (grupo `orden`).
+	CtxOCRFailureCause = "ocr_failure_cause"
+
+	// CtxOCRUnreadNames son los nombres de los procedimientos que el OCR leyó SIN código, unidos por
+	// «; ». Es lo único que el agente tiene de ellos. Lo escribe processOrderMedia y lo lee el
+	// resumen del agente (grupo `orden`).
+	CtxOCRUnreadNames = "ocr_unread_names"
+
+	// CtxEscalationWaitingListID es el id de la entrada de lista de espera que el paciente tenía al
+	// decir que no tenía la orden. Lo escribe has_order_no, lo lee el resumen del agente (grupo
+	// `orden`) y escalationExit lo borra.
+	CtxEscalationWaitingListID = "escalation_waiting_list_id"
 )

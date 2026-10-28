@@ -29,6 +29,19 @@ func maskInputForLog(state, input string) string {
 	return input
 }
 
+// maxLastInputRunes es el tope de lo último que el paciente escribió y se le muestra al agente.
+const maxLastInputRunes = 120
+
+// lastInputForAgent es el último mensaje del paciente tal como lo ve el agente: enmascarado por
+// estado (el documento nunca viaja en claro) y recortado a maxLastInputRunes.
+func lastInputForAgent(state, input string) string {
+	masked := []rune(maskInputForLog(state, strings.TrimSpace(input)))
+	if len(masked) > maxLastInputRunes {
+		masked = masked[:maxLastInputRunes]
+	}
+	return string(masked)
+}
+
 // SetMaxRetries configures the maximum retry count (called from main).
 func SetMaxRetries(n int) {
 	if n > 0 {
@@ -58,6 +71,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 		return NewResult(StateEscalateToAgent).
 			WithText(EscalationNoticeText).
 			WithContext(CtxEscalationReason, EscalationReasonMaxRetries).
+			WithContext(CtxEscalationLastInput, lastInputForAgent(sess.CurrentState, input)).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"retries":    maxRetries,
@@ -122,6 +136,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 		return NewResult(StateEscalateToAgent).
 			WithText(EscalationNoticeText).
 			WithContext(CtxEscalationReason, EscalationReasonMaxRetries).
+			WithContext(CtxEscalationLastInput, lastInputForAgent(sess.CurrentState, loggedInput)).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"last_input": loggedInput,

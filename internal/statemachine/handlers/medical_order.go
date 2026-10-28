@@ -192,6 +192,7 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRServi
 
 			case "has_order_no":
 				// Registrar en lista de espera (sin cups, pendiente de agente)
+				waitingListID := ""
 				if wlRepo != nil {
 					age, _ := strconv.Atoi(sess.GetContext("patient_age"))
 					gender := sess.GetContext("patient_gender")
@@ -220,14 +221,21 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRServi
 						// No bloquear el flujo si falla el registro
 						slog.Warn("particular_no_order: failed to create wl entry",
 							"phone", utils.MaskPhone(sess.PhoneNumber), "error", err)
+					} else {
+						waitingListID = entry.ID
 					}
 				}
 
-				return sm.NewResult(sm.StateEscalateToAgent).
+				res := sm.NewResult(sm.StateEscalateToAgent).
 					WithClearCtx("_prompted_has_order").
 					WithText("Entendido. En un momento uno de nuestros asesores se comunicará contigo para brindarte la atención que necesitas.").
 					WithContext(sm.CtxEscalationReason, sm.EscalationReasonParticularNoOrder).
-					WithEvent("particular_no_order_escalated", nil), nil
+					WithEvent("particular_no_order_escalated", nil)
+				if waitingListID != "" {
+					// El agente ve a qué entrada de la lista de espera quedó atado el paciente.
+					res.WithContext(sm.CtxEscalationWaitingListID, waitingListID)
+				}
+				return res, nil
 			}
 		}
 
@@ -414,15 +422,21 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: eventType})
 		return sm.NewResult(sess.CurrentState).
 			WithButtons(msg, ocrRetryButtons(birdClient)...).
+			WithContext(sm.CtxOCRFailureCause, eventType).
 			WithEvent(eventType, map[string]interface{}{"error": err.Error()}), nil
 	}
 
 	if !ocrResult.Success || len(ocrResult.Cups) == 0 {
+		cause := ocrResult.Error
+		if cause == "" {
+			cause = "ocr_sin_procedimientos"
+		}
 		return sm.NewResult(sess.CurrentState).
 			WithButtons(
 				ocrFailureMessage(ocrResult.Error),
 				ocrRetryButtons(birdClient)...,
 			).
+			WithContext(sm.CtxOCRFailureCause, cause).
 			WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil
 	}
 
@@ -432,17 +446,23 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 	// vacío al leer solo la 1ª hoja). Si tras el fallback multipágina NINGÚN CUP trae código,
 	// escalar a un agente (que sí puede leer la orden) en vez de mandar a particular.
 	validCups := make([]services.CUPSEntry, 0, len(ocrResult.Cups))
+	var unreadNames []string
 	for _, c := range ocrResult.Cups {
 		if strings.TrimSpace(c.Code) != "" {
 			validCups = append(validCups, c)
+		} else if name := strings.TrimSpace(c.Name); name != "" {
+			unreadNames = append(unreadNames, name)
 		}
 	}
+	unread := strings.Join(unreadNames, "; ")
 	if len(validCups) == 0 {
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_no_cups_code",
 			observability.EmitOpts{Phone: sess.PhoneNumber})
 		return sm.NewResult(sm.StateEscalateToAgent).
 			WithText("No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita.").
 			WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
+			WithContext(sm.CtxOCRUnreadNames, unread).
+			WithClearCtx(sm.CtxOCRFailureCause).
 			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)}), nil
 	}
 	ocrResult.Cups = validCups
@@ -452,6 +472,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 
 	r := sm.NewResult(sm.StateValidateOCR).
 		WithContext("ocr_cups_json", string(cupsJSON)).
+		WithClearCtx(sm.CtxOCRFailureCause).
 		WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
 		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})

@@ -1,11 +1,13 @@
 package statemachine
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/session"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 func helperSess(state string) *session.Session {
@@ -80,6 +82,32 @@ func TestValidateWithRetry_MaxRetriesEscalates(t *testing.T) {
 	}
 	if sess.RetryCount != 0 {
 		t.Error("expected RetryCount reset after escalation")
+	}
+}
+
+func TestValidateWithRetry_ExhaustedKeepsMaskedLastInput(t *testing.T) {
+	sess := helperSess(StateAskDocument)
+	sess.RetryCount = 2
+
+	result := ValidateWithRetry(sess, "1020304050", func(string) bool { return false }, "Invalid input")
+	if result == nil || result.NextState != StateEscalateToAgent {
+		t.Fatalf("quería escalación, obtuve %+v", result)
+	}
+	if got, want := result.UpdateCtx[CtxEscalationLastInput], utils.MaskDocument("1020304050"); got != want {
+		t.Errorf("último mensaje = %q, quería el enmascarado %q", got, want)
+	}
+	if strings.Contains(result.UpdateCtx[CtxEscalationLastInput], "1020304050") {
+		t.Error("el documento viajó en claro")
+	}
+}
+
+func TestValidateWithRetry_ExhaustedTruncatesLastInput(t *testing.T) {
+	sess := helperSess(StateAskDocument + "_X")
+	sess.RetryCount = 2
+
+	result := ValidateWithRetry(sess, strings.Repeat("ñ", 300), func(string) bool { return false }, "Invalid input")
+	if n := len([]rune(result.UpdateCtx[CtxEscalationLastInput])); n != 120 {
+		t.Errorf("el último mensaje debía recortarse a 120 runas, tiene %d", n)
 	}
 }
 

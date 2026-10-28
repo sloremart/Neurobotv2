@@ -576,6 +576,10 @@ func summaryForAgent(sess *session.Session, cupsCode, teamName string) (string, 
 		doc.untitled("nota").line("nota", "Nota", note)
 	}
 
+	// Los datos del caso (entidad, orden, grupo, agenda, cita, búsqueda, intento): summaryDoc.render
+	// los acomoda en el orden del resumen.
+	writeCaseGroups(&doc, sess, cupsCode)
+
 	procedure := doc.untitled("procedimiento")
 	if serviceName != "" {
 		procedure.line("servicio", "Servicio", serviceName)

@@ -72,6 +72,42 @@ func summaryCases() []summaryCase {
 			},
 			team: "Grupo B (Neuro/Fisiatria)",
 		},
+		{
+			name:   "caso_completo",
+			golden: "testdata/summary_caso_completo.golden",
+			sess: func() *session.Session {
+				s := &session.Session{
+					CurrentState: sm.StateEscalated,
+					PatientName:  "ANA RUIZ",
+					PatientDoc:   "52123456",
+					MenuOption:   "agendar",
+				}
+				s.SetContext("pre_escalation_state", sm.StateAskDocument)
+				s.SetContext("escalation_reason", "max_reintentos")
+				s.SetContext("client_type", "EPS")
+				s.SetContext("selected_entity_name", "SANITAS EPS")
+				s.SetContext("selected_entity_code", "EPS005")
+				s.SetContext("patient_contract", "7")
+				s.SetContext("eps_regimen", "2")
+				s.SetContext("ocr_cups_json", `[{"cups_code":"883141","cups_name":"RM DE CEREBRO","quantity":1},{"cups_code":"930810","cups_name":"POTENCIALES","quantity":2}]`)
+				s.SetContext("total_procedures", "3")
+				s.SetContext("current_procedure_idx", "0")
+				s.SetContext("procedures_json", `[{"service":"RESONANCIA","cups":[{"cups_code":"883141","cups_name":"RM DE CEREBRO","quantity":1}]},`+
+					`{"service":"NEUROFISIOLOGIA","cups":[{"cups_code":"930810","cups_name":"POTENCIALES","quantity":2},{"cups_code":"930820","cups_name":"CONDUCCION","quantity":1}]},`+
+					`{"service":"ECOGRAFIA","cups":[{"cups_code":"881201","cups_name":"ECO DE ABDOMEN","quantity":1}]}]`)
+				s.SetContext("selected_slot_id", "7||0800")
+				s.SetContext("available_slots_json", `[{"date":"2026-11-03","time_slot":"0800","time_display":"08:00 AM","doctor_name":"ROBERTO ORTEGA","agenda_id":7}]`)
+				s.SetContext("notif_appointment_id", "4521")
+				s.SetContext("notif_appt_date", "2026-11-03")
+				s.SetContext("notif_appt_time", "08:00")
+				s.SetContext("notif_cups_name", "RM DE CEREBRO")
+				s.SetContext("notif_type", "confirmation")
+				s.SetContext("search_procedures_json", `[{"ID":1,"Code":"883141","Name":"RM DE CEREBRO"},{"ID":2,"Code":"883101","Name":"RM DE COLUMNA"}]`)
+				s.SetContext(sm.CtxEscalationLastInput, "no entiendo")
+				return s
+			},
+			team: "Call Center",
+		},
 	}
 }
 

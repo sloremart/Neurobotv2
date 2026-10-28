@@ -869,3 +869,54 @@ func TestConfirmOCRResult_PreservesSedation(t *testing.T) {
 		t.Error("expected IsSedated=true in procedures_json after GroupByService")
 	}
 }
+
+// El motivo del fallo de lectura viaja a la sesión para que el agente sepa por qué no hay CUPS, y
+// una lectura posterior exitosa lo borra.
+func TestProcessOrderMedia_FailureKeepsCauseAndSuccessClearsIt(t *testing.T) {
+	ctx := context.Background()
+	fileSrv := newMockFileServer()
+	defer fileSrv.Close()
+
+	failSrv := newMockOCRServer(`{"choices":[{"message":{"content":"{\"cups\":[],\"entity\":\"\",\"error\":\"imagen_borrosa\"}"}}]}`)
+	defer failSrv.Close()
+	res, err := processOrderMedia(ctx, testSess(sm.StateUploadMedicalOrder), services.NewOCRServiceForTest(failSrv.URL), nil, fileSrv.URL+"/p1.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.UpdateCtx[sm.CtxOCRFailureCause]; got != "imagen_borrosa" {
+		t.Errorf("causa = %q, quería imagen_borrosa", got)
+	}
+
+	okSrv := newMockOCRServer(ocrCupsResponse("883141", "RM"))
+	defer okSrv.Close()
+	res, err = processOrderMedia(ctx, testSess(sm.StateUploadMedicalOrder), services.NewOCRServiceForTest(okSrv.URL), nil, fileSrv.URL+"/p1.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared := false
+	for _, k := range res.ClearCtx {
+		cleared = cleared || k == sm.CtxOCRFailureCause
+	}
+	if !cleared {
+		t.Errorf("el éxito debía borrar la causa: %v", res.ClearCtx)
+	}
+}
+
+// Un procedimiento leído sin código llega al agente con su nombre, que es lo único que hay.
+func TestProcessOrderMedia_NoCodeKeepsUnreadNames(t *testing.T) {
+	srv := newMockOCRServer(`{"choices":[{"message":{"content":"{\"cups\":[{\"cups_code\":\"\",\"cups_name\":\"RESONANCIA DE CEREBRO\",\"quantity\":1},{\"cups_code\":\"\",\"cups_name\":\"POTENCIALES\",\"quantity\":1}],\"entity\":\"\",\"error\":\"\"}"}}]}`)
+	defer srv.Close()
+	fileSrv := newMockFileServer()
+	defer fileSrv.Close()
+
+	res, err := processOrderMedia(context.Background(), testSess(sm.StateUploadMedicalOrder), services.NewOCRServiceForTest(srv.URL), nil, fileSrv.URL+"/p1.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("estado = %s", res.NextState)
+	}
+	if got := res.UpdateCtx[sm.CtxOCRUnreadNames]; got != "RESONANCIA DE CEREBRO; POTENCIALES" {
+		t.Errorf("nombres sin código = %q", got)
+	}
+}

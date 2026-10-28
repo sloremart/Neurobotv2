@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -60,6 +61,15 @@ func (g *summaryGroup) line(key, label, value string) {
 	fmt.Fprintf(&g.text, "%s: %s\n", label, value)
 }
 
+// optional es line solo si hay valor: los datos del caso (summary_case.go) son opcionales, y un
+// grupo que se queda sin líneas no se emite.
+func (g *summaryGroup) optional(key, label, value string) {
+	if value == "" {
+		return
+	}
+	g.line(key, label, value)
+}
+
 // tail es line SIN el salto final. Existe por una sola razón y conviene que se vea: el resumen
 // TERMINA en «Equipo: <x>» sin salto de línea, y los dorados lo fijan así.
 func (g *summaryGroup) tail(key, label, value string) {
@@ -92,12 +102,31 @@ func (d *summaryDoc) untitled(key string) *summaryGroup {
 	return g
 }
 
-// render devuelve el texto del resumen y los grupos que de verdad se escribieron. Los dos salen
-// de la MISMA lista, que es lo que garantiza que digan lo mismo.
+// summaryGroupOrder es el orden TOTAL de los grupos del resumen. render ordena por él, así que
+// el sitio donde se escribe cada grupo no altera el texto; los tres dorados viejos ya lo cumplen.
+var summaryGroupOrder = []string{
+	"encabezado", "paciente", "nota", "entidad", "procedimiento", "orden", "grupo",
+	"agenda", "cita", "busqueda", "intento", "estado",
+}
+
+// groupRank es la posición del grupo en summaryGroupOrder; un grupo desconocido va al final.
+func groupRank(key string) int {
+	for i, k := range summaryGroupOrder {
+		if k == key {
+			return i
+		}
+	}
+	return len(summaryGroupOrder)
+}
+
+// render devuelve el texto del resumen y los grupos que de verdad se escribieron, en el orden de
+// summaryGroupOrder. Los dos salen de la MISMA lista, que es lo que garantiza que digan lo mismo.
 func (d *summaryDoc) render() (string, []*summaryGroup) {
 	var b strings.Builder
-	out := make([]*summaryGroup, 0, len(d.groups))
-	for _, g := range d.groups {
+	ordered := append([]*summaryGroup(nil), d.groups...)
+	sort.SliceStable(ordered, func(i, j int) bool { return groupRank(ordered[i].Key) < groupRank(ordered[j].Key) })
+	out := make([]*summaryGroup, 0, len(ordered))
+	for _, g := range ordered {
 		if g.empty() {
 			continue
 		}

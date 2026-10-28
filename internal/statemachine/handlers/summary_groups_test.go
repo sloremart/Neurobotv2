@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/neuro-bot/neuro-bot/internal/services"
 )
 
 // La invariante del refactor: el texto es el render de los grupos y los campos son sus líneas,
@@ -72,6 +75,13 @@ func TestSummaryForAgent_FactsMatchText(t *testing.T) {
 					}
 					continue
 				}
+				if cita, ok := fields["Procedimiento"]; ok && label == "Procedimiento" && cita.Key == "procedimiento" {
+					// El «Procedimiento» del grupo cita es un campo normal (la fusionada no lo es).
+					if cita.Value != value {
+						t.Errorf("línea %q / campo %+v", line, cita)
+					}
+					continue
+				}
 				if label == "Procedimiento" {
 					if fields["Procedimiento"].Key != "" {
 						t.Error("Procedimiento es una línea fusionada: va partida en cups_nombre y cups_codigo")
@@ -130,5 +140,89 @@ func TestSummaryForAgent_EmptyGroupsAreOmitted(t *testing.T) {
 		if g.Key == "nota" || g.Key == "procedimiento" {
 			t.Errorf("grupo %q no debería emitirse", g.Key)
 		}
+	}
+}
+
+func groupKeys(groups []*summaryGroup) []string {
+	keys := make([]string, 0, len(groups))
+	for _, g := range groups {
+		keys = append(keys, g.Key)
+	}
+	return keys
+}
+
+func groupField(groups []*summaryGroup, group, key string) (string, bool) {
+	for _, g := range groups {
+		if g.Key != group {
+			continue
+		}
+		for _, f := range g.Fields {
+			if f.Key == key {
+				return f.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
+// Una sesión con solo el paciente no emite ningún grupo del caso: los dorados viejos no cambian.
+func TestSummaryForAgent_CaseGroupsOmittedWhenEmpty(t *testing.T) {
+	sess := summaryCases()[1].sess()
+	sess.PatientName, sess.PatientDoc = "JUAN", "123"
+	_, groups := summaryForAgent(sess, "", "Call Center")
+	if want := []string{"encabezado", "paciente", "estado"}; !reflect.DeepEqual(groupKeys(groups), want) {
+		t.Errorf("grupos = %v, quería %v", groupKeys(groups), want)
+	}
+}
+
+// El grupo orden describe lo leído ANTES de agrupar: con cups_code ya hay procedimiento y no se emite.
+func TestSummaryForAgent_OrderGroupOnlyBeforeGrouping(t *testing.T) {
+	sess := summaryCases()[3].sess()
+	_, groups := summaryForAgent(sess, "", "Call Center")
+	if _, ok := groupField(groups, "orden", "cups_leidos"); !ok {
+		t.Fatalf("sin cups_code debía haber grupo orden: %v", groupKeys(groups))
+	}
+	_, groups = summaryForAgent(sess, "883141", "Call Center")
+	for _, g := range groups {
+		if g.Key == "orden" {
+			t.Errorf("con cups_code no debe haber grupo orden")
+		}
+	}
+}
+
+// Lo que el agente lee en «CUPS leídos» es lo mismo que el campo de CUPS de la consola acepta.
+func TestSummaryForAgent_CupsReadInAgentGrammar(t *testing.T) {
+	_, groups := summaryForAgent(summaryCases()[3].sess(), "", "Call Center")
+	value, ok := groupField(groups, "orden", "cups_leidos")
+	if !ok || value != "883141:1 930810:2" {
+		t.Fatalf("cups_leidos = %q (%v)", value, ok)
+	}
+	if n := len(services.ParseAgentCups(value)); n != 2 {
+		t.Errorf("ParseAgentCups leyó %d CUPS, quería 2", n)
+	}
+}
+
+// El orden total de los grupos es el del contrato, sin importar en qué sitio se escriba cada uno.
+func TestSummaryForAgent_GroupOrder(t *testing.T) {
+	_, groups := summaryForAgent(summaryCases()[3].sess(), "", "Call Center")
+	want := []string{"encabezado", "paciente", "entidad", "orden", "grupo", "agenda", "cita", "busqueda", "intento", "estado"}
+	if !reflect.DeepEqual(groupKeys(groups), want) {
+		t.Errorf("grupos = %v, quería %v", groupKeys(groups), want)
+	}
+}
+
+func TestSummaryForAgent_PendingGroupsAndChosenSlot(t *testing.T) {
+	_, groups := summaryForAgent(summaryCases()[3].sess(), "", "Call Center")
+	if v, _ := groupField(groups, "grupo", "actual"); v != "1 de 3" {
+		t.Errorf("actual = %q", v)
+	}
+	if v, _ := groupField(groups, "grupo", "pendientes"); v != "NEUROFISIOLOGIA (POTENCIALES, CONDUCCION); ECOGRAFIA (ECO DE ABDOMEN)" {
+		t.Errorf("pendientes = %q", v)
+	}
+	if v, _ := groupField(groups, "agenda", "horario_elegido"); v != "2026-11-03 08:00 AM con Dr. ROBERTO ORTEGA" {
+		t.Errorf("horario_elegido = %q", v)
+	}
+	if _, ok := groupField(groups, "agenda", "horarios_ofrecidos"); ok {
+		t.Error("con horario elegido no se listan los ofrecidos")
 	}
 }
