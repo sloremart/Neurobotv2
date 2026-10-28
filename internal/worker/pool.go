@@ -847,6 +847,18 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		return
 	}
 
+	// Decisión del agente en Néctar: opción del menú de retornos o dato escrito. Se traduce ANTES
+	// del atajo de NOTIF_PENDING: es la traducción quien llena cmd.State y cmd.Data desde la
+	// opción elegida, y el atajo se evalúa sobre ese comando ya ajustado (así `confirm` en Néctar
+	// hace lo mismo que `/bot resume NOTIF_PENDING confirm`). Un comando de Bird no trae
+	// ReturnValue ni ReturnV1, así que para él esto no hace nada.
+	if cmd.ReturnV1 != nil || cmd.ReturnValue != "" {
+		var done bool
+		if cmd, done = p.applyAgentReturn(ctx, sess, cmd); done {
+			return
+		}
+	}
+
 	// Special case: NOTIF_PENDING — agent resolves a confirmation/reschedule/cancel directly.
 	// The pending notification was already removed from memory when escalation happened,
 	// so we must use the session context instead of HandleResponse (which needs in-memory pending).
@@ -876,14 +888,6 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 				"session_id", sess.ID,
 				"appointment_id", appointmentID,
 			)
-			return
-		}
-	}
-
-	// Decisión del agente en Néctar: opción del menú de retornos o dato escrito.
-	if cmd.ReturnV1 != nil || cmd.ReturnValue != "" {
-		var done bool
-		if cmd, done = p.applyAgentReturn(ctx, sess, cmd); done {
 			return
 		}
 	}

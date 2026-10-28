@@ -502,3 +502,76 @@ func TestResolveAgentReturn_V1OptionLoggedByPrefix(t *testing.T) {
 		t.Fatalf("el prefijo sí se traza:\n%s", logs.String())
 	}
 }
+
+// notifResponderSpy anota las acciones de NOTIF_PENDING que el worker le entrega.
+type notifResponderSpy struct {
+	actions []string
+	convID  string
+	apptID  string
+}
+
+func (s *notifResponderSpy) HandleResponse(string, string, string) {}
+
+func (s *notifResponderSpy) HandleNotifPendingCommand(_, action, convID, appointmentID, _ string) {
+	s.actions = append(s.actions, action)
+	s.convID, s.apptID = convID, appointmentID
+}
+
+// notifPendingReturnSession deja una sesión escalada desde NOTIF_PENDING con el menú estático
+// que declara el paso (el real vive en handlers; el worker no lo importa).
+func notifPendingReturnSession(t *testing.T) (*MessageWorkerPool, *session.Session, *notifResponderSpy, *int, *string) {
+	t.Helper()
+	statemachine.RegisterStaticReturnMenu(statemachine.StateNotifPending,
+		statemachine.ReturnOption{
+			Label: "Confirmar la cita", Value: "confirm",
+			Target: statemachine.StateNotifPending, Data: "confirm",
+		})
+	t.Cleanup(func() { statemachine.RegisterStaticReturnMenu(statemachine.StateNotifPending) })
+
+	pool, sm, _, sess, resumedTo, _ := returnSession(t, statemachine.StateNotifPending)
+	sess.Context["notif_appointment_id"] = "A-77"
+	completed := 0
+	sm.completeFn = func(_ context.Context, s *session.Session) error {
+		completed++
+		s.Status = session.StatusCompleted
+		return nil
+	}
+	spy := &notifResponderSpy{}
+	pool.SetNotifyResponder(spy)
+	return pool, sess, spy, &completed, resumedTo
+}
+
+// Ruling 17: el retorno de Néctar con la opción `confirm` debe hacer LO MISMO que
+// `/bot resume NOTIF_PENDING confirm`: completar la sesión y entregar la acción, no reanudar el
+// paso con un mensaje virtual (la notificación pendiente ya no está en memoria).
+func TestHandleAgentResume_NectarNotifPendingOptionRunsTheShortcut(t *testing.T) {
+	pool, sess, spy, completed, resumedTo := notifPendingReturnSession(t)
+	asNectar(sess)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: "confirm",
+	})
+
+	if len(spy.actions) != 1 || spy.actions[0] != "confirm" || spy.apptID != "A-77" {
+		t.Fatalf("la acción debe llegar a HandleNotifPendingCommand, got %v (cita %q)", spy.actions, spy.apptID)
+	}
+	if *completed != 1 {
+		t.Fatalf("la sesión se completa, completadas=%d", *completed)
+	}
+	if *resumedTo != "" {
+		t.Fatalf("no se reanuda el flujo (retomó en %q)", *resumedTo)
+	}
+}
+
+// El comando de Bird no cambia: mismo resultado que antes de mover la traducción.
+func TestHandleAgentResume_BirdNotifPendingCommandUnchanged(t *testing.T) {
+	pool, sess, spy, completed, resumedTo := notifPendingReturnSession(t)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, State: statemachine.StateNotifPending, Data: "confirm",
+	})
+
+	if len(spy.actions) != 1 || spy.actions[0] != "confirm" || *completed != 1 || *resumedTo != "" {
+		t.Fatalf("acciones=%v completadas=%d retomó=%q", spy.actions, *completed, *resumedTo)
+	}
+}

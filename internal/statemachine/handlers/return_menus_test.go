@@ -41,10 +41,14 @@ var (
 	}, cupsSteps...)
 )
 
+// universalReturnOptions es cuántas opciones lleva TODO paso aunque no declare ninguna (las
+// universales de ReturnOptionsFor), medido sobre un paso sin registro.
+var universalReturnOptions = len(sm.ReturnOptionsFor(nil, "PASO_SIN_REGISTRO_9C"))
+
 // hasReturnEntry dice si un paso ofrece al agente algún botón propio o un campo.
 func hasReturnEntry(m *sm.Machine, step string) bool {
 	d := m.InputDescriptor(nil, step)
-	return len(d.Fields) > 0 || len(d.Options) > 2 // las dos últimas son las universales
+	return len(d.Fields) > 0 || len(d.Options) > universalReturnOptions
 }
 
 func TestReturnMenuValuesExistInTheStateMachine(t *testing.T) {
