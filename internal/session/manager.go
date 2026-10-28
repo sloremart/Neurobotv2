@@ -212,8 +212,15 @@ func (m *SessionManager) ExtendExpiry(ctx context.Context, s *Session, until tim
 // TouchPatientActivity registra un mensaje inbound del paciente: renueva el TTL y sella el reloj de
 // actividad del paciente (last_patient_msg_at), reiniciando la ventana de recordatorios al agente.
 // Debe llamarse SOLO desde el flujo del paciente (no desde comandos del agente).
+//
+// NUNCA acorta el vencimiento: una escalación encolada para el próximo día hábil vive hasta la
+// apertura + 8 h (ExtendExpiry), y un mensaje del paciente mientras espera no puede devolverla
+// al TTL normal. En el caso común el vencimiento previo es menor que now+timeout y se renueva
+// como siempre. La sesión llega cargada de la BD, así que s.ExpiresAt es el vigente.
 func (m *SessionManager) TouchPatientActivity(ctx context.Context, s *Session) error {
-	s.ExpiresAt = time.Now().Add(m.timeout)
+	if renewed := time.Now().Add(m.timeout); renewed.After(s.ExpiresAt) {
+		s.ExpiresAt = renewed
+	}
 	return m.repo.TouchPatientActivity(ctx, s.ID, s.ExpiresAt)
 }
 

@@ -621,3 +621,51 @@ func TestEscalateToAgentWithSummary_BirdEscalateErrorSkipsNote(t *testing.T) {
 		t.Fatalf("sin escalación no hay nota: %v", reqs)
 	}
 }
+
+// Con el conversationID VACÍO, EscalateToAgent resuelve la conversación por su cuenta (caché,
+// lookup) y escala bien; la nota con el resumen tiene que ir a esa misma conversación y no
+// perderse (antes salía después de que el handler recuperaba el id de la caché).
+func TestEscalateToAgentWithSummary_BirdEmptyConversationIDUsesCachedForNote(t *testing.T) {
+	var mu sync.Mutex
+	var notes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == "PATCH" && r.URL.Path == "/workspaces/ws-test/conversations/conv-1":
+			w.WriteHeader(200)
+		case r.Method == "GET" && r.URL.Path == "/workspaces/ws-test/agents":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(agentsJSON(AgentInfo{
+				ID: "agent-1", DisplayName: "Agente Uno",
+				Teams:        []AgentTeam{{ID: "team-a", Name: "A"}},
+				Availability: AgentAvailability{Status: "active", Activity: "available"},
+			})))
+		case isFeedItemSearch(r):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(feedItemSearchJSON("conv-1")))
+		case r.Method == "PATCH" && r.URL.Path == "/workspaces/ws-test/feeds/channel:ch-test/items/fi-conv-1":
+			w.WriteHeader(200)
+		case r.Method == "POST" && r.URL.Path == "/workspaces/ws-test/conversations/conv-1/messages":
+			notes = append(notes, r.URL.Path)
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"msg-note"}`))
+		default:
+			t.Errorf("petición inesperada: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClientForTest(srv.URL)
+	c.CacheConversationID("+573001234567", "conv-1")
+	if _, _, err := c.EscalateToAgentWithSummary(context.Background(), "", "+573001234567",
+		"team-a", "Equipo", "Paciente", "fallback", Escalation{Summary: "RESUMEN"}); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(notes) != 1 {
+		t.Fatalf("la nota con el resumen va a la conversación resuelta: %v", notes)
+	}
+}

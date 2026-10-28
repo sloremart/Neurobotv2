@@ -1059,3 +1059,29 @@ func TestStateMachine_ExtendExpirySurvivesAutoChain(t *testing.T) {
 		t.Fatalf("ExtendExpiryUntil = %s, want %s", result.ExtendExpiryUntil, until)
 	}
 }
+
+// Una clave que el paso previo escribe y el paso automático BORRA no puede volver en el
+// UpdateCtx del resultado combinado: SaveState borra primero y escribe después, así que la
+// clave quedaría viva (fue el caso de la marca de pedido de agente).
+func TestStateMachine_AutoChainDoesNotResurrectKeyClearedByAutoStep(t *testing.T) {
+	m := NewMachine()
+	m.AddInterceptor(EscalationKeywordsInterceptor())
+	m.Register(StateEscalateToAgent, func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*StateResult, error) {
+		return NewResult(StateEscalated).WithClearCtx(CtxPatientAskedForAgent).WithContext("otra", "x"), nil
+	})
+	m.Register(StateEscalated, func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*StateResult, error) {
+		return NewResult(StateEscalated), nil
+	})
+
+	sess := newTestSession(StateAskDocument)
+	result, err := m.Process(context.Background(), sess, newTestMessage("agente"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := result.UpdateCtx[CtxPatientAskedForAgent]; kept {
+		t.Fatalf("la clave borrada por el paso automático no vuelve en UpdateCtx: %v", result.UpdateCtx)
+	}
+	if result.UpdateCtx["otra"] != "x" {
+		t.Fatalf("lo demás se fusiona como siempre: %v", result.UpdateCtx)
+	}
+}

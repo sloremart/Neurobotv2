@@ -214,6 +214,12 @@ func (c *Client) EscalateToAgentWithSummary(ctx context.Context, conversationID,
 		return "", "", err
 	}
 	// La nota interna es de cortesía para el agente: si falla, la asignación ya quedó hecha.
-	_, _ = c.SendInternalText(phone, conversationID, esc.Summary)
+	// Con el id vacío, EscalateToAgent resolvió la conversación por su cuenta; la nota va a la
+	// que dejó la caché (el mismo rescate que hacía el handler antes de mandarla).
+	noteConversationID := conversationID
+	if noteConversationID == "" {
+		noteConversationID = c.GetCachedConversationID(phone)
+	}
+	_, _ = c.SendInternalText(phone, noteConversationID, esc.Summary)
 	return agentID, agentName, nil
 }

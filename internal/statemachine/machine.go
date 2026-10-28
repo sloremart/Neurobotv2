@@ -221,12 +221,19 @@ func (m *Machine) Process(ctx context.Context, sess *session.Session, msg bird.I
 		autoResult.Messages = append(prevMessages, autoResult.Messages...)
 		autoResult.Events = append(prevEvents, autoResult.Events...)
 
-		// Merge contexto (prev no sobreescribe auto)
-		if autoResult.UpdateCtx == nil {
-			autoResult.UpdateCtx = prevCtx
-		} else if prevCtx != nil {
+		// Merge contexto (prev no sobreescribe auto). Tampoco vuelve una clave que el paso
+		// automático BORRA: SaveState borra primero y escribe después, así que copiarla de prev
+		// la dejaría viva — el borrado de auto es su decisión sobre esa clave, igual que su set.
+		autoClears := make(map[string]bool, len(autoResult.ClearCtx))
+		for _, k := range autoResult.ClearCtx {
+			autoClears[k] = true
+		}
+		if len(prevCtx) > 0 {
+			if autoResult.UpdateCtx == nil {
+				autoResult.UpdateCtx = make(map[string]string, len(prevCtx))
+			}
 			for k, v := range prevCtx {
-				if _, exists := autoResult.UpdateCtx[k]; !exists {
+				if _, exists := autoResult.UpdateCtx[k]; !exists && !autoClears[k] {
 					autoResult.UpdateCtx[k] = v
 				}
 			}

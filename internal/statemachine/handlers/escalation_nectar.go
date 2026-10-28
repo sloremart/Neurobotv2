@@ -29,16 +29,20 @@ const queuedExpiryExtra = 8 * time.Hour
 // emitSuggestedTeam deja `escalacion/equipo_sugerido` DESPUÉS de que Néctar aceptó el escalado:
 // emitirlo al armar el sobre contaría equipos sugeridos de casos que Néctar nunca recibió. Solo
 // cuando hay algo que sugerir: un evento por cada escalación sin mapeo no diría nada.
-func emitSuggestedTeam(sess *session.Session, team *int64) {
+func emitSuggestedTeam(cfg *config.Config, sess *session.Session, team *int64) {
 	if team == nil || sess == nil {
 		return
 	}
-	// CupsGroup no lee la config (receptor sin nombre): se llama como expresión de método.
-	group := (*config.Config).CupsGroup(nil, sess.GetContext("cups_code"))
 	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "equipo_sugerido",
 		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{
-			"grupo": group, "team_id": *team,
+			"grupo": cfg.CupsGroup(sess.GetContext("cups_code")), "team_id": *team,
 		}})
+}
+
+// sendAgentCommandsNote manda al Inbox de Bird la nota con los comandos para el agente (invisible
+// para el paciente). Es variable para que las pruebas cuenten las llamadas.
+var sendAgentCommandsNote = func(c *bird.Client, phone, conversationID, commands string) {
+	_, _ = c.SendInternalText(phone, conversationID, commands)
 }
 
 // escalationEnvelope arma el sobre del escalado con la forma que la BANDERA manda
@@ -110,7 +114,9 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 // ella, y por eso es donde vive lo que hay que dejar resuelto se escale o no.
 //
 // (1) LA MARCA DEL GATE: deja escrito que ESTA escalación se desvió por el RELOJ y la borra en
-// cualquier otra salida, para que hable siempre de la escalación recién decidida.
+// cualquier otra salida, para que hable siempre de la escalación recién decidida. Hoy NO tiene
+// lector en Neuro (en hdg-bot la lee su reanudador asíncrono del RPA, que aquí no existe): se
+// escribe para que el contrato de la clave quede igual en los dos bots.
 //
 // (2) EL RECHAZO TIPADO se borra en TODAS las salidas: el paso puede terminar sin escalar (tope,
 // desvío, fallo de canal) y una clave viva emitiría en la siguiente escalación un rechazo que no

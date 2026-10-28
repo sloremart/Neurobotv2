@@ -131,9 +131,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// desbloquear el input. Solo si el estado es opt-in y NO estamos ya en recuperación (si ya
 		// lo estamos, llegamos aquí por presupuesto agotado o keyword del paciente → escalar).
 		// NO se recupera con IA lo que rompió una persona: si llegamos aquí porque el dato que
-		// devolvió un agente no se pudo usar, quien tiene que corregirlo es un agente.
+		// devolvió un agente no se pudo usar, quien tiene que corregirlo es un agente. Se mira el
+		// rechazo de ESTA vuelta (CtxAgentInputRejection, que escalationExit borra en cada salida)
+		// y no el contador de la sesión, que no se borra y apagaría la IA para siempre.
 		if rc := m.Recovery(); rc != nil && !rc.Active(sess) &&
-			sess.GetContext(sm.CtxAgentInputRejected) == "" {
+			sess.GetContext(sm.CtxAgentInputRejection) == "" {
 			if res, ok := rc.TryStart(ctx, sess, msg, preState); ok {
 				return escalationExit("", res), nil
 			}
@@ -417,8 +419,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// 8. Send contextual commands for the agent (Inbox only — invisible to patient). Néctar no
 		// tiene nota interna: lo que el agente puede devolver viaja en el sobre (menú o descriptor).
 		if !nectarSession {
-			commands := buildAgentCommands(sess, cupsCode)
-			_, _ = birdClient.SendInternalText(msg.Phone, conversationID, commands)
+			sendAgentCommandsNote(birdClient, msg.Phone, conversationID, buildAgentCommands(sess, cupsCode))
 		}
 
 		// 8. Mark session as escalated (in-memory, persisted by worker pool).
@@ -441,7 +442,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		}
 		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalated",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
-		emitSuggestedTeam(sess, envelope.SuggestedTeamID)
+		// El equipo sugerido es un campo del sobre de Néctar: Bird lo descarta, así que anotarlo en
+		// una escalación de Bird contaría una sugerencia que nadie recibió.
+		if nectarSession {
+			emitSuggestedTeam(cfg, sess, envelope.SuggestedTeamID)
+		}
 		// El caso se encoló para el próximo día hábil: se ANOTA aparte de `escalated` para medir
 		// cuántos casos entran fuera del alcance del día, y por cuál de los dos motivos (el
 		// margen se puede mover con una variable; la noche no).
@@ -456,16 +461,17 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				"motivo", queue.reason, "pre_state", preState)
 		}
 
-		// La MARCA del próximo día describe SIEMPRE la escalación en curso: se borra en toda
-		// escalación y se vuelve a escribir solo si esta se encoló (SaveState borra antes de
-		// escribir, así que el WithContext gana sobre el WithClearCtx). Pegada de una anterior le
-		// regalaría a esta las exenciones de la cola (tope, cierre por silencio, no-show).
-		r := sm.NewResult(sm.StateEscalated).WithClearCtx(sm.CtxEscalationNextDay)
+		// La MARCA del próximo día describe SIEMPRE la escalación en curso: se escribe si esta se
+		// encoló y se borra si no. Pegada de una anterior le regalaría a esta las exenciones de la
+		// cola (tope, cierre por silencio, no-show).
+		r := sm.NewResult(sm.StateEscalated)
 		if queuedNextDay {
 			// La sesión tiene que vivir hasta que vuelva una persona: con el TTL normal vence de
 			// madrugada y deja de existir para todo lo que filtra expires_at.
 			r = r.WithContext(sm.CtxEscalationNextDay, "1").
 				WithExpiryUntil(queuedExpiryUntil(nowFunc()))
+		} else {
+			r = r.WithClearCtx(sm.CtxEscalationNextDay)
 		}
 		// La marca del paciente y la NOTA son de ESTA escalación y ya viajaron: se borran solo
 		// aquí, cuando el escalate se entregó (si falla, el reintento tiene que volver a llevarlas).

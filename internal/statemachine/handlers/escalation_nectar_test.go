@@ -1,11 +1,9 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -267,29 +265,90 @@ func TestEscalate_NectarCallerNoticeAlreadyFlushedIsNotRepeated(t *testing.T) {
 	}
 }
 
-// captureDebugLogs redirige slog a un búfer mientras corre fn.
-func captureDebugLogs(t *testing.T, fn func()) string {
+// countInternalNotes sustituye el envío de la nota de comandos por un contador mientras corre fn.
+func countInternalNotes(t *testing.T, fn func()) int {
 	t.Helper()
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	defer slog.SetDefault(prev)
+	prev := sendAgentCommandsNote
+	defer func() { sendAgentCommandsNote = prev }()
+	calls := 0
+	sendAgentCommandsNote = func(*bird.Client, string, string, string) { calls++ }
 	fn()
-	return buf.String()
+	return calls
 }
 
-// En Néctar no hay nota interna: el handler no le pide al cliente la de comandos (que el
-// cliente descartaría con un registro "nota interna sin destino").
+// En Néctar no hay nota interna: el handler no pide la de comandos.
 func TestEscalate_NectarNoAgentCommandsNote(t *testing.T) {
 	m, nb := nectarMachine(t, testEscalationConfig(), nil)
-	logs := captureDebugLogs(t, func() {
+	calls := countInternalNotes(t, func() {
 		escalateOnce(t, m, nectarSession(true))
 	})
 	if len(nb.escalations) != 1 {
 		t.Fatalf("se esperaba UNA escalación: %v", nb.events)
 	}
-	if strings.Contains(logs, "nota interna sin destino") {
-		t.Fatalf("en Néctar no se llama SendInternalText:\n%s", logs)
+	if calls != 0 {
+		t.Fatalf("en Néctar no se manda la nota de comandos: %d llamadas", calls)
+	}
+}
+
+// Y en Bird sí, una vez (el control del contador).
+func TestEscalate_BirdSendsAgentCommandsNoteOnce(t *testing.T) {
+	rec := &birdRecorder{}
+	srv := rec.server(t)
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), testEscalationConfig(), nil)
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+	calls := countInternalNotes(t, func() {
+		if _, err := m.Process(context.Background(), sess, bird.InboundMessage{Phone: "+573001234567", ConversationID: "conv-test"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if calls != 1 {
+		t.Fatalf("en Bird la nota de comandos sale una vez: %d", calls)
+	}
+}
+
+// La marca del paciente se escribe en el turno de la palabra clave y se borra en el mismo turno
+// al escalar: por Process, el resultado final la lleva en ClearCtx y NO en UpdateCtx (si no,
+// SaveState la borraría y la volvería a escribir, y quedaría pegada para la siguiente escalación).
+func TestEscalate_KeywordMarkClearedThroughProcess(t *testing.T) {
+	m, nb := nectarMachine(t, testEscalationConfig(), nil)
+	m.AddInterceptor(sm.EscalationKeywordsInterceptor())
+	sess := testSess(sm.StateAskDocument)
+	sess.PhoneNumber = "nectar:12"
+	sess.ConversationID = "12"
+
+	res, err := m.Process(context.Background(), sess, nectarMsg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalated || len(nb.escalations) != 1 ||
+		nb.escalations[0].Reason != nectar.ReasonPatientAskedForHuman {
+		t.Fatalf("la palabra clave escala con el motivo del paciente: %s %+v", res.NextState, nb.escalations)
+	}
+	if _, kept := res.UpdateCtx[sm.CtxPatientAskedForAgent]; kept {
+		t.Fatalf("la marca no puede volver en UpdateCtx: %v", res.UpdateCtx)
+	}
+	if !hasClear(res, sm.CtxPatientAskedForAgent) {
+		t.Fatalf("la marca se borra: %v", res.ClearCtx)
+	}
+}
+
+// El chequeo de la recuperación IA mira el rechazo de ESTA vuelta (que escalationExit borra), no
+// el contador de la sesión: pasado el rechazo, la IA vuelve a estar disponible.
+func TestEscalate_RecoveryAvailableAgainAfterRejectionCleared(t *testing.T) {
+	client := bird.NewClientForTest("http://nectar.invalid")
+	client.SetNectar(&fakeNectarBridge{})
+	m := sm.NewMachine()
+	rec := &spyRecovery{}
+	m.SetRecoveryCoordinator(rec)
+	RegisterEscalationHandlers(m, client, testEscalationConfig(), nil)
+
+	sess := nectarSession(false)
+	sess.SetContext(sm.CtxAgentInputRejected, "1") // contador de un rechazo ANTERIOR
+	escalateOnce(t, m, sess)
+	if !rec.called {
+		t.Fatal("sin rechazo en curso la recuperación IA se intenta")
 	}
 }
 
@@ -339,6 +398,9 @@ func TestEscalate_OutOfHoursQueuesWhenOpenIsNear(t *testing.T) {
 	}
 	if got := res.UpdateCtx[sm.CtxEscalationNextDay]; got != "1" {
 		t.Fatalf("falta la marca de escalación encolada: %q (%v)", got, res.UpdateCtx)
+	}
+	if hasClear(res, sm.CtxEscalationNextDay) {
+		t.Fatalf("la escalación que se encola no borra su propia marca: %v", res.ClearCtx)
 	}
 	txt := nb.texts()
 	if len(txt) != 1 {
@@ -629,4 +691,31 @@ func TestEscalate_BirdNeverQueues(t *testing.T) {
 			t.Fatalf("marca del gate: %q", got)
 		}
 	})
+}
+
+// El equipo sugerido es de Néctar: una escalación de Bird no lo anota aunque haya mapa.
+func TestEscalate_BirdDoesNotEmitSuggestedTeam(t *testing.T) {
+	rec := &birdRecorder{}
+	srv := rec.server(t)
+	cfg := testEscalationConfig()
+	cfg.NectarTeamByGroup = map[string]int64{"imagenes": 7}
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), cfg, nil)
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+	sess.SetContext("cups_code", "883100")
+
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	res, err := m.Process(context.Background(), sess, bird.InboundMessage{Phone: "+573001234567", ConversationID: "conv-test"})
+	stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalated {
+		t.Fatalf("expected ESCALATED, got %s", res.NextState)
+	}
+	if sink.FindStep("escalacion", "equipo_sugerido") != nil {
+		t.Fatal("Bird no anota equipo sugerido")
+	}
 }

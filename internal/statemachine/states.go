@@ -338,23 +338,25 @@ const (
 	// máquina al encadenar y lo lee el handler de escalación.
 	CtxPreAutoState = "_pre_auto_state"
 
-	// CtxPatientAskedForAgent ("1") marcará que EL PACIENTE PIDIÓ la persona (opción de menú o
-	// palabra clave), frente a las escalaciones donde el bot se atasca. Lo usarán el handler de
-	// escalación y los sitios donde el paciente pide agente, para decidir el `reason` con que se
-	// escala y si se le avisa al paciente. Es una marca aparte y no un valor de
-	// `escalation_reason` para no mezclar motivos de diagnóstico con lo que ve el paciente.
+	// CtxPatientAskedForAgent ("1") marca que EL PACIENTE PIDIÓ la persona (palabra clave o
+	// «agente» en el menú post-acción), frente a las escalaciones donde el bot se atasca. La
+	// escriben el interceptor de palabras clave y el menú post-acción; la lee el handler de
+	// escalación para decidir el `reason` del sobre y, en Néctar, si se le avisa al paciente, y la
+	// borra al escalar. Es una marca aparte y no un valor de `escalation_reason` para no mezclar
+	// motivos de diagnóstico con lo que ve el paciente.
 	CtxPatientAskedForAgent = "patient_asked_for_agent"
 
-	// CtxEscalationNextDay ("1") marcará que la escalación en curso de esta sesión quedó
-	// encolada para que una persona la atienda al abrir el siguiente día hábil. La escribirá el
-	// handler de escalación cuando escale dentro de esa ventana y la borrará en cualquier otra
-	// escalación: describirá SIEMPRE la escalación en curso. Se persistirá (WithContext) porque
-	// la leerán turnos posteriores.
+	// CtxEscalationNextDay ("1") marca que la escalación en curso de esta sesión quedó encolada
+	// para que una persona la atienda al abrir el siguiente día hábil (solo Néctar). La escribe el
+	// handler de escalación cuando escala dentro de esa ventana y la borra en cualquier otra
+	// escalación: describe SIEMPRE la escalación en curso. Se persiste (WithContext) porque la leen
+	// turnos posteriores: el tope por sesión del handler, el checker de sesiones escaladas
+	// (session.EscalationQueuedForNextDayKey) y el retorno del agente (worker), que la borra.
 	CtxEscalationNextDay = "escalacion_proximo_dia"
 
-	// CtxEscalationGate marcará que la ÚLTIMA escalación de esta sesión no llegó a ejecutarse
-	// porque la desvió el reloj ("out_of_hours"). La escribirá el handler de escalación y la
-	// borrará en cualquier otra salida suya, de modo que hable SIEMPRE de la escalación recién
-	// decidida.
+	// CtxEscalationGate marca que la ÚLTIMA escalación de esta sesión no llegó a ejecutarse
+	// porque la desvió el reloj ("out_of_hours"). La escribe el handler de escalación y la borra
+	// en cualquier otra salida suya, de modo que hable SIEMPRE de la escalación recién decidida.
+	// Hoy no tiene lector en Neuro.
 	CtxEscalationGate = "escalacion_desvio_gate"
 )
