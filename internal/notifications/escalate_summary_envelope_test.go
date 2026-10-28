@@ -12,8 +12,10 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
@@ -64,14 +66,55 @@ func (b *escalationBridge) only(t *testing.T) bird.Escalation {
 
 const nectarPhone = "nectar:777"
 
-// registerNotifPendingMenu declara el menú estático de NOTIF_PENDING igual que lo hace
-// handlers.RegisterAppointmentHandlers (aquí no se importa: handlers no es dependencia de este paquete).
+// registerNotifPendingMenu declara el menú de NOTIF_PENDING con la misma regla que
+// handlers.notifPendingReturnOptions (aquí no se importa: handlers depende de repository/local,
+// que importa este paquete). Las filas por tipo y motivo se prueban contra la función real en
+// handlers/return_menus_test.go; aquí solo importa que la escalación pase la vista de la sesión.
 func registerNotifPendingMenu() {
-	sm.RegisterStaticReturnMenu(sm.StateNotifPending,
-		sm.ReturnOption{Label: "Confirmar la cita", Value: "confirm", Target: sm.StateNotifPending, Data: "confirm"},
-		sm.ReturnOption{Label: "Reprogramar la cita", Value: "reschedule", Target: sm.StateNotifPending, Data: "reschedule"},
-		sm.ReturnOption{Label: "Cancelar la cita", Value: "cancel", Target: sm.StateNotifPending, Data: "cancel"},
-	)
+	np := sm.StateNotifPending
+	sm.RegisterReturnMenu(np, func(sess *session.Session) []sm.ReturnOption {
+		switch {
+		case sess != nil && sess.GetContext(sm.CtxNotifEscalationDetail) == sm.EscalationReasonNotifSystemFailure:
+			return []sm.ReturnOption{
+				{Label: "Reintentar la confirmación en SIESA", Value: "confirm", Target: np, Data: "confirm"},
+				{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
+			}
+		case sess != nil && sess.GetContext("notif_type") == "waiting_list":
+			return []sm.ReturnOption{
+				{Label: "Agendar ahora", Value: "wl_schedule", Target: np, Data: "wl_schedule"},
+				{Label: "No le interesa", Value: "wl_decline", Target: np, Data: "wl_decline"},
+			}
+		case sess != nil && sess.GetContext("notif_type") == "cancellation":
+			return []sm.ReturnOption{
+				{Label: "Entendido, sin reprogramar", Value: "understood", Target: np, Data: "understood"},
+				{Label: "Reprogramar", Value: "reschedule", Target: np, Data: "reschedule"},
+			}
+		}
+		return []sm.ReturnOption{
+			{Label: "Confirmar la cita", Value: "confirm", Target: np, Data: "confirm"},
+			{Label: "Reprogramar la cita", Value: "reschedule", Target: np, Data: "reschedule"},
+			{Label: "Cancelar la cita", Value: "cancel", Target: np, Data: "cancel"},
+		}
+	})
+}
+
+// descriptorOptions lee las opciones (valor y salida) del descriptor v1 que viajó en el sobre.
+func descriptorOptions(t *testing.T, raw []byte) (values, exits []string) {
+	t.Helper()
+	var d struct {
+		Opciones []struct {
+			Valor  string `json:"valor"`
+			Salida string `json:"salida"`
+		} `json:"opciones"`
+	}
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatalf("descriptor ilegible %s: %v", raw, err)
+	}
+	for _, o := range d.Opciones {
+		values = append(values, o.Valor)
+		exits = append(exits, o.Salida)
+	}
+	return values, exits
 }
 
 func nectarManager(t *testing.T, cfg *config.Config) (*NotificationManager, *escalationBridge) {
@@ -173,7 +216,7 @@ func TestEscalateNotifToAgent_NectarV1CarriesInputDescriptor(t *testing.T) {
 	if esc.ReturnMenu != nil {
 		t.Errorf("con v1 el menú no viaja: %s", esc.ReturnMenu)
 	}
-	if len(esc.Input) == 0 || string(esc.Input) != string(sm.StaticInputDescriptor(sm.StateNotifPending)) {
+	if len(esc.Input) == 0 || string(esc.Input) != string(sm.StaticInputDescriptor(nil, sm.StateNotifPending)) {
 		t.Errorf("Input = %s", esc.Input)
 	}
 }
@@ -250,5 +293,72 @@ func TestConfirmationEscalate_BirdSendsSummaryAsNote(t *testing.T) {
 	defer notes.mu.Unlock()
 	if len(notes.texts) != 1 || !strings.Contains(notes.texts[0], "APT001") {
 		t.Errorf("Bird debe recibir exactamente la nota del caso, got %q", notes.texts)
+	}
+}
+
+// S26: el paciente SÍ confirmó pero falló la persistencia en SIESA. Al agente de Néctar le sirve
+// reintentar o dar la cita por confirmada a mano (que cierra el caso), no re-pedir confirmación.
+func TestConfirmationEscalate_SystemFailureOffersRetryAndManual(t *testing.T) {
+	mgr, bridge := nectarManager(t, &config.Config{
+		BirdTeamFallback: "team-fallback", ProtocolEscaladoVersion: config.ProtocolEscaladoV1,
+	})
+	mgr.SetWaitingListDeps(nil, &mockSessionCreatorWithLookup{}, &mockVirtualEnqueuer{})
+
+	mgr.escalateToAgent(&PendingNotification{Phone: nectarPhone, AppointmentID: "APT001", Type: "confirmation", ConversationID: "777"}, escalationSystemFailure)
+
+	values, exits := descriptorOptions(t, bridge.only(t).Input)
+	if len(values) < 2 || values[0] != "confirm" || values[1] != "confirmada_manual" {
+		t.Fatalf("opciones = %v, deben empezar por confirm, confirmada_manual", values)
+	}
+	if exits[1] != "cerrar" {
+		t.Errorf("confirmada_manual cierra el caso: salida %q", exits[1])
+	}
+}
+
+// S24: la notificación de lista de espera ofrece agendar o declinar, y la sesión guarda el id de
+// la entrada (sin él, «agendar» no sabría qué oferta tomar).
+func TestEscalateNotifToAgent_WaitingListOffersScheduleAndDecline(t *testing.T) {
+	mgr, bridge := nectarManager(t, &config.Config{
+		BirdTeamFallback: "team-fallback", ProtocolEscaladoVersion: config.ProtocolEscaladoV1,
+	})
+	repo := &mockSessionCreatorWithLookup{}
+	mgr.SetWaitingListDeps(nil, repo, &mockVirtualEnqueuer{})
+
+	mgr.escalateNotifToAgent(&PendingNotification{
+		Phone: nectarPhone, AppointmentID: "APT001", Type: "waiting_list", WaitingListID: "wl-1",
+	}, "777")
+
+	values, _ := descriptorOptions(t, bridge.only(t).Input)
+	if len(values) < 2 || values[0] != "wl_schedule" || values[1] != "wl_decline" {
+		t.Fatalf("opciones = %v, deben empezar por wl_schedule, wl_decline", values)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if repo.batchCtx[sm.CtxNotifWaitingListID] != "wl-1" {
+		t.Errorf("notif_wl_id = %q, quiero wl-1", repo.batchCtx[sm.CtxNotifWaitingListID])
+	}
+	if repo.batchCtx[sm.CtxNotifEscalationDetail] != sm.EscalationReasonNotifFreeText {
+		t.Errorf("notif_escalation_detail = %q", repo.batchCtx[sm.CtxNotifEscalationDetail])
+	}
+}
+
+// El agente agenda la oferta de lista de espera: el comando llega con el id de la entrada (la
+// notificación ya no está en memoria) y toma la oferta, no la trata como confirmación.
+func TestHandleNotifPendingCommand_WaitingListSchedules(t *testing.T) {
+	srv := escalationBirdServer()
+	defer srv.Close()
+	var foundID string
+	wl := &mockWaitingListFinder{findByIDFn: func(_ context.Context, id string) (*domain.WaitingListEntry, error) {
+		foundID = id
+		return nil, nil
+	}}
+	mgr := NewNotificationManager(bird.NewClientForTest(srv.URL),
+		services.NewAppointmentService(&mockApptRepoNotif{}, nil), &config.Config{})
+	mgr.SetWaitingListDeps(wl, &mockSessionCreator{}, &mockVirtualEnqueuer{})
+
+	mgr.HandleNotifPendingCommand(nectarPhone, "wl_schedule", "777", "", "waiting_list", "wl-1")
+
+	if foundID != "wl-1" {
+		t.Fatalf("FindByID(%q), quiero wl-1", foundID)
 	}
 }

@@ -120,13 +120,10 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 		)
 	}
 	// El agente resuelve la notificación por el paciente (`/bot resume NOTIF_PENDING <acción>`).
-	// ESTÁTICO a propósito: el descriptor de este paso se arma también sin sesión ni máquina. El
-	// worker reconoce State == NOTIF_PENDING con Data = acción y la ejecuta sin reanudar el flujo.
-	sm.RegisterStaticReturnMenu(sm.StateNotifPending,
-		sm.ReturnOption{Label: "Confirmar la cita", Value: "confirm", Target: sm.StateNotifPending, Data: "confirm"},
-		sm.ReturnOption{Label: "Reprogramar la cita", Value: "reschedule", Target: sm.StateNotifPending, Data: "reschedule"},
-		sm.ReturnOption{Label: "Cancelar la cita", Value: "cancel", Target: sm.StateNotifPending, Data: "cancel"},
-	)
+	// Sin campo a propósito: el NotificationManager arma el descriptor de este paso sin máquina,
+	// con la vista de la sesión. El worker reconoce State == NOTIF_PENDING con Data = acción y la
+	// ejecuta sin reanudar el flujo.
+	sm.RegisterReturnMenu(sm.StateNotifPending, notifPendingReturnOptions)
 	m.RegisterWithConfig(sm.StateNotifPending, sm.HandlerConfig{
 		InputType:   sm.InputButton,
 		Options:     []string{"confirm", "reschedule", "cancel"},
@@ -1216,4 +1213,36 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen-1]) + "…"
+}
+
+// notifPendingReturnOptions son las acciones que el agente puede tomar sobre una notificación
+// escalada, según su tipo y el motivo de la escalación (contexto de la sesión). Cada `Data` es una
+// acción que el atajo de NOTIF_PENDING del worker entrega a HandleNotifPendingCommand. Sin sesión
+// sale el menú de la confirmación, el de siempre.
+func notifPendingReturnOptions(sess *session.Session) []sm.ReturnOption {
+	np := sm.StateNotifPending
+	action := func(label, value string) sm.ReturnOption {
+		return sm.ReturnOption{Label: label, Value: value, Target: np, Data: value}
+	}
+	if sess != nil {
+		// El paciente YA confirmó y falló la persistencia en SIESA: re-pedirle confirmación no
+		// sirve; el agente reintenta, o la confirma a mano y cierra el caso.
+		if sess.GetContext(sm.CtxNotifEscalationDetail) == sm.EscalationReasonNotifSystemFailure {
+			return []sm.ReturnOption{
+				action("Reintentar la confirmación en SIESA", "confirm"),
+				{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
+			}
+		}
+		switch sess.GetContext("notif_type") {
+		case "waiting_list":
+			return []sm.ReturnOption{action("Agendar ahora", "wl_schedule"), action("No le interesa", "wl_decline")}
+		case "cancellation":
+			return []sm.ReturnOption{action("Entendido, sin reprogramar", "understood"), action("Reprogramar", "reschedule")}
+		}
+	}
+	return []sm.ReturnOption{
+		action("Confirmar la cita", "confirm"),
+		action("Reprogramar la cita", "reschedule"),
+		action("Cancelar la cita", "cancel"),
+	}
 }

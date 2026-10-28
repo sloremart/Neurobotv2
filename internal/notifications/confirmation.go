@@ -342,14 +342,45 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 
 	patientName := ""
 	apptInfo := fmt.Sprintf("Cita ID: %s", pending.AppointmentID)
+	var apptDate, apptTime, cupsName, cupsCode string
 	if appt != nil {
 		patientName = appt.PatientName
+		apptDate = utils.FormatFriendlyDate(appt.Date)
+		apptTime = services.FormatTimeSlot(appt.TimeSlot)
+		if len(appt.Procedures) > 0 {
+			cupsName = appt.Procedures[0].CupName
+			cupsCode = appt.Procedures[0].CupCode
+		}
 		apptInfo = fmt.Sprintf("Paciente: %s\nFecha: %s | Hora: %s\nProcedimiento: %s\nCita ID: %s",
 			patientName,
 			utils.FormatFriendlyDate(appt.Date),
 			services.FormatTimeSlot(appt.TimeSlot),
 			services.GetFirstCupName(*appt),
 			pending.AppointmentID)
+	}
+
+	detail := sm.EscalationReasonNotifNoResponse
+	if reason == escalationSystemFailure {
+		detail = sm.EscalationReasonNotifSystemFailure
+	}
+	sessCtx := map[string]string{
+		"notif_appointment_id":      pending.AppointmentID,
+		"notif_type":                pending.Type,
+		"notif_appt_date":           apptDate,
+		"notif_appt_time":           apptTime,
+		"notif_cups_name":           cupsName,
+		sm.CtxNotifCupsCode:         cupsCode,
+		"notif_conv_id":             pending.ConversationID,
+		"patient_name":              patientName,
+		"pre_escalation_state":      sm.StateNotifPending,
+		sm.CtxNotifEscalationDetail: detail,
+	}
+	// P0-2: en Néctar el retorno del agente necesita una sesión escalada en NOTIF_PENDING (sin ella
+	// el worker lo descarta). En Bird no se crea, como siempre: su agente no devuelve esta escalación
+	// con `/bot resume`.
+	var sessID string
+	if session.IsNectarSession(pending.Phone) {
+		sessID = m.escalatedNotifSession(ctx, pending.Phone, pending.ConversationID, sessCtx)
 	}
 
 	var note string
@@ -384,18 +415,28 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 	if pending.ConversationID != "" {
 		// L9: capturar el error de la escalación (antes se descartaba). La escalación ya loguea
 		// internamente en rutas degradadas, pero sin esto la traza propia no distinguía éxito/fallo.
-		detail := escalationDetailNoResponse
-		if reason == escalationSystemFailure {
-			detail = escalationDetailSystemFailed
-		}
 		if _, _, err := m.birdClient.EscalateToAgentWithSummary(
 			ctx, pending.ConversationID, pending.Phone,
 			m.cfg.BirdTeamFallback, "Call Center",
 			patientName, m.cfg.BirdTeamFallback,
-			notifEscalation(m.cfg, pending.Phone, detail, note),
+			notifEscalation(m.cfg, pending.Phone, &session.Session{Context: sessCtx}, detail, note),
 		); err != nil {
 			slog.Error("notif escalate to agent failed", "phone", utils.MaskPhone(pending.Phone),
 				"conversation_id", pending.ConversationID, "error", err)
+		} else if sessID != "" {
+			// Escalación efectiva con sesión (solo Néctar): se registra como en escalateNotifToAgent,
+			// para el KPI de escaladas y el SLA por escalación. from_state = NOTIF_PENDING.
+			if m.tracker != nil {
+				m.tracker.LogEvent(ctx, sessID, pending.Phone, "escalated_to_agent", map[string]interface{}{
+					"from_state": sm.StateNotifPending,
+					"agent":      "Call Center",
+				})
+			}
+			if m.escalations != nil {
+				if err := m.escalations.Create(ctx, sessID, pending.Phone, sm.StateNotifPending, m.cfg.BirdTeamFallback, "", "Call Center"); err != nil {
+					slog.Warn("notif escalation: record escalation", "error", err, "phone", utils.MaskPhone(pending.Phone))
+				}
+			}
 		}
 	}
 

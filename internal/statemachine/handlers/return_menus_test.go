@@ -11,6 +11,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
@@ -84,8 +85,8 @@ func TestReturnMenuValuesExistInTheStateMachine(t *testing.T) {
 }
 
 func TestReturnMenus_NotifPendingIsStaticAndMatchesTheWorkerShortcut(t *testing.T) {
-	// Task 10 arma el descriptor de NOTIF_PENDING SIN sesión ni máquina, y el worker reconoce
-	// `State == NOTIF_PENDING` + `Data` ∈ {confirm, reschedule, cancel}.
+	// El descriptor de NOTIF_PENDING se arma SIN máquina; sin sesión sale el menú de la
+	// confirmación, y el worker reconoce `State == NOTIF_PENDING` + `Data` = acción.
 	returnMenuMachine()
 	var got []string
 	for _, o := range sm.ReturnOptionsFor(nil, sm.StateNotifPending) {
@@ -110,7 +111,7 @@ func TestReturnMenus_NotifPendingStaticDescriptorMatchesTheMachine(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sm.StaticInputDescriptor(sm.StateNotifPending); string(got) != string(want) {
+	if got := sm.StaticInputDescriptor(nil, sm.StateNotifPending); string(got) != string(want) {
 		t.Fatalf("StaticInputDescriptor = %s\nMachine.InputDescriptor = %s", got, want)
 	}
 }
@@ -282,5 +283,71 @@ func TestBotDisabledReturnMenu_OffersGreetingAndHidesResume(t *testing.T) {
 	}
 	if !found {
 		t.Error("falta la opción bot_iniciar hacia GREETING sin dato")
+	}
+}
+
+// NOTIF_PENDING ofrece las acciones del TIPO de notificación (y del motivo): la lista de espera y
+// la cancelación tienen sus propios botones, y el fallo de persistencia en SIESA ofrece reintentar
+// o dar la cita por confirmada a mano. Sin sesión sale el menú de confirmación de siempre.
+func TestNotifPendingReturnOptions_ByTypeAndDetail(t *testing.T) {
+	type want struct {
+		label, value, target, data string
+		close                      bool
+	}
+	view := func(kv ...string) *session.Session {
+		s := testSess(sm.StateNotifPending)
+		for i := 0; i+1 < len(kv); i += 2 {
+			s.Context[kv[i]] = kv[i+1]
+		}
+		return s
+	}
+	np := sm.StateNotifPending
+	cases := []struct {
+		name string
+		sess *session.Session
+		want []want
+	}{
+		{"fallo de sistema", view(sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifSystemFailure, "notif_type", "confirmation"), []want{
+			{"Reintentar la confirmación en SIESA", "confirm", np, "confirm", false},
+			{"Ya la confirmé a mano en SIESA", "confirmada_manual", "", "", true},
+		}},
+		{"lista de espera", view("notif_type", "waiting_list"), []want{
+			{"Agendar ahora", "wl_schedule", np, "wl_schedule", false},
+			{"No le interesa", "wl_decline", np, "wl_decline", false},
+		}},
+		{"cancelación", view("notif_type", "cancellation"), []want{
+			{"Entendido, sin reprogramar", "understood", np, "understood", false},
+			{"Reprogramar", "reschedule", np, "reschedule", false},
+		}},
+		{"confirmación", view("notif_type", "confirmation", sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifNoResponse), []want{
+			{"Confirmar la cita", "confirm", np, "confirm", false},
+			{"Reprogramar la cita", "reschedule", np, "reschedule", false},
+			{"Cancelar la cita", "cancel", np, "cancel", false},
+		}},
+		{"sin sesión", nil, []want{
+			{"Confirmar la cita", "confirm", np, "confirm", false},
+			{"Reprogramar la cita", "reschedule", np, "reschedule", false},
+			{"Cancelar la cita", "cancel", np, "cancel", false},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := notifPendingReturnOptions(c.sess)
+			if len(got) != len(c.want) {
+				t.Fatalf("opciones = %+v, quiero %+v", got, c.want)
+			}
+			for i, w := range c.want {
+				o := got[i]
+				if o.Label != w.label || o.Value != w.value || o.Target != w.target || o.Data != w.data || o.Close != w.close {
+					t.Errorf("opción %d = %+v, quiero %+v", i, o, w)
+				}
+			}
+			// El registro es el que leen el descriptor y el worker: las opciones del tipo van
+			// primero y las universales después.
+			returnMenuMachine()
+			if reg := sm.ReturnOptionsFor(c.sess, np); len(reg) < len(c.want) || reg[0].Value != c.want[0].value {
+				t.Errorf("el registro de NOTIF_PENDING no es notifPendingReturnOptions: %+v", reg)
+			}
+		})
 	}
 }

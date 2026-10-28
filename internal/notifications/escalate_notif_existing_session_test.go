@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
+	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
 // errActiveSessionExists reproduce el error del índice único de sesión activa (uq_active_phone).
@@ -29,6 +31,8 @@ type mockSessionCreatorWithLookup struct {
 	createCalls  int
 	statusCalls  []string
 	batchSession string
+	batchCtx     map[string]string
+	findCalls    int
 }
 
 func (m *mockSessionCreatorWithLookup) Create(_ context.Context, s *session.Session) error {
@@ -45,13 +49,15 @@ func (m *mockSessionCreatorWithLookup) Create(_ context.Context, s *session.Sess
 func (m *mockSessionCreatorWithLookup) FindCurrentByPhone(_ context.Context, _ string) (*session.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.findCalls++
 	return m.existing, nil
 }
 
-func (m *mockSessionCreatorWithLookup) SetContextBatch(_ context.Context, sessionID string, _ map[string]string) error {
+func (m *mockSessionCreatorWithLookup) SetContextBatch(_ context.Context, sessionID string, kvs map[string]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.batchSession = sessionID
+	m.batchCtx = kvs
 	return nil
 }
 
@@ -160,5 +166,101 @@ func TestEscalateNotifToAgent_ReusesExistingSession(t *testing.T) {
 	}
 	if !hasEsc {
 		t.Errorf("esperaba escalated_to_agent emitido; got %v", evs)
+	}
+}
+
+// confirmationEscalationManager arma un manager de Néctar con el repo de sesiones, el tracker y
+// el registro de escalaciones a la vista.
+func confirmationEscalationManager(t *testing.T, repo *mockSessionCreatorWithLookup) (*NotificationManager, *mockEventLoggerNotif, *mockEscRecorderNotif) {
+	t.Helper()
+	mgr, _ := nectarManager(t, &config.Config{BirdTeamFallback: "team-fallback"})
+	mgr.SetWaitingListDeps(nil, repo, &mockVirtualEnqueuer{})
+	tracker := &mockEventLoggerNotif{}
+	mgr.SetTracker(tracker)
+	rec := &mockEscRecorderNotif{}
+	mgr.SetEscalationRecorder(rec)
+	return mgr, tracker, rec
+}
+
+// P0-2/S25: la escalación por no-respuesta en Néctar no tenía sesión, y el retorno del agente se
+// descartaba («agent command but no escalated session»). Ahora crea la sesión ESCALATED en
+// NOTIF_PENDING con el contexto de la notificación, y queda registrada.
+func TestConfirmationEscalate_NectarCreatesEscalatedSession(t *testing.T) {
+	repo := &mockSessionCreatorWithLookup{}
+	mgr, tracker, rec := confirmationEscalationManager(t, repo)
+
+	mgr.escalateToAgent(&PendingNotification{
+		Phone: "nectar:42", AppointmentID: "APT001", Type: "confirmation", ConversationID: "42",
+	}, escalationNoResponse)
+
+	repo.mu.Lock()
+	created, kv := repo.created, repo.batchCtx
+	repo.mu.Unlock()
+	switch {
+	case created == nil:
+		t.Fatal("la escalación de Néctar debe crear su sesión")
+	case created.Status != session.StatusEscalated || created.CurrentState != sm.StateNotifPending:
+		t.Errorf("sesión = %s/%s, quiero escalated/NOTIF_PENDING", created.Status, created.CurrentState)
+	}
+	if kv["pre_escalation_state"] != sm.StateNotifPending ||
+		kv[sm.CtxNotifEscalationDetail] != sm.EscalationReasonNotifNoResponse ||
+		kv["notif_appointment_id"] != "APT001" || kv["notif_type"] != "confirmation" {
+		t.Errorf("contexto incompleto: %v", kv)
+	}
+	rec.mu.Lock()
+	rows := rec.created
+	rec.mu.Unlock()
+	tracker.mu.Lock()
+	evs := append([]string{}, tracker.events...)
+	tracker.mu.Unlock()
+	if rows != 1 || !slices.Contains(evs, "escalated_to_agent") {
+		t.Errorf("la escalación queda registrada: filas=%d eventos=%v", rows, evs)
+	}
+}
+
+// Review Focus 4: el paciente ya tenía una sesión ACTIVA (ocupa el índice único del teléfono): se
+// reutiliza y se marca escalada; un Create chocaría.
+func TestConfirmationEscalate_NectarReusesActiveSession(t *testing.T) {
+	repo := &mockSessionCreatorWithLookup{existing: &session.Session{
+		ID: "sess-activa", PhoneNumber: "nectar:42", Status: session.StatusActive,
+	}}
+	mgr, _, _ := confirmationEscalationManager(t, repo)
+
+	mgr.escalateToAgent(&PendingNotification{
+		Phone: "nectar:42", AppointmentID: "APT001", Type: "confirmation", ConversationID: "42",
+	}, escalationNoResponse)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if repo.createCalls != 0 {
+		t.Errorf("Create no se llama con una sesión activa; llamadas=%d", repo.createCalls)
+	}
+	if !slices.Contains(repo.statusCalls, "sess-activa:"+session.StatusEscalated) {
+		t.Errorf("la sesión activa queda escalada: %v", repo.statusCalls)
+	}
+	if repo.batchSession != "sess-activa" || repo.batchCtx["pre_escalation_state"] != sm.StateNotifPending {
+		t.Errorf("el contexto va a la sesión activa: %q %v", repo.batchSession, repo.batchCtx)
+	}
+}
+
+// Bird no cambia: la escalación de confirmación sigue sin sesión (los comandos del Inbox no la
+// necesitan para esta nota).
+func TestConfirmationEscalate_BirdCreatesNoSession(t *testing.T) {
+	srv := escalationBirdServer()
+	defer srv.Close()
+	repo := &mockSessionCreatorWithLookup{}
+	mgr := NewNotificationManager(bird.NewClientForTest(srv.URL),
+		services.NewAppointmentService(&mockApptRepoNotif{}, nil),
+		&config.Config{BirdTeamFallback: "team-fallback"})
+	mgr.SetWaitingListDeps(nil, repo, &mockVirtualEnqueuer{})
+
+	mgr.escalateToAgent(&PendingNotification{
+		Phone: "+573001112233", AppointmentID: "APT001", Type: "confirmation", ConversationID: "conv-1",
+	}, escalationNoResponse)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if repo.findCalls != 0 || repo.createCalls != 0 {
+		t.Errorf("Bird no busca ni crea sesión: find=%d create=%d", repo.findCalls, repo.createCalls)
 	}
 }

@@ -121,22 +121,24 @@ func descriptorOptions(sess *session.Session, step string) []InputOption {
 	return out
 }
 
-// StaticInputDescriptor serializa el descriptor `input` de un paso de menú ESTÁTICO (sin sesión
-// ni máquina): quien escala sin tener la máquina, como el NotificationManager, lo arma con él.
-// Solo lleva `paso` y `opciones` y SOLO sirve para pasos de menú estático: un paso que pide un
+// StaticInputDescriptor serializa el descriptor `input` de un paso SIN campo y sin máquina: quien
+// escala sin tener la máquina, como el NotificationManager, lo arma con él. `sess` es la vista de
+// la sesión con la que se arman las opciones (el menú de NOTIF_PENDING depende del tipo de
+// notificación); nil arma el menú por defecto del paso.
+// Solo lleva `paso` y `opciones` y SOLO sirve para pasos sin campo: un paso que pide un
 // campo al agente necesita la máquina (la ayuda por omisión sale de su config) y debe usar
 // Machine.InputDescriptor. Llamarla con un paso que tiene ReturnInput registrado es un error de
 // programación: se registra como ERROR y devuelve nil, en vez de emitir un descriptor sin
 // `campos`. No hace panic porque quien llama es el NotificationManager en producción, y un panic
 // ahí tumbaría el envío; el test que compara con la máquina (return_menus_test.go) lo atrapa en
 // CI. También devuelve nil si no se puede serializar; nil significa «no viaja».
-func StaticInputDescriptor(step string) []byte {
+func StaticInputDescriptor(sess *session.Session, step string) []byte {
 	if _, offers := returnInputFor(step); offers {
 		slog.Error("StaticInputDescriptor: el paso ofrece un ReturnInput; usar Machine.InputDescriptor",
 			"step", step)
 		return nil
 	}
-	raw, err := json.Marshal(InputDescriptor{Step: step, Options: descriptorOptions(nil, step)})
+	raw, err := json.Marshal(InputDescriptor{Step: step, Options: descriptorOptions(sess, step)})
 	if err != nil {
 		slog.Error("descriptor de entrada estático no serializable", "error", err, "step", step)
 		return nil

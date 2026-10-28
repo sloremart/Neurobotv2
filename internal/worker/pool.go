@@ -134,7 +134,15 @@ type NotificationResponder interface {
 	HandleResponse(phone, payload, conversationID string)
 	// HandleNotifPendingCommand processes a /bot resume NOTIF_PENDING command from an agent.
 	// Used when the pending notification was already removed from memory (escalated path).
-	HandleNotifPendingCommand(phone, action, convID, appointmentID, notifType string)
+	// waitingListID es el id de la entrada de lista de espera notificada ("" en los demás tipos).
+	HandleNotifPendingCommand(phone, action, convID, appointmentID, notifType, waitingListID string)
+}
+
+// notifPendingActions son las acciones que el atajo de NOTIF_PENDING entrega a
+// HandleNotifPendingCommand: las del menú de retornos del paso, para todos los tipos.
+var notifPendingActions = map[string]bool{
+	"confirm": true, "reschedule": true, "cancel": true,
+	"understood": true, "wl_schedule": true, "wl_decline": true,
 }
 
 // InboxMarker marks messages as processed in the inbox (WAL pattern).
@@ -864,12 +872,15 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		}
 	}
 
-	// Special case: NOTIF_PENDING — agent resolves a confirmation/reschedule/cancel directly.
+	// Special case: NOTIF_PENDING — agent resolves the notification directly.
 	// The pending notification was already removed from memory when escalation happened,
 	// so we must use the session context instead of HandleResponse (which needs in-memory pending).
+	// Las acciones son las de cada tipo de notificación: confirmación/reprogramación
+	// (confirm/reschedule/cancel), cancelación (understood/reschedule) y lista de espera
+	// (wl_schedule/wl_decline).
 	if cmd.State == statemachine.StateNotifPending && cmd.Data != "" && p.notifyResponder != nil {
 		action := strings.TrimSpace(cmd.Data)
-		if action == "confirm" || action == "reschedule" || action == "cancel" {
+		if notifPendingActions[action] {
 			appointmentID := sess.GetContext("notif_appointment_id")
 			notifType := sess.GetContext("notif_type")
 			convID := sess.ConversationID
@@ -885,7 +896,8 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			if err := p.birdClient.UnassignFeedItem(cmd.Phone, convID, false); err != nil {
 				slog.Error("notif_pending: unassign feed item failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "conversation_id", convID)
 			}
-			p.notifyResponder.HandleNotifPendingCommand(sess.PhoneNumber, action, convID, appointmentID, notifType)
+			p.notifyResponder.HandleNotifPendingCommand(sess.PhoneNumber, action, convID, appointmentID, notifType,
+				sess.GetContext(statemachine.CtxNotifWaitingListID))
 			slog.Info(
 				"agent resolved notif_pending",
 				"phone", utils.MaskPhone(cmd.Phone),

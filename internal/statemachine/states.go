@@ -95,7 +95,7 @@ const (
 const (
 	StateConfirmRescheduleNotif  = "CONFIRM_RESCHEDULE_NOTIF"
 	StateConfirmCancelNotif      = "CONFIRM_CANCEL_NOTIF"
-	StateNotifPending            = "NOTIF_PENDING"             // Escalación por texto libre durante confirmación proactiva
+	StateNotifPending            = "NOTIF_PENDING"             // Notificación proactiva escalada al agente (texto libre, sin respuesta o fallo en SIESA)
 	StateNotifRescheduleFallback = "NOTIF_RESCHEDULE_FALLBACK" // Reprogramar sin slots → ofrece Confirmar/Cancelar
 )
 

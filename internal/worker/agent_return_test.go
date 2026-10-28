@@ -507,16 +507,19 @@ func TestResolveAgentReturn_V1OptionLoggedByPrefix(t *testing.T) {
 
 // notifResponderSpy anota las acciones de NOTIF_PENDING que el worker le entrega.
 type notifResponderSpy struct {
-	actions []string
-	convID  string
-	apptID  string
+	actions   []string
+	convID    string
+	apptID    string
+	notifType string
+	wlID      string
 }
 
 func (s *notifResponderSpy) HandleResponse(string, string, string) {}
 
-func (s *notifResponderSpy) HandleNotifPendingCommand(_, action, convID, appointmentID, _ string) {
+func (s *notifResponderSpy) HandleNotifPendingCommand(_, action, convID, appointmentID, notifType, waitingListID string) {
 	s.actions = append(s.actions, action)
 	s.convID, s.apptID = convID, appointmentID
+	s.notifType, s.wlID = notifType, waitingListID
 }
 
 // notifPendingReturnSession deja una sesión escalada desde NOTIF_PENDING con el menú estático
@@ -575,6 +578,32 @@ func TestHandleAgentResume_BirdNotifPendingCommandUnchanged(t *testing.T) {
 
 	if len(spy.actions) != 1 || spy.actions[0] != "confirm" || *completed != 1 || *resumedTo != "" {
 		t.Fatalf("acciones=%v completadas=%d retomó=%q", spy.actions, *completed, *resumedTo)
+	}
+}
+
+// S24: en una notificación de lista de espera el agente de Néctar elige «Agendar ahora»: el atajo
+// la entrega con el tipo y el id de la entrada guardados en la sesión, y la sesión se completa.
+func TestHandleAgentResume_NotifPendingWaitingListSchedule(t *testing.T) {
+	pool, sess, spy, completed, resumedTo := notifPendingReturnSession(t)
+	statemachine.RegisterStaticReturnMenu(statemachine.StateNotifPending,
+		statemachine.ReturnOption{
+			Label: "Agendar ahora", Value: "wl_schedule",
+			Target: statemachine.StateNotifPending, Data: "wl_schedule",
+		})
+	asNectar(sess)
+	sess.Context["notif_type"] = "waiting_list"
+	sess.Context[statemachine.CtxNotifWaitingListID] = "wl-1"
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnV1: &nectar.V1Return{Option: "wl_schedule"},
+	})
+
+	if len(spy.actions) != 1 || spy.actions[0] != "wl_schedule" || spy.apptID != "A-77" ||
+		spy.notifType != "waiting_list" || spy.wlID != "wl-1" {
+		t.Fatalf("acciones=%v cita=%q tipo=%q lista=%q", spy.actions, spy.apptID, spy.notifType, spy.wlID)
+	}
+	if *completed != 1 || *resumedTo != "" {
+		t.Fatalf("la sesión se completa sin reanudar: completadas=%d retomó=%q", *completed, *resumedTo)
 	}
 }
 

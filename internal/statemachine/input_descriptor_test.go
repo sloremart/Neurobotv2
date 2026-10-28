@@ -298,7 +298,7 @@ func TestStaticInputDescriptor_MatchesTheMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := StaticInputDescriptor(stepDescriptor)
+	got := StaticInputDescriptor(nil, stepDescriptor)
 	if string(got) != string(want) {
 		t.Fatalf("StaticInputDescriptor = %s\nMachine.InputDescriptor = %s", got, want)
 	}
@@ -320,12 +320,45 @@ func TestStaticInputDescriptor_LogsAndReturnsNilOnAStepWithInput(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 
-	if got := StaticInputDescriptor(stepDescriptor); got != nil {
+	if got := StaticInputDescriptor(nil, stepDescriptor); got != nil {
 		t.Fatalf("un paso con ReturnInput no emite descriptor estático: %s", got)
 	}
 	logged := buf.String()
 	if !strings.Contains(logged, "level=ERROR") || !strings.Contains(logged, stepDescriptor) ||
 		!strings.Contains(logged, "Machine.InputDescriptor") {
 		t.Errorf("el error debe nombrar el paso y la alternativa: %s", logged)
+	}
+}
+
+// Un menú que depende de la sesión (el de NOTIF_PENDING cambia según el tipo de notificación)
+// también se arma sin máquina: StaticInputDescriptor recibe la VISTA de la sesión y emite lo mismo
+// que Machine.InputDescriptor con esa vista, byte a byte.
+func TestStaticInputDescriptor_UsesTheSessionView(t *testing.T) {
+	RegisterReturnMenu(stepDescriptor, func(sess *session.Session) []ReturnOption {
+		if sess != nil && sess.GetContext("notif_type") == "waiting_list" {
+			return []ReturnOption{{Label: "Agendar ahora", Value: "wl_schedule", Target: stepDescriptor, Data: "wl_schedule"}}
+		}
+		return []ReturnOption{{Label: "Confirmar la cita", Value: "confirm", Target: stepDescriptor, Data: "confirm"}}
+	})
+	t.Cleanup(func() {
+		returnMenusMu.Lock()
+		defer returnMenusMu.Unlock()
+		delete(returnMenus, stepDescriptor)
+	})
+
+	view := &session.Session{Context: map[string]string{"notif_type": "waiting_list"}}
+	want, err := json.Marshal(NewMachine().InputDescriptor(view, stepDescriptor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := StaticInputDescriptor(view, stepDescriptor)
+	if string(got) != string(want) {
+		t.Fatalf("StaticInputDescriptor = %s\nMachine.InputDescriptor = %s", got, want)
+	}
+	if !strings.Contains(string(got), `"wl_schedule"`) || strings.Contains(string(got), `"confirm"`) {
+		t.Errorf("el descriptor debe salir de la vista de la sesión: %s", got)
+	}
+	if def := StaticInputDescriptor(nil, stepDescriptor); !strings.Contains(string(def), `"confirm"`) {
+		t.Errorf("sin sesión sale el menú por defecto: %s", def)
 	}
 }

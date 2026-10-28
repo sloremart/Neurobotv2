@@ -428,7 +428,7 @@ func (m *NotificationManager) HandleResponse(phone, payload, conversationID stri
 // HandleNotifPendingCommand processes a /bot resume NOTIF_PENDING command from an agent.
 // Called when the pending notification was already removed from memory (escalated path),
 // so the appointment data is reconstructed from the session context.
-func (m *NotificationManager) HandleNotifPendingCommand(phone, action, convID, appointmentID, notifType string) {
+func (m *NotificationManager) HandleNotifPendingCommand(phone, action, convID, appointmentID, notifType, waitingListID string) {
 	if !m.lockPhone(phone) {
 		return
 	}
@@ -447,6 +447,7 @@ func (m *NotificationManager) HandleNotifPendingCommand(phone, action, convID, a
 		AppointmentID:  appointmentID,
 		Type:           notifType,
 		ConversationID: convID,
+		WaitingListID:  waitingListID,
 	}
 
 	normalized := normalizePostback(action)
@@ -458,6 +459,10 @@ func (m *NotificationManager) HandleNotifPendingCommand(phone, action, convID, a
 		m.handleReschedule(phone, normalized, pending)
 	case "cancellation":
 		m.handleCancellation(phone, normalized, pending)
+	case "waiting_list":
+		if m.waitingListRepo != nil {
+			m.handleWaitingList(phone, normalized, pending)
+		}
 	default:
 		// Unknown type — treat as confirmation (safest fallback)
 		slog.Warn("HandleNotifPendingCommand: unknown notif type, treating as confirmation",
@@ -1217,6 +1222,7 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	apptDate := ""
 	apptTime := ""
 	cupsName := ""
+	cupsCode := ""
 	patientName := ""
 	if appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, p.AppointmentID); err == nil && appt != nil {
 		apptDate = utils.FormatFriendlyDate(appt.Date)
@@ -1224,69 +1230,25 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		patientName = appt.PatientName
 		if len(appt.Procedures) > 0 {
 			cupsName = appt.Procedures[0].CupName
+			cupsCode = appt.Procedures[0].CupCode
 		}
 	}
 
-	// Crear sesión escalada con contexto de la notificación
-	var sessID string
-	if m.sessionRepo != nil {
-		sess := &session.Session{
-			ID:             uuid.New().String(),
-			PhoneNumber:    p.Phone,
-			CurrentState:   sm.StateNotifPending,
-			ConversationID: convID,
-			Status:         session.StatusEscalated,
-			ExpiresAt:      time.Now().Add(24 * time.Hour),
-		}
-		sessCtx := map[string]string{
-			"notif_appointment_id": p.AppointmentID,
-			"notif_type":           p.Type,
-			"notif_appt_date":      apptDate,
-			"notif_appt_time":      apptTime,
-			"notif_cups_name":      cupsName,
-			"notif_conv_id":        convID,
-			"notif_bird_msg_id":    p.BirdMessageID,
-			"patient_name":         patientName,
-			"pre_escalation_state": sm.StateNotifPending,
-		}
-		// Si el paciente YA tiene una sesión ocupando el cupo del teléfono, se escala SOBRE ella en vez
-		// de crear otra. Auditoría 2026-07-21/26: el Create a ciegas chocaba con el índice único
-		// ("active session already exists for phone"); el error solo se logueaba y la escalación seguía
-		// con sessID vacío, así que el handoff a Bird ocurría pero NO se registraba (sin fila en
-		// escalations → sin SLA, sin recordatorio al agente, sin no-show) y la sesión original quedaba
-		// activa: el bot le seguía respondiendo al paciente mientras el agente lo atendía.
-		existing, ferr := m.sessionRepo.FindCurrentByPhone(ctx, p.Phone)
-		if ferr != nil {
-			slog.Warn("escalateNotifToAgent: lookup session", "error", ferr, "phone", utils.MaskPhone(p.Phone))
-		}
-
-		if existing != nil {
-			sessID = existing.ID
-			// Marcarla escalada: el worker deja de responder automáticamente y el chat queda del agente.
-			if existing.Status != session.StatusEscalated {
-				if err := m.sessionRepo.UpdateStatus(ctx, existing.ID, session.StatusEscalated); err != nil {
-					slog.Error("escalateNotifToAgent: escalate existing session", "error", err,
-						"phone", utils.MaskPhone(p.Phone), "session_id", existing.ID)
-				}
-			}
-			if err := m.sessionRepo.SetContextBatch(ctx, existing.ID, sessCtx); err != nil {
-				slog.Error("escalateNotifToAgent: set context", "error", err, "phone", utils.MaskPhone(p.Phone))
-			}
-			slog.Info("escalateNotifToAgent: reusing active session", "phone", utils.MaskPhone(p.Phone),
-				"session_id", existing.ID, "prev_status", existing.Status)
-		} else if err := m.sessionRepo.Create(ctx, sess); err != nil {
-			slog.Error("escalateNotifToAgent: create session", "error", err, "phone", utils.MaskPhone(p.Phone))
-		} else {
-			sessID = sess.ID
-			if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessCtx); err != nil {
-				slog.Error("escalateNotifToAgent: set context", "error", err, "phone", utils.MaskPhone(p.Phone))
-			}
-			// Sesión proactiva: contarla en total_sessions/sesiones-por-hora como las demás.
-			if m.tracker != nil {
-				m.tracker.LogEvent(ctx, sess.ID, p.Phone, "session_started", map[string]interface{}{"proactive": true})
-			}
-		}
+	sessCtx := map[string]string{
+		"notif_appointment_id":      p.AppointmentID,
+		"notif_type":                p.Type,
+		"notif_appt_date":           apptDate,
+		"notif_appt_time":           apptTime,
+		"notif_cups_name":           cupsName,
+		sm.CtxNotifCupsCode:         cupsCode,
+		sm.CtxNotifWaitingListID:    p.WaitingListID,
+		"notif_conv_id":             convID,
+		"notif_bird_msg_id":         p.BirdMessageID,
+		"patient_name":              patientName,
+		"pre_escalation_state":      sm.StateNotifPending,
+		sm.CtxNotifEscalationDetail: sm.EscalationReasonNotifFreeText,
 	}
+	sessID := m.escalatedNotifSession(ctx, p.Phone, convID, sessCtx)
 
 	// Nota interna + mensaje al paciente + asignación de agente
 	note := fmt.Sprintf("Paciente envio texto libre repetidamente durante confirmacion de cita.\n"+
@@ -1329,7 +1291,7 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		_, _ = m.birdClient.SendInternalText(p.Phone, convID, commands)
 	}
 
-	esc := notifEscalation(m.cfg, p.Phone, escalationDetailFreeText, note)
+	esc := notifEscalation(m.cfg, p.Phone, &session.Session{Context: sessCtx}, sm.EscalationReasonNotifFreeText, note)
 	if _, _, err := m.birdClient.EscalateToAgentWithSummary(ctx, convID, p.Phone,
 		m.cfg.BirdTeamFallback, "Call Center",
 		patientName, m.cfg.BirdTeamFallback, esc); err != nil {
@@ -1360,6 +1322,63 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	}
 
 	slog.Info("notif escalated to agent (invalid inputs)", "phone", utils.MaskPhone(p.Phone), "appointment_id", p.AppointmentID)
+}
+
+// escalatedNotifSession deja al paciente en una sesión ESCALADA en NOTIF_PENDING con el contexto
+// de la notificación, para que el retorno del agente tenga sobre qué actuar. Devuelve su id, o ""
+// si no hay repo de sesiones o no se pudo crear (el error ya queda logueado).
+//
+// Si el paciente YA tiene una sesión ocupando el cupo del teléfono, se escala SOBRE ella en vez
+// de crear otra. Auditoría 2026-07-21/26: el Create a ciegas chocaba con el índice único
+// ("active session already exists for phone"); el error solo se logueaba y la escalación seguía
+// con sessID vacío, así que el handoff a Bird ocurría pero NO se registraba (sin fila en
+// escalations → sin SLA, sin recordatorio al agente, sin no-show) y la sesión original quedaba
+// activa: el bot le seguía respondiendo al paciente mientras el agente lo atendía.
+func (m *NotificationManager) escalatedNotifSession(ctx context.Context, phone, convID string, sessCtx map[string]string) (sessionID string) {
+	if m.sessionRepo == nil {
+		return ""
+	}
+	existing, ferr := m.sessionRepo.FindCurrentByPhone(ctx, phone)
+	if ferr != nil {
+		slog.Warn("escalatedNotifSession: lookup session", "error", ferr, "phone", utils.MaskPhone(phone))
+	}
+
+	if existing != nil {
+		// Marcarla escalada: el worker deja de responder automáticamente y el chat queda del agente.
+		if existing.Status != session.StatusEscalated {
+			if err := m.sessionRepo.UpdateStatus(ctx, existing.ID, session.StatusEscalated); err != nil {
+				slog.Error("escalatedNotifSession: escalate existing session", "error", err,
+					"phone", utils.MaskPhone(phone), "session_id", existing.ID)
+			}
+		}
+		if err := m.sessionRepo.SetContextBatch(ctx, existing.ID, sessCtx); err != nil {
+			slog.Error("escalatedNotifSession: set context", "error", err, "phone", utils.MaskPhone(phone))
+		}
+		slog.Info("escalatedNotifSession: reusing active session", "phone", utils.MaskPhone(phone),
+			"session_id", existing.ID, "prev_status", existing.Status)
+		return existing.ID
+	}
+
+	sess := &session.Session{
+		ID:             uuid.New().String(),
+		PhoneNumber:    phone,
+		CurrentState:   sm.StateNotifPending,
+		ConversationID: convID,
+		Status:         session.StatusEscalated,
+		ExpiresAt:      time.Now().Add(24 * time.Hour),
+	}
+	if err := m.sessionRepo.Create(ctx, sess); err != nil {
+		slog.Error("escalatedNotifSession: create session", "error", err, "phone", utils.MaskPhone(phone))
+		return ""
+	}
+	if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessCtx); err != nil {
+		slog.Error("escalatedNotifSession: set context", "error", err, "phone", utils.MaskPhone(phone))
+	}
+	// Sesión proactiva: contarla en total_sessions/sesiones-por-hora como las demás.
+	if m.tracker != nil {
+		m.tracker.LogEvent(ctx, sess.ID, phone, "session_started", map[string]interface{}{"proactive": true})
+	}
+	return sess.ID
 }
 
 // safeHours returns v if > 0, otherwise fallback. Guards against zero-value configs in tests.
