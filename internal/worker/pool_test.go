@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -138,7 +139,10 @@ func (m *mockSessionMgmt) SetContext(ctx context.Context, sess *session.Session,
 // --- Mock MessageSender ---
 
 type mockMessageSender struct {
-	mu               sync.Mutex
+	mu sync.Mutex
+	// closedConvs registra las conversaciones que se cerraron (CloseFeedItems), en el orden en
+	// que se cerraron.
+	closedConvs      []string
 	sent             []sentMsg
 	sendErr          error
 	cachedConvID     string // returned by GetCachedConversationID
@@ -197,7 +201,10 @@ func (m *mockMessageSender) UnassignFeedItem(_, _ string, _ bool) error {
 	return nil
 }
 
-func (m *mockMessageSender) CloseFeedItems(_, _ string) error {
+func (m *mockMessageSender) CloseFeedItems(_, conversationID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closedConvs = append(m.closedConvs, conversationID)
 	return nil
 }
 
@@ -216,6 +223,9 @@ func (m *mockMessageSender) LookupConversationByPhone(phone string) (string, err
 
 type mockMessageProcessor struct {
 	processFn func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error)
+	// returnInput es el veredicto sobre lo que el agente escribió al devolver la conversación.
+	// Por omisión vacío (Written=false): «no venía escrito», el camino de siempre.
+	returnInput statemachine.ReturnInputResult
 }
 
 func (m *mockMessageProcessor) Process(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error) {
@@ -223,6 +233,16 @@ func (m *mockMessageProcessor) Process(ctx context.Context, sess *session.Sessio
 		return m.processFn(ctx, sess, msg)
 	}
 	return &statemachine.StateResult{NextState: "GREETING"}, nil
+}
+
+func (m *mockMessageProcessor) ResolveReturnInput(*session.Session, string, string) statemachine.ReturnInputResult {
+	return m.returnInput
+}
+
+// El retorno v1 devuelve el mismo veredicto: para el pool los dos caminos desembocan en los
+// mismos tres desenlaces.
+func (m *mockMessageProcessor) ResolveReturnV1(*session.Session, string, json.RawMessage) statemachine.ReturnInputResult {
+	return m.returnInput
 }
 
 // --- Existing Tests ---

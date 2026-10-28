@@ -31,10 +31,11 @@ type AgentCommand struct {
 
 // ChosenOption es el TOKEN que el agente eligió, venga por donde venga: la `opcion` del retorno
 // v1 si lo hay, y si no el `return_value` del dialecto. Existe para los sitios que preguntan por
-// el token y nada más, que si no tendrían que repetir la precedencia y acabarían discrepando.
+// el token y nada más (hoy, el reconocimiento de la cola vencida en handleAgentResume), que si no
+// tendrían que repetir la precedencia y acabarían discrepando.
 //
-// OJO: en el dialecto el mismo campo transporta también los DATOS escritos (`bot_dato:` /
-// `bot_citas:`), así que esto no es «el token y solo el token».
+// OJO: en el dialecto el mismo campo transporta también el DATO escrito (`bot_dato:`), así que
+// esto no es «el token y solo el token».
 func (c AgentCommand) ChosenOption() string {
 	if c.ReturnV1 != nil && c.ReturnV1.Option != "" {
 		return c.ReturnV1.Option

@@ -177,6 +177,15 @@ var catalog = map[string]stepSpec{
 	// (el bucle que el guard corta); si cap_reached aparece = una sesión pidió >3 escalaciones.
 	"escalacion/escalation_suppressed_resume": {LvOutcome, "blocked", ""},
 	"escalacion/escalation_cap_reached":       {LvOutcome, "blocked", ""},
+	// agent_input_rejected: el agente devolvió la conversación (Néctar) con un dato ESCRITO que el
+	// bot no pudo usar. No es terminal: el caso vuelve a una persona con el motivo. Es la métrica
+	// de los errores del lado humano —si sube, hay que revisar la pantalla del agente o el texto
+	// de ayuda, no el bot—.
+	"escalacion/agent_input_rejected": {LvError, "retry", ""},
+	// cola_vencida: nadie tomó el caso en la cola de Néctar a tiempo; Néctar lo devolvió y el bot
+	// se lo dijo al paciente y cerró. No es un error del bot, pero sí una promesa incumplida: el
+	// número que dice si la cola da abasto.
+	"escalacion/cola_vencida": {LvOutcome, "info", ""},
 	// Restricción de edad en neurología: menor intenta neurología adultos o adulto intenta pediátrica.
 	// Terminal: se regresa al menú principal para que el paciente elija la especialidad correcta.
 	"agendar/age_restriction_blocked": {LvOutcome, "blocked", ""},

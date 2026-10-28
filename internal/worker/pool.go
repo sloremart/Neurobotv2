@@ -110,6 +110,13 @@ type MessageSender interface {
 // MessageProcessor abstracts state machine processing for testability.
 type MessageProcessor interface {
 	Process(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error)
+	// ResolveReturnInput juzga el dato que el agente ESCRIBIÓ al devolver la conversación
+	// (dialecto). Va aquí y no en una interfaz aparte para que el compilador obligue a cualquier
+	// doble de prueba a decidir qué hace con él.
+	ResolveReturnInput(sess *session.Session, step, value string) statemachine.ReturnInputResult
+	// ResolveReturnV1 es la misma traducción para el retorno del protocolo v1, donde lo escrito
+	// viaja en `valores`, aparte del token.
+	ResolveReturnV1(sess *session.Session, step string, values json.RawMessage) statemachine.ReturnInputResult
 }
 
 // OCRAnalyzer abstracts OCR text analysis for testability.
@@ -161,6 +168,9 @@ type MessageWorkerPool struct {
 	ocrService      OCRAnalyzer
 	inboxRepo       InboxMarker // WAL crash recovery (optional)
 	notifyResponder NotificationResponder
+	// businessHoursText devuelve el horario de atención EN PALABRAS. Se pregunta en cada uso
+	// (puede cambiar sin redespliegue); nil = el aviso sale sin nombrarlo. Ver queue_expired.go.
+	businessHoursText func() string
 }
 
 func NewMessageWorkerPool(workers, queueSize int) *MessageWorkerPool {
@@ -761,6 +771,13 @@ func (p *MessageWorkerPool) handleAgentNoShow(ctx context.Context, sess *session
 	if sess.Status != session.StatusEscalated {
 		return
 	}
+	// El no-show no existe para Néctar: la cola la administra Néctar, y el caso que nadie toma
+	// vuelve por su propio camino (cola_vencida, handleQueueExpired).
+	if session.IsNectarSession(sess.PhoneNumber) {
+		slog.Info("no_show ignorado: la sesión es de Néctar",
+			"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber))
+		return
+	}
 
 	targetState := sess.GetContext("pre_escalation_state")
 	if targetState == "" {
@@ -772,6 +789,8 @@ func (p *MessageWorkerPool) handleAgentNoShow(ctx context.Context, sess *session
 		slog.Error("no_show resume failed", "error", err, "phone", utils.MaskPhone(sess.PhoneNumber), "session_id", sess.ID)
 		return
 	}
+	// El bot retoma: la espera de esta escalación se acabó, aunque sea por la mala.
+	p.clearNextDayQueueMark(ctx, sess)
 
 	// El bot retoma: liberar el feed item en Bird (mantener abierto, sin agente).
 	if err := p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false); err != nil {
@@ -816,6 +835,15 @@ func (p *MessageWorkerPool) handleAgentNoShow(ctx context.Context, sess *session
 
 // handleAgentResume resumes a session from escalation at a specific state, optionally with corrected data.
 func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session.Session, cmd AgentCommand) {
+	// COLA VENCIDA: Néctar devuelve la conversación porque nadie la tomó a tiempo. Se reconoce
+	// SIEMPRE y ANTES de traducir el retorno contra el menú del paso: no lo eligió un agente en
+	// ningún menú —lo declaró el barredor—, así que no pertenece a ningún paso. Da igual que
+	// llegue como `return_value` a secas o como la `opcion` de un retorno v1 (ChosenOption).
+	if cmd.ChosenOption() == statemachine.ReturnValueQueueExpired {
+		p.handleQueueExpired(ctx, sess)
+		return
+	}
+
 	// Special case: NOTIF_PENDING — agent resolves a confirmation/reschedule/cancel directly.
 	// The pending notification was already removed from memory when escalation happened,
 	// so we must use the session context instead of HandleResponse (which needs in-memory pending).
@@ -832,6 +860,8 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			if err := p.sessionManager.Complete(ctx, sess); err != nil {
 				slog.Error("notif_pending: complete session failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", convID)
 			}
+			// La marca de la cola no sobrevive a una sesión completada (igual que en handleAgentClose).
+			p.clearNextDayQueueMark(ctx, sess)
 			if err := p.birdClient.UnassignFeedItem(cmd.Phone, convID, false); err != nil {
 				slog.Error("notif_pending: unassign feed item failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "conversation_id", convID)
 			}
@@ -843,6 +873,14 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 				"session_id", sess.ID,
 				"appointment_id", appointmentID,
 			)
+			return
+		}
+	}
+
+	// Decisión del agente en Néctar: opción del menú de retornos o dato escrito.
+	if cmd.ReturnV1 != nil || cmd.ReturnValue != "" {
+		var done bool
+		if cmd, done = p.applyAgentReturn(ctx, sess, cmd); done {
 			return
 		}
 	}
@@ -861,13 +899,21 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		slog.Error("resume from escalation failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 		return
 	}
+	// La espera de esta escalación se acabó: una persona tomó el caso. Va ANTES del turno de
+	// abajo, para que si ese turno vuelve a escalar no herede la marca.
+	p.clearNextDayQueueMark(ctx, sess)
 
 	// Unassign agent from Bird Inbox (bot takes over, keep item open)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	if cmd.Data != "" {
-		// Agent provided corrected data — inject as virtual message
-		p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Hemos retomado tu atención. Procesando tu información...")
+		// Agent provided corrected data — inject as virtual message.
+		// En Néctar NO se acusa el retorno: el agente acaba de hablar con el paciente y el
+		// mensaje de verdad sale en este mismo turno; un acuse pegado a él es un mensaje cobrado
+		// que no le dice nada a nadie.
+		if !session.IsNectarSession(sess.PhoneNumber) {
+			_, _ = p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Hemos retomado tu atención. Procesando tu información...")
+		}
 
 		virtualMsg := bird.InboundMessage{
 			ID:          fmt.Sprintf("agent-cmd-%s-%d", cmd.Phone, time.Now().UnixNano()),
@@ -887,7 +933,9 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		// No data — notify patient and trigger the state handler.
 		// For automatic states: executes immediately (e.g., CHECK_ENTITY).
 		// For interactive states: re-displays the prompt/buttons (e.g., MAIN_MENU).
-		p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Hemos retomado tu atención. Continuamos con tu proceso.")
+		if !session.IsNectarSession(sess.PhoneNumber) {
+			_, _ = p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Hemos retomado tu atención. Continuamos con tu proceso.")
+		}
 
 		virtualMsg := bird.InboundMessage{
 			ID:          fmt.Sprintf("agent-resume-%s-%d", cmd.Phone, time.Now().UnixNano()),
@@ -961,24 +1009,30 @@ func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.
 		slog.Error("agent close failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 		return
 	}
+	// El caso se resolvió: la marca de la cola no sobrevive a una sesión completada.
+	p.clearNextDayQueueMark(ctx, sess)
 
-	p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Tu consulta ha sido resuelta. Gracias por comunicarte con nosotros!")
+	if session.IsNectarSession(sess.PhoneNumber) {
+		p.closeNectarConversation(sess, cmd)
+	} else {
+		_, _ = p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, agentCloseFarewell)
 
-	// Delay close so Bird finishes processing the outbound message delivery
-	closingConvID := sess.ConversationID
-	p.wg.Add(1) // L16: wg-tracked + sleep cancelable
-	go func() {
-		defer p.wg.Done()
-		defer recoverLog("close-feed-agent")
-		select {
-		case <-time.After(3 * time.Second):
-		case <-p.ctx.Done():
-			return
-		}
-		if err := p.birdClient.CloseFeedItems(sess.PhoneNumber, closingConvID); err != nil {
-			slog.Warn("close feed items on agent close failed", "conversation_id", closingConvID, "error", err)
-		}
-	}()
+		// Delay close so Bird finishes processing the outbound message delivery
+		closingConvID := sess.ConversationID
+		p.wg.Add(1) // L16: wg-tracked + sleep cancelable
+		go func() {
+			defer p.wg.Done()
+			defer recoverLog("close-feed-agent")
+			select {
+			case <-time.After(3 * time.Second):
+			case <-p.ctx.Done():
+				return
+			}
+			if err := p.birdClient.CloseFeedItems(sess.PhoneNumber, closingConvID); err != nil {
+				slog.Warn("close feed items on agent close failed", "conversation_id", closingConvID, "error", err)
+			}
+		}()
+	}
 
 	if p.tracker != nil {
 		// session_completed además de escalation_closed: la sesión SÍ se completó (el agente la resolvió
@@ -1057,6 +1111,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
 		return
 	}
+	p.clearNextDayQueueMark(ctx, sess)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	// 4. Send confirmation to agent (internal only)
@@ -1069,8 +1124,10 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 	_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, summary.String())
 
 	// 5. Notify patient and trigger VALIDATE_OCR
-	p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
-		"Hemos retomado tu atención. Verificando tu orden médica...")
+	if !session.IsNectarSession(sess.PhoneNumber) {
+		_, _ = p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
+			"Hemos retomado tu atención. Verificando tu orden médica...")
+	}
 
 	virtualMsg := bird.InboundMessage{
 		ID:          fmt.Sprintf("agent-orden-%s-%d", cmd.Phone, time.Now().UnixNano()),
@@ -1142,6 +1199,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
 		return
 	}
+	p.clearNextDayQueueMark(ctx, sess)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	// Internal summary for agent
@@ -1154,8 +1212,10 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 	_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, summary.String())
 
 	// Notify patient and trigger VALIDATE_OCR
-	p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
-		"Hemos retomado tu atención. Verificando tu orden médica...")
+	if !session.IsNectarSession(sess.PhoneNumber) {
+		_, _ = p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
+			"Hemos retomado tu atención. Verificando tu orden médica...")
+	}
 
 	virtualMsg := bird.InboundMessage{
 		ID:          fmt.Sprintf("agent-cups-%s-%d", cmd.Phone, time.Now().UnixNano()),
