@@ -262,3 +262,23 @@ func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 		}
 	}
 }
+
+// BOT_DISABLED no es un estado con handler: «devolver tal cual» lo rompería. El menú ofrece
+// empezar desde el saludo y esconde la reanudación simple.
+func TestBotDisabledReturnMenu_OffersGreetingAndHidesResume(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, nil, nil, nil)
+
+	var found bool
+	for _, o := range sm.ReturnOptionsFor(nil, sm.BotDisabledStep) {
+		if o.Value == sm.ReturnResume {
+			t.Error("BOT_DISABLED no ofrece reanudar en el mismo paso")
+		}
+		if o.Value == "bot_iniciar" {
+			found = o.Target == sm.StateGreeting && o.NoInput
+		}
+	}
+	if !found {
+		t.Error("falta la opción bot_iniciar hacia GREETING sin dato")
+	}
+}

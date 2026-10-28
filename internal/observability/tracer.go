@@ -161,10 +161,13 @@ var catalog = map[string]stepSpec{
 	"escalacion/agent_reminder_sent": {LvMilestone, "retry", ""},
 	// agent_takeover: un agente respondió manualmente una sesión ACTIVA (sin escalación previa) y
 	// el bot se pausó solo para no interferir. Terminal escalated: la sesión queda en manos humanas.
-	"escalacion/agent_takeover":        {LvOutcome, "escalated", ""},
-	"escalacion/escalation_expired":    {LvOutcome, "info", ""},
-	"escalacion/agent_no_show":         {LvOutcome, "no_show", ""}, // agente nunca atendió → bot retoma
-	"escalacion/escalation_no_channel": {LvOutcome, "error", ""},   // no se pudo resolver conversación en Bird
+	"escalacion/agent_takeover": {LvOutcome, "escalated", ""},
+	// retorno_estado_inexistente: un retorno apuntaba a un estado sin handler y se retomó en el
+	// saludo. Es un fallo del lado del bot (menú o comando mal armado), no del paciente.
+	"escalacion/retorno_estado_inexistente": {LvError, "error", ""},
+	"escalacion/escalation_expired":         {LvOutcome, "info", ""},
+	"escalacion/agent_no_show":              {LvOutcome, "no_show", ""}, // agente nunca atendió → bot retoma
+	"escalacion/escalation_no_channel":      {LvOutcome, "error", ""},   // no se pudo resolver conversación en Bird
 	// H131-1. ack_sent: acuse al paciente de que un agente lo atenderá (sigue esperando → milestone).
 	// escalation_no_agents: el gate de disponibilidad CIERRA el intento y devuelve al paciente al menú;
 	// es terminal y es un bloqueo, no un 'info' (como milestone salía "estancado" en cada ciclo — ya

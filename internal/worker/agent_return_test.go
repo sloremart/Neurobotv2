@@ -15,6 +15,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/statemachine/handlers"
 )
 
 // Retorno del agente desde Néctar: el token que eligió (o el dato que escribió) se traduce
@@ -592,5 +593,44 @@ func TestHandleAgentClose_NectarTracesReason(t *testing.T) {
 	ev := sink.FindStep("escalacion", "agent_closed")
 	if ev == nil || ev.Attrs["motivo"] != "cola_vencida" {
 		t.Fatalf("agent_closed lleva el motivo: %+v", ev)
+	}
+}
+
+// El kill switch deja la sesión en el paso BOT_DISABLED, que no tiene handler: el agente de
+// Néctar lo devuelve con la opción que publica el menú y el bot retoma en el saludo.
+func TestHandleAgentResume_NectarBotDisabledResumesAtGreeting(t *testing.T) {
+	handlers.RegisterEscalationHandlers(statemachine.NewMachine(), nil, nil, nil)
+
+	pool, _, _, sess, resumedTo, processed := returnSession(t, statemachine.BotDisabledStep)
+	sess.PhoneNumber = "nectar:7"
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber,
+		ReturnV1: &nectar.V1Return{Option: "bot_iniciar"},
+	})
+
+	if *resumedTo != statemachine.StateGreeting {
+		t.Fatalf("se retoma en GREETING, got %q", *resumedTo)
+	}
+	if processed.Phone == "" {
+		t.Error("el turno del saludo se procesa")
+	}
+}
+
+// Ningún retorno cae en un estado sin handler: el de un comando de Bird sin State y con el
+// paso fantasma guardado se redirige al saludo y queda trazado.
+func TestHandleAgentResume_UnregisteredTargetFallsBackToGreeting(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+
+	pool, _, _, sess, resumedTo, _ := returnSession(t, statemachine.BotDisabledStep)
+	pool.machine.(*mockMessageProcessor).unregistered = true
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "resume", Phone: sess.PhoneNumber})
+
+	if *resumedTo != statemachine.StateGreeting {
+		t.Fatalf("un destino sin handler cae a GREETING, got %q", *resumedTo)
+	}
+	stop()
+	if sink.FindStep("escalacion", "retorno_estado_inexistente") == nil {
+		t.Error("falta el evento escalacion/retorno_estado_inexistente")
 	}
 }

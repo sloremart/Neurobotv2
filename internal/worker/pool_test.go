@@ -234,7 +234,12 @@ type mockMessageProcessor struct {
 	// returnInput es el veredicto sobre lo que el agente escribió al devolver la conversación.
 	// Por omisión vacío (Written=false): «no venía escrito», el camino de siempre.
 	returnInput statemachine.ReturnInputResult
+	// unregistered hace que IsRegistered diga que ningún estado tiene handler. Por omisión todos
+	// lo tienen: es lo que ocurre con la máquina real.
+	unregistered bool
 }
+
+func (m *mockMessageProcessor) IsRegistered(string) bool { return !m.unregistered }
 
 func (m *mockMessageProcessor) Process(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error) {
 	if m.processFn != nil {

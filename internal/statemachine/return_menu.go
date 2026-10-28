@@ -115,7 +115,18 @@ var (
 	returnMenus   = map[string]ReturnOptionsBuilder{}
 	returnInputs  = map[string]ReturnInput{}
 	resolveGuards = map[string]string{}
+	// hiddenPlainResume son los pasos donde «devolver en el mismo paso» no lleva a ninguna parte.
+	hiddenPlainResume = map[string]bool{}
 )
+
+// HidePlainResume hace que ReturnOptionsFor omita «Devolver al bot en el mismo paso» en ese paso
+// (las demás universales siguen). Es para pasos que no son un estado de la máquina: reanudar en
+// ellos dejaría la sesión sin handler.
+func HidePlainResume(state string) {
+	returnMenusMu.Lock()
+	defer returnMenusMu.Unlock()
+	hiddenPlainResume[state] = true
+}
 
 // RegisterReturnMenu declara las salidas de un paso. Se llama donde se registra el estado,
 // pegado a los payloads que refleja.
@@ -136,16 +147,17 @@ func RegisterStaticReturnMenu(state string, options ...ReturnOption) {
 func ReturnOptionsFor(sess *session.Session, step string) []ReturnOption {
 	returnMenusMu.RLock()
 	build := returnMenus[step]
+	hidePlain := hiddenPlainResume[step]
 	returnMenusMu.RUnlock()
 
 	var opts []ReturnOption
 	if build != nil {
 		opts = append(opts, build(sess)...)
 	}
-	return append(opts,
-		ReturnOption{Label: "Devolver al bot en el mismo paso", Value: ReturnResume},
-		ReturnOption{Label: "Caso cerrado, no reanudar", Value: ReturnClose, Close: true},
-	)
+	if !hidePlain {
+		opts = append(opts, ReturnOption{Label: "Devolver al bot en el mismo paso", Value: ReturnResume})
+	}
+	return append(opts, ReturnOption{Label: "Caso cerrado, no reanudar", Value: ReturnClose, Close: true})
 }
 
 // BuildReturnMenu arma el menú que viaja en el escalate.

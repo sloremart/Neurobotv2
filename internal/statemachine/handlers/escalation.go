@@ -36,6 +36,15 @@ type EscalationCreator interface {
 func RegisterEscalationHandlers(m *sm.Machine, birdClient *bird.Client, cfg *config.Config, escRepo EscalationCreator) {
 	m.Register(sm.StateEscalateToAgent, escalateHandler(m, birdClient, cfg, escRepo))
 	m.Register(sm.StateEscalated, escalatedHandler())
+
+	// BOT_DISABLED no es un estado: devolver «en el mismo paso» dejaría la sesión sin handler. La
+	// única vuelta con sentido es empezar la atención desde el saludo.
+	sm.RegisterStaticReturnMenu(sm.BotDisabledStep,
+		sm.ReturnOption{
+			Label: "Iniciar la atención del bot desde el saludo", Value: "bot_iniciar",
+			Target: sm.StateGreeting, NoInput: true,
+		})
+	sm.HidePlainResume(sm.BotDisabledStep)
 }
 
 // ESCALATE_TO_AGENT (automático) — transfiere la conversación a un agente humano.
@@ -1050,7 +1059,7 @@ func buildAgentCommands(sess *session.Session, cupsCode string) string {
 			"  /bot resume NOTIF_RESCHEDULE_FALLBACK cancel — Cancelar la cita"
 
 	// --- Bot desactivado (BOT_ENABLED=false) ---
-	case "BOT_DISABLED":
+	case sm.BotDisabledStep:
 		return "Situacion: Bot desactivado. El paciente aún no fue atendido.\n\n" +
 			"Acciones sugeridas:\n" +
 			"- Atiende al paciente directamente desde el inicio.\n\n" +

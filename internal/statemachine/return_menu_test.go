@@ -767,3 +767,28 @@ func TestRegisterReturnInput_UnknownCommandPanics(t *testing.T) {
 	}()
 	RegisterReturnInput("RETURN_TEST_CMD_BAD", ReturnInput{Command: "otro"})
 }
+
+// HidePlainResume quita «Devolver al bot en el mismo paso» de un paso donde reanudar tal cual
+// no lleva a ninguna parte; el resto de las universales sigue.
+func TestReturnOptionsFor_HiddenPlainResume(t *testing.T) {
+	const step = "T1_HIDE"
+	registerTestMenu(t, step, ReturnOption{Label: "Otra", Value: "otra", Target: StateGreeting})
+	t.Cleanup(func() {
+		returnMenusMu.Lock()
+		defer returnMenusMu.Unlock()
+		delete(hiddenPlainResume, step)
+	})
+	HidePlainResume(step)
+
+	var hasResume, hasClose bool
+	for _, o := range ReturnOptionsFor(nil, step) {
+		hasResume = hasResume || o.Value == ReturnResume
+		hasClose = hasClose || o.Value == ReturnClose
+	}
+	if hasResume {
+		t.Error("el paso oculta «devolver en el mismo paso»")
+	}
+	if !hasClose {
+		t.Error("las demás universales siguen")
+	}
+}

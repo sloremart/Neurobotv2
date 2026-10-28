@@ -120,6 +120,8 @@ type MessageProcessor interface {
 	// ResolveReturnV1 es la misma traducción para el retorno del protocolo v1, donde lo escrito
 	// viaja en `valores`, aparte del token.
 	ResolveReturnV1(sess *session.Session, step string, values json.RawMessage) statemachine.ReturnInputResult
+	// IsRegistered dice si el estado tiene handler: un retorno nunca debe reanudar en uno que no.
+	IsRegistered(state string) bool
 }
 
 // OCRAnalyzer abstracts OCR text analysis for testability.
@@ -583,7 +585,7 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 	// Solo actúa sobre sesiones activas; sesiones ya escaladas siguen su flujo normal.
 	if !p.botEnabled && sess.Status == session.StatusActive {
 		sess.CurrentState = statemachine.StateEscalateToAgent
-		sess.Context[statemachine.CtxPreAutoState] = "BOT_DISABLED"
+		sess.Context[statemachine.CtxPreAutoState] = statemachine.BotDisabledStep
 		sess.Context["escalation_note"] = "Bot desactivado — atender al paciente directamente desde el inicio."
 		slog.Info("bot_disabled_escalating", "session_id", sess.ID, "phone", utils.MaskPhone(msg.Phone))
 	}
@@ -901,6 +903,15 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		targetState = sess.GetContext("pre_escalation_state")
 	}
 	if targetState == "" {
+		targetState = statemachine.StateGreeting
+	}
+	// Un destino sin handler rompería la sesión («ocurrió un error») en el siguiente turno, venga
+	// de un comando de Bird o de un paso que no es un estado (el del kill switch): al saludo.
+	if !p.machine.IsRegistered(targetState) {
+		slog.Warn("retorno a un estado sin handler, se retoma en el saludo",
+			"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "target_state", targetState)
+		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "retorno_estado_inexistente",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: targetState})
 		targetState = statemachine.StateGreeting
 	}
 

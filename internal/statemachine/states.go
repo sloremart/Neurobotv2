@@ -328,6 +328,11 @@ func IsAutomatic(state string) bool {
 	return st == StateTypeAutomatic
 }
 
+// BotDisabledStep es el paso con que se escala cuando el bot está apagado (BOT_ENABLED=false). NO
+// es un estado de la máquina —no tiene handler— y por eso no empieza por `State`: solo nombra el
+// paso del que sale el menú de retornos y lo que guarda `pre_escalation_state`.
+const BotDisabledStep = "BOT_DISABLED"
+
 // Claves del contexto de sesión que compartirán la máquina, el handler de escalación y el worker.
 // Viven aquí, y no como literales en cada paquete, para que quien escriba y quien lea no se
 // separen.
