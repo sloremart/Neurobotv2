@@ -1074,18 +1074,22 @@ func (p *MessageWorkerPool) handleAgentInfo(ctx context.Context, sess *session.S
 }
 
 // handleAgentOrder processes /bot orden commands — extracts CUPS from a text description using OCR AI.
-func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.Session, cmd AgentCommand) {
+//
+// Devuelve "" si la orden se procesó, o el motivo del fallo en palabras del asesor. El aviso de
+// siempre sale igual como nota interna; el motivo existe para el retorno de Néctar, donde la nota
+// interna no tiene destino y el fallo tiene que volver al agente (applyAgentReturn).
+func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.Session, cmd AgentCommand) string {
 	if cmd.Data == "" {
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID,
 			"Uso: /bot orden <descripcion de la orden>\n"+
 				"Ej: /bot orden Resonancia cerebral simple codigo 883141 cantidad 1\n"+
 				"Ej: /bot orden Electromiografia 4 ext codigo 930810 cantidad 1, Resonancia columna lumbar codigo 883210 cantidad 1")
-		return
+		return "No se escribió la descripción de la orden."
 	}
 
 	if p.ocrService == nil {
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error: servicio OCR no disponible.")
-		return
+		return "El servicio que lee la orden no está disponible; escriba los códigos CUPS o vuelva a intentarlo más tarde."
 	}
 
 	// 1. Call OCR service with text description
@@ -1098,7 +1102,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 			errMsg += " Detalle: " + result.Error
 		}
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, errMsg)
-		return
+		return "No se pudieron extraer procedimientos de la descripción; revísela o escriba los códigos CUPS."
 	}
 
 	// 2. Serialize CUPS to JSON and store in session
@@ -1109,7 +1113,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 	if err := p.sessionManager.ResumeFromEscalation(ctx, sess, statemachine.StateValidateOCR); err != nil {
 		slog.Error("orden resume failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
-		return
+		return agentCommandResumeProblem
 	}
 	p.clearNextDayQueueMark(ctx, sess)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
@@ -1149,19 +1153,23 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 			"description": cmd.Data,
 		})
 	}
+	return ""
 }
 
 // handleAgentCups injects CUPS codes directly without AI extraction.
 // Syntax: /bot cups <code1>[:qty] <code2>[:qty] ...
 // Example: /bot cups 883141 930810:2
 // VALIDATE_OCR will automatically enrich names from the procedure DB.
-func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.Session, cmd AgentCommand) {
+//
+// Devuelve "" si los CUPS se inyectaron, o el motivo del fallo en palabras del asesor (mismo
+// contrato que handleAgentOrder).
+func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.Session, cmd AgentCommand) string {
 	if cmd.Data == "" {
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID,
 			"Uso: /bot cups <codigo1>[:cantidad] <codigo2>[:cantidad] ...\n"+
 				"Ej: /bot cups 883141\n"+
 				"Ej: /bot cups 883141:1 930810:2")
-		return
+		return "No se escribió ningún código CUPS."
 	}
 
 	// Parse each token: "883141" or "883141:2"
@@ -1188,7 +1196,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 
 	if len(cups) == 0 {
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "No se encontraron codigos CUPS validos en el comando.")
-		return
+		return "No se encontraron códigos CUPS válidos en lo escrito (formato: 883141 o 883141:2, separados por espacios)."
 	}
 
 	cupsJSON, _ := json.Marshal(cups)
@@ -1197,7 +1205,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 	if err := p.sessionManager.ResumeFromEscalation(ctx, sess, statemachine.StateValidateOCR); err != nil {
 		slog.Error("cups inject resume failed", "error", err, "phone", utils.MaskPhone(cmd.Phone))
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
-		return
+		return agentCommandResumeProblem
 	}
 	p.clearNextDayQueueMark(ctx, sess)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
@@ -1237,6 +1245,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 			"raw":        cmd.Data,
 		})
 	}
+	return ""
 }
 
 // PreEscalationFlush es el gancho de statemachine.Machine para Néctar: manda los mensajes

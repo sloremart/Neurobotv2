@@ -14,6 +14,10 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
+// agentCommandResumeProblem es el motivo, para el asesor, de un comando /bot cups u orden que no
+// pudo retomar la sesión.
+const agentCommandResumeProblem = "El bot no pudo retomar la sesión; vuelva a devolver la conversación."
+
 // agentCloseFarewell es la despedida al paciente cuando el agente da el caso por resuelto.
 const agentCloseFarewell = "Tu consulta ha sido resuelta. Gracias por comunicarte con nosotros!"
 
@@ -30,7 +34,10 @@ const agentCloseFarewell = "Tu consulta ha sido resuelta. Gracias por comunicart
 // que no queda nada en vuelo que el cierre pueda cortar.
 func (p *MessageWorkerPool) closeNectarConversation(sess *session.Session, cmd AgentCommand) {
 	if cmd.Reason == "" {
-		_, _ = p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, agentCloseFarewell)
+		if _, err := p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, agentCloseFarewell); err != nil {
+			slog.Warn("farewell on agent close failed (nectar)",
+				"conversation_id", sess.ConversationID, "session_id", sess.ID, "error", err)
+		}
 	}
 	if err := p.birdClient.CloseFeedItems(sess.PhoneNumber, sess.ConversationID); err != nil {
 		slog.Warn("close conversation on agent close failed (nectar)",
@@ -67,10 +74,11 @@ func (p *MessageWorkerPool) resolveAgentReturn(sess *session.Session, step strin
 	cmd AgentCommand,
 ) (statemachine.ReturnInputResult, string) {
 	if cmd.ReturnV1 != nil {
-		// `valores` NO se traza: puede llevar el documento del paciente. `opcion` sí, que es lo
-		// único que explica la vuelta.
+		// `valores` NO se traza: puede llevar el documento del paciente. `opcion` va por
+		// ReturnValueForLog, por la misma regla que el token del dialecto: si trae un dato
+		// escrito, solo sale su prefijo.
 		slog.Info("agent return: retorno v1", "phone", utils.MaskPhone(cmd.Phone),
-			"session_id", sess.ID, "step", step, "opcion", cmd.ReturnV1.Option,
+			"session_id", sess.ID, "step", step, "opcion", statemachine.ReturnValueForLog(cmd.ReturnV1.Option),
 			"con_valores", len(cmd.ReturnV1.Values) > 0)
 		return p.machine.ResolveReturnV1(sess, step, cmd.ReturnV1.Values), cmd.ReturnV1.Option
 	}
@@ -104,11 +112,19 @@ func (p *MessageWorkerPool) applyAgentReturn(ctx context.Context, sess *session.
 			slog.Info("agent return: el dato escrito va al comando del asesor",
 				"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "step", step,
 				"command", written.Command)
+			var problem string
 			switch written.Command {
 			case statemachine.ReturnCommandCups:
-				p.handleAgentCups(ctx, sess, cmd)
+				problem = p.handleAgentCups(ctx, sess, cmd)
 			case statemachine.ReturnCommandOrder:
-				p.handleAgentOrder(ctx, sess, cmd)
+				problem = p.handleAgentOrder(ctx, sess, cmd)
+			}
+			// Si el comando no pudo con el dato, su aviso al asesor es una nota interna que en
+			// Néctar no tiene dónde aterrizar: la sesión quedaría escalada sin dueño. El fallo
+			// vuelve entonces a una persona como cualquier dato rechazado.
+			if problem != "" && session.IsNectarSession(sess.PhoneNumber) {
+				written.Problem = problem
+				p.reescalateRejectedAgentInput(ctx, sess, cmd, step, written)
 			}
 			return cmd, true
 		}
@@ -177,8 +193,13 @@ func truncateRejectedEcho(s string) string {
 // la pregunta convierte el descuido del agente en trabajo suyo.
 //
 // NO tiene que ser el mismo agente: el motivo viaja en el resumen, así que el caso llega completo
-// a quien lo tome. Lo que acota el peor caso —un agente que insista con datos malos— es el tope
-// de escalaciones por sesión del handler de escalación.
+// a quien lo tome. Ningún tope del bot acota cuántas vueltas puede dar un agente que insista con
+// datos malos: lo que las acota es que cada una exige que una PERSONA devuelva la conversación a
+// mano, no un lazo del bot.
+//
+// El contexto de la re-escalada se PERSISTE antes del turno: cada comando de agente recarga la
+// sesión de la BD, así que lo que solo viviera en memoria se perdería para el siguiente (el número
+// de intento volvería a 1 y el rechazo tipado no llegaría a quien lo lea en otro turno).
 func (p *MessageWorkerPool) reescalateRejectedAgentInput(ctx context.Context, sess *session.Session,
 	cmd AgentCommand, step string, res statemachine.ReturnInputResult,
 ) {
@@ -207,7 +228,14 @@ func (p *MessageWorkerPool) reescalateRejectedAgentInput(ctx context.Context, se
 		"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "step", step,
 		"attempt", n)
 
-	sess.SetContext(statemachine.CtxAgentInputRejected, strconv.Itoa(n))
+	updateCtx := map[string]string{
+		statemachine.CtxAgentInputRejected: strconv.Itoa(n),
+		"escalation_note":                  statemachine.RejectedInputNote(n, truncateRejectedEcho(res.Value), res.Problem),
+		// El paso bloqueado tiene que seguir siendo el de origen: es de donde sale el menú de
+		// retornos que el agente va a volver a ver. Lo normal es que lo ponga el auto-chain de la
+		// máquina; aquí se entra por fuera, así que se pone a mano.
+		statemachine.CtxPreAutoState: step,
+	}
 	// El rechazo TIPADO, para el sobre v1: lo escribe quien re-escala y lo leerá, en OTRO turno,
 	// el handler de escalación al armar el sobre. Si no se pudiera rendir, el caso escala igual y
 	// solo se pierde la clave tipada; la nota, que es lo que el agente LEE, no depende de esto.
@@ -221,23 +249,30 @@ func (p *MessageWorkerPool) reescalateRejectedAgentInput(ctx context.Context, se
 		slog.Error("no se pudo rendir el rechazo tipado, la escalación sale sin `rechazo`",
 			"session_id", sess.ID, "step", step)
 	} else {
-		sess.SetContext(statemachine.CtxAgentInputRejection, raw)
+		updateCtx[statemachine.CtxAgentInputRejection] = raw
 	}
-	sess.SetContext("escalation_note",
-		statemachine.RejectedInputNote(n, truncateRejectedEcho(res.Value), res.Problem))
-	// El paso bloqueado tiene que seguir siendo el de origen: es de donde sale el menú de retornos
-	// que el agente va a volver a ver. Lo normal es que lo ponga el auto-chain de la máquina; aquí
-	// se entra por fuera, así que se pone a mano.
-	sess.SetContext(statemachine.CtxPreAutoState, step)
 
 	if err := p.sessionManager.ResumeFromEscalation(ctx, sess, statemachine.StateEscalateToAgent); err != nil {
 		slog.Error("reescalada por dato rechazado: no se pudo retomar la sesión", "error", err,
 			"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID)
 		return
 	}
-	// La espera de esta escalación se acabó: un agente tomó el caso y escribió. Va ANTES del turno
-	// de abajo, que vuelve a escalar y decide de nuevo si la marca corresponde.
-	p.clearNextDayQueueMark(ctx, sess)
+	// La espera de esta escalación se acabó: un agente tomó el caso y escribió. La marca se borra
+	// en la MISMA escritura, antes del turno de abajo, que vuelve a escalar y decide de nuevo si
+	// corresponde.
+	var clearCtx []string
+	if sess.GetContext(statemachine.CtxEscalationNextDay) != "" {
+		clearCtx = []string{statemachine.CtxEscalationNextDay}
+	}
+	if err := p.sessionManager.SaveState(ctx, sess, statemachine.StateEscalateToAgent, updateCtx, clearCtx); err != nil {
+		// El turno sigue: la escalación de abajo usa la sesión en memoria. Lo que se pierde es el
+		// contexto para los turnos siguientes (intento y rechazo tipado).
+		slog.Error("reescalada por dato rechazado: no se pudo persistir el contexto", "error", err,
+			"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID)
+		for k, v := range updateCtx {
+			sess.SetContext(k, v)
+		}
+	}
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	// El texto NO puede ser __resume__: ese es el cortacircuito anti-bucle del handler de

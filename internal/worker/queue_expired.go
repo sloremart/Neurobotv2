@@ -78,22 +78,28 @@ func (p *MessageWorkerPool) handleQueueExpired(ctx context.Context, sess *sessio
 
 	p.notifyQueueExpired(sess, p.businessHoursTextValue())
 
-	if err := p.sessionManager.Complete(ctx, sess); err != nil {
-		slog.Error("cola vencida: no se pudo completar la sesión", "error", err,
+	completeErr := p.sessionManager.Complete(ctx, sess)
+	if completeErr != nil {
+		slog.Error("cola vencida: no se pudo completar la sesión", "error", completeErr,
 			"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber))
-		return
+	} else {
+		// La espera se acabó y la marca no puede sobrevivir a una sesión completada. Mismo
+		// criterio que handleAgentClose.
+		p.clearNextDayQueueMark(ctx, sess)
 	}
-	// La espera se acabó y la marca no puede sobrevivir a una sesión completada. Mismo criterio
-	// que handleAgentClose.
-	p.clearNextDayQueueMark(ctx, sess)
 
 	// Cierre SÍNCRONO: con Néctar el envío de arriba es un POST que ya volvió con el id del
-	// mensaje, así que no hay nada en vuelo que el cierre pueda cortar.
+	// mensaje, así que no hay nada en vuelo que el cierre pueda cortar. Se intenta aunque Complete
+	// haya fallado: la conversación vencida no puede quedarse abierta en Néctar sin dueño.
 	if sess.ConversationID != "" {
 		if err := p.birdClient.CloseFeedItems(sess.PhoneNumber, sess.ConversationID); err != nil {
 			slog.Warn("cola vencida: no se pudo cerrar la conversación",
-				"conversation_id", sess.ConversationID, "session_id", sess.ID, "error", err)
+				"conversation_id", sess.ConversationID, "session_id", sess.ID, "error", err,
+				"complete_error", completeErr)
 		}
+	}
+	if completeErr != nil {
+		return
 	}
 
 	if p.tracker != nil {
@@ -128,6 +134,13 @@ func (p *MessageWorkerPool) notifyQueueExpired(sess *session.Session, hours stri
 	ts, ok := p.birdClient.(templateSender)
 	if !ok {
 		slog.Warn("cola vencida: ventana de 24 h cerrada y el canal no manda plantillas",
+			"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber))
+		return
+	}
+	// La plantilla lleva el horario como parámetro y Meta rechaza un parámetro vacío: sin horario
+	// cableado no se gasta el envío. El caso se cierra igual.
+	if hours == "" {
+		slog.Error("cola vencida: ventana de 24 h cerrada y sin horario para la plantilla; el caso se cierra sin avisar",
 			"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber))
 		return
 	}

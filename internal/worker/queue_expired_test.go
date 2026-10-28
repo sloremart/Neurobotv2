@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -177,5 +178,49 @@ func TestNotifyQueueExpired_WindowClosedUsesTemplate(t *testing.T) {
 	}
 	if !completed {
 		t.Error("la sesión se cierra aunque el aviso haya tenido que irse por plantilla")
+	}
+}
+
+// Si Complete falla, la conversación vencida se cierra igual en Néctar: no puede quedarse abierta
+// sin dueño.
+func TestHandleQueueExpired_CompleteFailsStillCloses(t *testing.T) {
+	pool, sm, sender, sess := queueExpiredPool(t)
+	sm.completeFn = func(context.Context, *session.Session) error { return errors.New("bd caída") }
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnValueQueueExpired,
+	})
+
+	sender.mu.Lock()
+	closed := append([]string(nil), sender.closedConvs...)
+	sender.mu.Unlock()
+	if len(closed) != 1 || closed[0] != "conv1" {
+		t.Fatalf("la conversación se cierra aunque Complete falle, got %v", closed)
+	}
+}
+
+// Sin horario no se manda la plantilla (Meta rechaza el parámetro vacío); el caso se cierra igual.
+func TestNotifyQueueExpired_NoHoursSkipsTemplate(t *testing.T) {
+	pool, sm, base, _ := queueExpiredPool(t)
+	pool.SetBusinessHoursText(func() string { return "" })
+	base.sendErr = nectar.ErrWindowClosed
+	sender := &templateSpySender{mockMessageSender: base}
+	pool.SetDependencies(sm, sender, &mockMessageProcessor{})
+	completed := false
+	sm.completeFn = func(_ context.Context, s *session.Session) error {
+		completed = true
+		s.Status = session.StatusCompleted
+		return nil
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: testNectarPhone, ReturnValue: statemachine.ReturnValueQueueExpired,
+	})
+
+	if sender.tmplCalls != 0 {
+		t.Fatalf("sin horario no se manda la plantilla, got %d envíos", sender.tmplCalls)
+	}
+	if !completed {
+		t.Fatal("el caso se cierra igual")
 	}
 }

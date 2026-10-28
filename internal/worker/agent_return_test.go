@@ -1,12 +1,16 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -162,11 +166,21 @@ func TestHandleAgentResume_WrittenCupsGoesToHandleAgentCups(t *testing.T) {
 
 // Un dato escrito que no sirve vuelve a una PERSONA con el motivo; al paciente no le llega nada.
 func TestHandleAgentResume_RejectedReescalates(t *testing.T) {
-	pool, _, sender, sess, resumedTo, processed := returnSession(t, "ASK_DOCUMENT")
+	pool, sm, sender, sess, resumedTo, _ := returnSession(t, "ASK_DOCUMENT")
 	asNectar(sess)
+	db := persistedContext(sm)
 	const value, problem = "12ab", "El documento solo lleva números."
-	pool.machine.(*mockMessageProcessor).returnInput = statemachine.ReturnInputResult{
-		Written: true, Value: value, Problem: problem, Field: "documento",
+	persistedAtProcess := ""
+	var processed bird.InboundMessage
+	pool.machine = &mockMessageProcessor{
+		returnInput: statemachine.ReturnInputResult{
+			Written: true, Value: value, Problem: problem, Field: "documento",
+		},
+		processFn: func(_ context.Context, _ *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error) {
+			processed = msg
+			persistedAtProcess = db[statemachine.CtxAgentInputRejected]
+			return &statemachine.StateResult{NextState: statemachine.StateEscalated}, nil
+		},
 	}
 
 	pool.processAgentCommand(context.Background(), AgentCommand{
@@ -176,16 +190,23 @@ func TestHandleAgentResume_RejectedReescalates(t *testing.T) {
 	if *resumedTo != statemachine.StateEscalateToAgent {
 		t.Fatalf("el dato rechazado re-escala, got %q", *resumedTo)
 	}
-	if got := sess.GetContext(statemachine.CtxAgentInputRejected); got != "1" {
-		t.Errorf("CtxAgentInputRejected = %q, esperaba \"1\"", got)
+	// Todo se lee de lo PERSISTIDO: el siguiente comando recarga la sesión de la BD.
+	if got := db[statemachine.CtxAgentInputRejected]; got != "1" {
+		t.Errorf("CtxAgentInputRejected persistido = %q, esperaba \"1\"", got)
 	}
-	if got, want := sess.GetContext("escalation_note"), statemachine.RejectedInputNote(1, value, problem); got != want {
+	if persistedAtProcess != "1" {
+		t.Errorf("el contexto se persiste ANTES del turno que re-escala, got %q", persistedAtProcess)
+	}
+	if got, want := db["escalation_note"], statemachine.RejectedInputNote(1, value, problem); got != want {
 		t.Errorf("escalation_note = %q, esperaba %q", got, want)
 	}
-	if got := sess.GetContext(statemachine.CtxPreAutoState); got != "ASK_DOCUMENT" {
+	if got := db[statemachine.CtxPreAutoState]; got != "ASK_DOCUMENT" {
 		t.Errorf("el paso bloqueado sigue siendo el de origen, got %q", got)
 	}
-	rej, ok := statemachine.DecodeRejection(sess.GetContext(statemachine.CtxAgentInputRejection))
+	if got := sess.GetContext(statemachine.CtxPreAutoState); got != "ASK_DOCUMENT" {
+		t.Errorf("el turno de re-escalada ve el paso de origen en memoria, got %q", got)
+	}
+	rej, ok := statemachine.DecodeRejection(db[statemachine.CtxAgentInputRejection])
 	if !ok || rej.Reason != problem || rej.Attempt != 1 || rej.Echo != value || rej.Field != "documento" {
 		t.Errorf("rechazo tipado = %+v (ok=%v)", rej, ok)
 	}
@@ -328,5 +349,156 @@ func TestHandleAgentNoShow_IgnoresNectar(t *testing.T) {
 	}
 	if sess.Status != session.StatusEscalated {
 		t.Fatalf("la sesión sigue escalada, got %v", sess.Status)
+	}
+}
+
+// persistedContext simula la tabla de contexto: SaveState aplica updateCtx/clearCtx en la «BD» y
+// en memoria, como el SessionManager real. Lo que no pasa por aquí no sobrevive a la recarga de
+// la sesión que hace cada comando de agente.
+func persistedContext(sm *mockSessionMgmt) map[string]string {
+	db := map[string]string{}
+	sm.saveFn = func(_ context.Context, s *session.Session, state string, upd map[string]string, clr []string) error {
+		s.CurrentState = state
+		for _, k := range clr {
+			delete(db, k)
+			delete(s.Context, k)
+		}
+		for k, v := range upd {
+			db[k] = v
+			s.SetContext(k, v)
+		}
+		return nil
+	}
+	return db
+}
+
+// captureLogs desvía slog a un búfer mientras dura el test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// Cada comando de agente recarga la sesión de la BD: el número de intento solo avanza si la
+// re-escalada lo persistió.
+func TestReescalate_AttemptSurvivesSessionReload(t *testing.T) {
+	pool, sm, _, _ := escalatedPool(t)
+	db := persistedContext(sm)
+	db["pre_escalation_state"] = "ASK_DOCUMENT"
+	sm.findOrCreateFn = func(context.Context, string) (*session.Session, bool, error) {
+		ctx := make(map[string]string, len(db))
+		for k, v := range db {
+			ctx[k] = v
+		}
+		return &session.Session{
+			ID: "s1", PhoneNumber: testNectarPhone, Status: session.StatusEscalated,
+			ConversationID: "conv1", CurrentState: statemachine.StateEscalated, Context: ctx,
+		}, false, nil
+	}
+	pool.SetDependencies(sm, pool.birdClient, &mockMessageProcessor{
+		returnInput: statemachine.ReturnInputResult{Written: true, Value: "12ab", Problem: "Solo números."},
+	})
+
+	for range 2 {
+		pool.processAgentCommand(context.Background(), AgentCommand{
+			Action: "resume", Phone: testNectarPhone, ReturnValue: statemachine.ReturnInputPrefix + "12ab",
+		})
+	}
+
+	if got := db[statemachine.CtxAgentInputRejected]; got != "2" {
+		t.Fatalf("el segundo rechazo sobre la sesión recargada es el intento 2, got %q", got)
+	}
+	rej, ok := statemachine.DecodeRejection(db[statemachine.CtxAgentInputRejection])
+	if !ok || rej.Attempt != 2 {
+		t.Fatalf("el rechazo tipado persistido lleva el intento 2, got %+v (ok=%v)", rej, ok)
+	}
+	if want := statemachine.RejectedInputNote(2, "12ab", "Solo números."); db["escalation_note"] != want {
+		t.Fatalf("escalation_note = %q, esperaba %q", db["escalation_note"], want)
+	}
+}
+
+// Un /bot cups que no puede con lo escrito avisa con una nota interna, que en Néctar no tiene
+// destino: el fallo vuelve al agente como dato rechazado, con el motivo.
+func TestHandleAgentResume_NectarCupsCommandFailureReescalates(t *testing.T) {
+	pool, sm, sender, sess, resumedTo, _ := returnSession(t, statemachine.StateUploadMedicalOrder)
+	asNectar(sess)
+	db := persistedContext(sm)
+	pool.machine.(*mockMessageProcessor).returnInput = statemachine.ReturnInputResult{
+		Written: true, Value: ":2", Command: statemachine.ReturnCommandCups,
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnInputPrefix + ":2",
+	})
+
+	if *resumedTo != statemachine.StateEscalateToAgent {
+		t.Fatalf("el comando fallido re-escala, got %q", *resumedTo)
+	}
+	if !strings.Contains(db["escalation_note"], "No se encontraron códigos CUPS válidos") {
+		t.Fatalf("la nota lleva el motivo del comando, got %q", db["escalation_note"])
+	}
+	if db[statemachine.CtxAgentInputRejected] != "1" {
+		t.Fatalf("cuenta como un rechazo, got %q", db[statemachine.CtxAgentInputRejected])
+	}
+	if n := countSent(sender, "text"); n != 0 {
+		t.Fatalf("el paciente no recibe nada, got %d", n)
+	}
+}
+
+// En Bird el /bot cups fallido sigue igual que hoy: nota interna y la sesión queda escalada.
+func TestAgentCommand_CupsFailureUnchangedForBird(t *testing.T) {
+	pool, sm, sender, sess := escalatedPool(t)
+	resumed := false
+	sm.resumeFn = func(context.Context, *session.Session, string) error { resumed = true; return nil }
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "cups", Phone: sess.PhoneNumber, Data: ":2"})
+
+	sender.mu.Lock()
+	sent := append([]sentMsg(nil), sender.sent...)
+	sender.mu.Unlock()
+	if len(sent) != 1 || sent[0].msgType != "internal" || sent[0].text != "No se encontraron codigos CUPS validos en el comando." {
+		t.Fatalf("Bird conserva la nota interna, got %+v", sent)
+	}
+	if resumed || sess.Status != session.StatusEscalated {
+		t.Fatalf("la sesión de Bird sigue escalada para que el agente corrija, resumed=%v status=%v", resumed, sess.Status)
+	}
+}
+
+// Si la despedida de Néctar no sale, queda en el registro.
+func TestCloseNectarConversation_LogsFarewellError(t *testing.T) {
+	logs := captureLogs(t)
+	pool, _, sender, sess := escalatedPool(t)
+	asNectar(sess)
+	sender.sendErr = errors.New("envío caído")
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnClose,
+	})
+
+	if !strings.Contains(logs.String(), "farewell on agent close failed") || !strings.Contains(logs.String(), "envío caído") {
+		t.Fatalf("el fallo de la despedida se registra:\n%s", logs.String())
+	}
+}
+
+// La `opcion` de un retorno v1 se traza por ReturnValueForLog: si trae un dato escrito, solo su
+// prefijo.
+func TestResolveAgentReturn_V1OptionLoggedByPrefix(t *testing.T) {
+	logs := captureLogs(t)
+	pool, _, _, sess, _, _ := returnSession(t, "ASK_DOCUMENT")
+	asNectar(sess)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber,
+		ReturnV1: &nectar.V1Return{Option: statemachine.ReturnInputPrefix + "1000000001"},
+	})
+
+	if strings.Contains(logs.String(), "1000000001") {
+		t.Fatalf("el dato escrito no puede aparecer en el registro:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), statemachine.ReturnInputPrefix) {
+		t.Fatalf("el prefijo sí se traza:\n%s", logs.String())
 	}
 }
