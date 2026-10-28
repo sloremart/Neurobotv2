@@ -26,22 +26,37 @@ func TestSummaryForAgent_FactsMatchText(t *testing.T) {
 			}
 
 			// Campo -> texto: cada campo está escrito como línea de SU grupo (el vacío también:
-			// `Documento: ` se escribe igual).
+			// `Documento: ` se escribe igual). Los rótulos son únicos en todo el resumen: si uno
+			// se repitiera, el cotejo inverso (texto -> campo) los confundiría.
 			fields := map[string]summaryField{}
 			for _, g := range groups {
 				for _, f := range g.Fields {
 					if f.Key == "" {
 						t.Errorf("grupo %q: un campo sin clave", g.Key)
 					}
-					fields[f.Label] = f
-					if f.Key == "cups_codigo" || f.Key == "cups_nombre" {
-						if !strings.Contains(g.text.String(), f.Value) {
-							t.Errorf("campo %q=%q no está en el texto", f.Key, f.Value)
-						}
-						continue
+					if _, dup := fields[f.Label]; dup {
+						t.Fatalf("rótulo repetido %q: el cotejo no distinguiría los campos", f.Label)
 					}
-					if want := f.Label + ": " + f.Value; !strings.Contains(g.text.String(), want) {
+					fields[f.Label] = f
+					if f.Key == "cups_nombre" || f.Key == "cups_codigo" {
+						continue // línea fusionada: se asevera entera abajo
+					}
+					if want := f.Label + ": " + f.Value; !hasLine(g.text.String(), want) {
 						t.Errorf("campo %q: falta la línea %q en %q", f.Key, want, g.text.String())
+					}
+				}
+				if g.Key == "procedimiento" {
+					var name, code string
+					for _, f := range g.Fields {
+						switch f.Key {
+						case "cups_nombre":
+							name = f.Value
+						case "cups_codigo":
+							code = f.Value
+						}
+					}
+					if want := "Procedimiento: " + name + " (" + code + ")"; !hasLine(g.text.String(), want) {
+						t.Errorf("falta la línea combinada %q en %q", want, g.text.String())
 					}
 				}
 			}
@@ -77,8 +92,18 @@ func TestSummaryForAgent_FactsMatchText(t *testing.T) {
 	}
 }
 
-// El teléfono del paciente NO viaja en facts: el agente lo ve en la conversación, y facts se
-// guarda aparte.
+// hasLine dice si el texto trae esa línea ENTERA (no como subcadena de otra).
+func hasLine(text, want string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
+// El teléfono del paciente NO viaja en facts: el agente ya lo ve en la conversación. La Tarea 9b
+// enviará estos grupos como `facts` en el sobre v1.
 func TestSummaryForAgent_NoPhoneInFacts(t *testing.T) {
 	const phone = "+573001234567"
 	for _, c := range summaryCases() {

@@ -27,18 +27,18 @@ import (
 // La excepción declarada: la línea FUSIONADA `Procedimiento: <nombre> (<cups>)` se parte en dos
 // campos, porque los valores ya están separados en la sesión y la fusión es solo del render.
 
-// summaryField es un par del resumen estructurado. Las tres claves de cable son `clave`,
-// `rotulo` y `valor`; los identificadores de Go van en inglés.
+// LAS ETIQUETAS JSON SON DEL CONTRATO CON NÉCTAR. `clave`, `rotulo`, `valor`, `titulo` y
+// `campos`, con su omitempty (o sin él), son idénticas a las de hdg-bot: el esquema de Néctar
+// lleva additionalProperties:false, así que renombrar o añadir una clave rompe la validación.
+// `titulo` va SIN omitempty: un grupo sin título viaja como null, igual que en hdg-bot. (hdg
+// además tiene `items` con omitempty; Neuro no lo usa y su ausencia no cambia el cable.)
+//
+// summaryField es un par del resumen estructurado; los identificadores de Go van en inglés.
 type summaryField struct {
 	Key string `json:"clave"`
 	// Label es opcional en `facts`: un par sin rótulo sigue siendo legible por su clave.
 	Label string `json:"rotulo,omitempty"`
 	Value string `json:"valor"`
-}
-
-// summaryItem es una entrada repetida dentro de un grupo (para los grupos de lista).
-type summaryItem struct {
-	Fields []summaryField `json:"campos"`
 }
 
 // summaryGroup es un bloque del resumen. `titulo` NULO es un valor LEGAL y significa «bloque sin
@@ -49,7 +49,6 @@ type summaryGroup struct {
 	Key    string         `json:"clave"`
 	Title  *string        `json:"titulo"`
 	Fields []summaryField `json:"campos,omitempty"`
-	Items  []summaryItem  `json:"items,omitempty"`
 
 	// text es el render EXACTO de ESTE bloque, tal como el resumen lo escribía antes.
 	text strings.Builder
@@ -80,7 +79,7 @@ func (g *summaryGroup) raw(s string) { g.text.WriteString(s) }
 // empty dice si el grupo no llegó a escribir nada. Un grupo así NO se emite: es el bloque que
 // hoy no aporta líneas y deja el resumen intacto.
 func (g *summaryGroup) empty() bool {
-	return g.text.Len() == 0 && len(g.Fields) == 0 && len(g.Items) == 0
+	return g.text.Len() == 0 && len(g.Fields) == 0
 }
 
 // summaryDoc es el resumen entero: los grupos, en su orden exacto.
