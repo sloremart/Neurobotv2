@@ -567,7 +567,7 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 	// Solo actúa sobre sesiones activas; sesiones ya escaladas siguen su flujo normal.
 	if !p.botEnabled && sess.Status == session.StatusActive {
 		sess.CurrentState = statemachine.StateEscalateToAgent
-		sess.Context["_pre_auto_state"] = "BOT_DISABLED"
+		sess.Context[statemachine.CtxPreAutoState] = "BOT_DISABLED"
 		sess.Context["escalation_note"] = "Bot desactivado — atender al paciente directamente desde el inicio."
 		slog.Info("bot_disabled_escalating", "session_id", sess.ID, "phone", utils.MaskPhone(msg.Phone))
 	}
@@ -1180,6 +1180,25 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 }
 
 // sendAndSave sends result messages and persists state (shared between processMessage and agent commands).
+// PreEscalationFlush es el gancho de statemachine.Machine para Néctar: manda los mensajes
+// acumulados (el aviso al paciente) ANTES del escalate, porque después la conversación ya
+// es del agente. Para Bird devuelve false y el flujo sigue como siempre (envío tras el turno).
+func (p *MessageWorkerPool) PreEscalationFlush(_ context.Context, sess *session.Session, messages []statemachine.OutboundMessage) bool {
+	if !session.IsNectarSession(sess.PhoneNumber) {
+		return false
+	}
+	for i, m := range statemachine.CoalesceMessages(messages) {
+		if i > 0 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		if _, err := p.sendMessage(sess.PhoneNumber, sess.ConversationID, m); err != nil {
+			slog.Error("pre-escalation send error", "phone", utils.MaskPhone(sess.PhoneNumber),
+				"session_id", sess.ID, "type", m.Type(), "error", err)
+		}
+	}
+	return true
+}
+
 func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Session, phone string, result *statemachine.StateResult) {
 	// Coalescer: los mensajes acumulados del turno (auto-chain: texto de transición + prompt del
 	// siguiente estado) se fusionan en el mínimo de envíos — Bird cobra cada uno por separado.

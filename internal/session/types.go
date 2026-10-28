@@ -1,6 +1,9 @@
 package session
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	StatusActive    = "active"
@@ -80,3 +83,7 @@ type EscalatedSession struct {
 	RemindersSent  int        // agent reminders already sent in this waiting window
 	EscalatedAt    time.Time  // when THIS escalation happened (anchors the no-show clock; zero = legacy row)
 }
+
+// IsNectarSession dice si la sesión viene de Néctar: su clave ocupa el sitio del teléfono y
+// lleva el prefijo "nectar:" (un id de conversación numérico pelado no cuenta).
+func IsNectarSession(phone string) bool { return strings.HasPrefix(phone, "nectar:") }

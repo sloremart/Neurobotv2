@@ -40,7 +40,24 @@ type Machine struct {
 	configs map[string]HandlerConfig
 	// recovery es la capa de recuperación asistida por IA (opcional). nil = desactivada.
 	recovery RecoveryCoordinator
+	// preEscalationFlush, si está puesto, recibe los mensajes acumulados JUSTO ANTES de
+	// encadenar a ESCALATE_TO_AGENT. Si devuelve true ya los envió y no se vuelven a mandar.
+	// Existe por Néctar: tras el escalate la conversación pasa al agente y el bot ya no puede
+	// escribirle al paciente, así que el aviso "te conecto con un asesor" tiene que salir
+	// ANTES. En Bird no hace falta y el pool declina (false).
+	preEscalationFlush PreEscalationFlush
 }
+
+// CtxEscalationNoticeFlushed marca, SOLO durante este turno, que los mensajes acumulados
+// del caller (entre ellos su aviso al paciente) ya salieron en el pre-envío. Vive en memoria:
+// se borra al terminar Process porque describe el turno, no la sesión.
+const CtxEscalationNoticeFlushed = "_escalation_notice_flushed"
+
+// PreEscalationFlush envía los mensajes pendientes antes de escalar. true = enviados.
+type PreEscalationFlush func(ctx context.Context, sess *session.Session, messages []OutboundMessage) bool
+
+// SetPreEscalationFlush inyecta el gancho (ver Machine.preEscalationFlush).
+func (m *Machine) SetPreEscalationFlush(f PreEscalationFlush) { m.preEscalationFlush = f }
 
 // SetRecoveryCoordinator inyecta la capa de recuperación IA (opcional). Se llama desde main
 // después de construir la máquina. nil mantiene el comportamiento actual.
@@ -130,6 +147,9 @@ func (m *Machine) Process(ctx context.Context, sess *session.Session, msg bird.I
 		}
 	}
 
+	// La marca del pre-envío es del turno: no debe sobrevivir en la sesión en memoria.
+	defer delete(sess.Context, CtxEscalationNoticeFlushed)
+
 	// 4. Si el resultado lleva a un estado automático, ejecutarlo encadenado
 	const maxAutoChain = 20 // Cycle guard: prevent infinite loops
 	visited := make(map[string]bool)
@@ -157,7 +177,7 @@ func (m *Machine) Process(ctx context.Context, sess *session.Session, msg bird.I
 		)
 
 		// Save previous state for auto-chained handlers (e.g., escalation needs origin state)
-		sess.SetContext("_pre_auto_state", sess.CurrentState)
+		sess.SetContext(CtxPreAutoState, sess.CurrentState)
 
 		// Actualizar estado en session (para que el handler automático lo vea)
 		sess.CurrentState = result.NextState
@@ -169,6 +189,12 @@ func (m *Machine) Process(ctx context.Context, sess *session.Session, msg bird.I
 
 		// Preservar mensajes y eventos acumulados
 		prevMessages := result.Messages
+		if result.NextState == StateEscalateToAgent && m.preEscalationFlush != nil && len(prevMessages) > 0 {
+			if m.preEscalationFlush(ctx, sess, prevMessages) {
+				prevMessages = nil
+				sess.SetContext(CtxEscalationNoticeFlushed, "1")
+			}
+		}
 		prevEvents := result.Events
 		prevCtx := result.UpdateCtx
 		prevClear := result.ClearCtx

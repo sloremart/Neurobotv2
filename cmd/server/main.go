@@ -314,6 +314,7 @@ func main() {
 	// Worker pool (configurable via WORKER_POOL_SIZE / WORKER_QUEUE_SIZE)
 	workerPool := worker.NewMessageWorkerPool(cfg.WorkerPoolSize, cfg.WorkerQueueSize)
 	workerPool.SetDependencies(sessionManager, birdClient, machine)
+	machine.SetPreEscalationFlush(workerPool.PreEscalationFlush)
 	workerPool.SetTracker(tracker)
 	workerPool.SetAgentActivityChecker(escalationRepo) // acuse durante escalación (§8.1 #6)
 	workerPool.SetOCRService(ocrSvc)

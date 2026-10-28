@@ -990,3 +990,47 @@ func TestMenuReset_RetryCountReset(t *testing.T) {
 		t.Errorf("expected GREETING, got %s", result.NextState)
 	}
 }
+
+// El aviso al paciente viaja en el StateResult del turno y se envía al final. En Néctar eso
+// llega DESPUÉS del escalate, cuando la conversación ya es del agente y el bot no puede escribir.
+// El gancho lo manda antes y el resultado final no lo repite.
+func TestPreEscalationFlush_NectarSendsBeforeEscalate(t *testing.T) {
+	m := NewMachine()
+	var order []string
+	var flushed []OutboundMessage
+	m.Register(StateMainMenu, func(context.Context, *session.Session, bird.InboundMessage) (*StateResult, error) {
+		return NewResult(StateEscalateToAgent).WithText("Te conecto con un asesor"), nil
+	})
+	var markAtEscalate string
+	m.Register(StateEscalateToAgent, func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*StateResult, error) {
+		order = append(order, "escalate")
+		markAtEscalate = sess.GetContext(CtxEscalationNoticeFlushed)
+		return NewResult(StateEscalated), nil
+	})
+	m.SetPreEscalationFlush(func(_ context.Context, _ *session.Session, msgs []OutboundMessage) bool {
+		order = append(order, "flush")
+		flushed = msgs
+		return true
+	})
+
+	sess := newTestSession(StateMainMenu)
+	result, err := m.Process(context.Background(), sess, newTestMessage("agente"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0] != "flush" || order[1] != "escalate" {
+		t.Fatalf("el aviso sale ANTES del escalate: %v", order)
+	}
+	if len(flushed) != 1 {
+		t.Fatalf("se entregó el aviso pendiente: %v", flushed)
+	}
+	if markAtEscalate != "1" {
+		t.Fatalf("el handler de escalación ve la marca: %q", markAtEscalate)
+	}
+	if len(result.Messages) != 0 {
+		t.Fatalf("lo ya enviado no se repite al final del turno: %d", len(result.Messages))
+	}
+	if got := sess.GetContext(CtxEscalationNoticeFlushed); got != "" {
+		t.Fatalf("la marca es solo del turno y se borra al terminar Process: %q", got)
+	}
+}
