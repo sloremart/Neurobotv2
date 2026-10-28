@@ -2107,9 +2107,7 @@ func (h *InternalHandler) HandleWaitingListCheck(w http.ResponseWriter, r *http.
 func (h *InternalHandler) HandleWaitingListGet(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	phone := strings.TrimSpace(q.Get("phone"))
-	if phone != "" && !strings.HasPrefix(phone, "+") {
-		phone = "+" + phone
-	}
+	phone = normalizeQueryPhone(phone)
 	filters := domain.WaitingListFilters{
 		Status:   q.Get("status"),
 		CupsCode: q.Get("cups_code"),
@@ -2181,9 +2179,7 @@ func (h *InternalHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logPhone := strings.TrimSpace(q.Get("phone"))
-	if logPhone != "" && !strings.HasPrefix(logPhone, "+") {
-		logPhone = "+" + logPhone
-	}
+	logPhone = normalizeQueryPhone(logPhone)
 	filter := logging.LogFilter{
 		Lines:  lines,
 		Level:  q.Get("level"),
@@ -2252,10 +2248,7 @@ func (h *InternalHandler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "'phone' query param is required", http.StatusBadRequest)
 		return
 	}
-	// Normalize: accept with or without +
-	if !strings.HasPrefix(phone, "+") {
-		phone = "+" + phone
-	}
+	phone = normalizeQueryPhone(phone)
 
 	var from, to time.Time
 	if v := q.Get("from"); v != "" {
@@ -2354,9 +2347,7 @@ func (h *InternalHandler) HandleSessions(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error":"'phone' or 'id' query parameter required"}`, http.StatusBadRequest)
 		return
 	}
-	if !strings.HasPrefix(phone, "+") {
-		phone = "+" + phone
-	}
+	phone = normalizeQueryPhone(phone)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 10
@@ -2532,4 +2523,14 @@ func (h *InternalHandler) HandleMRCConsumption(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"year": year, "month": month, "bot_cedula_masked": utils.MaskPhone(botCedula), "groups": out,
 	})
+}
+
+// normalizeQueryPhone deja un parámetro `phone` listo para buscar: los teléfonos de Bird se
+// aceptan con o sin «+» (E.164), pero la clave de una sesión de Néctar («nectar:<id>») NO es un
+// teléfono y se usa tal cual —con «+» delante no existe en la BD—.
+func normalizeQueryPhone(phone string) string {
+	if phone == "" || session.IsNectarSession(phone) || strings.HasPrefix(phone, "+") {
+		return phone
+	}
+	return "+" + phone
 }
