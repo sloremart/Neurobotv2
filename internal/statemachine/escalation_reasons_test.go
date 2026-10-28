@@ -2,7 +2,12 @@ package statemachine
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"regexp"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -71,5 +76,40 @@ func TestEscalationKeywordsInterceptor_WritesPatientAskedReason(t *testing.T) {
 	}
 	if got := res.UpdateCtx[CtxPatientAskedForAgent]; got != "1" {
 		t.Fatalf("falta la marca del paciente: %q", got)
+	}
+}
+
+// EscalationReasons() no puede olvidar una constante: se recorre el fuente y se compara.
+func TestEscalationReasons_ListsEveryConstant(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "escalation_reasons.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := EscalationReasons()
+	found := 0
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs := spec.(*ast.ValueSpec)
+			for i, name := range vs.Names {
+				if !strings.HasPrefix(name.Name, "EscalationReason") {
+					continue
+				}
+				found++
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok {
+					t.Fatalf("%s no es un literal", name.Name)
+				}
+				if !slices.Contains(listed, strings.Trim(lit.Value, `"`)) {
+					t.Errorf("%s (%s) no está en EscalationReasons()", name.Name, lit.Value)
+				}
+			}
+		}
+	}
+	if found != len(listed) {
+		t.Errorf("el fuente declara %d constantes y EscalationReasons() lista %d", found, len(listed))
 	}
 }

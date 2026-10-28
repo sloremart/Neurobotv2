@@ -107,6 +107,11 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 			sess.SetContext("entity_list_codes", "50001")
 			return must(askEntityNumberHandler(nil)(ctx, sess, textM("1")))(t)
 		}},
+		{"agrupacion_vacia", sm.EscalationReasonEmptyGrouping, false, func(t *testing.T) *sm.StateResult {
+			sess := testSess(sm.StateConfirmOCRResult)
+			sess.SetContext("ocr_cups_json", "[]")
+			return must(confirmOCRResultHandler(&mockProcedureRepo{}, nil)(ctx, sess, postbackM("ocr_correct")))(t)
+		}},
 		{"consolidacion_emg_fallida", sm.EscalationReasonEmgConsolidationFailed, false, func(t *testing.T) *sm.StateResult {
 			return must(confirmConsolidateHandler(nil)(ctx, testSess(sm.StateConfirmConsolidate), postbackM("consolidate_yes")))(t)
 		}},
@@ -233,5 +238,48 @@ func TestEscalate_OCRButtonIsPatientAsked(t *testing.T) {
 	}
 	if nb.escalations[0].ReasonDetail != "ocr_pidio_agente" {
 		t.Fatalf("ReasonDetail = %q", nb.escalations[0].ReasonDetail)
+	}
+}
+
+// Si el pre-envío ya sacó el aviso del caller, el aviso forzado de particular_liga no lo repite.
+func TestEscalate_NectarParticularLigaFlushedStaysSilent(t *testing.T) {
+	m, nb := nectarMachine(t, testEscalationConfig(), nil)
+	sess := nectarSession(false)
+	sess.SetContext(sm.CtxEscalationReason, sm.EscalationReasonParticularLiga)
+	sess.SetContext(sm.CtxEscalationNoticeFlushed, "1")
+	escalateOnce(t, m, sess)
+	if got := nb.texts(); len(got) != 0 {
+		t.Fatalf("el aviso ya salió del caller: %v", got)
+	}
+}
+
+// En la cola del próximo día el paciente recibe UN aviso, el de la cola, no el estándar además.
+func TestEscalate_NectarParticularLigaQueuedSendsOnlyTheQueueNotice(t *testing.T) {
+	m, nb := nectarMachine(t, nextDayConfig(), &mockEscalationCreator{})
+	sess := nectarSession(false)
+	sess.SetContext(sm.CtxEscalationReason, sm.EscalationReasonParticularLiga)
+	withTime(at(2026, 10, 23, 17, 50), func() { escalateOnce(t, m, sess) })
+	txt := nb.texts()
+	if len(txt) != 1 || txt[0] != escalationNoticeText(true) {
+		t.Fatalf("un solo aviso, el de la cola: %v", txt)
+	}
+}
+
+// Sin conversación resuelta, el pre-envío saca el aviso: en Néctar el de 4b no lo repite.
+func TestEscalate_NectarPreSendNoticeIsNotRepeated(t *testing.T) {
+	m, nb := nectarMachine(t, testEscalationConfig(), nil)
+	sess := nectarSession(true)
+	sess.ConversationID = ""
+	if _, err := m.Process(context.Background(), sess, bird.InboundMessage{Phone: "nectar:12", Text: "agente"}); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, txt := range nb.texts() {
+		if txt == sm.EscalationNoticeText {
+			count++
+		}
+	}
+	if count > 1 {
+		t.Fatalf("el aviso salió %d veces: %v", count, nb.events)
 	}
 }

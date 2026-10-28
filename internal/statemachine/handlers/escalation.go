@@ -247,6 +247,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			//nolint:contextcheck // SendText no toma ctx (patrón existente del pre-envío)
 			sentMsgID, sendErr := birdClient.SendText(msg.Phone, "", sm.EscalationNoticeText)
 			diagSentOK = sentMsgID != ""
+			// En Néctar el aviso que sale aquí es el mismo que el paso 4b mandaría: se marca para
+			// que no se repita. Bird no se toca (su aviso viaja en el resultado del caller).
+			if nectarSession && sendErr == nil {
+				sess.SetContext(sm.CtxEscalationNoticeFlushed, "1")
+			}
 			if sendErr != nil {
 				slog.Error(
 					"escalation_pre_send_failed",
