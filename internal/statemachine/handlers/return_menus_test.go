@@ -267,6 +267,8 @@ func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 // empezar desde el saludo y esconde la reanudación simple.
 func TestBotDisabledReturnMenu_OffersGreetingAndHidesResume(t *testing.T) {
 	m := sm.NewMachine()
+	// El registro es global y de solo escritura idempotente (siempre el mismo menú): dejarlo
+	// puesto no contamina a otras pruebas, igual que el resto de returnMenuMachine.
 	RegisterEscalationHandlers(m, nil, nil, nil)
 
 	var found bool

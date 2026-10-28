@@ -599,6 +599,7 @@ func TestHandleAgentClose_NectarTracesReason(t *testing.T) {
 // El kill switch deja la sesión en el paso BOT_DISABLED, que no tiene handler: el agente de
 // Néctar lo devuelve con la opción que publica el menú y el bot retoma en el saludo.
 func TestHandleAgentResume_NectarBotDisabledResumesAtGreeting(t *testing.T) {
+	// El registro del menú es global e idempotente (siempre el mismo): no hay que limpiarlo.
 	handlers.RegisterEscalationHandlers(statemachine.NewMachine(), nil, nil, nil)
 
 	pool, _, _, sess, resumedTo, processed := returnSession(t, statemachine.BotDisabledStep)
@@ -632,5 +633,21 @@ func TestHandleAgentResume_UnregisteredTargetFallsBackToGreeting(t *testing.T) {
 	stop()
 	if sink.FindStep("escalacion", "retorno_estado_inexistente") == nil {
 		t.Error("falta el evento escalacion/retorno_estado_inexistente")
+	}
+}
+
+// El dato del comando era para un paso que no existe: al caer al saludo no se inyecta como texto.
+func TestHandleAgentResume_UnregisteredTargetDropsData(t *testing.T) {
+	pool, _, _, sess, resumedTo, processed := returnSession(t, statemachine.BotDisabledStep)
+	pool.machine.(*mockMessageProcessor).unregistered = true
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, State: "NO_EXISTE", Data: "1234",
+	})
+
+	if *resumedTo != statemachine.StateGreeting {
+		t.Fatalf("cae a GREETING, got %q", *resumedTo)
+	}
+	if strings.Contains(processed.Text, "1234") {
+		t.Errorf("el dato no se inyecta en el saludo: %q", processed.Text)
 	}
 }

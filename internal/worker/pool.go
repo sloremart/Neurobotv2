@@ -913,6 +913,9 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "retorno_estado_inexistente",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: targetState})
 		targetState = statemachine.StateGreeting
+		// El dato (escrito o de la opción) era para el paso que no existe: inyectado como texto en
+		// el saludo sería una respuesta a una pregunta que no se hizo.
+		cmd.Data = ""
 	}
 
 	// Resume session in DB
