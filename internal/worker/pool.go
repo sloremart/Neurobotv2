@@ -1179,7 +1179,6 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 	}
 }
 
-// sendAndSave sends result messages and persists state (shared between processMessage and agent commands).
 // PreEscalationFlush es el gancho de statemachine.Machine para Néctar: manda los mensajes
 // acumulados (el aviso al paciente) ANTES del escalate, porque después la conversación ya
 // es del agente. Para Bird devuelve false y el flujo sigue como siempre (envío tras el turno).
@@ -1199,6 +1198,7 @@ func (p *MessageWorkerPool) PreEscalationFlush(_ context.Context, sess *session.
 	return true
 }
 
+// sendAndSave sends result messages and persists state (shared between processMessage and agent commands).
 func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Session, phone string, result *statemachine.StateResult) {
 	// Coalescer: los mensajes acumulados del turno (auto-chain: texto de transición + prompt del
 	// siguiente estado) se fusionan en el mínimo de envíos — Bird cobra cada uno por separado.
