@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
 
 // maxOCRPages acota cuántas páginas de un PDF multipágina se mandan a Vision en el fallback (costo/tamaño).
@@ -41,6 +43,10 @@ type OCRService struct {
 	client        *http.Client
 	cupsContext   string // CUPS reference table injected into the prompt
 	birdAccessKey string // Bird API key for downloading media files
+	// Néctar: adjuntos de GET /api/bot/attachments/{id}; solo se adjuntan si el anfitrión coincide.
+	nectarHost          string
+	nectarServiceKey    string
+	nectarRequestSecret string
 	// analyzeTimeout es el techo de UN análisis completo (download + Vision + reintentos). 0 = default.
 	analyzeTimeout time.Duration
 }
@@ -445,31 +451,38 @@ func (s *OCRService) AnalyzeImage(ctx context.Context, imageURL string) (*OCRRes
 	return s.callOpenAI(ctx, messages)
 }
 
-// AnalyzeDocument downloads a document (PDF), converts the first page to JPEG
-// using Ghostscript (300 DPI), and sends the image to OpenAI Vision for OCR.
-// Same behavior as Laravel's VisionMedicalOrderService.
-func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*OCRResult, error) {
-	// Presupuesto propio: cubre download + conversión de PDF + Vision (incluido el fallback
-	// multipágina). Sin él, un documento pesado o un Vision colgado agotaba el contexto del mensaje.
-	ctx, cancel := s.withAnalyzeBudget(ctx)
-	defer cancel()
+// SetNectarCredentials habilita la descarga de adjuntos de Néctar: GET /api/bot/attachments/{id}
+// exige clave de servicio + firma X-Nectar-*. baseURL es la raíz de Néctar; solo las URLs de ESE
+// anfitrión llevan esas credenciales. Con baseURL vacío no cambia nada.
+func (s *OCRService) SetNectarCredentials(baseURL, serviceKey, requestSecret string) {
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		s.nectarHost = strings.ToLower(u.Host)
+	}
+	s.nectarServiceKey = serviceKey
+	s.nectarRequestSecret = requestSecret
+}
 
-	// 1. Download the file (with Bird auth if configured)
+// downloadMedia baja el adjunto (cap 20 MB) con la credencial que corresponde a su anfitrión.
+func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", documentURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create download request: %w", err)
 	}
-	// #3 (auditoría): adjuntar la AccessKey de Bird SOLO si la URL es de Bird (*.bird.com). El
-	// documentURL viene del webhook (firmado), pero por defensa en profundidad evitamos filtrar la
-	// credencial a un host arbitrario (SSRF/leak). Las media pre-firmadas de otros hosts no la necesitan.
-	if s.birdAccessKey != "" {
-		if u, perr := url.Parse(documentURL); perr == nil {
-			host := strings.ToLower(u.Hostname())
-			if host == "bird.com" || strings.HasSuffix(host, ".bird.com") {
-				req.Header.Set("Authorization", "AccessKey "+s.birdAccessKey)
-			} else {
-				slog.Warn("ocr: media URL host no es de Bird — no se adjunta credencial", "host", host)
-			}
+	// #3 (auditoría): cada credencial sale SOLO hacia su anfitrión. El documentURL viene del webhook
+	// (firmado), pero por defensa en profundidad no se filtra ninguna a un host arbitrario
+	// (SSRF/leak). Las media pre-firmadas de otros hosts no la necesitan.
+	if u, perr := url.Parse(documentURL); perr == nil {
+		host := strings.ToLower(u.Hostname())
+		switch {
+		case s.nectarHost != "" && strings.ToLower(u.Host) == s.nectarHost:
+			// Néctar: SUS credenciales, nunca la de Bird. Se firma al enviar (ventana de 5 min del
+			// otro lado); un GET sin cuerpo firma SHA256("").
+			req.Header.Set(nectar.ServiceKeyHeader, s.nectarServiceKey)
+			nectar.SignRequest(req, s.nectarRequestSecret, time.Now(), nil)
+		case s.birdAccessKey != "" && (host == "bird.com" || strings.HasSuffix(host, ".bird.com")):
+			req.Header.Set("Authorization", "AccessKey "+s.birdAccessKey)
+		case s.birdAccessKey != "":
+			slog.Warn("ocr: media URL host no es de Bird — no se adjunta credencial", "host", host)
 		}
 	}
 	resp, err := s.client.Do(req)
@@ -483,8 +496,7 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	}
 
 	// L6: acotar la lectura de la media (cap 20 MB). Sin límite, un archivo enorme infla memoria
-	// (~1.33x al base64-ear) × sesiones concurrentes. La URL viene del CDN de Bird/WhatsApp, pero el
-	// cap evita el peor caso. +1 byte para detectar el desborde.
+	// (~1.33x al base64-ear) × sesiones concurrentes. +1 byte para detectar el desborde.
 	const maxMediaBytes = 20 << 20 // 20 MB
 	fileData, err := io.ReadAll(io.LimitReader(resp.Body, maxMediaBytes+1))
 	if err != nil {
@@ -492,6 +504,23 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	}
 	if len(fileData) > maxMediaBytes {
 		return nil, fmt.Errorf("document too large (> %d MB)", maxMediaBytes>>20)
+	}
+	return fileData, nil
+}
+
+// AnalyzeDocument downloads a document (PDF), converts the first page to JPEG
+// using Ghostscript (300 DPI), and sends the image to OpenAI Vision for OCR.
+// Same behavior as Laravel's VisionMedicalOrderService.
+func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*OCRResult, error) {
+	// Presupuesto propio: cubre download + conversión de PDF + Vision (incluido el fallback
+	// multipágina). Sin él, un documento pesado o un Vision colgado agotaba el contexto del mensaje.
+	ctx, cancel := s.withAnalyzeBudget(ctx)
+	defer cancel()
+
+	// 1. Download the file (credencial según el anfitrión: Bird o Néctar)
+	fileData, err := s.downloadMedia(ctx, documentURL)
+	if err != nil {
+		return nil, err
 	}
 
 	// 2. Detect MIME type from magic bytes

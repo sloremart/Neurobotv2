@@ -3,8 +3,10 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -308,5 +310,74 @@ func TestAnalyzeImage_WithObservations(t *testing.T) {
 	}
 	if result.Cups[0].Observations != "bilateral AMB" {
 		t.Errorf("expected observations 'bilateral AMB', got %q", result.Cups[0].Observations)
+	}
+}
+
+// capturingTransport responde 200 a todo y guarda la última petición: permite probar qué
+// credencial sale hacia cada anfitrión sin red.
+type capturingTransport struct{ last *http.Request }
+
+func (c *capturingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.last = r
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("data")),
+		Header:     http.Header{},
+		Request:    r,
+	}, nil
+}
+
+func newDownloadSvc(rt http.RoundTripper) *OCRService {
+	s := NewOCRService("k", "m", "", "bird-key")
+	s.client = &http.Client{Transport: rt}
+	return s
+}
+
+func TestDownloadMedia_NectarHostSignsRequest(t *testing.T) {
+	rt := &capturingTransport{}
+	s := newDownloadSvc(rt)
+	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+
+	if _, err := s.downloadMedia(context.Background(), "https://aom.colibrixa.com/api/bot/attachments/7"); err != nil {
+		t.Fatalf("downloadMedia: %v", err)
+	}
+	if got := rt.last.Header.Get("X-Bot-Service-Key"); got != "service-key" {
+		t.Errorf("X-Bot-Service-Key = %q", got)
+	}
+	if rt.last.Header.Get("X-Nectar-Signature") == "" || rt.last.Header.Get("X-Nectar-Request-Timestamp") == "" {
+		t.Errorf("falta la firma X-Nectar-*: %v", rt.last.Header)
+	}
+	if rt.last.Header.Get("Authorization") != "" {
+		t.Error("la credencial de Bird no debe salir hacia Néctar")
+	}
+}
+
+func TestDownloadMedia_BirdHostUnchanged(t *testing.T) {
+	rt := &capturingTransport{}
+	s := newDownloadSvc(rt)
+	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+
+	if _, err := s.downloadMedia(context.Background(), "https://media.api.bird.com/x.jpg"); err != nil {
+		t.Fatalf("downloadMedia: %v", err)
+	}
+	if got := rt.last.Header.Get("Authorization"); got != "AccessKey bird-key" {
+		t.Errorf("Authorization = %q", got)
+	}
+	if rt.last.Header.Get("X-Bot-Service-Key") != "" || rt.last.Header.Get("X-Nectar-Signature") != "" {
+		t.Error("las credenciales de Néctar no deben salir hacia Bird")
+	}
+}
+
+func TestDownloadMedia_OtherHostNoCredential(t *testing.T) {
+	rt := &capturingTransport{}
+	s := newDownloadSvc(rt)
+	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+
+	if _, err := s.downloadMedia(context.Background(), "https://evil.example.com/x.jpg"); err != nil {
+		t.Fatalf("downloadMedia: %v", err)
+	}
+	h := rt.last.Header
+	if h.Get("Authorization") != "" || h.Get("X-Bot-Service-Key") != "" || h.Get("X-Nectar-Signature") != "" {
+		t.Errorf("ningún anfitrión ajeno recibe credencial: %v", h)
 	}
 }

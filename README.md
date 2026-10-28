@@ -88,6 +88,23 @@ WhatsApp (usuario)
 | **Notification Manager** | Maneja respuestas a mensajes proactivos (recordatorios de citas, lista de espera) |
 | **Repository** | Capa de acceso a datos: sistema clínico **SIESA** (SQL Server) + base interna del bot (MySQL) |
 
+### Néctar (puente de mensajería)
+
+Con `NECTAR_BASE_URL` puesta, las conversaciones `nectar:*` salen por Néctar (`/api/bot/*`) y sus avisos
+entran por `POST /api/webhooks/nectar` (firma `X-Nectar-*`, dedupe por `event_id`, WAL); el resto sigue por
+Bird. Vacía, el bot funciona exactamente como antes (puente apagado). Si la configuración está a medias
+(URL sin clave de servicio o sin secreto de ida) el puente queda apagado y se registra un error al arrancar.
+`GET /api/nectar/capabilities` publica los pasos escalables y sus opciones de retorno.
+
+- Sesiones de Néctar: sin recordatorio ni no-show del agente de Bird; se cierran solo por silencio del
+  paciente; los casos encolados dentro de horario no vencen; la cola al próximo día hábil es solo suya.
+- El agente de Néctar devuelve el caso por las opciones del menú o por un único campo de texto («dato»).
+- Límites de la fase A: la descripción libre de la orden escrita por el agente no llega desde Néctar (solo
+  los CUPS); 39 estados escalables vuelven solo con las opciones universales (reanudar/cerrar) hasta la fase B;
+  los envíos proactivos (recordatorios, lista de espera, plantillas administrativas) siguen por Bird hasta el Plan B.
+- Pendiente del operador: plantilla de Meta para el aviso de cola vencida, mapeada como
+  `cola_vencida=<nombre meta>` (un parámetro, `horario`) en `NECTAR_TEMPLATE_NAMES`.
+
 ---
 
 ## 📁 Estructura de carpetas

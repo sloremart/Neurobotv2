@@ -331,3 +331,15 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - [x] `internal/repository/datosipsndx/` (Antares/MySQL) eliminado.
 - [x] Servidor SIESA de producción confirmado (`192.168.1.207` / `ZeusSalud_Neuro`).
 - [x] Mapeo de paciente (`autoid`) y de entidad/contrato (`empresa` + `contrato`) implementado.
+
+---
+
+## NÉCTAR (mensajería)
+
+- La mensajería migra de Bird a Néctar portando el puente de hdg-bot (`internal/nectar`, `bird.NectarBridge`);
+  diseño en `docs/superpowers/specs/2026-10-27-migracion-nectar-design.md`.
+- `NECTAR_BASE_URL` vacía = puente apagado (todo por Bird). Configuración a medias = puente apagado + error en
+  el arranque (`nectarBridgeFromConfig`). `/health` publica `nectar_host` (solo host).
+- Secretos: `NECTAR_SERVICE_KEY` y `NECTAR_NOTICE_SECRET` por cuenta (`openssl rand -hex 32`);
+  `NECTAR_REQUEST_SECRET` = `BOT_WEBHOOK_SECRET_INBOUND` compartido. Nunca valores reales en el repo.
+- Lo que Neuro pide a Néctar es aditivo: no debe romper a hdg-bot.

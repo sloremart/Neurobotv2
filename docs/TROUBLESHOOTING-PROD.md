@@ -630,6 +630,25 @@ variables en el `.env` del servidor.
 
 ---
 
+### 18. Néctar: 401 de firma, `nectar_host` y puente apagado
+
+**401 «firma» al entrar un aviso (`POST /api/webhooks/nectar`)**: Néctar firma la URL pública; el bot la
+reconstruye con `https` por defecto más `X-Forwarded-Proto`/`X-Forwarded-Host`. El túnel o proxy DEBE reenviar
+esas cabeceras; si las pierde, la URL reconstruida no coincide y todo aviso da 401. Revisar también
+`NECTAR_NOTICE_SECRET` (el mismo de «Configurar bot» en Néctar) y el reloj del servidor (ventana de 5 min).
+
+**¿A qué Néctar apunta este bot?** `GET /health` publica `nectar_host` (solo el host, `none` si no hay
+puente). `GET /health/debug` agrega `nectar_enabled` y `protocol_escalado_version`.
+
+**Puente apagado por configuración a medias**: con `NECTAR_BASE_URL` puesta pero sin `NECTAR_SERVICE_KEY`
+o `NECTAR_REQUEST_SECRET`, el arranque registra el error «el desvío a Néctar queda APAGADO» y el bot sigue
+como Bird (`nectar_enabled=false`). Completar las variables y reiniciar.
+
+**Adjuntos**: las URL de adjuntos de Néctar se descargan con clave de servicio + firma; si el OCR falla con
+`download document status 401/404`, revisar `NECTAR_SERVICE_KEY` y `NECTAR_REQUEST_SECRET`.
+
+---
+
 ## Backup de la BD Interna
 
 > Esto es **solo la BD local del bot** (`neuro_bot`: sesiones, eventos, lista de espera, catálogo

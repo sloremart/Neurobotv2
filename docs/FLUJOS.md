@@ -17,6 +17,7 @@
 | A4 | **Webhook de Voz** — IVR 2 fases (gather al iniciar, DTMF al terminar) | `POST /api/webhooks/voice` | `webhook_handler.go:424` |
 | A5 | **Webhook DTMF** — devuelve callFlow (TTS) y procesa la tecla | `POST /api/webhooks/voice/dtmf` | `webhook_handler.go:551` |
 | A6 | **Worker pool** — 10 workers; `Enqueue`/`EnqueueVirtual`/`EnqueueAgentCommand`; **phone-lock** (30s); `processMessage` → convID → kill-switch `BOT_ENABLED` → state machine → `sendAndSave`; drain en apagado | — | `worker/pool.go` |
+| A8 | **Webhook de Néctar** — verifica firma `X-Nectar-*` → WAL (`inbox`, `msg_type nectar_notice`) → dedupe por `event_id` → mensaje del paciente (`Enqueue`), retorno del agente (menú o campo `dato`) o cierre; `GET /api/nectar/capabilities` lista los pasos escalables | `POST /api/webhooks/nectar` | `api/nectar_handler.go` |
 | A7 | **WAL replay** al arranque — re-procesa mensajes inbox no completados | startup | `main.go:286-318` |
 
 ---
@@ -118,6 +119,11 @@ Toda resolución se archiva con estado + conversation_id (evidencia); limpieza 4
 
 ## E. Comandos de agente (`/bot ...`, solo en sesión escalada)
 `/bot` o `/bot reset` (reinicia), `/bot resume [ESTADO] [data]` (retoma; sub-rama `NOTIF_PENDING confirm|reschedule|cancel`), `/bot orden <texto>` (OCR de texto), `/bot cups <c1:q> ...` (inyecta CUPS), `/bot cerrar` (cierra), `/bot info` (resumen interno).
+
+**Retorno por menú (sesiones de Néctar):** en lugar de `/bot`, el agente elige en Néctar una opción del
+menú de retorno del paso escalado (o escribe un único campo de texto, «dato»); la opción se traduce a la
+entrada del paso y la sesión retoma. Una entrada que el paso no acepta se rechaza al agente
+(`escalacion/agent_input_rejected`). Los 39 pasos sin menú propio solo ofrecen reanudar/cerrar (fase A).
 
 ---
 

@@ -24,6 +24,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/database"
 	"github.com/neuro-bot/neuro-bot/internal/logging"
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/recovery"
@@ -152,6 +153,17 @@ func main() {
 	birdClient := bird.NewClient(cfg)
 	safeGo("bird-cache-cleanup", func() { birdClient.StartCacheCleanup(ctx) })
 
+	// Néctar: con NECTAR_BASE_URL puesta, las conversaciones nectar:* se desvían a las rutas
+	// /api/bot/*; lo demás sigue en Bird. Configurado a medias → se registra y el bot sigue como Bird.
+	nectarClient, nectarBridge, nectarErr := nectarBridgeFromConfig(cfg)
+	if nectarErr != nil {
+		slog.Error("el desvío a Néctar queda APAGADO", "error", nectarErr)
+	}
+	if nectarBridge != nil {
+		birdClient.SetNectar(nectarBridge)
+		slog.Info("Néctar activo", "host", nectar.HostOf(nectarClient.BaseURL()), "notice_secret", cfg.NectarNoticeSecret != "")
+	}
+
 	// Services (dependen de repos)
 	var patientSvc *services.PatientService
 	var appointmentSvc *services.AppointmentService
@@ -171,6 +183,10 @@ func main() {
 		}
 	}
 	ocrSvc := services.NewOCRService(cfg.OpenAIAPIKey, cfg.OpenAIModel, cupsContext, cfg.BirdAccessKeyID)
+
+	if nectarBridge != nil {
+		ocrSvc.SetNectarCredentials(cfg.NectarBaseURL, cfg.NectarServiceKey, cfg.NectarRequestSecret)
+	}
 
 	if repos != nil {
 		patientSvc = services.NewPatientService(repos.Patient)
@@ -510,8 +526,8 @@ func main() {
 
 	// HTTP Server
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB))
-	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg))))
+	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, cfg.NectarBaseURL))
+	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg, nectarBridge != nil))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -714,7 +730,9 @@ type healthCache struct {
 	critical  bool
 }
 
-func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
+// healthHandler responde el estado del bot. nectarBaseURL se publica como `nectar_host` (SOLO el host:
+// ni claves ni ruta), o "none".
+func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.HandlerFunc {
 	cache := &healthCache{}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -748,6 +766,8 @@ func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 			} else {
 				health["external_db"] = "ok"
 			}
+
+			health["nectar_host"] = nectarHealth(nectarBaseURL)
 
 			cache.health = health
 			cache.critical = critical
@@ -827,7 +847,7 @@ func safeGo(name string, f func()) {
 	}()
 }
 
-func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool, cfg *config.Config) http.HandlerFunc {
+func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool, cfg *config.Config, nectarEnabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
@@ -861,6 +881,8 @@ func debugHandler(localDB, externalDB *sql.DB, pool *worker.MessageWorkerPool, c
 				"testing_always_open":            cfg.TestingAlwaysOpen,
 				"scaling_profile":                cfg.ScalingProfile,
 				"log_level":                      cfg.LogLevel,
+				"nectar_enabled":                 nectarEnabled,
+				"protocol_escalado_version":      cfg.ProtocolEscaladoVersion,
 			}
 			// Tamaño del log del día: un bucle caliente lo dispara (28-jul-2026: 7,4 GB contra ~30 MB
 			// de un día normal). Es la señal más barata de "algo está girando en falso", y además avisa

@@ -87,6 +87,10 @@ curl -s -H "X-API-Key: $KEY" "$BASE/api/internal/flow-stats?flow=agendar" | jq
 | `GET /health` | no | Liveness + ping a ambas BD (MySQL local y SIESA). |
 | `GET /health/debug` | sí | Estado detallado: **`build_commit`** (qué código corre), `build_time`, cola del worker, conexiones DB, etc. |
 
+Con Néctar: `GET /health` publica `nectar_host` (solo el host; `none` = puente apagado, todo por Bird) y
+`/health/debug` suma `config.nectar_enabled` y `config.protocol_escalado_version`. El webhook de avisos es
+`POST /api/webhooks/nectar` y el registro de capacidades `GET /api/nectar/capabilities` (ver TROUBLESHOOTING §18).
+
 ### 2.5 Acciones (no auditoría, pero útiles al investigar)
 `POST /test-alert` (probar Telegram), `POST /send-reminders` (disparar recordatorios sin esperar 07:00),
 `POST /test-voice-call` (probar IVR), `POST /send-agenda-confirmations`, `POST /cancel-agenda`,
@@ -473,6 +477,16 @@ Imagen durante CONFIRM_OCR_RESULT = página extra: fusión de CUPS (dedupe) y re
 agente NO ha respondido; fail-quiet ante cualquier duda).
 - CAZAR: [BUG] más de un `ack_sent` por escalación · [BUG] un `ack_sent` DESPUÉS de actividad del
   agente (first_agent_msg_at anterior al ack) — el bot se metió en una conversación humana.
+
+### E2) Escalaciones de Néctar (flujo escalacion, oct-2026)
+Eventos nuevos: `escalacion/equipo_sugerido` (equipo de Néctar por grupo de CUPS al escalar),
+`escalacion/encolada_proximo_dia` (fuera de horario o sin tiempo antes del cierre; solo sesiones de Néctar),
+`escalacion/agent_input_rejected` (el protocolo rechazó la entrada del agente), `escalacion/cola_vencida`
+(el caso encolado venció; con la ventana cerrada sin plantilla `cola_vencida` se cierra sin avisar).
+- SANO: `escalated` → [`equipo_sugerido`] → [`encolada_proximo_dia`] → `agent_resumed`/`agent_closed`.
+  Las sesiones de Néctar NO emiten `agent_no_show` ni `agent_reminder_sent`.
+- CAZAR: [BUG] `agent_no_show`/`agent_reminder_sent` en una sesión `nectar:*` · [BUG] `escalation_expired`
+  de un caso encolado dentro de horario (no debe vencer) · `cola_vencida` frecuente sin plantilla mapeada.
 
 ### F) 3ª tanda jul-2026 (variantes de entrada + proactivos nuevos)
 - `entidad/greeting_midflow_redirected` y tipo-doc: saludo/intención a mitad de flujo re-muestra la
