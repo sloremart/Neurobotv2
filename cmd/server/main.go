@@ -497,6 +497,7 @@ func main() {
 		if schedulerTasks != nil {
 			internalHandler.SetReminderRunner(schedulerTasks)
 		}
+		internalHandler.SetAgentsInNectar(nectarBridge != nil) // agentes en Néctar solo con puente real
 		internalHandler.SetSessionReader(sessionRepo)
 		internalHandler.SetFlowReader(flowRepo)
 		if repos.Patient != nil {

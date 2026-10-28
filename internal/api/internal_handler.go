@@ -148,7 +148,12 @@ type InternalHandler struct {
 	siesaAnalytics  SiesaAnalyticsReader // optional: SIESA aggregated KPIs (ocupación, citas, conciliación)
 	cupsMedico      CupsMedicoReader     // optional: cups_medico reader for the conciliación cross
 	patientRepo     PatientReader        // optional: resolver teléfono/nombre del paciente al notificar
+	agentsInNectar  bool                 // el puente de Néctar está cableado: los agentes viven allá
 }
+
+// SetAgentsInNectar marca que el puente de Néctar está realmente activo (main lo llama solo si el
+// puente se armó; NECTAR_BASE_URL puesta sin puente completo NO cuenta, porque ahí el bot sigue en Bird).
+func (h *InternalHandler) SetAgentsInNectar(v bool) { h.agentsInNectar = v }
 
 // PatientReader resuelve datos del paciente (teléfono/nombre) por su id (autoid), para las
 // notificaciones individuales del módulo Agenda. Lo inyecta SetPatientReader.
@@ -476,9 +481,16 @@ func (c *callsCache) set(key string, data []byte) {
 
 // HandleBirdAgents expone las métricas DIRECTAS de Bird por agente (estado/actividad, carga actual de
 // conversaciones asignadas, equipos) para el informe unificado de agentes del dashboard (F3 §9).
-// Solo lectura contra la API de Bird; sin Bird configurado responde 503.
+// Solo lectura contra la API de Bird; sin Bird configurado responde 503. Con el puente de Néctar
+// activo las métricas por agente viven en Néctar (D5): 409 {"reason":"agents_in_nectar"}.
 // GET /api/internal/agents/bird
 func (h *InternalHandler) HandleBirdAgents(w http.ResponseWriter, _ *http.Request) {
+	if h.agentsInNectar {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"reason":"agents_in_nectar"}`))
+		return
+	}
 	if h.birdClient == nil {
 		http.Error(w, "bird client not available", http.StatusServiceUnavailable)
 		return

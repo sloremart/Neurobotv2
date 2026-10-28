@@ -1184,3 +1184,33 @@ func TestIsClientAbort(t *testing.T) {
 func (m *mockSiesaAnalyticsReader) MRCGroupMonthlyConsumption(_ context.Context, _ []string, _, _ int, _ string) (int, int, error) {
 	return 0, 0, nil
 }
+
+// Con el puente de Néctar cableado, las métricas por agente viven allá: 409 agents_in_nectar,
+// aunque no haya cliente de Bird.
+func TestHandleBirdAgents_409WhenNectar(t *testing.T) {
+	h := &InternalHandler{cfg: &config.Config{NectarBaseURL: "https://nectar.example.com"}}
+	h.SetAgentsInNectar(true)
+	w := httptest.NewRecorder()
+	h.HandleBirdAgents(w, httptest.NewRequest(http.MethodGet, "/api/internal/agents/bird", nil))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, esperaba 409", w.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["reason"] != "agents_in_nectar" {
+		t.Errorf("cuerpo = %q (%v)", w.Body.String(), err)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q", ct)
+	}
+}
+
+// NECTAR_BASE_URL puesta pero sin puente (config a medias): el bot sigue en Bird, así que el
+// endpoint se comporta como siempre (aquí 503 por no haber cliente de Bird), nunca 409.
+func TestHandleBirdAgents_NoBridgeKeepsBirdBehavior(t *testing.T) {
+	h := &InternalHandler{cfg: &config.Config{NectarBaseURL: "https://nectar.example.com"}}
+	w := httptest.NewRecorder()
+	h.HandleBirdAgents(w, httptest.NewRequest(http.MethodGet, "/api/internal/agents/bird", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, esperaba 503", w.Code)
+	}
+}
