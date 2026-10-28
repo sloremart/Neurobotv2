@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"os"
 	"regexp"
 	"slices"
@@ -98,6 +99,19 @@ func TestReturnMenus_NotifPendingIsStaticAndMatchesTheWorkerShortcut(t *testing.
 	}
 	if want := []string{"confirm", "reschedule", "cancel"}; !slices.Equal(got, want) {
 		t.Fatalf("acciones = %v, quiero %v", got, want)
+	}
+}
+
+// El descriptor de NOTIF_PENDING sin máquina (lo que usa el NotificationManager) es el mismo que
+// el de la máquina: si alguien le añade un campo al paso, esto avisa de que el atajo ya no basta.
+func TestReturnMenus_NotifPendingStaticDescriptorMatchesTheMachine(t *testing.T) {
+	m := returnMenuMachine()
+	want, err := json.Marshal(m.InputDescriptor(nil, sm.StateNotifPending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sm.StaticInputDescriptor(sm.StateNotifPending); string(got) != string(want) {
+		t.Fatalf("StaticInputDescriptor = %s\nMachine.InputDescriptor = %s", got, want)
 	}
 }
 

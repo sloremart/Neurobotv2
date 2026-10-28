@@ -1323,13 +1323,16 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		return
 	}
 
-	// Internal notes visible only in Bird Inbox (agent context)
-	_, _ = m.birdClient.SendInternalText(p.Phone, convID, note)
-	_, _ = m.birdClient.SendInternalText(p.Phone, convID, commands)
+	// Los comandos `/bot resume` son del Inbox de Bird: en Néctar las opciones viajan en el sobre.
+	// La nota del caso va como resumen de la escalación (Bird la manda tras asignar al agente).
+	if !session.IsNectarSession(p.Phone) {
+		_, _ = m.birdClient.SendInternalText(p.Phone, convID, commands)
+	}
 
-	if _, _, err := m.birdClient.EscalateToAgent(ctx, convID, p.Phone,
+	esc := notifEscalation(m.cfg, p.Phone, escalationDetailFreeText, note)
+	if _, _, err := m.birdClient.EscalateToAgentWithSummary(ctx, convID, p.Phone,
 		m.cfg.BirdTeamFallback, "Call Center",
-		patientName, m.cfg.BirdTeamFallback); err != nil {
+		patientName, m.cfg.BirdTeamFallback, esc); err != nil {
 		slog.Error(
 			"escalateNotifToAgent: EscalateToAgent failed",
 			"phone", utils.MaskPhone(p.Phone),

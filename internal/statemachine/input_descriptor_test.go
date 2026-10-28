@@ -2,6 +2,7 @@ package statemachine
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -280,5 +281,26 @@ func TestInputDescriptor_RequiredEmitsRequeridoAndMinimoCampos(t *testing.T) {
 		if _, has := got.Fields[0][k]; has {
 			t.Errorf("%q va ausente donde nadie lo declaró: %s", k, raw)
 		}
+	}
+}
+
+// StaticInputDescriptor es la forma de armar el descriptor sin máquina: para un paso estático sin
+// entrada tiene que ser BYTE A BYTE el de Machine.InputDescriptor, o dos emisores dirían cosas
+// distintas del mismo paso.
+func TestStaticInputDescriptor_MatchesTheMachine(t *testing.T) {
+	registerTestMenu(t, stepDescriptor,
+		ReturnOption{Label: "Confirmar la cita", Value: "confirm", Target: stepDescriptor, Data: "confirm"},
+		ReturnOption{Label: "Sin dato", Value: "sin_dato", NoInput: true},
+	)
+	want, err := json.Marshal(NewMachine().InputDescriptor(nil, stepDescriptor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := StaticInputDescriptor(stepDescriptor)
+	if string(got) != string(want) {
+		t.Fatalf("StaticInputDescriptor = %s\nMachine.InputDescriptor = %s", got, want)
+	}
+	if !strings.HasSuffix(string(got), `{"rotulo":"Caso cerrado, no reanudar","valor":"`+ReturnClose+`","salida":"cerrar"}]}`) {
+		t.Errorf("las opciones universales deben ir al final: %s", got)
 	}
 }

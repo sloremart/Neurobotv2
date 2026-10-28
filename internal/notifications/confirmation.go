@@ -361,12 +361,10 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		note = buildNoResponseNote(pending.SameDay, pending.Phone, apptInfo)
 	}
 
-	// 2. Internal note — visible ONLY in Bird Inbox (patient doesn't see it on WhatsApp)
-	if pending.ConversationID != "" {
-		_, _ = m.birdClient.SendInternalText(pending.Phone, pending.ConversationID, note)
-	} else {
-		// Sin ConversationID no hay nota NI asignación (paso 4): el agente jamás se entera. Emitir el
-		// hueco para que el auditor/dashboard lo cuenten en vez de perderse en silencio.
+	// 2. La nota interna (visible SOLO en el Inbox; el paciente no la ve) viaja como resumen de la
+	// escalación del paso 4. Sin ConversationID no hay nota NI asignación: el agente jamás se entera.
+	// Emitir el hueco para que el auditor/dashboard lo cuenten en vez de perderse en silencio.
+	if pending.ConversationID == "" {
 		observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "escalation_no_conversation",
 			observability.EmitOpts{Phone: pending.Phone})
 		slog.Warn("notif escalation without conversation_id - agent will NOT be notified",
@@ -384,12 +382,17 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 
 	// 4. Assign to best available agent
 	if pending.ConversationID != "" {
-		// L9: capturar el error de la escalación (antes se descartaba). EscalateToAgent ya loguea
+		// L9: capturar el error de la escalación (antes se descartaba). La escalación ya loguea
 		// internamente en rutas degradadas, pero sin esto la traza propia no distinguía éxito/fallo.
-		if _, _, err := m.birdClient.EscalateToAgent(
+		detail := escalationDetailNoResponse
+		if reason == escalationSystemFailure {
+			detail = escalationDetailSystemFailed
+		}
+		if _, _, err := m.birdClient.EscalateToAgentWithSummary(
 			ctx, pending.ConversationID, pending.Phone,
 			m.cfg.BirdTeamFallback, "Call Center",
 			patientName, m.cfg.BirdTeamFallback,
+			notifEscalation(m.cfg, pending.Phone, detail, note),
 		); err != nil {
 			slog.Error("notif escalate to agent failed", "phone", utils.MaskPhone(pending.Phone),
 				"conversation_id", pending.ConversationID, "error", err)

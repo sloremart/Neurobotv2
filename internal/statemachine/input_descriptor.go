@@ -1,6 +1,7 @@
 package statemachine
 
 import (
+	"encoding/json"
 	"log/slog"
 
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -72,17 +73,7 @@ type InputField struct {
 // por la misma razón: la ayuda por omisión sale de la config del paso. Recibe la sesión y no
 // tiene caché: un descriptor cacheado por paso congelaría lo que dependa de la sesión.
 func (m *Machine) InputDescriptor(sess *session.Session, step string) InputDescriptor {
-	opts := ReturnOptionsFor(sess, step)
-	d := InputDescriptor{Step: step, Options: make([]InputOption, 0, len(opts))}
-	for _, o := range opts {
-		// Misma regla que el dialecto: una opción ilegible descarta LA OPCIÓN, no el menú.
-		if o.Label == "" || o.Value == "" {
-			slog.Warn("descriptor de entrada: opción descartada por venir incompleta",
-				"step", step, "rotulo", o.Label, "valor", o.Value)
-			continue
-		}
-		d.Options = append(d.Options, InputOption{Label: o.Label, Value: o.Value, Exit: returnOptionExit(o)})
-	}
+	d := InputDescriptor{Step: step, Options: descriptorOptions(sess, step)}
 
 	in, offers := returnInputFor(step)
 	if !offers {
@@ -110,4 +101,36 @@ func (m *Machine) InputDescriptor(sess *session.Session, step string) InputDescr
 		d.MinFields = 1
 	}
 	return d
+}
+
+// descriptorOptions son los botones del paso en la forma del descriptor: las salidas del paso y
+// las dos universales al final, las MISMAS que BuildReturnMenu. La comparten la máquina y
+// StaticInputDescriptor para que las dos formas de armar el descriptor no puedan separarse.
+func descriptorOptions(sess *session.Session, step string) []InputOption {
+	opts := ReturnOptionsFor(sess, step)
+	out := make([]InputOption, 0, len(opts))
+	for _, o := range opts {
+		// Misma regla que el dialecto: una opción ilegible descarta LA OPCIÓN, no el menú.
+		if o.Label == "" || o.Value == "" {
+			slog.Warn("descriptor de entrada: opción descartada por venir incompleta",
+				"step", step, "rotulo", o.Label, "valor", o.Value)
+			continue
+		}
+		out = append(out, InputOption{Label: o.Label, Value: o.Value, Exit: returnOptionExit(o)})
+	}
+	return out
+}
+
+// StaticInputDescriptor serializa el descriptor `input` de un paso de menú ESTÁTICO (sin sesión
+// ni máquina): quien escala sin tener la máquina, como el NotificationManager, lo arma con él.
+// Solo lleva `paso` y `opciones`: los pasos que piden un campo al agente necesitan la máquina
+// (la ayuda por omisión sale de su config) y deben usar Machine.InputDescriptor. Devuelve nil si
+// no se puede serializar, y nil significa «no viaja».
+func StaticInputDescriptor(step string) []byte {
+	raw, err := json.Marshal(InputDescriptor{Step: step, Options: descriptorOptions(nil, step)})
+	if err != nil {
+		slog.Error("descriptor de entrada estático no serializable", "error", err, "step", step)
+		return nil
+	}
+	return raw
 }
