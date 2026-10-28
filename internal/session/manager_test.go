@@ -1335,3 +1335,123 @@ func TestCheckEscalatedSessions_ReminderFailureConsumesAttempt(t *testing.T) {
 		t.Fatalf("el fallo genérico del recordatorio debe consumir el intento (IncrementAgentReminders), got %d", incremented)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Sesiones de Néctar en el checker de escalaciones: la cola es de Néctar, así que el bot
+// no corre ni el no-show ni los recordatorios al agente; solo cierra por silencio del paciente.
+// ---------------------------------------------------------------------------
+
+// TestCheckEscalated_NectarSkipsNoShowAndReminders: una sesión de Néctar sin respuesta del
+// agente a los 400 min no dispara el Resumer ni el recordatorio interno.
+func TestCheckEscalated_NectarSkipsNoShowAndReminders(t *testing.T) {
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "nectar:7", ConversationID: "7",
+				LastPatientMsg: time.Now().Add(-400 * time.Minute),
+				EscalatedAt:    time.Now().Add(-400 * time.Minute),
+				LastAgentMsg:   nil,
+			}}, nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	bird := &mockInactivityBird{}
+	resumer := &mockResumer{}
+	deps := escalationDeps(bird)
+	deps.EscalationCloseMin = 1000 // aislar: que el cierre por silencio no actúe
+	deps.Resumer = resumer
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if len(resumer.phones) != 0 {
+		t.Errorf("Néctar no debe disparar no-show, got %v", resumer.phones)
+	}
+	if len(bird.internalTexts) != 0 || len(bird.sentTexts) != 0 {
+		t.Errorf("Néctar no debe recibir recordatorios, got internal=%d patient=%d",
+			len(bird.internalTexts), len(bird.sentTexts))
+	}
+}
+
+// TestCheckEscalated_NectarClosesByPatientSilence: el silencio del paciente sí cierra, aun
+// sin que el agente haya respondido y con Resumer cableado (en Bird eso iría al no-show).
+func TestCheckEscalated_NectarClosesByPatientSilence(t *testing.T) {
+	abandoned := ""
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "nectar:7", ConversationID: "7",
+				LastPatientMsg: time.Now().Add(-130 * time.Minute),
+				EscalatedAt:    time.Now().Add(-130 * time.Minute),
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, id string) error { abandoned = id; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	bird := &mockInactivityBird{}
+	resumer := &mockResumer{}
+	deps := escalationDeps(bird)
+	deps.Resumer = resumer
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if abandoned != "s1" {
+		t.Errorf("esperaba s1 abandonada, got %q", abandoned)
+	}
+	if rec.expire != 1 || bird.closedFeeds != 1 {
+		t.Errorf("esperaba 1 Expire y 1 cierre de feed, got expire=%d feeds=%d", rec.expire, bird.closedFeeds)
+	}
+	if len(resumer.phones) != 0 {
+		t.Errorf("no debe haber no-show, got %v", resumer.phones)
+	}
+}
+
+// TestCloseEscalatedBySilence_NectarNotMineIsSuccess: CloseFeedItems devuelve nil tras el 404
+// interno de Néctar (ErrNotMine absorbido): el cierre se completa igual.
+func TestCloseEscalatedBySilence_NectarNotMineIsSuccess(t *testing.T) {
+	abandoned := ""
+	repo := &mockRepo{
+		markAbandonedFn: func(_ context.Context, id string) error { abandoned = id; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	bird := &mockInactivityBird{}
+
+	s := EscalatedSession{ID: "s9", PhoneNumber: "nectar:9", ConversationID: "9"}
+	mgr.closeEscalatedBySilence(context.Background(), escalationDeps(bird), s, 130*time.Minute)
+
+	if abandoned != "s9" {
+		t.Errorf("esperaba s9 abandonada, got %q", abandoned)
+	}
+	if rec.expire != 1 {
+		t.Errorf("esperaba 1 Expire, got %d", rec.expire)
+	}
+}
+
+// TestCheckEscalated_QueuedExemptSkipsEverything: una escalación encolada para el próximo día
+// no se cierra por silencio ni dispara no-show mientras dure la exención.
+func TestCheckEscalated_QueuedExemptSkipsEverything(t *testing.T) {
+	abandoned := ""
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "nectar:7", ConversationID: "7",
+				LastPatientMsg: time.Now().Add(-600 * time.Minute),
+				EscalatedAt:    time.Now().Add(-600 * time.Minute), QueuedForNextDay: true,
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, id string) error { abandoned = id; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	bird := &mockInactivityBird{}
+	deps := escalationDeps(bird)
+	deps.NextOpen = func(time.Time) time.Time { return time.Now().Add(time.Hour) }
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if abandoned != "" || bird.closedFeeds != 0 {
+		t.Errorf("la encolada no debe cerrarse, abandoned=%q feeds=%d", abandoned, bird.closedFeeds)
+	}
+}

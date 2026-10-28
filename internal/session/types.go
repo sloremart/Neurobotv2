@@ -82,6 +82,28 @@ type EscalatedSession struct {
 	LastAgentMsg   *time.Time // last reply from the agent (nil = agent never replied)
 	RemindersSent  int        // agent reminders already sent in this waiting window
 	EscalatedAt    time.Time  // when THIS escalation happened (anchors the no-show clock; zero = legacy row)
+	// QueuedForNextDay dice si esta escalación quedó ENCOLADA para que una persona la atienda
+	// el próximo día hábil (la marca la pone el handler de escalación; aquí llega leída del
+	// session_context). Al paciente se le dijo que lo atienden mañana, así que su silencio de
+	// esta noche no es abandono.
+	QueuedForNextDay bool
+}
+
+// EscalationQueuedForNextDayKey es la clave de session_context que marca una escalación
+// encolada para el próximo día hábil. El repo la lee por SQL para llenar QueuedForNextDay.
+//
+// El literal se escribe a mano porque este paquete no puede importar statemachine (crearía
+// ciclo); el test TestEscalationQueuedForNextDayKey_MatchStateMachine lo mantiene sincronizado
+// con statemachine.CtxEscalationNextDay.
+const EscalationQueuedForNextDayKey = "escalacion_proximo_dia"
+
+// escalationExempt dice si una escalación debe sobrevivir al checker (ni cierre por silencio ni
+// no-show): quedó encolada para el próximo día hábil y esa espera aún no termina. La exención
+// caduca en la próxima apertura del horario (nextOpen aplicado a EscalatedAt); sin horario
+// cableado o sin escalated_at no hay con qué calcular el fin y no caduca, que es el lado seguro
+// (cerrarle el chat a quien espera a una persona es peor que dejarlo esperando).
+func escalationExempt(s EscalatedSession, now time.Time, nextOpen func(time.Time) time.Time) bool {
+	return s.QueuedForNextDay && (nextOpen == nil || s.EscalatedAt.IsZero() || now.Before(nextOpen(s.EscalatedAt)))
 }
 
 // IsNectarSession dice si la sesión viene de Néctar: su clave ocupa el sitio del teléfono y

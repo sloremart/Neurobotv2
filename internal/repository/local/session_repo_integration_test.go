@@ -225,3 +225,46 @@ func TestSessionRepo_CompleteActiveByPhone_AlsoClearsExpiredOccupant(t *testing.
 		t.Fatalf("create tras limpiar el cupo: %v", err)
 	}
 }
+
+// TestFindEscalatedSessions_ReadsQueuedMark: la marca de escalación encolada
+// (session_context.escalacion_proximo_dia) llega como QueuedForNextDay; sin marca, false.
+func TestFindEscalatedSessions_ReadsQueuedMark(t *testing.T) {
+	db := openLocalTestDB(t)
+	defer db.Close()
+	repo := NewSessionRepo(db)
+	ctx := context.Background()
+
+	mk := func(suffix string, mark bool) string {
+		id := fmt.Sprintf("itest-queued-%s-%d", suffix, time.Now().UnixNano())
+		t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", id) })
+		s := &session.Session{
+			ID: id, PhoneNumber: "nectar:" + id, CurrentState: "X",
+			Status: session.StatusActive, ExpiresAt: time.Now().Add(time.Hour),
+		}
+		if err := repo.Create(ctx, s); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if mark {
+			if err := repo.SetContext(ctx, id, session.EscalationQueuedForNextDayKey, "1"); err != nil {
+				t.Fatalf("set context: %v", err)
+			}
+		}
+		if err := repo.MarkEscalated(ctx, id, "team-1"); err != nil {
+			t.Fatalf("escalate: %v", err)
+		}
+		return id
+	}
+	queuedID := mk("a", true)
+	plainID := mk("b", false)
+
+	list, err := repo.FindEscalatedSessions(ctx)
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got := findEsc(list, queuedID); got == nil || !got.QueuedForNextDay {
+		t.Errorf("la sesión con marca debe traer QueuedForNextDay=true: %+v", got)
+	}
+	if got := findEsc(list, plainID); got == nil || got.QueuedForNextDay {
+		t.Errorf("la sesión sin marca debe traer QueuedForNextDay=false: %+v", got)
+	}
+}

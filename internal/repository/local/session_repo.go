@@ -309,11 +309,15 @@ func (r *SessionRepo) TouchAgentActivity(ctx context.Context, phone string) erro
 // FindEscalatedSessions returns all escalated sessions with the activity timestamps needed
 // to decide close (patient silence) vs agent reminder.
 func (r *SessionRepo) FindEscalatedSessions(ctx context.Context) ([]session.EscalatedSession, error) {
+	// La marca de escalación encolada (escalacion_proximo_dia) sale del session_context con un
+	// LEFT JOIN propio, porque esa tabla es una fila por clave.
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, phone_number, COALESCE(conversation_id, ''),
-		 COALESCE(last_patient_msg_at, last_activity_at), last_agent_msg_at, agent_reminders_sent,
-		 escalated_at
-		 FROM sessions WHERE status = 'escalated'`)
+		`SELECT s.id, s.phone_number, COALESCE(s.conversation_id, ''),
+		 COALESCE(s.last_patient_msg_at, s.last_activity_at), s.last_agent_msg_at,
+		 s.agent_reminders_sent, s.escalated_at, COALESCE(scq.ctx_value, '')
+		 FROM sessions s
+		 LEFT JOIN session_context scq ON scq.session_id = s.id AND scq.ctx_key = ?
+		 WHERE s.status = 'escalated'`, session.EscalationQueuedForNextDayKey)
 	if err != nil {
 		return nil, fmt.Errorf("find escalated sessions: %w", err)
 	}
@@ -323,10 +327,12 @@ func (r *SessionRepo) FindEscalatedSessions(ctx context.Context) ([]session.Esca
 	for rows.Next() {
 		var s session.EscalatedSession
 		var lastAgent, escalatedAt sql.NullTime
+		var queued string
 		if err := rows.Scan(&s.ID, &s.PhoneNumber, &s.ConversationID,
-			&s.LastPatientMsg, &lastAgent, &s.RemindersSent, &escalatedAt); err != nil {
+			&s.LastPatientMsg, &lastAgent, &s.RemindersSent, &escalatedAt, &queued); err != nil {
 			return nil, fmt.Errorf("scan escalated session: %w", err)
 		}
+		s.QueuedForNextDay = queued == "1"
 		if lastAgent.Valid {
 			s.LastAgentMsg = &lastAgent.Time
 		}

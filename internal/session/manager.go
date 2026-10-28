@@ -74,6 +74,9 @@ type InactivityDeps struct {
 	// Resumer devuelve al bot las escalaciones no atendidas por el agente (no-show). nil = no actúa
 	// (en ese caso el no-show no se procesa y la escalación sigue hasta el cierre por silencio).
 	Resumer EscalationResumer
+	// NextOpen devuelve la próxima apertura del horario después de t; acota la exención de las
+	// escalaciones encoladas para el próximo día (escalationExempt). nil = la exención no caduca.
+	NextOpen func(time.Time) time.Time
 }
 
 // EscalationRecorder registra el ciclo de vida de cada escalación en la tabla `escalations`
@@ -436,6 +439,40 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 	}
 }
 
+// closeEscalatedBySilence cierra una escalación porque el PACIENTE lleva en silencio más de
+// EscalationCloseMin: marca la sesión abandonada, expira la escalación y cierra el feed del
+// canal. En Néctar, CloseFeedItems devuelve nil aunque Néctar responda 404 (ErrNotMine), así
+// que ese caso cuenta como cierre exitoso.
+func (m *SessionManager) closeEscalatedBySilence(ctx context.Context, deps InactivityDeps, s EscalatedSession, patientSilent time.Duration) {
+	if err := m.repo.MarkAbandoned(ctx, s.ID); err != nil {
+		slog.Error("mark escalated abandoned failed", "session_id", s.ID, "error", err)
+		return
+	}
+	if m.escalations != nil {
+		if err := m.escalations.Expire(ctx, s.ID); err != nil {
+			slog.Warn("escalation expire failed", "session_id", s.ID, "error", err)
+		}
+	}
+	if s.ConversationID != "" {
+		if err := deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID); err != nil {
+			slog.Warn("close feed on escalated close failed", "session_id", s.ID, "error", err)
+		}
+	}
+	if deps.Tracker != nil {
+		deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_expired", map[string]interface{}{
+			"patient_silent_min": int(patientSilent.Minutes()),
+		})
+	}
+	observability.Emit(observability.TraceSession(s.ID), "escalacion", "escalation_expired",
+		observability.EmitOpts{
+			Phone: s.PhoneNumber,
+			Attrs: map[string]interface{}{"duration_ms": patientSilent.Milliseconds()},
+		})
+	slog.Info("escalated session closed by patient silence",
+		"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
+		"patient_silent_min", int(patientSilent.Minutes()))
+}
+
 // checkEscalatedSessions, por cada chat escalado, decide UNA de dos cosas:
 //  1. Cerrar (marcar abandonado + cerrar feed) si el PACIENTE lleva EscalationCloseMin en silencio.
 //     El silencio del agente NUNCA cierra el chat (last_patient_msg_at solo lo mueve el paciente).
@@ -452,6 +489,24 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 	for _, s := range sessions {
 		patientSilent := now.Sub(s.LastPatientMsg)
 		agentEverReplied := s.LastAgentMsg != nil
+
+		// Escalación encolada para el próximo día: ni cierre por silencio ni no-show mientras
+		// dure la espera (escalationExempt).
+		if escalationExempt(s, now, deps.NextOpen) {
+			slog.Debug("escalation exempt: encolada para el próximo día",
+				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
+			continue
+		}
+
+		// Néctar: la cola es de Néctar, así que NO corren el no-show ni los recordatorios al
+		// agente. Lo único que el bot hace con la sesión es cerrarla por silencio del PACIENTE
+		// (aunque ningún agente haya respondido: no hay Resumer al que devolverla).
+		if IsNectarSession(s.PhoneNumber) {
+			if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute {
+				m.closeEscalatedBySilence(ctx, deps, s, patientSilent)
+			}
+			continue
+		}
 
 		// (0) Agente NO-SHOW: el agente NUNCA respondió y ya pasó la ventana de recordatorios
 		// (AgentReminderMin*(Max+1); con 75 y Max=3 → 300 min = 5h, un intervalo tras el 3er
@@ -485,33 +540,7 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 		// fugar la sesión.
 		if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute &&
 			(agentEverReplied || deps.Resumer == nil) {
-			if err := m.repo.MarkAbandoned(ctx, s.ID); err != nil {
-				slog.Error("mark escalated abandoned failed", "session_id", s.ID, "error", err)
-				continue
-			}
-			if m.escalations != nil {
-				if err := m.escalations.Expire(ctx, s.ID); err != nil {
-					slog.Warn("escalation expire failed", "session_id", s.ID, "error", err)
-				}
-			}
-			if s.ConversationID != "" {
-				if err := deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID); err != nil {
-					slog.Warn("close feed on escalated close failed", "session_id", s.ID, "error", err)
-				}
-			}
-			if deps.Tracker != nil {
-				deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_expired", map[string]interface{}{
-					"patient_silent_min": int(patientSilent.Minutes()),
-				})
-			}
-			observability.Emit(observability.TraceSession(s.ID), "escalacion", "escalation_expired",
-				observability.EmitOpts{
-					Phone: s.PhoneNumber,
-					Attrs: map[string]interface{}{"duration_ms": patientSilent.Milliseconds()},
-				})
-			slog.Info("escalated session closed by patient silence",
-				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
-				"patient_silent_min", int(patientSilent.Minutes()))
+			m.closeEscalatedBySilence(ctx, deps, s, patientSilent)
 			continue
 		}
 

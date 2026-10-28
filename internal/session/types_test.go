@@ -1,6 +1,9 @@
 package session
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSession_GetContext_NilMap(t *testing.T) {
 	s := &Session{Context: nil}
@@ -43,5 +46,34 @@ func TestSession_SetContext_ExistingMap(t *testing.T) {
 	}
 	if s.Context["new"] != "value" {
 		t.Errorf("expected 'value', got %q", s.Context["new"])
+	}
+}
+
+func TestEscalationExempt_QueuedUntilNextOpen(t *testing.T) {
+	escalated := time.Date(2026, 9, 11, 22, 0, 0, 0, time.UTC)
+	open := escalated.Add(10 * time.Hour)
+	nextOpen := func(time.Time) time.Time { return open }
+	queued := EscalatedSession{QueuedForNextDay: true, EscalatedAt: escalated}
+
+	cases := []struct {
+		name     string
+		s        EscalatedSession
+		now      time.Time
+		nextOpen func(time.Time) time.Time
+		want     bool
+	}{
+		{"encolada antes de abrir", queued, open.Add(-time.Minute), nextOpen, true},
+		{"encolada al abrir ya no exime", queued, open, nextOpen, false},
+		{"encolada tras abrir", queued, open.Add(time.Hour), nextOpen, false},
+		{"sin marca nunca exime", EscalatedSession{EscalatedAt: escalated}, open.Add(-time.Minute), nextOpen, false},
+		{"sin horario cableado exime sin caducar", queued, open.Add(48 * time.Hour), nil, true},
+		{"sin escalated_at exime sin caducar", EscalatedSession{QueuedForNextDay: true}, open.Add(48 * time.Hour), nextOpen, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := escalationExempt(c.s, c.now, c.nextOpen); got != c.want {
+				t.Errorf("escalationExempt = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
