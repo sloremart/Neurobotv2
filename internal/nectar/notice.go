@@ -490,7 +490,16 @@ func (n Notice) ToInboundMessage(baseURL string) bird.InboundMessage {
 	switch m.Kind {
 	case "", "text":
 		msg.MessageType = "text"
-	case "image", "sticker", "document":
+	case "sticker":
+		// Mismo tipo que produce bird.ParseInboundMessage: lo rechaza el interceptor de mensajes
+		// no soportados. NO es una imagen —iría al OCR como si fuera la foto de una orden— y no
+		// necesita descarga, así que se decide antes de mirar el adjunto.
+		msg.MessageType = "sticker"
+	case "contacts":
+		// Néctar nombra la tarjeta de contacto en plural, como el payload crudo de WhatsApp;
+		// Neuro la maneja con el tipo singular que ya produce Bird.
+		msg.MessageType = "contact"
+	case "image", "document":
 		// Sin NADA con que descargarlo, el adjunto no se despacha como adjunto: ver
 		// UnusableAttachmentType. El aviso se procesa igual y el paso pide otra foto.
 		if attachmentURL == "" {
@@ -507,8 +516,8 @@ func (n Notice) ToInboundMessage(baseURL string) bird.InboundMessage {
 		msg.MessageType = "image"
 		msg.ImageURL = attachmentURL
 	default:
-		// audio, video, location, contacts, interactive… — la máquina de estados ya sabe
-		// qué decirle al paciente con un tipo que no maneja.
+		// audio, video, location, interactive… — la máquina de estados ya sabe qué decirle al
+		// paciente con un tipo que no maneja.
 		msg.MessageType = m.Kind
 	}
 	return msg

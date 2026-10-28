@@ -60,6 +60,8 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 // InboxPersister abstracts message inbox operations for crash recovery (WAL pattern).
 type InboxPersister interface {
 	InsertIfNotExists(ctx context.Context, id, phone, rawBody, msgType string, receivedAt time.Time) (bool, error)
+	// MarkDone cierra una fila que no pasa por el worker (avisos de Néctar sin mensaje).
+	MarkDone(ctx context.Context, id string) error
 }
 
 type WebhookHandler struct {
@@ -85,6 +87,10 @@ type WebhookHandler struct {
 	deliverySeenCount atomic.Int64
 	// startedAt: gracia de arranque para la pausa por intervención de agente (ver takeoverStartupGrace).
 	startedAt time.Time
+	// Néctar (nectar_handler.go): a dónde despachar los avisos (nil → workerPool) y la
+	// memoria local de event_id vistos.
+	nectarSink    nectarDispatcher
+	nectarSeenIDs nectarSeen
 }
 
 // DeliveryTracker registra el resultado de ENTREGA de los envíos salientes (webhook outbound).

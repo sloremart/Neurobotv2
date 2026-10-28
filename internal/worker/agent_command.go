@@ -1,13 +1,45 @@
 package worker
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
+)
 
 // AgentCommand represents a parsed /bot command from a human agent.
 type AgentCommand struct {
+	// ReturnValue es el token del menú de retornos que el agente eligió en Néctar
+	// (conversacion_devuelta.return_value). Vacío = devolución sin decisión.
+	ReturnValue string
+
+	// ReturnV1 es el retorno del protocolo v1 (`{opcion, valores?}`), cuando el aviso lo trajo.
+	// nil = el dialecto, que es lo que llega hasta que Néctar despliegue v1 — y lo que seguirá
+	// llegando después, porque la aceptación dual no se apaga.
+	//
+	// Va JUNTO a ReturnValue y no en su lugar: un aviso puede traer las dos (manda ésta).
+	ReturnV1 *nectar.V1Return
+
+	// Reason es el motivo con que Néctar resolvió la conversación (conversacion_resuelta.motivo,
+	// p. ej. "cola_vencida"). Solo viaja con Action "close"; vacío = resolución sin motivo.
+	Reason string
+
 	Action string // "resume", "close", "info", "reset", "orden", "cups"
 	State  string // Target state (optional, for resume)
 	Data   string // Corrected data (optional, for resume with data / orden description)
 	Phone  string // Patient phone number
+}
+
+// ChosenOption es el TOKEN que el agente eligió, venga por donde venga: la `opcion` del retorno
+// v1 si lo hay, y si no el `return_value` del dialecto. Existe para los sitios que preguntan por
+// el token y nada más, que si no tendrían que repetir la precedencia y acabarían discrepando.
+//
+// OJO: en el dialecto el mismo campo transporta también los DATOS escritos (`bot_dato:` /
+// `bot_citas:`), así que esto no es «el token y solo el token».
+func (c AgentCommand) ChosenOption() string {
+	if c.ReturnV1 != nil && c.ReturnV1.Option != "" {
+		return c.ReturnV1.Option
+	}
+	return c.ReturnValue
 }
 
 // ParseAgentCommand parses agent text into a structured command.

@@ -325,6 +325,8 @@ func (m *mockInbox) InsertIfNotExists(_ context.Context, _, phone, _, _ string, 
 	return true, nil
 }
 
+func (m *mockInbox) MarkDone(_ context.Context, _ string) error { return nil }
+
 func inboundEvent(id, identifier string) []byte {
 	event := bird.WebhookEvent{
 		Payload: bird.WebhookPayload{

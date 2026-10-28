@@ -73,7 +73,7 @@ func TestInbound_AdjuntoSinURLSeComponeDelID(t *testing.T) {
 // (2) del §5.3: sin NADA con que descargarlo, el adjunto no se despacha como adjunto. El paso de
 // la orden médica veía un mensaje de imagen SIN imagen y se quedaba mirando una URL vacía.
 func TestInbound_AdjuntoSinURLUtilizableNoSeDespachaComoImagen(t *testing.T) {
-	for _, kind := range []string{"image", "document", "sticker"} {
+	for _, kind := range []string{"image", "document"} {
 		body := `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
 		          "message":{"id":1,"kind":"` + kind + `","attachment":{"id":""}}}`
 		n, _ := ParseNotice([]byte(body))

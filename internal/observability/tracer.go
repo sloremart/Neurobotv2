@@ -218,6 +218,28 @@ var catalog = map[string]stepSpec{
 	// paciente NO recibe respuesta por ese canal y el origen debe corregirse en Bird.
 	"infra/non_contactable_identifier": {LvOutcome, "error", ""}, // trace sess:<id>, 1 vez por sesión
 
+	// Néctar (webhook POST /api/webhooks/nectar) — trace sess:nectar:<conversation_id>.
+	// protocolo/version_desconocida: Néctar mandó un aviso con una versión de protocolo MAYOR que
+	// la que este binario sabe leer (nectar.ProtocolMax). El aviso se procesa igual —el lector es
+	// tolerante y lo desconocido se ignora—, así que NO es un paciente colgado: es que el otro
+	// lado desplegó antes que nosotros y hay que ponerse al día. Va como error porque es lo que
+	// sube a Telegram, el único sitio donde alguien lo va a ver a tiempo.
+	"protocolo/version_desconocida": {LvError, "error", ""},
+	// apertura/*: el aviso `conversacion_abierta_por_agente` (un agente abrió la conversación con
+	// una plantilla). En Neuro la respuesta es SIEMPRE «agent»: no se preabre ninguna sesión, y
+	// estos pasos son el único rastro de que Néctar preguntó. Info (no warn): el vocabulario de
+	// outcome de Neuro no tiene «warn» y ninguno de los tres es un fallo del paciente.
+	//   solo_traza: aviso legible; se respondió «agent» y quedó la traza (plantilla).
+	//   aviso_invalido: `opened` ausente o sin template_name; se respondió «agent» igual, pero
+	//     algo en el lado de Néctar no mandó lo que el contrato promete.
+	//   replay_perdida: el aviso volvió por el REPLAY del WAL (arranque tras una caída, o el
+	//     barredor de filas atascadas): su valor era la respuesta síncrona, que murió con el
+	//     request. Se acusa y se ignora; cada una es una conversación que se quedó del lado del
+	//     agente por una caída del bot.
+	"apertura/solo_traza":     {LvMilestone, "info", ""},
+	"apertura/aviso_invalido": {LvMilestone, "info", ""},
+	"apertura/replay_perdida": {LvMilestone, "info", ""},
+
 	// Reconciliación de invariantes (§4) — anomalía de "mal comportamiento silencioso".
 	"invariante/anomaly": {LvError, "error", ""},
 }
@@ -258,6 +280,12 @@ var allowedAttrKeys = map[string]bool{
 	// tope. `date` y `mrc_groups` van en booking_success para saber a qué mes y a qué grupo con
 	// tope fue cada cita SIN tener que cruzar con SIESA. Todo agregado, sin PII.
 	"consumed": true, "limit": true, "qty": true, "date": true, "mrc_groups": true,
+	// Néctar: `plantilla` es el nombre de la plantilla de Meta con la que un agente abrió la
+	// conversación (apertura/solo_traza); `protocol`/`soportada` son la versión de protocolo del
+	// aviso y la más alta que este binario lee (protocolo/version_desconocida). Ninguno es PII: el
+	// identificador del paciente y las variables de la plantilla NO pasan por aquí (van
+	// enmascarados solo en el WAL). Sin estas claves el attr se descartaba en silencio.
+	"plantilla": true, "protocol": true, "soportada": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

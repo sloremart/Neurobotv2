@@ -355,6 +355,12 @@ func main() {
 		safeGo("capacity-monitor", func() { capMon.Start(ctx) })
 	}
 
+	// Webhook handler (con NotificationManager para postbacks proactivos + WAL inbox). Se construye
+	// ANTES del replay del WAL porque las filas de Néctar (msg_type nectar_notice) se despachan a
+	// través de él.
+	webhookHandler := api.NewWebhookHandler(birdClient, workerPool, notifyManager, cfg)
+	webhookHandler.SetInboxRepo(inboxRepo)
+
 	// WAL replay: re-process messages that weren't completed before last shutdown/crash.
 	//
 	// Protección de mensaje veneno (migración 035): un mensaje cuyo procesamiento MATA al proceso
@@ -380,40 +386,17 @@ func main() {
 		if err := inboxRepo.MarkReplayAttempt(ctx, ids); err != nil {
 			slog.Error("inbox replay attempt counter failed", "error", err)
 		}
-		for _, row := range pending {
-			var event bird.WebhookEvent
-			if err := json.Unmarshal([]byte(row.RawBody), &event); err != nil {
-				slog.Error("inbox replay parse failed", "id", row.ID, "error", err)
-				inboxRepo.MarkDone(ctx, row.ID)
-				continue
-			}
-			msg := bird.ParseInboundMessage(event)
-
-			// Classify: notification postback vs regular message
-			if notifyManager != nil && notifyManager.HasPending(msg.Phone) {
-				if msg.IsPostback && api.IsNotificationPostback(msg.PostbackPayload) {
-					slog.Info("WAL replay: notification postback routed to handler",
-						"id", row.ID, "phone", msg.Phone, "payload", msg.PostbackPayload)
-					go notifyManager.HandleResponse(msg.Phone, msg.PostbackPayload, msg.ConversationID)
-					inboxRepo.MarkDone(ctx, row.ID)
-					continue
-				}
-				if notifyManager.HandleInvalidInput(msg.Phone, msg.ConversationID) {
-					slog.Info("WAL replay: invalid input during notification handled",
-						"id", row.ID, "phone", msg.Phone)
-					inboxRepo.MarkDone(ctx, row.ID)
-					continue
-				}
-			}
-
-			workerPool.Enqueue(msg)
+		deps := replayDeps{webhook: webhookHandler, pool: workerPool, inbox: inboxRepo}
+		if notifyManager != nil { // una interfaz con un *NotificationManager nil NO sería nil
+			deps.notify = notifyManager
 		}
+		replayPendingRows(ctx, pending, deps)
 	}
 
 	// M7: re-replay periódico de mensajes 'pending' atascados (p.ej. descartados por backpressure),
 	// para recuperarlos sin esperar al reinicio del proceso.
 	safeGo("stale-replay", func() {
-		workerPool.StartStaleReplay(ctx, inboxReplaySource{repo: inboxRepo})
+		workerPool.StartStaleReplay(ctx, inboxReplaySource{repo: inboxRepo, nectar: webhookHandler})
 	})
 
 	// Fase 13: Inyectar dependencias de lista de espera al NotificationManager
@@ -469,9 +452,7 @@ func main() {
 		safeGo("scheduler", func() { sched.Start(ctx) })
 	}
 
-	// Webhook handler (con NotificationManager para postbacks proactivos + WAL inbox)
-	webhookHandler := api.NewWebhookHandler(birdClient, workerPool, notifyManager, cfg)
-	webhookHandler.SetInboxRepo(inboxRepo)
+	// (webhookHandler se construye antes del replay del WAL: ver arriba)
 	// Supresión de templates a números sin WhatsApp: el webhook outbound registra los fallos de
 	// entrega y los recordatorios/lista de espera consultan el contador antes de enviar.
 	deliveryRepo := localrepo.NewDeliveryRepo(localDB)
@@ -529,6 +510,11 @@ func main() {
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
 	mux.HandleFunc("POST /api/webhooks/voice", webhookHandler.HandleVoiceWebhook)
 	mux.HandleFunc("POST /api/webhooks/voice/dtmf", webhookHandler.HandleVoiceDTMF)
+	// Néctar: avisos entrantes (cuatro kinds) y registro de capacidades. Se registran siempre: con
+	// NECTAR_BASE_URL vacío nadie los invoca y el tráfico de Bird no cambia. El patrón de las
+	// capacidades (con su método) lo comparten el mux y las pruebas.
+	mux.HandleFunc("POST /api/webhooks/nectar", webhookHandler.HandleNectarNotice)
+	mux.HandleFunc(api.NectarCapabilitiesPattern, webhookHandler.HandleNectarCapabilities)
 
 	if internalHandler != nil {
 		internalMux := http.NewServeMux()
@@ -777,7 +763,15 @@ func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 // viejas y parsea su raw_body a InboundMessage (M7). Las filas no parseables se marcan 'done' para
 // no reintentarlas en cada corrida (igual que el replay de arranque).
 type inboxReplaySource struct {
-	repo *localrepo.InboxRepo
+	repo staleInboxRepo
+	// nectar despacha las filas de Néctar (msg_type nectar_notice), que no son eventos de Bird.
+	nectar nectarReplayer
+}
+
+// staleInboxRepo es lo que el replay de atascados necesita del inbox repo (*localrepo.InboxRepo).
+type staleInboxRepo interface {
+	FindPendingOlderThan(ctx context.Context, minutes int) ([]localrepo.InboxRow, error)
+	inboxCloser
 }
 
 func (s inboxReplaySource) PendingOlderThan(ctx context.Context, minutes int) ([]bird.InboundMessage, error) {
@@ -787,6 +781,18 @@ func (s inboxReplaySource) PendingOlderThan(ctx context.Context, minutes int) ([
 	}
 	msgs := make([]bird.InboundMessage, 0, len(rows))
 	for _, row := range rows {
+		if api.IsNectarInboxRow(row.MsgType) {
+			// Se despacha directo (un mensaje_entrante entra al pool por Enqueue, que deduplica
+			// por ID igual que esta lista); un aviso ilegible se cierra para no repetirlo.
+			if s.nectar == nil {
+				continue
+			}
+			if err := s.nectar.DispatchNectarNotice(ctx, row.RawBody); err != nil {
+				slog.Error("stale replay: aviso de Néctar ilegible", "id", row.ID, "error", err)
+				_ = s.repo.MarkDone(ctx, row.ID)
+			}
+			continue
+		}
 		var event bird.WebhookEvent
 		if err := json.Unmarshal([]byte(row.RawBody), &event); err != nil {
 			slog.Error("stale replay: parse failed", "id", row.ID, "error", err)

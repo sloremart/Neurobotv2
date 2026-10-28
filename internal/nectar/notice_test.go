@@ -124,6 +124,37 @@ func TestDocumentMappingUsesDocumentURL(t *testing.T) {
 	}
 }
 
+// Ruling 7: el interceptor de no soportados de Neuro (statemachine.UnsupportedMessageInterceptor)
+// rechaza "sticker" y "contact", los mismos tipos que produce bird.ParseInboundMessage. Un sticker
+// NO puede llegar al paso de la orden como "image": iría al OCR como si fuera una foto de orden.
+func TestStickerMappingIsUnsupportedNotImage(t *testing.T) {
+	for name, attachment := range map[string]string{
+		"con url":     `"attachment":{"id":"s1","url":"https://aom.colibrixa.com/api/bot/attachments/s1"}`,
+		"solo id":     `"attachment":{"id":"s1"}`,
+		"sin adjunto": `"text":""`,
+	} {
+		body := `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
+		          "message":{"id":1,"kind":"sticker",` + attachment + `}}`
+		n, _ := ParseNotice([]byte(body))
+		msg := n.ToInboundMessage("https://aom.colibrixa.com")
+		if msg.MessageType != "sticker" {
+			t.Errorf("%s: tipo=%q, el sticker se traduce a %q", name, msg.MessageType, "sticker")
+		}
+		if msg.ImageURL != "" || msg.DocumentURL != "" {
+			t.Errorf("%s: un sticker no lleva URL de descarga: %+v", name, msg)
+		}
+	}
+}
+
+func TestContactsMappingMatchesBirdContact(t *testing.T) {
+	body := `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
+	          "message":{"id":1,"kind":"contacts","text":""}}`
+	n, _ := ParseNotice([]byte(body))
+	if msg := n.ToInboundMessage(""); msg.MessageType != "contact" {
+		t.Fatalf("contacts → %q, el interceptor de Neuro espera %q", msg.MessageType, "contact")
+	}
+}
+
 func TestTextMapping(t *testing.T) {
 	body := `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
 	          "message":{"id":1,"kind":"text","text":"hola"}}`

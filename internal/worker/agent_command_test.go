@@ -1,6 +1,10 @@
 package worker
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
+)
 
 func TestParseAgentCommand_Orden(t *testing.T) {
 	tests := []struct {
@@ -77,6 +81,37 @@ func TestParseAgentCommand_ExistingActions(t *testing.T) {
 			}
 			if cmd.Data != tt.data {
 				t.Errorf("expected data %q, got %q", tt.data, cmd.Data)
+			}
+		})
+	}
+}
+
+// ChosenOption: la `opcion` del retorno v1 manda sobre el `return_value` del dialecto, y sin
+// ninguno de los dos no hay decisión.
+func TestAgentCommand_ChosenOption(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  AgentCommand
+		want string
+	}{
+		{"sin decision", AgentCommand{Action: "resume"}, ""},
+		{"dialecto", AgentCommand{ReturnValue: "cola_vencida"}, "cola_vencida"},
+		{"v1", AgentCommand{ReturnV1: &nectar.V1Return{Option: "bot_reanudar"}}, "bot_reanudar"},
+		{
+			"v1 manda sobre el dialecto",
+			AgentCommand{ReturnValue: "cola_vencida", ReturnV1: &nectar.V1Return{Option: "bot_reanudar"}},
+			"bot_reanudar",
+		},
+		{
+			"v1 sin opcion no pisa el dialecto",
+			AgentCommand{ReturnValue: "cola_vencida", ReturnV1: &nectar.V1Return{}},
+			"cola_vencida",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cmd.ChosenOption(); got != tt.want {
+				t.Errorf("ChosenOption() = %q, want %q", got, tt.want)
 			}
 		})
 	}
