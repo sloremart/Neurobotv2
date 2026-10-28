@@ -83,7 +83,7 @@ type EscalatedSession struct {
 	RemindersSent  int        // agent reminders already sent in this waiting window
 	EscalatedAt    time.Time  // when THIS escalation happened (anchors the no-show clock; zero = legacy row)
 	// QueuedForNextDay dice si esta escalación quedó ENCOLADA para que una persona la atienda
-	// el próximo día hábil (la marca la pone el handler de escalación; aquí llega leída del
+	// el próximo día hábil (la marca la pondrá el handler de escalación; aquí llega leída del
 	// session_context). Al paciente se le dijo que lo atienden mañana, así que su silencio de
 	// esta noche no es abandono.
 	QueuedForNextDay bool
