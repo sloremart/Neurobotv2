@@ -737,10 +737,10 @@ func TestResolveReturnInput_RequiredGovernsEmptyValue(t *testing.T) {
 
 	// stepPlain se registró sin Required.
 	res := m.ResolveReturnInput(sess, stepPlain, ReturnInputPrefix+"   ")
-	if !res.OK() || res.Value != "" {
-		t.Fatalf("un campo opcional vacío no se rechaza por estar vacío: %+v", res)
+	if res.Written || res.OK() || res.Rejected() || res.Command != "" {
+		t.Fatalf("un campo opcional vacío es «sin dato»: NO escrito, sin comando: %+v", res)
 	}
-	if res := m.ResolveReturnV1(sess, stepPlain, json.RawMessage(`{"dato":"  "}`)); !res.OK() {
+	if res := m.ResolveReturnV1(sess, stepPlain, json.RawMessage(`{"dato":"  "}`)); res.Written || res.OK() || res.Rejected() {
 		t.Fatalf("v1 igual: %+v", res)
 	}
 

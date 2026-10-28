@@ -246,8 +246,8 @@ type ReturnInput struct {
 	// médica lee una foto con OCR): inyectarles un texto los haría escalar otra vez.
 	Target string
 	// Required hace que el campo vacío se rechace («Se devolvió el campo vacío.») y publica
-	// `requerido` y `minimo_campos` de uno. Sin Required, un valor vacío no se rechaza por estar
-	// vacío: el bot lo acepta como «sin dato».
+	// `requerido` y `minimo_campos` de uno. Sin Required, un valor vacío no se rechaza: cuenta
+	// como NO escrito (Written=false) y se resuelve por la opción elegida.
 	Required bool
 	// MaxLen publica `largo` (en caracteres). 0 = ninguno declarado.
 	MaxLen int
@@ -422,11 +422,13 @@ func (m *Machine) judge(sess *session.Session, step, data string, revalidate boo
 	}
 	res := ReturnInputResult{Written: true, Value: data, Target: in.Target, Command: in.Command}
 	if data == "" {
-		// Solo un campo requerido rechaza el vacío; uno opcional lo acepta como «sin dato» y no
-		// pasa por los validadores, que juzgan datos y no su ausencia.
-		if in.Required {
-			res.Problem = "Se devolvió el campo vacío."
+		// Solo un campo requerido rechaza el vacío. Uno opcional vacío es «sin dato», o sea NO
+		// escrito: el worker cae a la opción elegida o a reanudar sin decisión, y no despacha
+		// un comando ni inyecta un mensaje vacío.
+		if !in.Required {
+			return ReturnInputResult{}
 		}
+		res.Problem = "Se devolvió el campo vacío."
 		return res
 	}
 	if !revalidate {
