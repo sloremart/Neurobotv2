@@ -910,3 +910,43 @@ func TestRegisteredReturnSteps_ListsMenusAndInputs(t *testing.T) {
 		t.Error("ReturnInputRequired lee el Required de la entrada")
 	}
 }
+
+// Una lista que se quedó sin opciones no admite ningún valor.
+func TestResolveReturnV1_ListWithoutOptionsRejectsEverything(t *testing.T) {
+	m := NewMachine()
+	const step = "T5_LIST_EMPTY"
+	registerTestInput(t, step, ReturnInput{
+		Kind: InputKindList, Label: "Entidad",
+		Options: func(*session.Session) []InputChoice { return nil },
+	})
+	res := m.ResolveReturnV1(&session.Session{}, step, json.RawMessage(`{"dato":"1"}`))
+	if !res.Rejected() || res.Problem != ReturnInputNotInListProblem {
+		t.Fatalf("sin opciones se rechaza: %+v", res)
+	}
+}
+
+// Las combinaciones de tipo y formato que la consola no sabría pintar se detectan al arrancar.
+func TestRegisterReturnInput_KindAndFormatMustMatch(t *testing.T) {
+	for name, in := range map[string]ReturnInput{
+		"fecha sin iso":      {Kind: InputKindDate},
+		"hora sin iso":       {Kind: InputKindTime},
+		"fecha otro formato": {Kind: InputKindDate, Format: "dd/mm"},
+		"formato en texto":   {Kind: InputKindText, Format: InputFormatISO},
+		"formato sin tipo":   {Format: InputFormatISO},
+		"lista sin opciones": {Kind: InputKindList},
+		"opciones en texto":  {Options: func(*session.Session) []InputChoice { return nil }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("debía hacer panic")
+				}
+				UnregisterReturnStepForTest("T5_PANIC")
+			}()
+			RegisterReturnInput("T5_PANIC", in)
+		})
+	}
+	// Las válidas no hacen panic.
+	registerTestInput(t, "T5_OK_DATE", ReturnInput{Kind: InputKindDate, Format: InputFormatISO})
+	registerTestInput(t, "T5_OK_TIME", ReturnInput{Kind: InputKindTime, Format: InputFormatISO})
+}

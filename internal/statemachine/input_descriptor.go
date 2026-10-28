@@ -24,6 +24,7 @@ import (
 const (
 	InputKindText   = "texto"
 	InputKindDate   = "fecha"
+	InputKindTime   = "hora"
 	InputKindNumber = "numero"
 	// InputKindList es un `<select>`: el campo lleva sus `opciones`.
 	InputKindList = "lista"
@@ -103,6 +104,10 @@ func (m *Machine) InputDescriptor(sess *session.Session, step string) InputDescr
 	}
 	if in.Options != nil {
 		field.Options = in.Options(sess)
+		// Sin sesión una lista no tiene de dónde sacar sus opciones: el `<select>` saldría vacío.
+		if sess == nil && len(field.Options) == 0 {
+			slog.Warn("descriptor de entrada: lista armada sin sesión y sin opciones", "step", step)
+		}
 	}
 	// Rótulo y ayuda salen de donde ya salían en el dialecto: el registro, o el ErrorMsg del
 	// paso. Rellenarlo aquí evita la segunda copia que se queda vieja.
@@ -139,7 +144,35 @@ func descriptorOptions(sess *session.Session, step string) []InputOption {
 		}
 		out = append(out, InputOption{Label: o.Label, Value: o.Value, Exit: returnOptionExit(o)})
 	}
+	if _, offers := returnInputFor(step); offers {
+		out = resumeCarriesTheValues(step, out)
+	}
 	return out
+}
+
+// resumeCarriesTheValues defiende, en un paso con entrada, que la PRIMERA salida «reanudar» sea
+// ReturnResume: es la única a la que Néctar le adjunta los `valores` (ver RegisterReturnInput).
+// Una opción propia «reanudar» es un error de registro: se reporta y ReturnResume se adelanta al
+// principio del menú, solo en ese caso; el orden normal (lo propio primero) no cambia.
+func resumeCarriesTheValues(step string, opts []InputOption) []InputOption {
+	resumeAt, shadowed := -1, false
+	for i, o := range opts {
+		switch {
+		case o.Value == ReturnResume:
+			resumeAt = i
+		case o.Exit == returnMenuTipoResume:
+			slog.Error("descriptor de entrada: opción propia «reanudar» en un paso con campo; debe ser NoInput o Close",
+				"step", step, "valor", o.Value)
+			shadowed = shadowed || resumeAt < 0
+		}
+	}
+	if !shadowed || resumeAt < 0 {
+		return opts
+	}
+	out := make([]InputOption, 0, len(opts))
+	out = append(out, opts[resumeAt])
+	out = append(out, opts[:resumeAt]...)
+	return append(out, opts[resumeAt+1:]...)
 }
 
 // StaticInputDescriptor serializa el descriptor `input` de un paso SIN campo y sin máquina: quien

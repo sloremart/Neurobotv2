@@ -72,7 +72,9 @@ const nectarPhone = "nectar:777"
 // handlers.notifPendingReturnOptions (aquí no se importa: handlers depende de repository/local,
 // que importa este paquete). Las filas por tipo y motivo se prueban contra la función real en
 // handlers/return_menus_test.go; aquí solo importa que la escalación pase la vista de la sesión.
-func registerNotifPendingMenu() {
+func registerNotifPendingMenu(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { sm.UnregisterReturnStepForTest(sm.StateNotifPending) })
 	np := sm.StateNotifPending
 	sm.RegisterReturnMenu(np, func(sess *session.Session) []sm.ReturnOption {
 		switch {
@@ -121,7 +123,7 @@ func descriptorOptions(t *testing.T, raw []byte) (values, exits []string) {
 
 func nectarManager(t *testing.T, cfg *config.Config) (*NotificationManager, *escalationBridge) {
 	t.Helper()
-	registerNotifPendingMenu()
+	registerNotifPendingMenu(t)
 	srv := escalationBirdServer()
 	t.Cleanup(srv.Close)
 	client := bird.NewClientForTest(srv.URL)

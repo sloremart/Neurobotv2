@@ -433,3 +433,53 @@ func TestInputDescriptor_DateFieldDeclaresIsoFormat(t *testing.T) {
 		t.Fatal("literales de cable")
 	}
 }
+
+// En un paso con campo, Néctar adjunta los `valores` a la PRIMERA salida «reanudar». Una opción
+// propia «reanudar» (ni NoInput ni Close) es un error de registro: se reporta y bot_reanudar pasa
+// al principio, para que lo escrito nunca caiga en otra opción.
+func TestInputDescriptor_OwnResumeOptionInAFieldStepPutsResumeFirst(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	d := buildDescriptor(t, nil, &ReturnInput{Label: "Dato", Required: true},
+		ReturnOption{Label: "Sin dato", Value: "sin_dato", NoInput: true},
+		ReturnOption{Label: "Mala", Value: "mala", Target: "OTRO", Data: "x"})
+
+	var got []string
+	for _, o := range d.Options {
+		got = append(got, o.Value)
+	}
+	if strings.Join(got, ",") != "bot_reanudar,sin_dato,mala,bot_cerrar" {
+		t.Fatalf("bot_reanudar va primero, el resto en su orden: %v", got)
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "mala") {
+		t.Fatalf("la opción mal registrada se reporta como ERROR: %s", logs.String())
+	}
+
+	// Bien registrado, el orden de siempre: lo propio primero y las universales al final.
+	d = buildDescriptor(t, nil, &ReturnInput{Label: "Dato"},
+		ReturnOption{Label: "Sin dato", Value: "sin_dato", NoInput: true})
+	if d.Options[0].Value != "sin_dato" || d.Options[1].Value != ReturnResume {
+		t.Fatalf("sin opción propia «reanudar» el orden no cambia: %+v", d.Options)
+	}
+}
+
+// Una lista armada sin sesión no tiene opciones: se avisa (el `<select>` saldría vacío).
+func TestInputDescriptor_ListWithoutSessionWarns(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	m := NewMachine()
+	registerTestInput(t, stepDescriptor, ReturnInput{
+		Kind: InputKindList, Label: "Entidad",
+		Options: func(*session.Session) []InputChoice { return nil },
+	})
+	m.InputDescriptor(nil, stepDescriptor)
+	if !strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("una lista sin sesión ni opciones se avisa: %s", logs.String())
+	}
+}

@@ -136,7 +136,8 @@ var (
 
 // RegisterResumeLabel cambia el rótulo de ReturnResume en ese paso; el token no cambia. Es para
 // los pasos con campo, donde «devolver en el mismo paso» es la salida que lleva lo escrito y no
-// se puede ocultar (Néctar solo manda los `valores` con la primera salida «reanudar»).
+// se puede ocultar: Néctar solo manda los `valores` con la primera salida «reanudar», y en un
+// paso con entrada esa es SIEMPRE ReturnResume (ver RegisterReturnInput).
 func RegisterResumeLabel(state, label string) {
 	returnMenusMu.Lock()
 	defer returnMenusMu.Unlock()
@@ -346,14 +347,29 @@ const (
 
 // RegisterReturnInput declara que un paso ofrece campo de texto al agente. Se llama donde se
 // registra el estado, por la misma razón que el menú. Un Command que no sea ninguno de los dos
-// conocidos, o unas Options sin Kind lista (o una lista sin Options), es un error de programación
-// y se detecta al arrancar: hace panic.
+// conocidos, unas Options sin Kind lista (o una lista sin Options), una fecha u hora sin
+// Format InputFormatISO o un Format en un tipo que no lo usa son errores de programación y se
+// detectan al arrancar: hacen panic.
+//
+// ⚠️ QUIÉN LLEVA LO ESCRITO: Néctar solo manda `valores` con la PRIMERA opción de salida
+// «reanudar», y esa debe ser ReturnResume (re-rotulable con RegisterResumeLabel). En un paso con
+// entrada, toda opción PROPIA del paso tiene que ser NoInput o Close —una opción que no lleva
+// dato ES NoInput—: si fuera «reanudar», recibiría lo escrito y perdería su Target, Data y Clear.
+// TestReturnInputSteps_OwnOptionsNeverCarryTheValues lo cruza con los pasos reales, y
+// descriptorOptions lo defiende en ejecución.
 func RegisterReturnInput(state string, in ReturnInput) {
 	if in.Command != "" && in.Command != ReturnCommandCups && in.Command != ReturnCommandOrder {
 		panic(fmt.Sprintf("RegisterReturnInput(%s): Command %q desconocido", state, in.Command))
 	}
 	if (in.Options != nil) != (in.Kind == InputKindList) {
 		panic(fmt.Sprintf("RegisterReturnInput(%s): Options va con Kind %q y solo con él", state, InputKindList))
+	}
+	pickerKind := in.Kind == InputKindDate || in.Kind == InputKindTime
+	if pickerKind && in.Format != InputFormatISO {
+		panic(fmt.Sprintf("RegisterReturnInput(%s): Kind %q exige Format %q", state, in.Kind, InputFormatISO))
+	}
+	if !pickerKind && in.Format != "" {
+		panic(fmt.Sprintf("RegisterReturnInput(%s): Kind %q no usa Format", state, in.Kind))
 	}
 	returnMenusMu.Lock()
 	defer returnMenusMu.Unlock()
@@ -493,8 +509,9 @@ func (m *Machine) ResolveReturnInput(sess *session.Session, step, value string) 
 
 // judge aplica las reglas comunes a un dato ya AISLADO de su envoltorio (el prefijo del dialecto,
 // o la clave de `valores` en v1): paso que no ofrece campo, campo vacío, opciones de una lista,
-// Validate de la entrada —o, si no lo declara, el validador del paso— y destino. revalidate=false es para el dato que el Parse del paso ya
-// validó y rindió: se le aplican las reglas del paso pero no se vuelve a juzgar la rendición.
+// Validate de la entrada —o, si no lo declara, el validador del paso— y destino.
+// revalidate=false es para el dato que el Parse del paso ya validó y rindió: se le aplican las
+// reglas del paso pero no se vuelve a juzgar la rendición.
 func (m *Machine) judge(sess *session.Session, step, data string, revalidate bool) ReturnInputResult {
 	in, offers := returnInputFor(step)
 	if !offers {
@@ -518,10 +535,9 @@ func (m *Machine) judge(sess *session.Session, step, data string, revalidate boo
 		return res
 	}
 	// Una lista solo admite sus opciones: la consola lo valida en el cliente y el bot no se fía.
-	if in.Kind == InputKindList && in.Options != nil {
-		if opts := in.Options(sess); len(opts) > 0 && !slices.ContainsFunc(opts, func(c InputChoice) bool {
-			return c.Value == data
-		}) {
+	// Una lista sin opciones no admite ningún valor.
+	if in.Kind == InputKindList {
+		if !slices.ContainsFunc(in.Options(sess), func(c InputChoice) bool { return c.Value == data }) {
 			res.Problem = ReturnInputNotInListProblem
 			return res
 		}

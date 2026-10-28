@@ -352,3 +352,20 @@ func TestNotifPendingReturnOptions_ByTypeAndDetail(t *testing.T) {
 		})
 	}
 }
+
+// En un paso con campo, Néctar adjunta lo escrito a la PRIMERA salida «reanudar», que tiene que
+// ser bot_reanudar: ninguna opción propia del paso puede ser «reanudar» (NoInput o Close).
+func TestReturnInputSteps_OwnOptionsNeverCarryTheValues(t *testing.T) {
+	m := returnMenuMachine()
+	for _, step := range sm.RegisteredReturnSteps() {
+		if len(m.InputDescriptor(nil, step).Fields) == 0 {
+			continue
+		}
+		for _, o := range sm.ReturnOptionsFor(nil, step) {
+			if !sm.IsUniversalReturnValue(o.Value) && !o.Close && !o.NoInput {
+				t.Errorf("%s: la opción %q es «reanudar» en un paso con campo y recibiría lo escrito; debe ser NoInput o Close",
+					step, o.Value)
+			}
+		}
+	}
+}

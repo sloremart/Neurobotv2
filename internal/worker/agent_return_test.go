@@ -73,7 +73,7 @@ func TestHandleAgentResume_OptionTargetAndData(t *testing.T) {
 			Label: "Cita agendada, continúa", Value: "cita_ok",
 			Target: "OTRO_PASO", Data: "dato_de_la_opcion",
 		})
-	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
 
 	pool, _, _, sess, resumedTo, processed := returnSession(t, testReturnStep)
 	asNectar(sess)
@@ -225,7 +225,7 @@ func TestHandleAgentResume_RejectedReescalates(t *testing.T) {
 func TestHandleAgentResume_NectarNoInterstitialText(t *testing.T) {
 	statemachine.RegisterStaticReturnMenu(testReturnStep,
 		statemachine.ReturnOption{Label: "Con dato", Value: "con_dato", Data: "CC"})
-	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
 
 	for name, cmd := range map[string]AgentCommand{
 		"sin dato": {Action: "resume", ReturnValue: statemachine.ReturnResume},
@@ -531,7 +531,7 @@ func notifPendingReturnSession(t *testing.T) (*MessageWorkerPool, *session.Sessi
 			Label: "Confirmar la cita", Value: "confirm",
 			Target: statemachine.StateNotifPending, Data: "confirm",
 		})
-	t.Cleanup(func() { statemachine.RegisterStaticReturnMenu(statemachine.StateNotifPending) })
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(statemachine.StateNotifPending) })
 
 	pool, sm, _, sess, resumedTo, _ := returnSession(t, statemachine.StateNotifPending)
 	sess.Context["notif_appointment_id"] = "A-77"
@@ -751,7 +751,7 @@ func TestReescalateRejected_WritesReason(t *testing.T) {
 func TestApplyAgentReturn_NoInputOptionIgnoresWrittenValues(t *testing.T) {
 	statemachine.RegisterStaticReturnMenu(testReturnStep,
 		statemachine.ReturnOption{Label: "Sin dato", Value: "opt_sin_dato", NoInput: true, Data: "dato_de_la_opcion"})
-	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
 
 	pool, _, _, sess, resumedTo, processed := returnSession(t, testReturnStep)
 	asNectar(sess)
@@ -775,6 +775,7 @@ func TestApplyAgentReturn_NoInputOptionIgnoresWrittenValues(t *testing.T) {
 func TestApplyAgentReturn_ResumeWithoutValuesOnRequiredFieldReescalates(t *testing.T) {
 	const step = "PASO_REQUERIDO_T5"
 	statemachine.RegisterReturnInput(step, statemachine.ReturnInput{Label: "Dato", Required: true})
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(step) })
 
 	pool, sm, _, sess, resumedTo, processed := returnSession(t, step)
 	asNectar(sess)
@@ -801,9 +802,9 @@ func TestApplyAgentReturn_ResumeWithoutValuesOnRequiredFieldReescalates(t *testi
 func TestHandleAgentResume_OptionClearsContext(t *testing.T) {
 	statemachine.RegisterStaticReturnMenu(testReturnStep,
 		statemachine.ReturnOption{Label: "Corregir", Value: "corregir", Target: "OTRO_PASO", Clear: []string{"patient_contract"}})
-	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
 
-	pool, sm, _, sess, _, processed := returnSession(t, testReturnStep)
+	pool, sm, _, sess, resumedTo, processed := returnSession(t, testReturnStep)
 	asNectar(sess)
 	sess.Context["patient_contract"] = "7"
 	var cleared []string
@@ -826,6 +827,9 @@ func TestHandleAgentResume_OptionClearsContext(t *testing.T) {
 		Action: "resume", Phone: sess.PhoneNumber, ReturnV1: &nectar.V1Return{Option: "corregir"},
 	})
 
+	if *resumedTo != "OTRO_PASO" {
+		t.Fatalf("se retoma en el Target de la opción, got %q", *resumedTo)
+	}
 	if strings.Join(cleared, ",") != "patient_contract" {
 		t.Fatalf("SaveState borra las claves de la opción, got %v", cleared)
 	}
@@ -839,7 +843,7 @@ func TestHandleAgentResume_OptionClearsContext(t *testing.T) {
 func TestHandleAgentResume_OptionDataArrivesAsPostback(t *testing.T) {
 	statemachine.RegisterStaticReturnMenu(testReturnStep,
 		statemachine.ReturnOption{Label: "Elegir", Value: "elegir", Data: "proc_2"})
-	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
 
 	pool, _, _, sess, _, processed := returnSession(t, testReturnStep)
 	asNectar(sess)
