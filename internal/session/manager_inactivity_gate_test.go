@@ -26,11 +26,11 @@ func (b *inactivityBirdMock) SendText(_, _, text string) (string, error) {
 	return "msg-1", nil
 }
 
-func (b *inactivityBirdMock) SendInternalText(_, _ string) (string, error) {
+func (b *inactivityBirdMock) SendInternalText(_, _, _ string) (string, error) {
 	return "msg-int", nil
 }
-func (b *inactivityBirdMock) UnassignFeedItem(_ string, _ bool) error { return nil }
-func (b *inactivityBirdMock) CloseFeedItems(_ string) error           { return nil }
+func (b *inactivityBirdMock) UnassignFeedItem(_, _ string, _ bool) error { return nil }
+func (b *inactivityBirdMock) CloseFeedItems(_, _ string) error           { return nil }
 
 func (b *inactivityBirdMock) sentCount() int {
 	b.mu.Lock()

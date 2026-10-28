@@ -29,6 +29,10 @@ var ErrConversationNotActive = errors.New("conversation not active")
 // llamada HTTP: cada intento contra Bird se cobra, falle o no.
 var ErrNonContactable = errors.New("non-contactable identifier (not E.164)")
 
+// ErrPermanentSend marca un envío rechazado de forma definitiva por un destino alterno (p. ej. Néctar):
+// reintentarlo no sirve. IsPermanentSendError lo reconoce aunque venga envuelto.
+var ErrPermanentSend = errors.New("envío rechazado de forma permanente")
+
 // APIError preserva el status HTTP de un error de la API de Bird, para que los callers puedan
 // distinguir fallos permanentes (4xx: reintentar es pagar otro envío condenado) de transitorios.
 type APIError struct {
@@ -84,7 +88,7 @@ func IsPermanentSendError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrNonContactable) {
+	if errors.Is(err, ErrNonContactable) || errors.Is(err, ErrPermanentSend) {
 		return true
 	}
 	var ae *APIError
@@ -337,7 +341,7 @@ func (c *Client) conversationsBase() string {
 
 // MarkConversationEscalated updates the conversation name/description in Bird Inbox
 // to signal escalation to agents. This is visible to agents in the inbox.
-func (c *Client) MarkConversationEscalated(conversationID, teamName, patientName string) error {
+func (c *Client) MarkConversationEscalated(_, conversationID, teamName, patientName string) error {
 	if conversationID == "" {
 		return nil
 	}
@@ -952,7 +956,7 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 
 // SendInternalText sends a text message visible only in Bird Inbox (not delivered to WhatsApp).
 // Uses Conversations API with draft:true. Returns ("", nil) if no conversationID.
-func (c *Client) SendInternalText(conversationID, text string) (string, error) {
+func (c *Client) SendInternalText(_, conversationID, text string) (string, error) {
 	if conversationID == "" {
 		return "", nil
 	}
@@ -1679,7 +1683,7 @@ func (c *Client) doPatchFeedItem(url string, jsonBody []byte) (int, error) {
 // UnassignFeedItem removes agent/team assignment from a feed item in Bird Inbox.
 // If closed=true, also closes the item (removes from agent's queue permanently).
 // Non-blocking: logs errors but does not fail.
-func (c *Client) UnassignFeedItem(conversationID string, closed bool) error {
+func (c *Client) UnassignFeedItem(_, conversationID string, closed bool) error {
 	if conversationID == "" {
 		return nil
 	}
@@ -1723,7 +1727,7 @@ func (c *Client) UnassignFeedItem(conversationID string, closed bool) error {
 // Inbox (Collaborations API → search/feed-items → PATCH closed:true).
 // It finds items across ALL feeds (channel, team, agent) so it works regardless
 // of which feed the agents are viewing.
-func (c *Client) CloseFeedItems(conversationID string) error {
+func (c *Client) CloseFeedItems(_, conversationID string) error {
 	if conversationID == "" {
 		return nil
 	}
@@ -2076,7 +2080,7 @@ func (c *Client) EscalateToAgent(ctx context.Context, conversationID, phone, tea
 	)
 
 	// 1. Mark conversation name (visible in Bird Inbox, non-blocking)
-	if err := c.MarkConversationEscalated(conversationID, teamName, patientName); err != nil {
+	if err := c.MarkConversationEscalated(phone, conversationID, teamName, patientName); err != nil {
 		slog.Warn("mark escalated failed (non-blocking)", "error", err)
 	}
 
@@ -2196,7 +2200,7 @@ func (c *Client) UpdateFeedItem(conversationID, messageID string, closed bool, t
 }
 
 // TagConversation adds a tag/label to a conversation in Bird for categorization.
-func (c *Client) TagConversation(conversationID, tag string) error {
+func (c *Client) TagConversation(_, conversationID, tag string) error {
 	if conversationID == "" || tag == "" {
 		return nil
 	}

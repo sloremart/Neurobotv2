@@ -183,7 +183,7 @@ func (m *mockMessageSender) SendList(phone, conversationID, body, title string, 
 	return "msg-sent-list", nil
 }
 
-func (m *mockMessageSender) SendInternalText(conversationID, text string) (string, error) {
+func (m *mockMessageSender) SendInternalText(phone, _, text string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sent = append(m.sent, sentMsg{phone: "", msgType: "internal", text: text})
@@ -193,11 +193,11 @@ func (m *mockMessageSender) SendInternalText(conversationID, text string) (strin
 	return "msg-sent-internal", nil
 }
 
-func (m *mockMessageSender) UnassignFeedItem(conversationID string, closed bool) error {
+func (m *mockMessageSender) UnassignFeedItem(_, _ string, _ bool) error {
 	return nil
 }
 
-func (m *mockMessageSender) CloseFeedItems(conversationID string) error {
+func (m *mockMessageSender) CloseFeedItems(_, _ string) error {
 	return nil
 }
 

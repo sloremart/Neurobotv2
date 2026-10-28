@@ -323,11 +323,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 
 		// 7. Send detailed context summary for the agent (Inbox only — invisible to patient)
 		summary := buildAgentSummary(sess, cupsCode, teamName)
-		birdClient.SendInternalText(conversationID, summary)
+		_, _ = birdClient.SendInternalText(msg.Phone, conversationID, summary)
 
 		// 8. Send contextual commands for the agent (Inbox only — invisible to patient)
 		commands := buildAgentCommands(sess, cupsCode)
-		birdClient.SendInternalText(conversationID, commands)
+		_, _ = birdClient.SendInternalText(msg.Phone, conversationID, commands)
 
 		// 8. Mark session as escalated (in-memory, persisted by worker pool).
 		// Sellar escalated_at / escalated_team aquí: el flujo real persiste vía Save() y, sin esto,

@@ -29,7 +29,7 @@ func (m *NotificationManager) handleCancellation(phone, action string, pending *
 				"Si necesitas reagendar tu cita, puedes escribirnos cuando gustes.")
 
 		if pending.ConversationID != "" {
-			m.birdClient.CloseFeedItems(pending.ConversationID)
+			_ = m.birdClient.CloseFeedItems(pending.Phone, pending.ConversationID)
 		}
 
 		if m.tracker != nil {

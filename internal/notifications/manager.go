@@ -921,7 +921,7 @@ func (m *NotificationManager) ivrInternalNote(convID, phone, callID, note string
 		convID = m.birdClient.GetCachedConversationID(phone)
 	}
 	msg := note + fmt.Sprintf("\n\n🎙️ CallID: `%s`\n_(La grabacion esta disponible en la seccion de Grabaciones de Bird)_", callID)
-	m.birdClient.SendInternalText(convID, msg)
+	_, _ = m.birdClient.SendInternalText(phone, convID, msg)
 }
 
 // LoadPendingForTest exposes the pending sync.Map entry for test manipulation.
@@ -1324,8 +1324,8 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	}
 
 	// Internal notes visible only in Bird Inbox (agent context)
-	m.birdClient.SendInternalText(convID, note)
-	m.birdClient.SendInternalText(convID, commands)
+	_, _ = m.birdClient.SendInternalText(p.Phone, convID, note)
+	_, _ = m.birdClient.SendInternalText(p.Phone, convID, commands)
 
 	if _, _, err := m.birdClient.EscalateToAgent(ctx, convID, p.Phone,
 		m.cfg.BirdTeamFallback, "Call Center",

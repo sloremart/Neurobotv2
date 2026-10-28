@@ -766,7 +766,7 @@ func (m *mockInactivityBird) SendText(_, _, text string) (string, error) {
 	return "", nil
 }
 
-func (m *mockInactivityBird) SendInternalText(_, text string) (string, error) {
+func (m *mockInactivityBird) SendInternalText(_, _, text string) (string, error) {
 	if m.internalSendErr != nil {
 		return "", m.internalSendErr
 	}
@@ -774,9 +774,9 @@ func (m *mockInactivityBird) SendInternalText(_, text string) (string, error) {
 	return "msg-id", nil
 }
 
-func (m *mockInactivityBird) UnassignFeedItem(_ string, _ bool) error { return nil }
+func (m *mockInactivityBird) UnassignFeedItem(_, _ string, _ bool) error { return nil }
 
-func (m *mockInactivityBird) CloseFeedItems(_ string) error {
+func (m *mockInactivityBird) CloseFeedItems(_, _ string) error {
 	m.closedFeeds++
 	return nil
 }

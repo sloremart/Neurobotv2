@@ -153,7 +153,7 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 		m.birdClient.SendText(phone, pending.ConversationID, msg)
 
 		if pending.ConversationID != "" {
-			m.birdClient.CloseFeedItems(pending.ConversationID)
+			_ = m.birdClient.CloseFeedItems(pending.Phone, pending.ConversationID)
 		}
 
 		// Cerrar sesión activa y abrir una nueva en StateGreeting con post_confirmed=1.
@@ -363,7 +363,7 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 
 	// 2. Internal note — visible ONLY in Bird Inbox (patient doesn't see it on WhatsApp)
 	if pending.ConversationID != "" {
-		m.birdClient.SendInternalText(pending.ConversationID, note)
+		_, _ = m.birdClient.SendInternalText(pending.Phone, pending.ConversationID, note)
 	} else {
 		// Sin ConversationID no hay nota NI asignación (paso 4): el agente jamás se entera. Emitir el
 		// hueco para que el auditor/dashboard lo cuenten en vez de perderse en silencio.

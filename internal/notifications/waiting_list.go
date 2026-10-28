@@ -155,7 +155,7 @@ func (m *NotificationManager) handleWaitingList(phone, action string, pending *P
 			"Entendido. Si cambias de opinión, puedes escribirnos para agendar tu cita.")
 
 		if pending.ConversationID != "" {
-			m.birdClient.CloseFeedItems(pending.ConversationID)
+			_ = m.birdClient.CloseFeedItems(pending.Phone, pending.ConversationID)
 		}
 
 		if m.tracker != nil {

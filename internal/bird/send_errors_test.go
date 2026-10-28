@@ -132,3 +132,13 @@ func TestSendList_NonE164Fallback_NoHTTPCall(t *testing.T) {
 		t.Errorf("la Channels API no debe recibir el identificador crudo, hubo %d llamadas", channelHits.Load())
 	}
 }
+
+func TestIsPermanentSendError_WrapsErrPermanentSend(t *testing.T) {
+	err := fmt.Errorf("nectar: 404: %w", ErrPermanentSend)
+	if !IsPermanentSendError(err) {
+		t.Fatal("ErrPermanentSend envuelto debe ser permanente")
+	}
+	if IsPermanentSendError(errors.New("timeout")) {
+		t.Fatal("un error cualquiera no es permanente")
+	}
+}

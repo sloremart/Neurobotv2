@@ -100,9 +100,9 @@ type MessageSender interface {
 	SendText(phone, conversationID, text string) (string, error)
 	SendButtons(phone, conversationID, text string, buttons []bird.Button) (string, error)
 	SendList(phone, conversationID, body, title string, sections []bird.ListSection) (string, error)
-	SendInternalText(conversationID, text string) (string, error)
-	UnassignFeedItem(conversationID string, closed bool) error
-	CloseFeedItems(conversationID string) error
+	SendInternalText(phone, conversationID, text string) (string, error)
+	UnassignFeedItem(phone, conversationID string, closed bool) error
+	CloseFeedItems(phone, conversationID string) error
 	GetCachedConversationID(phone string) string
 	LookupConversationByPhone(phone string) (string, error)
 }
@@ -774,7 +774,7 @@ func (p *MessageWorkerPool) handleAgentNoShow(ctx context.Context, sess *session
 	}
 
 	// El bot retoma: liberar el feed item en Bird (mantener abierto, sin agente).
-	if err := p.birdClient.UnassignFeedItem(sess.ConversationID, false); err != nil {
+	if err := p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false); err != nil {
 		slog.Warn("no_show unassign feed item failed", "error", err, "conversation_id", sess.ConversationID)
 	}
 
@@ -832,7 +832,7 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			if err := p.sessionManager.Complete(ctx, sess); err != nil {
 				slog.Error("notif_pending: complete session failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", convID)
 			}
-			if err := p.birdClient.UnassignFeedItem(convID, false); err != nil {
+			if err := p.birdClient.UnassignFeedItem(cmd.Phone, convID, false); err != nil {
 				slog.Error("notif_pending: unassign feed item failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "conversation_id", convID)
 			}
 			p.notifyResponder.HandleNotifPendingCommand(sess.PhoneNumber, action, convID, appointmentID, notifType)
@@ -863,7 +863,7 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 	}
 
 	// Unassign agent from Bird Inbox (bot takes over, keep item open)
-	p.birdClient.UnassignFeedItem(sess.ConversationID, false)
+	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	if cmd.Data != "" {
 		// Agent provided corrected data — inject as virtual message
@@ -926,7 +926,7 @@ func (p *MessageWorkerPool) handleAgentReset(ctx context.Context, sess *session.
 	}
 
 	// Unassign agent from Bird Inbox (bot restarts, keep item open)
-	p.birdClient.UnassignFeedItem(sess.ConversationID, false)
+	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Hemos retomado tu atención. Vamos a comenzar de nuevo.")
 
@@ -975,7 +975,7 @@ func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.
 		case <-p.ctx.Done():
 			return
 		}
-		if err := p.birdClient.CloseFeedItems(closingConvID); err != nil {
+		if err := p.birdClient.CloseFeedItems(sess.PhoneNumber, closingConvID); err != nil {
 			slog.Warn("close feed items on agent close failed", "conversation_id", closingConvID, "error", err)
 		}
 	}()
@@ -1016,13 +1016,13 @@ func (p *MessageWorkerPool) handleAgentInfo(ctx context.Context, sess *session.S
 		sess.GetContext("escalation_team"),
 		sess.GetContext("pre_escalation_state"),
 	)
-	p.birdClient.SendInternalText(sess.ConversationID, info)
+	_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, info)
 }
 
 // handleAgentOrder processes /bot orden commands — extracts CUPS from a text description using OCR AI.
 func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.Session, cmd AgentCommand) {
 	if cmd.Data == "" {
-		p.birdClient.SendInternalText(sess.ConversationID,
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID,
 			"Uso: /bot orden <descripcion de la orden>\n"+
 				"Ej: /bot orden Resonancia cerebral simple codigo 883141 cantidad 1\n"+
 				"Ej: /bot orden Electromiografia 4 ext codigo 930810 cantidad 1, Resonancia columna lumbar codigo 883210 cantidad 1")
@@ -1030,7 +1030,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 	}
 
 	if p.ocrService == nil {
-		p.birdClient.SendInternalText(sess.ConversationID, "Error: servicio OCR no disponible.")
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error: servicio OCR no disponible.")
 		return
 	}
 
@@ -1043,7 +1043,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		} else if result != nil && result.Error != "" {
 			errMsg += " Detalle: " + result.Error
 		}
-		p.birdClient.SendInternalText(sess.ConversationID, errMsg)
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, errMsg)
 		return
 	}
 
@@ -1054,10 +1054,10 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 	// 3. Resume at VALIDATE_OCR (same flow as image OCR success)
 	if err := p.sessionManager.ResumeFromEscalation(ctx, sess, statemachine.StateValidateOCR); err != nil {
 		slog.Error("orden resume failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
-		p.birdClient.SendInternalText(sess.ConversationID, "Error al retomar sesion: "+err.Error())
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
 		return
 	}
-	p.birdClient.UnassignFeedItem(sess.ConversationID, false)
+	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	// 4. Send confirmation to agent (internal only)
 	var summary strings.Builder
@@ -1066,7 +1066,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		fmt.Fprintf(&summary, "- %s: %s (x%d)\n", c.Code, c.Name, c.Quantity)
 	}
 	summary.WriteString("\nProcesando con el paciente...")
-	p.birdClient.SendInternalText(sess.ConversationID, summary.String())
+	_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, summary.String())
 
 	// 5. Notify patient and trigger VALIDATE_OCR
 	p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
@@ -1100,7 +1100,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 // VALIDATE_OCR will automatically enrich names from the procedure DB.
 func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.Session, cmd AgentCommand) {
 	if cmd.Data == "" {
-		p.birdClient.SendInternalText(sess.ConversationID,
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID,
 			"Uso: /bot cups <codigo1>[:cantidad] <codigo2>[:cantidad] ...\n"+
 				"Ej: /bot cups 883141\n"+
 				"Ej: /bot cups 883141:1 930810:2")
@@ -1130,7 +1130,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 	}
 
 	if len(cups) == 0 {
-		p.birdClient.SendInternalText(sess.ConversationID, "No se encontraron codigos CUPS validos en el comando.")
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "No se encontraron codigos CUPS validos en el comando.")
 		return
 	}
 
@@ -1139,10 +1139,10 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 
 	if err := p.sessionManager.ResumeFromEscalation(ctx, sess, statemachine.StateValidateOCR); err != nil {
 		slog.Error("cups inject resume failed", "error", err, "phone", utils.MaskPhone(cmd.Phone))
-		p.birdClient.SendInternalText(sess.ConversationID, "Error al retomar sesion: "+err.Error())
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
 		return
 	}
-	p.birdClient.UnassignFeedItem(sess.ConversationID, false)
+	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	// Internal summary for agent
 	var summary strings.Builder
@@ -1151,7 +1151,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		fmt.Fprintf(&summary, "- %s (x%d)\n", c.Code, c.Quantity)
 	}
 	summary.WriteString("\nProcesando con el paciente...")
-	p.birdClient.SendInternalText(sess.ConversationID, summary.String())
+	_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, summary.String())
 
 	// Notify patient and trigger VALIDATE_OCR
 	p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID,
@@ -1353,7 +1353,7 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 			case <-p.ctx.Done():
 				return
 			}
-			if err := p.birdClient.CloseFeedItems(closingConvID); err != nil {
+			if err := p.birdClient.CloseFeedItems(sess.PhoneNumber, closingConvID); err != nil {
 				slog.Warn("close feed items on completion failed", "phone", utils.MaskPhone(phone), "conversation_id", closingConvID, "error", err)
 			}
 		}()

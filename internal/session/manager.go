@@ -50,9 +50,9 @@ type SessionRepo interface {
 // InactivityBirdClient defines the Bird client methods needed by the inactivity checker.
 type InactivityBirdClient interface {
 	SendText(to, conversationID, text string) (string, error)
-	SendInternalText(conversationID, text string) (string, error)
-	UnassignFeedItem(conversationID string, closed bool) error
-	CloseFeedItems(conversationID string) error
+	SendInternalText(phone, conversationID, text string) (string, error)
+	UnassignFeedItem(phone, conversationID string, closed bool) error
+	CloseFeedItems(phone, conversationID string) error
 }
 
 // EventLogger defines the event tracking method needed by the inactivity checker.
@@ -403,7 +403,7 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 				continue
 			}
 			if s.ConversationID != "" {
-				deps.BirdClient.CloseFeedItems(s.ConversationID)
+				_ = deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID)
 			}
 			if deps.Tracker != nil {
 				deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "session_closed_inactivity", map[string]interface{}{
@@ -495,7 +495,7 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 				}
 			}
 			if s.ConversationID != "" {
-				if err := deps.BirdClient.CloseFeedItems(s.ConversationID); err != nil {
+				if err := deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID); err != nil {
 					slog.Warn("close feed on escalated close failed", "session_id", s.ID, "error", err)
 				}
 			}
@@ -533,7 +533,7 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 				"Por favor atiéndelo. (aviso %d de %d)",
 			formatMinutes(int(patientSilent.Minutes())), s.RemindersSent+1, deps.AgentReminderMax,
 		)
-		if _, err := deps.BirdClient.SendInternalText(s.ConversationID, reminder); err != nil {
+		if _, err := deps.BirdClient.SendInternalText(s.PhoneNumber, s.ConversationID, reminder); err != nil {
 			// BUG-005: si Bird responde que la conversación ya NO está activa (el agente la cerró),
 			// el recordatorio nunca tendrá éxito. Sin esto, el checker reintentaba cada minuto
 			// indefinidamente (no incrementa RemindersSent en el error) hasta la expiración a las 6h.
