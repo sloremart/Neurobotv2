@@ -385,8 +385,9 @@ func resolveTeamName(teamID string, cfg *config.Config) string {
 	}
 }
 
-// buildAgentSummary generates a formatted context summary for the human agent.
-func buildAgentSummary(sess *session.Session, cupsCode, teamName string) string {
+// summaryForAgent arma el resumen de contexto para el agente humano en sus dos formas a la vez:
+// el texto y los grupos (que serán `facts`). El teléfono del paciente no entra en ninguno.
+func summaryForAgent(sess *session.Session, cupsCode, teamName string) (string, []*summaryGroup) {
 	patientName := sess.GetContext("patient_name")
 	if patientName == "" {
 		patientName = sess.PatientName
@@ -410,27 +411,43 @@ func buildAgentSummary(sess *session.Session, cupsCode, teamName string) string 
 	// Include custom escalation note if present (e.g., from identity free-text)
 	note := sess.GetContext("escalation_note")
 
-	summary := fmt.Sprintf("Transferencia de chatbot\n\n"+
-		"Paciente: %s\n"+
-		"Documento: %s\n",
-		patientName, patientDoc)
+	// Un solo camino: el texto y los grupos salen de la MISMA construcción (summary_groups.go).
+	// El orden de los grupos es el orden de las líneas del texto, que fijan los dorados.
+	var doc summaryDoc
+
+	doc.untitled("encabezado").raw("Transferencia de chatbot\n\n")
+
+	patient := doc.untitled("paciente")
+	patient.line("nombre", "Paciente", patientName)
+	patient.line("documento", "Documento", patientDoc)
 
 	if note != "" {
-		summary += fmt.Sprintf("Nota: %s\n", note)
+		doc.untitled("nota").line("nota", "Nota", note)
 	}
 
+	procedure := doc.untitled("procedimiento")
 	if serviceName != "" {
-		summary += fmt.Sprintf("Servicio: %s\n", serviceName)
+		procedure.line("servicio", "Servicio", serviceName)
 	}
 	if cupsCode != "" {
-		summary += fmt.Sprintf("Procedimiento: %s (%s)\n", cupsName, cupsCode)
+		// Línea fusionada: el texto la une, los campos van separados.
+		procedure.field("cups_nombre", "Nombre", cupsName)
+		procedure.field("cups_codigo", "CUPS", cupsCode)
+		procedure.raw(fmt.Sprintf("Procedimiento: %s (%s)\n", cupsName, cupsCode))
 	}
-	summary += fmt.Sprintf("Estado anterior: %s\n"+
-		"Menu: %s\n"+
-		"Equipo: %s",
-		prevState, menuOption, teamName)
 
-	return summary
+	state := doc.untitled("estado")
+	state.line("estado_anterior", "Estado anterior", prevState)
+	state.line("menu", "Menu", menuOption)
+	state.tail("equipo", "Equipo", teamName)
+
+	return doc.render()
+}
+
+// buildAgentSummary es el texto del resumen para el agente (lo que Bird recibe hoy).
+func buildAgentSummary(sess *session.Session, cupsCode, teamName string) string {
+	text, _ := summaryForAgent(sess, cupsCode, teamName)
+	return text
 }
 
 // regFieldLabels maps registration states to human-readable field descriptions for agent commands.
