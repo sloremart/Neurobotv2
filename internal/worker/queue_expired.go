@@ -158,3 +158,11 @@ func (p *MessageWorkerPool) notifyQueueExpired(sess *session.Session, hours stri
 	slog.Info("cola vencida: aviso enviado por plantilla (ventana de 24 h cerrada)",
 		"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber))
 }
+
+// SetEscalationQueuedNextDay cablea el predicado que dice si la escalación de una sesión de Néctar
+// se encola para el próximo día hábil (handlers.NextDayQueueApplies). Con él, PreEscalationFlush
+// descarta el aviso del caller y el único aviso al paciente es el del próximo día. Sin cablear, el
+// aviso del caller sale siempre.
+func (p *MessageWorkerPool) SetEscalationQueuedNextDay(f func(*session.Session) bool) {
+	p.escalationQueuedNextDay = f
+}

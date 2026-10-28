@@ -174,6 +174,9 @@ type MessageWorkerPool struct {
 	// businessHoursText devuelve el horario de atención EN PALABRAS. Se pregunta en cada uso
 	// (puede cambiar sin redespliegue); nil = el aviso sale sin nombrarlo. Ver queue_expired.go.
 	businessHoursText func() string
+	// escalationQueuedNextDay dice si la escalación de ESTA sesión de Néctar se va a encolar para el
+	// próximo día hábil. La consulta PreEscalationFlush; nil = nunca (el aviso del caller sale).
+	escalationQueuedNextDay func(*session.Session) bool
 }
 
 func NewMessageWorkerPool(workers, queueSize int) *MessageWorkerPool {
@@ -1244,6 +1247,14 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 func (p *MessageWorkerPool) PreEscalationFlush(_ context.Context, sess *session.Session, messages []statemachine.OutboundMessage) bool {
 	if !session.IsNectarSession(sess.PhoneNumber) {
 		return false
+	}
+	// Con la cola del próximo día el aviso del caller («te voy a conectar… un momento por favor»)
+	// contradice al del próximo día hábil que manda el handler: se descarta sin enviarlo. Se
+	// devuelve true igual: con false los mensajes saldrían tras el escalate y morirían en 404.
+	if p.escalationQueuedNextDay != nil && p.escalationQueuedNextDay(sess) {
+		slog.Info("pre-escalation: aviso del caller descartado, la escalación se encola para el próximo día",
+			"phone", utils.MaskPhone(sess.PhoneNumber), "session_id", sess.ID, "messages", len(messages))
+		return true
 	}
 	for i, m := range statemachine.CoalesceMessages(messages) {
 		if i > 0 {

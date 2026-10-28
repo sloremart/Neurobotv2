@@ -167,3 +167,13 @@ func escalationNoticeText(nextDay bool) string {
 		"Un asesor te atenderá el próximo día hábil y te escribirá por aquí. "+
 		"Te atendemos %s", BusinessHoursDescription())
 }
+
+// NextDayQueueApplies devuelve el predicado que el pre-envío del pool consulta antes del escalate:
+// true si la escalación de ESA sesión se va a encolar para el próximo día hábil, con el mismo
+// criterio que el handler (solo Néctar, nextBusinessDayQueue). Así el aviso del caller («te voy a
+// conectar… un momento») no sale antes del aviso del próximo día y el paciente lee uno solo.
+func NextDayQueueApplies(cfg *config.Config) func(*session.Session) bool {
+	return func(sess *session.Session) bool {
+		return sess != nil && session.IsNectarSession(sess.PhoneNumber) && nextBusinessDayQueue(cfg).queue
+	}
+}

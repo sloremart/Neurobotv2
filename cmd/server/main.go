@@ -339,6 +339,9 @@ func main() {
 	// El horario EN PALABRAS: lo nombra el aviso de cola vencida (Néctar devuelve el caso que
 	// nadie tomó y el bot le dice al paciente cuándo volver). Sale del mismo horario que el gate.
 	workerPool.SetBusinessHoursText(handlers.BusinessHoursDescription)
+	// Con la cola del próximo día, el pre-envío descarta el aviso del caller: el paciente lee solo el
+	// del próximo día hábil, que manda el handler de escalación.
+	workerPool.SetEscalationQueuedNextDay(handlers.NextDayQueueApplies(cfg))
 	if notifyManager != nil {
 		workerPool.SetNotifyResponder(notifyManager)
 	}

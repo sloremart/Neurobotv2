@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"testing"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
@@ -112,5 +115,64 @@ func TestEscalate_SessionCapAppliesAgainAfterOpen(t *testing.T) {
 	})
 	if res.NextState != sm.StateFallbackMenu || escRepo.calls != 0 {
 		t.Fatalf("pasada la apertura el tope vuelve a cortar: %s / %d", res.NextState, escRepo.calls)
+	}
+}
+
+// NextDayQueueApplies es el predicado que el pool consulta en el pre-envío: solo Néctar y solo
+// en la ventana de la cola.
+func TestNextDayQueueApplies(t *testing.T) {
+	applies := NextDayQueueApplies(nextDayConfig())
+	birdSess := testSess(sm.StateEscalateToAgent)
+	birdSess.PhoneNumber = "+573001234567"
+
+	withTime(at(2026, 10, 23, 17, 50), func() { // viernes, dentro del margen de cierre
+		if !applies(nectarSession(true)) {
+			t.Error("viernes 17:50 en Néctar: la cola aplica")
+		}
+		if applies(birdSess) {
+			t.Error("Bird nunca encola")
+		}
+	})
+	withTime(at(2026, 10, 23, 10, 0), func() {
+		if applies(nectarSession(true)) {
+			t.Error("viernes 10:00: la cola no aplica")
+		}
+	})
+}
+
+// Viernes 17:50, un caller que escala con su aviso «te voy a conectar… un momento»: con el
+// pre-envío cableado como en main (el pool consulta NextDayQueueApplies), el paciente lee UN
+// solo aviso, el del próximo día hábil.
+func TestEscalate_QueuedCallerNoticeYieldsSingleNextDayNotice(t *testing.T) {
+	cfg := nextDayConfig()
+	m, nb := nectarMachine(t, cfg, nil)
+	applies := NextDayQueueApplies(cfg)
+	client := bird.NewClientForTest("http://nectar.invalid")
+	client.SetNectar(nb)
+	// Mismo contrato que worker.PreEscalationFlush: en la cola descarta sin enviar; si no, envía.
+	m.SetPreEscalationFlush(func(_ context.Context, sess *session.Session, msgs []sm.OutboundMessage) bool {
+		if applies(sess) {
+			return true
+		}
+		for _, out := range msgs {
+			if txt, ok := out.(*sm.TextMessage); ok {
+				//nolint:contextcheck // SendText no toma ctx (patrón existente del pre-envío)
+				_, _ = client.SendText(sess.PhoneNumber, sess.ConversationID, txt.Text)
+			}
+		}
+		return true
+	})
+	const callerState = "TEST_CALLER"
+	m.Register(callerState, func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		return sm.NewResult(sm.StateEscalateToAgent).WithText(sm.EscalationNoticeText), nil
+	})
+	sess := nectarSession(true)
+	sess.CurrentState = callerState
+
+	withTime(at(2026, 10, 23, 17, 50), func() {
+		escalateOnce(t, m, sess)
+	})
+	if txt := nb.texts(); len(txt) != 1 || txt[0] != escalationNoticeText(true) {
+		t.Fatalf("un solo aviso, el del próximo día: %q", txt)
 	}
 }

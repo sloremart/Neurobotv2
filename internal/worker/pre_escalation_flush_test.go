@@ -61,3 +61,42 @@ func TestPreEscalationFlush_NectarSendsCoalesced(t *testing.T) {
 		t.Fatalf("el envío va a la clave de sesión: %q", sender.sent[0].phone)
 	}
 }
+
+// Con la cola del próximo día aplicando, el aviso del caller («te voy a conectar… un momento»)
+// contradice al del próximo día que manda el handler: el gancho lo descarta SIN enviarlo y
+// devuelve true (devolver false lo dejaría para después del escalate, donde muere en 404).
+func TestPreEscalationFlush_NectarQueuedDropsCallerNotice(t *testing.T) {
+	pool, sender, sess := preEscalationPool("nectar:42")
+	pool.SetEscalationQueuedNextDay(func(*session.Session) bool { return true })
+	msgs := []statemachine.OutboundMessage{&statemachine.TextMessage{Text: statemachine.EscalationNoticeText}}
+
+	if !pool.PreEscalationFlush(context.Background(), sess, msgs) {
+		t.Fatal("con la cola el gancho devuelve true: los mensajes no deben quedar para después del escalate")
+	}
+	if len(sender.sent) != 0 {
+		t.Fatalf("con la cola el aviso del caller no sale: %d envíos", len(sender.sent))
+	}
+}
+
+// Sin la cola el predicado no cambia nada: el aviso del caller sale como siempre.
+func TestPreEscalationFlush_NectarNotQueuedSends(t *testing.T) {
+	pool, sender, sess := preEscalationPool("nectar:42")
+	pool.SetEscalationQueuedNextDay(func(*session.Session) bool { return false })
+	msgs := []statemachine.OutboundMessage{&statemachine.TextMessage{Text: statemachine.EscalationNoticeText}}
+
+	if !pool.PreEscalationFlush(context.Background(), sess, msgs) || len(sender.sent) != 1 {
+		t.Fatalf("sin cola el aviso sale: %d envíos", len(sender.sent))
+	}
+}
+
+// Bird no consulta el predicado: declina como siempre.
+func TestPreEscalationFlush_BirdIgnoresQueuePredicate(t *testing.T) {
+	pool, sender, sess := preEscalationPool("+573001234567")
+	asked := false
+	pool.SetEscalationQueuedNextDay(func(*session.Session) bool { asked = true; return true })
+	msgs := []statemachine.OutboundMessage{&statemachine.TextMessage{Text: "Te conecto con un asesor"}}
+
+	if pool.PreEscalationFlush(context.Background(), sess, msgs) || len(sender.sent) != 0 || asked {
+		t.Fatalf("Bird queda igual: sent=%d asked=%v", len(sender.sent), asked)
+	}
+}
