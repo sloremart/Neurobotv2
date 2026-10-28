@@ -958,7 +958,7 @@ func ocrSpecialtyMismatch(ocrName, catalogName string) bool {
 	// Se chequea en ambas direcciones para cubrir OCR correcto con código erróneo.
 	specificKeywords := []string{
 		"TRASLUCENCIA", "TRANSLUCENCIA", // ecografía obstétrica semana 11-14
-		"DETALLE ANATOMICO",             // ecografía semana 22-24
+		"DETALLE ANATOMICO", // ecografía semana 22-24
 	}
 	for _, kw := range specificKeywords {
 		ocrHas := strings.Contains(ocr, kw)

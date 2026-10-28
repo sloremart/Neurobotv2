@@ -9,17 +9,17 @@ import (
 
 // MedicationPendingRecord representa un medicamento pendiente de aplicación para un paciente.
 type MedicationPendingRecord struct {
-	ID                  int
-	Cedula              string
-	Paciente            string
-	EPS                 string
-	Medicamento         string
-	NombreComercial     string
-	Concentracion       string
-	FormaFarmaceutica   string
-	SaldoActual         int
-	FechaVencimiento    string
-	NumeroAutorizacion  string // "SIN AUTORIZACION" si no tiene autorización vigente
+	ID                 int
+	Cedula             string
+	Paciente           string
+	EPS                string
+	Medicamento        string
+	NombreComercial    string
+	Concentracion      string
+	FormaFarmaceutica  string
+	SaldoActual        int
+	FechaVencimiento   string
+	NumeroAutorizacion string // "SIN AUTORIZACION" si no tiene autorización vigente
 }
 
 // HasAutorizacion retorna true cuando el registro tiene un número de autorización válido.

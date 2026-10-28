@@ -82,7 +82,7 @@ func medicationCheckExcelHandler(medRepo *local.MedicationPendingRepo) sm.StateH
 			r := sm.NewResult(sm.StateMainMenu).
 				WithClearCtx("medication_flow").
 				WithEvent("medication_sin_autorizacion", map[string]interface{}{
-					"doc":        sess.GetContext("patient_doc"),
+					"doc":         sess.GetContext("patient_doc"),
 					"medicamento": rec.Medicamento,
 				})
 			r.Messages = append(r.Messages, list)
