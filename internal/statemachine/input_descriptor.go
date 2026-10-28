@@ -2,6 +2,7 @@ package statemachine
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -123,10 +124,15 @@ func descriptorOptions(sess *session.Session, step string) []InputOption {
 
 // StaticInputDescriptor serializa el descriptor `input` de un paso de menú ESTÁTICO (sin sesión
 // ni máquina): quien escala sin tener la máquina, como el NotificationManager, lo arma con él.
-// Solo lleva `paso` y `opciones`: los pasos que piden un campo al agente necesitan la máquina
-// (la ayuda por omisión sale de su config) y deben usar Machine.InputDescriptor. Devuelve nil si
-// no se puede serializar, y nil significa «no viaja».
+// Solo lleva `paso` y `opciones` y SOLO sirve para pasos de menú estático: un paso que pide un
+// campo al agente necesita la máquina (la ayuda por omisión sale de su config) y debe usar
+// Machine.InputDescriptor. Llamarla con un paso que tiene ReturnInput registrado es un error de
+// programación y hace panic, en vez de emitir un descriptor sin `campos`. Devuelve nil si no se
+// puede serializar, y nil significa «no viaja».
 func StaticInputDescriptor(step string) []byte {
+	if _, offers := returnInputFor(step); offers {
+		panic(fmt.Sprintf("StaticInputDescriptor(%s): el paso ofrece un ReturnInput; usar Machine.InputDescriptor", step))
+	}
 	raw, err := json.Marshal(InputDescriptor{Step: step, Options: descriptorOptions(nil, step)})
 	if err != nil {
 		slog.Error("descriptor de entrada estático no serializable", "error", err, "step", step)
