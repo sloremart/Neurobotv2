@@ -130,7 +130,8 @@ func TestReturnMenus_CupsInputUsesTheAgentCommandGrammar(t *testing.T) {
 // deferredAgentCommandSteps son los estados que buildAgentCommands nombra y que 9c NO declara:
 // la tarea cubre los pasos de su alcance (menú, identificación, orden médica, notificación y
 // cobertura). Cada uno de estos conserva hoy SOLO el comando `/bot resume` de Bird. Declararlos
-// es trabajo aparte; la lista está FIJADA aquí para que nadie quede fuera en silencio: un paso
+// es trabajo de la fase B: hasta entonces estos pasos devuelven SOLO con las opciones universales
+// (reanudar / cerrar). La lista está FIJADA aquí para que nadie quede fuera en silencio: un paso
 // nuevo en buildAgentCommands, o uno de estos que gane registro, hace fallar la prueba.
 var deferredAgentCommandSteps = []string{
 	"OUT_OF_HOURS_MENU", "CONFIRM_IDENTITY", "CONFIRM_CONTACT_INFO", "ASK_UPDATE_PHONE",
@@ -206,10 +207,7 @@ func TestReturnMenusCoverAgentCommands(t *testing.T) {
 // El descriptor no puede mentir: los `tipos` y las `salidas` que EMITEN los pasos tienen que ser
 // los que publica nectar.Capabilities (Task 5), en los dos sentidos.
 //
-// Dos valores publicados no los emite ningún paso de la fase A y se listan aquí a propósito, no
-// en silencio: `texto_largo` es del campo «orden descrita por el asesor» (la descripción en
-// texto libre queda fuera de la fase A: el comando `orden` no se ofrece a Néctar), y la lista de
-// CUPS entra como `texto`.
+// Es IGUALDAD estricta: lo que no emite ningún paso no se publica, y viceversa.
 func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 	m := returnMenuMachine()
 	kinds, exits := map[string]bool{}, map[string]bool{}
@@ -224,7 +222,6 @@ func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 	}
 
 	published := nectar.Capabilities(config.ProtocolEscaladoV1).Capabilities.Input
-	notEmittedYet := map[string]bool{"texto_largo": true}
 
 	for k := range kinds {
 		if !slices.Contains(published.Kinds, k) {
@@ -232,11 +229,8 @@ func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 		}
 	}
 	for _, k := range published.Kinds {
-		switch {
-		case !kinds[k] && !notEmittedYet[k]:
+		if !kinds[k] {
 			t.Errorf("Capabilities publica el tipo %q y ningún paso lo emite", k)
-		case kinds[k] && notEmittedYet[k]:
-			t.Errorf("el tipo %q ya se emite: quitarlo de notEmittedYet", k)
 		}
 	}
 	for e := range exits {

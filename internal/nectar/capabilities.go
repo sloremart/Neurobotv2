@@ -68,13 +68,13 @@ const groupInTheReturn = "opcional"
 // Los dos vocabularios del descriptor. Solo VIAJAN cuando emitsInputDescriptor está encendida
 // (si no, van como listas vacías, que es lo que el binario cumple).
 //
-// Son DOS tipos y no los del vocabulario completo de Néctar: los pasos de Neuro solo le piden
-// al agente texto, corto o largo. No hay fecha, hora ni enlace, y declararlos haría que Néctar
+// Las clases salen de los pasos REGISTRADOS, no del vocabulario completo de Néctar: hoy los pasos
+// de Neuro solo le piden al agente `texto`. Declarar más haría que Néctar
 // esperara algo que nunca llega. Se cruzan contra lo que EMITEN los pasos, y en los dos sentidos,
 // en TestElRegistroDelDescriptorNoMiente (internal/statemachine/handlers): declarar de más hace
 // que Néctar espere algo que no llega; declarar de menos deja al adaptador pintando de menos.
 var (
-	inputKinds = []string{"texto", "texto_largo"}
+	inputKinds = []string{"texto"}
 	inputExits = []string{"reanudar", "reanudar_sin_dato", "cerrar"}
 )
 

@@ -17,13 +17,10 @@ import (
 // LA FUENTE NO CAMBIA: se leen los MISMOS registros que `ReturnMenu` (las opciones y la entrada
 // del paso), así que esto es un cambio de forma de emisión y no una segunda declaración.
 
-// Los dos `tipo` de campo que este bot emite: los pasos de Neuro solo le piden al agente texto,
-// corto o largo. No hay fecha, hora ni enlace, y declararlos haría que Néctar esperara algo que
-// nunca llega (el registro de capacidades publica estos mismos dos).
-const (
-	InputKindText     = "texto"
-	InputKindLongText = "texto_largo"
-)
+// InputKindText es el `tipo` de campo que este bot emite: los pasos de Neuro solo le piden al agente texto. Un
+// tipo nuevo se añade aquí Y al registro de capacidades en el mismo cambio
+// (TestElRegistroDelDescriptorNoMiente los cruza).
+const InputKindText = "texto"
 
 // InputFieldKey es la `clave` del campo único de una entrada registrada: la que Néctar devuelve
 // dentro de `valores`. Es vocabulario nuestro y es una sola porque un paso ofrece UN campo.

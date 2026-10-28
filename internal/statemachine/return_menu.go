@@ -234,7 +234,7 @@ func ReturnValueForLog(token string) string {
 // MaxLen y Pattern se PUBLICAN para que la pantalla del agente pre-valide, pero la autoridad es
 // Validate (el bot es el único validador).
 type ReturnInput struct {
-	// Kind es el `tipo` del campo (InputKindText o InputKindLongText). "" = InputKindText.
+	// Kind es el `tipo` del campo (hoy solo InputKindText). "" = InputKindText.
 	Kind string
 	// Label es el rótulo del campo en la pantalla del agente.
 	Label string

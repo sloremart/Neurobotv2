@@ -47,7 +47,7 @@ func TestInputDescriptor_WireKeysAreTheSchemas(t *testing.T) {
 	d := buildDescriptor(t,
 		&HandlerConfig{InputType: InputText, ErrorMsg: "el formato", Handler: noopHandler},
 		&ReturnInput{
-			Kind: InputKindLongText, Label: "Escriba el dato", Target: "OTRO_PASO",
+			Kind: "texto_largo", Label: "Escriba el dato", Target: "OTRO_PASO",
 			Required: true, MaxLen: 300, Pattern: `^\d+$`,
 		},
 		ReturnOption{Label: "No hay agenda", Value: "bot_sin_agenda", NoInput: true},
@@ -183,8 +183,8 @@ func TestInputDescriptor_ExitDerivedFromCloseAndNoInput(t *testing.T) {
 
 // Los literales de cable son los que Néctar y el registro de capacidades declaran.
 func TestInputDescriptor_KindsAreTheLiteralsTheRegistryPublishes(t *testing.T) {
-	if InputKindText != "texto" || InputKindLongText != "texto_largo" {
-		t.Fatalf("los tipos de campo son texto y texto_largo: %q, %q", InputKindText, InputKindLongText)
+	if InputKindText != "texto" {
+		t.Fatalf("el tipo de campo es texto: %q", InputKindText)
 	}
 }
 
@@ -231,7 +231,7 @@ func TestInputDescriptor_TheFieldInheritsLabelHelpAndKind(t *testing.T) {
 	}
 
 	// Y en un paso sin config declarativa el campo se declara igual (los de la orden médica).
-	d = buildDescriptor(t, nil, &ReturnInput{Label: "CUPS", Kind: InputKindLongText})
+	d = buildDescriptor(t, nil, &ReturnInput{Label: "CUPS", Kind: "texto_largo"})
 	if len(d.Fields) != 1 || d.Fields[0].Kind != "texto_largo" || d.Fields[0].Help != "" {
 		t.Errorf("sin config declarativa: %+v", d.Fields)
 	}
