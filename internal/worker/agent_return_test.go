@@ -724,3 +724,24 @@ func TestHandleAgentResume_UnregisteredTargetDropsData(t *testing.T) {
 		t.Errorf("el dato no se inyecta en el saludo: %q", processed.Text)
 	}
 }
+
+// La re-escalada por un dato que no sirvió dice POR QUÉ: el agente ve el detalle, no el `reason`.
+func TestReescalateRejected_WritesReason(t *testing.T) {
+	pool, sm, _, sess, _, _ := returnSession(t, "ASK_DOCUMENT")
+	asNectar(sess)
+	db := persistedContext(sm)
+	pool.machine = &mockMessageProcessor{
+		returnInput: statemachine.ReturnInputResult{Written: true, Value: "12ab", Problem: "Solo números."},
+		processFn: func(context.Context, *session.Session, bird.InboundMessage) (*statemachine.StateResult, error) {
+			return &statemachine.StateResult{NextState: statemachine.StateEscalated}, nil
+		},
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnInputPrefix + "12ab",
+	})
+
+	if got := db[statemachine.CtxEscalationReason]; got != statemachine.EscalationReasonAgentInputRejected {
+		t.Fatalf("motivo persistido = %q, quería dato_agente_rechazado", got)
+	}
+}

@@ -185,6 +185,7 @@ func showEntityListHandler(entityRepo repository.EntityRepository) sm.StateHandl
 		if len(entities) == 0 {
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Lo siento, en este momento no pude completar tu solicitud automaticamente. Te voy a comunicar con uno de nuestros agentes para que pueda ayudarte.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonNoEntities).
 				WithEvent("no_entities_found", map[string]interface{}{"category": category}), nil
 		}
 
@@ -321,6 +322,7 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "unresolved"})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Lo siento, no pude identificar tu entidad. Te comunico con un agente para ayudarte.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonEntityUnresolved).
 				WithEvent("entity_resolution_failed", map[string]interface{}{"index": index, "category": category}), nil
 		}
 
@@ -330,6 +332,7 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithContext("selected_entity_code", entityCode).
 				WithContext("selected_entity_name", entityName).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonParticularLiga).
 				WithEvent("particular_liga_escalated", map[string]interface{}{"code": entityCode, "name": entityName}), nil
 		}
 

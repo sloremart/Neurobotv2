@@ -81,7 +81,7 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 	}
 	esc.Protocol = config.ProtocolEscaladoV1
 	// El detalle es el escalation_reason INTERNO del bot. Vacío no viaja (omitempty en el cable).
-	esc.ReasonDetail = sess.GetContext("escalation_reason")
+	esc.ReasonDetail = sess.GetContext(sm.CtxEscalationReason)
 	// Los hechos ACOMPAÑAN al resumen, no lo sustituyen. Sin serializar se escala sin ellos.
 	if raw, err := json.Marshal(facts); err != nil {
 		slog.Error("escalación: los hechos del resumen no se pudieron serializar, se escala sin ellos",
@@ -121,11 +121,22 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 // termina sin escalar, una marca viva haría que la siguiente —una en que el bot se atasca—
 // saliera como pedida por el paciente (motivo del sobre y aviso de Néctar equivocados). Si el
 // paciente vuelve a pedir un asesor, el interceptor o el menú la escriben de nuevo.
+//
+// (3) EL MOTIVO INTERNO (CtxEscalationReason) también: describe ESTA escalación. El evento
+// `escalated` y el sobre lo leen de la sesión ANTES de que esta salida se aplique; una clave viva
+// rotularía la siguiente escalación, que escribe el suyo, con el motivo de la anterior.
 func escalationExit(r *sm.StateResult) *sm.StateResult {
 	if r == nil {
 		return r
 	}
-	return r.WithClearCtx(sm.CtxAgentInputRejection, sm.CtxPatientAskedForAgent)
+	return r.WithClearCtx(sm.CtxAgentInputRejection, sm.CtxPatientAskedForAgent, sm.CtxEscalationReason)
+}
+
+// reasonNotifiesPatient dice si el motivo interno obliga a avisarle al paciente de Néctar aunque
+// no lo haya pedido: son las escalaciones cuyo caller no trae texto para él (la entidad «particular
+// liga» y el kill switch), y sin aviso el paciente se quedaría en silencio esperando.
+func reasonNotifiesPatient(reason string) bool {
+	return reason == sm.EscalationReasonParticularLiga || reason == sm.EscalationReasonBotDisabled
 }
 
 // queuedWaitStillOpen dice si la escalación ENCOLADA de esta sesión sigue DENTRO de su espera:

@@ -239,6 +239,8 @@ func (p *MessageWorkerPool) reescalateRejectedAgentInput(ctx context.Context, se
 		// retornos que el agente va a volver a ver. Lo normal es que lo ponga el auto-chain de la
 		// máquina; aquí se entra por fuera, así que se pone a mano.
 		statemachine.CtxPreAutoState: step,
+		// Néctar le muestra al agente el detalle y no el `reason`: lo que le dice POR QUÉ vuelve.
+		statemachine.CtxEscalationReason: statemachine.EscalationReasonAgentInputRejected,
 	}
 	// El rechazo TIPADO, para el sobre v1: lo escribe quien re-escala y lo leerá, en OTRO turno,
 	// el handler de escalación al armar el sobre. Si no se pudiera rendir, el caso escala igual y

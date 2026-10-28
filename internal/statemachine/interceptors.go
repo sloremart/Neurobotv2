@@ -268,6 +268,7 @@ func EscalationKeywordsInterceptor() Interceptor {
 		return NewResult(StateEscalateToAgent).
 			WithText(EscalationNoticeText).
 			WithContext(CtxPatientAskedForAgent, "1").
+			WithContext(CtxEscalationReason, EscalationReasonPatientAsked).
 			WithEvent("escalation_requested", map[string]interface{}{
 				"from_state": sess.CurrentState,
 				"keyword":    input,

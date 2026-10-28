@@ -770,6 +770,7 @@ func checkSpecialCupsHandler() sm.StateHandler {
 				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: "sleep_study", Attrs: map[string]interface{}{"cups": cupsCode}})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Los *estudios del sueño* requieren una coordinación especial. Te comunicaremos con un agente para programar tu cita.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonSleepStudy).
 				WithEvent("special_cups_sleep_study", map[string]interface{}{"cups_code": cupsCode}), nil
 		}
 

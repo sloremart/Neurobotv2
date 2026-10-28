@@ -324,6 +324,12 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			if !askedForAgent && !queuedNextDay {
 				notice = ""
 			}
+			// Los callers sin texto propio (particular liga, bot desactivado) no avisarían a nadie:
+			// el aviso estándar sale igual, salvo que el pre-envío ya lo haya sacado.
+			if !queuedNextDay && sess.GetContext(sm.CtxEscalationNoticeFlushed) != "1" &&
+				reasonNotifiesPatient(sess.GetContext(sm.CtxEscalationReason)) {
+				notice = sm.EscalationNoticeText
+			}
 			if notice != "" {
 				//nolint:contextcheck // SendText no toma ctx (patrón existente del pre-envío del paso 4)
 				if _, serr := birdClient.SendText(msg.Phone, conversationID, notice); serr != nil {
@@ -455,7 +461,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 		}
 		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalated",
-			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
+			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext(sm.CtxEscalationReason)})
 		// El equipo sugerido es un campo del sobre de Néctar: Bird lo descarta, así que anotarlo en
 		// una escalación de Bird contaría una sugerencia que nadie recibió.
 		if nectarSession {

@@ -216,3 +216,35 @@ func (f *formattingAI) Name() string { return "formatting_ai" }
 func (f *formattingAI) Try(_ context.Context, _ Request) Result {
 	return Result{Handled: true, Value: f.value, Reason: "formatted"}
 }
+
+// Al agotarse el presupuesto de recuperación el caso se escala con su motivo: Néctar no le muestra
+// el `reason` al agente, solo el detalle.
+func TestHandle_BudgetExhaustedWritesReason(t *testing.T) {
+	const blocked = "ASK_DOC_TYPE"
+
+	m := sm.NewMachine()
+	m.RegisterWithConfig(blocked, sm.HandlerConfig{
+		InputType:    sm.InputText,
+		TextValidate: func(s string) bool { return s == "CC" },
+		AIRecovery:   true,
+		Handler: func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+			return sm.NewResult("ASK_DOC_NUMBER"), nil
+		},
+	})
+	coord := NewCoordinator(m, &stubAI{}, Config{Enabled: true, MaxPatientAttempts: 2})
+	m.SetRecoveryCoordinator(coord)
+
+	sess := newRecoverySession(blocked)
+	sess.SetContext(CtxRecoveryActive, blocked)
+	sess.SetContext(CtxRecoveryAttempts, "1")
+
+	res, handled := coord.Handle(context.Background(), sess, bird.InboundMessage{
+		ID: "msg-agotado", Phone: sess.PhoneNumber, MessageType: "text", Text: "no se", ReceivedAt: time.Now(),
+	})
+	if !handled || res == nil || res.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("esperaba escalación por presupuesto agotado, got handled=%v res=%+v", handled, res)
+	}
+	if got := res.UpdateCtx[sm.CtxEscalationReason]; got != sm.EscalationReasonAIRecoveryExhausted {
+		t.Fatalf("motivo = %q, quería ia_recuperacion_agotada", got)
+	}
+}

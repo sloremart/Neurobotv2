@@ -226,6 +226,7 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRServi
 				return sm.NewResult(sm.StateEscalateToAgent).
 					WithClearCtx("_prompted_has_order").
 					WithText("Entendido. En un momento uno de nuestros asesores se comunicará contigo para brindarte la atención que necesitas.").
+					WithContext(sm.CtxEscalationReason, sm.EscalationReasonParticularNoOrder).
 					WithEvent("particular_no_order_escalated", nil), nil
 			}
 		}
@@ -441,6 +442,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 			observability.EmitOpts{Phone: sess.PhoneNumber})
 		return sm.NewResult(sm.StateEscalateToAgent).
 			WithText("No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita.").
+			WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
 			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)}), nil
 	}
 	ocrResult.Cups = validCups
@@ -483,6 +485,8 @@ func uploadNonMedia(sess *session.Session, birdClient *bird.Client, msg bird.Inb
 			}
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Te voy a comunicar con uno de nuestros agentes para que pueda ayudarte con tu orden médica.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRAskedForAgent).
+				WithContext(sm.CtxPatientAskedForAgent, "1").
 				WithEvent("ocr_escalate_to_agent", nil), nil
 		}
 	}
@@ -497,6 +501,7 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 		if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil {
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("No pudimos procesar los datos de tu orden. Te voy a comunicar con un agente para que pueda ayudarte.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRInvalidJSON).
 				WithEvent("ocr_parse_error", map[string]interface{}{"error": err.Error()}), nil
 		}
 
@@ -560,6 +565,7 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 						})
 					return sm.NewResult(sm.StateEscalateToAgent).
 						WithText("Tu orden incluye un *bloqueo*, que se agenda directamente con un asesor. Te comunico con un agente para gestionar tu cita.").
+						WithContext(sm.CtxEscalationReason, sm.EscalationReasonSanitasBlock).
 						WithEvent("bloqueo_sanitas_escalated", map[string]interface{}{"cups_code": cup.Code}), nil
 				}
 			}
@@ -570,6 +576,7 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("No pudimos procesar los procedimientos de tu orden médica. Te voy a comunicar con un agente para que pueda ayudarte.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonNoValidCups).
 				WithEvent("ocr_no_valid_cups", map[string]interface{}{"skipped": skipped}), nil
 		}
 
@@ -627,6 +634,7 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 			if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil {
 				return sm.NewResult(sm.StateEscalateToAgent).
 					WithText("No pudimos procesar tu orden. Te voy a comunicar con un agente para que pueda ayudarte.").
+					WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRInvalidJSON).
 					WithEvent("ocr_parse_error", map[string]interface{}{"error": err.Error()}), nil
 			}
 
@@ -692,6 +700,7 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 			if len(groups) == 0 {
 				return sm.NewResult(sm.StateEscalateToAgent).
 					WithText("No pudimos identificar procedimientos válidos en tu orden. Te comunicaremos con un agente.").
+					WithContext(sm.CtxEscalationReason, sm.EscalationReasonEmptyGrouping).
 					WithEvent("ocr_no_valid_cups", nil), nil
 			}
 
@@ -720,6 +729,7 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 			if len(firstGroup.Cups) == 0 {
 				return sm.NewResult(sm.StateEscalateToAgent).
 					WithText("No pudimos identificar procedimientos válidos en tu orden. Te comunicaremos con un agente.").
+					WithContext(sm.CtxEscalationReason, sm.EscalationReasonEmptyGrouping).
 					WithEvent("ocr_empty_cups_group", nil), nil
 			}
 

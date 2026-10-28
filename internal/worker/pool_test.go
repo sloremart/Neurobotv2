@@ -1696,3 +1696,34 @@ func TestShouldSendEscalationAck(t *testing.T) {
 		}
 	}
 }
+
+// El kill switch escala sin pasar por la máquina: su motivo viaja en el mismo mapa de contexto que
+// ya escribe, porque Néctar le muestra al agente el detalle y no el `reason`.
+func TestProcessMessage_BotDisabledWritesReason(t *testing.T) {
+	sm := newMockSessionMgmt()
+	sm.findOrCreateFn = func(_ context.Context, phone string) (*session.Session, bool, error) {
+		return &session.Session{
+			ID: "sess-kill", PhoneNumber: phone, CurrentState: "GREETING",
+			Status: session.StatusActive, Context: map[string]string{},
+		}, false, nil
+	}
+	sender := &mockMessageSender{}
+	var seen string
+	processor := &mockMessageProcessor{
+		processFn: func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*statemachine.StateResult, error) {
+			seen = sess.GetContext(statemachine.CtxEscalationReason)
+			return &statemachine.StateResult{NextState: statemachine.StateEscalated}, nil
+		},
+	}
+	pool := NewMessageWorkerPool(1, 10)
+	pool.SetDependencies(sm, sender, processor)
+	pool.SetBotEnabled(false)
+
+	pool.processMessage(context.Background(), bird.InboundMessage{
+		ID: "msg-kill-1", Phone: "+573001234567", MessageType: "text", Text: "hola", ReceivedAt: time.Now(),
+	})
+
+	if seen != statemachine.EscalationReasonBotDisabled {
+		t.Fatalf("motivo = %q, quería bot_desactivado", seen)
+	}
+}

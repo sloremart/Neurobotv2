@@ -178,7 +178,9 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 		default:
 			if msg.IsPostback && msg.PostbackPayload == "escalate_agent" {
 				return sm.NewResult(sm.StateEscalateToAgent).
-					WithText("En un momento un asesor se comunicará contigo."), nil
+					WithText("En un momento un asesor se comunicará contigo.").
+					WithContext(sm.CtxEscalationReason, sm.EscalationReasonEmgAskedForAgent).
+					WithContext(sm.CtxPatientAskedForAgent, "1"), nil
 			}
 			return sm.NewResult(sess.CurrentState).
 				WithText("Por favor envía una *foto* o *PDF* de la orden de la electromiografía."), nil
@@ -188,7 +190,9 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 
 // escalateEmg construye una escalada a agente con mensaje.
 func escalateEmg(text string) *sm.StateResult {
-	return sm.NewResult(sm.StateEscalateToAgent).WithText(text)
+	return sm.NewResult(sm.StateEscalateToAgent).
+		WithText(text).
+		WithContext(sm.CtxEscalationReason, sm.EscalationReasonEmgConsolidationFailed)
 }
 
 // mergeEmgAndDependentCups fusiona los CUPS de la orden EMG (2ª foto, ya extraídos por OCR) con los

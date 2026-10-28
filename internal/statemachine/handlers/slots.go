@@ -145,6 +145,7 @@ func sanitasBloqueoEscalation(sess *session.Session, cup, source string) *sm.Sta
 		})
 	return sm.NewResult(sm.StateEscalateToAgent).
 		WithText("Tu orden incluye un *bloqueo*, que se agenda directamente con un asesor. Te comunico con un agente para gestionar tu cita.").
+		WithContext(sm.CtxEscalationReason, sm.EscalationReasonSanitasBlock).
 		WithEvent("bloqueo_sanitas_escalated", map[string]interface{}{"cups_code": cup, "source": source})
 }
 
@@ -524,6 +525,8 @@ func coverageNoConvenioHandler() sm.StateHandler {
 				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Te comunicamos con un agente para gestionar tu cita.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonNoCoverage).
+				WithContext(sm.CtxPatientAskedForAgent, "1").
 				WithEvent("coverage_escalate_agent", nil), nil
 		}
 		// cov_particular → cambiar a PARTICULAR (siempre tiene tarifa > 0, así el gate no se re-dispara).

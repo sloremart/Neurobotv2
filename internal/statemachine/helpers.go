@@ -57,6 +57,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 		// Escalate to agent first; if agent unavailable, escalation handler falls back to FALLBACK_MENU
 		return NewResult(StateEscalateToAgent).
 			WithText(EscalationNoticeText).
+			WithContext(CtxEscalationReason, EscalationReasonMaxRetries).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"retries":    maxRetries,
@@ -120,6 +121,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 		// Escalate to agent first; if agent unavailable, escalation handler falls back to FALLBACK_MENU
 		return NewResult(StateEscalateToAgent).
 			WithText(EscalationNoticeText).
+			WithContext(CtxEscalationReason, EscalationReasonMaxRetries).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"last_input": loggedInput,
@@ -146,6 +148,7 @@ func RetryOrEscalate(sess *session.Session, errorMsg string) *StateResult {
 		// Escalate to agent first; if agent unavailable, escalation handler falls back to FALLBACK_MENU
 		return NewResult(StateEscalateToAgent).
 			WithText(EscalationNoticeText).
+			WithContext(CtxEscalationReason, EscalationReasonMaxRetries).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":   sess.CurrentState,
 				"retries": maxRetries,

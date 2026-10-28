@@ -384,7 +384,7 @@ func medicationPrepareScheduleHandler() sm.StateHandler {
 		if err != nil {
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText("Ocurrió un error preparando tu solicitud. Te conecto con un agente. 😊").
-				WithContext("escalation_reason", "medicamentos_error"), nil
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonMedicationError), nil
 		}
 
 		return sm.NewResult(sm.StateCheckExisting).
