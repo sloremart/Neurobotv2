@@ -23,6 +23,8 @@ import (
 type escalationBridge struct {
 	mu        sync.Mutex
 	escalated []bird.Escalation
+	// fail, si no es nil, hace fallar Escalate (el sobre igual se anota).
+	fail error
 }
 
 func (b *escalationBridge) SendText(context.Context, int64, string) (string, error) { return "m", nil }
@@ -46,7 +48,7 @@ func (b *escalationBridge) Escalate(_ context.Context, _ int64, esc bird.Escalat
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.escalated = append(b.escalated, esc)
-	return nil
+	return b.fail
 }
 func (b *escalationBridge) Close(context.Context, int64) error { return nil }
 func (b *escalationBridge) ConversationState(context.Context, int64) (string, error) {

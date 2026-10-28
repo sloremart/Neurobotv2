@@ -929,6 +929,10 @@ func (m *mockSessionCreator) CompleteActiveByPhone(ctx context.Context, phone st
 	return nil
 }
 
+func (m *mockSessionCreator) RenewExpiry(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 func (m *mockSessionCreator) LastPatientMessageAt(_ context.Context, _ string) (*time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

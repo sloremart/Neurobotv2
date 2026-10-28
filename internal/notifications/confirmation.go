@@ -375,13 +375,6 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		"pre_escalation_state":      sm.StateNotifPending,
 		sm.CtxNotifEscalationDetail: detail,
 	}
-	// P0-2: en Néctar el retorno del agente necesita una sesión escalada en NOTIF_PENDING (sin ella
-	// el worker lo descarta). En Bird no se crea, como siempre: su agente no devuelve esta escalación
-	// con `/bot resume`.
-	var sessID string
-	if session.IsNectarSession(pending.Phone) {
-		sessID = m.escalatedNotifSession(ctx, pending.Phone, pending.ConversationID, sessCtx)
-	}
 
 	var note string
 	switch reason {
@@ -423,20 +416,12 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		); err != nil {
 			slog.Error("notif escalate to agent failed", "phone", utils.MaskPhone(pending.Phone),
 				"conversation_id", pending.ConversationID, "error", err)
-		} else if sessID != "" {
-			// Escalación efectiva con sesión (solo Néctar): se registra como en escalateNotifToAgent,
-			// para el KPI de escaladas y el SLA por escalación. from_state = NOTIF_PENDING.
-			if m.tracker != nil {
-				m.tracker.LogEvent(ctx, sessID, pending.Phone, "escalated_to_agent", map[string]interface{}{
-					"from_state": sm.StateNotifPending,
-					"agent":      "Call Center",
-				})
-			}
-			if m.escalations != nil {
-				if err := m.escalations.Create(ctx, sessID, pending.Phone, sm.StateNotifPending, m.cfg.BirdTeamFallback, "", "Call Center"); err != nil {
-					slog.Warn("notif escalation: record escalation", "error", err, "phone", utils.MaskPhone(pending.Phone))
-				}
-			}
+		} else if session.IsNectarSession(pending.Phone) {
+			// P0-2: en Néctar el retorno del agente necesita una sesión escalada en NOTIF_PENDING
+			// (sin ella el worker lo descarta). Se persiste SOLO tras escalar con éxito: una sesión
+			// ESCALATED sin agente dejaría al paciente sin bot hasta el barrido de vencidas. En Bird
+			// no se crea, como siempre.
+			m.registerNectarNotifEscalation(ctx, pending.Phone, pending.ConversationID, sessCtx)
 		}
 	}
 
@@ -459,6 +444,27 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		"phone", utils.MaskPhone(pending.Phone),
 		"appointment_id", pending.AppointmentID,
 		"retry_count", pending.RetryCount)
+}
+
+// registerNectarNotifEscalation persiste la sesión escalada de una escalación de confirmación ya
+// hecha en Néctar y la registra como escalateNotifToAgent (KPI de escaladas y SLA por escalación,
+// from_state = NOTIF_PENDING).
+func (m *NotificationManager) registerNectarNotifEscalation(ctx context.Context, phone, convID string, sessCtx map[string]string) {
+	sessID := m.escalatedNotifSession(ctx, phone, convID, sessCtx)
+	if sessID == "" {
+		return
+	}
+	if m.tracker != nil {
+		m.tracker.LogEvent(ctx, sessID, phone, "escalated_to_agent", map[string]interface{}{
+			"from_state": sm.StateNotifPending,
+			"agent":      "Call Center",
+		})
+	}
+	if m.escalations != nil {
+		if err := m.escalations.Create(ctx, sessID, phone, sm.StateNotifPending, m.cfg.BirdTeamFallback, "", "Call Center"); err != nil {
+			slog.Warn("notif escalation: record escalation", "error", err, "phone", utils.MaskPhone(phone))
+		}
+	}
 }
 
 // startConfirmRescheduleSession creates a new session at CONFIRM_RESCHEDULE_NOTIF

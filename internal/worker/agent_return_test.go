@@ -607,6 +607,50 @@ func TestHandleAgentResume_NotifPendingWaitingListSchedule(t *testing.T) {
 	}
 }
 
+// Una acción que no es del tipo de la notificación (confirm sobre una lista de espera) no se
+// ejecuta: en Bird la sesión sigue escalada y el agente recibe una nota con las acciones válidas.
+func TestHandleAgentResume_BirdNotifPendingActionOfAnotherTypeIsRefused(t *testing.T) {
+	pool, sess, spy, completed, resumedTo := notifPendingReturnSession(t)
+	sess.Context["notif_type"] = "waiting_list"
+	sender := pool.birdClient.(*mockMessageSender)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, State: statemachine.StateNotifPending, Data: "confirm",
+	})
+
+	if len(spy.actions) != 0 || *completed != 0 || *resumedTo != "" {
+		t.Fatalf("no se ejecuta ni se completa: acciones=%v completadas=%d retomó=%q", spy.actions, *completed, *resumedTo)
+	}
+	var note string
+	for _, txt := range sentTexts(sender) {
+		if strings.Contains(txt, "/bot resume NOTIF_PENDING wl_schedule") {
+			note = txt
+		}
+	}
+	if note == "" || !strings.Contains(note, "/bot resume NOTIF_PENDING wl_decline") {
+		t.Fatalf("el agente recibe las acciones válidas del tipo: %q", sentTexts(sender))
+	}
+}
+
+// En Néctar la acción que no es del tipo vuelve a una persona como dato rechazado, sin completar
+// la sesión ni entregar la acción.
+func TestHandleAgentResume_NectarNotifPendingActionOfAnotherTypeReescalates(t *testing.T) {
+	pool, sess, spy, completed, resumedTo := notifPendingReturnSession(t)
+	asNectar(sess)
+	sess.Context["notif_type"] = "cancellation"
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: "confirm",
+	})
+
+	if len(spy.actions) != 0 || *completed != 0 {
+		t.Fatalf("no se ejecuta ni se completa: acciones=%v completadas=%d", spy.actions, *completed)
+	}
+	if *resumedTo != statemachine.StateEscalateToAgent {
+		t.Fatalf("re-escala como dato rechazado (retoma en ESCALATE_TO_AGENT): retomó=%q", *resumedTo)
+	}
+}
+
 // M2: el motivo de conversacion_resuelta queda en la traza de agent_closed (p. ej. cola_vencida).
 func TestHandleAgentClose_NectarTracesReason(t *testing.T) {
 	sink := &observability.CaptureSink{}

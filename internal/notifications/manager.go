@@ -68,6 +68,8 @@ type SessionCreator interface {
 	SetContextBatch(ctx context.Context, sessionID string, kvs map[string]string) error
 	UpdateStatus(ctx context.Context, sessionID, status string) error
 	CompleteActiveByPhone(ctx context.Context, phone string) error
+	// RenewExpiry fija el vencimiento de la sesión (y toca su última actividad).
+	RenewExpiry(ctx context.Context, sessionID string, expiresAt time.Time) error
 	// LastPatientMessageAt: último mensaje DEL paciente en cualquier sesión del teléfono (nil si
 	// nunca escribió) — la referencia de la ventana de servicio de 24h de WhatsApp.
 	LastPatientMessageAt(ctx context.Context, phone string) (*time.Time, error)
@@ -460,9 +462,12 @@ func (m *NotificationManager) HandleNotifPendingCommand(phone, action, convID, a
 	case "cancellation":
 		m.handleCancellation(phone, normalized, pending)
 	case "waiting_list":
-		if m.waitingListRepo != nil {
-			m.handleWaitingList(phone, normalized, pending)
+		if m.waitingListRepo == nil {
+			slog.Warn("HandleNotifPendingCommand: waiting list sin repositorio, acción descartada",
+				"phone", utils.MaskPhone(phone), "action", action, "waiting_list_id", waitingListID)
+			return
 		}
+		m.handleWaitingList(phone, normalized, pending)
 	default:
 		// Unknown type — treat as confirmation (safest fallback)
 		slog.Warn("HandleNotifPendingCommand: unknown notif type, treating as confirmation",
@@ -1248,7 +1253,14 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		"pre_escalation_state":      sm.StateNotifPending,
 		sm.CtxNotifEscalationDetail: sm.EscalationReasonNotifFreeText,
 	}
-	sessID := m.escalatedNotifSession(ctx, p.Phone, convID, sessCtx)
+	// En Bird la sesión se persiste antes de escalar (comportamiento de siempre). En Néctar solo
+	// tras una escalación exitosa: una sesión ESCALATED sin agente deja al paciente sin respuesta
+	// del bot hasta que el barrido de vencidas la libere.
+	nectarSession := session.IsNectarSession(p.Phone)
+	var sessID string
+	if !nectarSession {
+		sessID = m.escalatedNotifSession(ctx, p.Phone, convID, sessCtx)
+	}
 
 	// Nota interna + mensaje al paciente + asignación de agente
 	note := fmt.Sprintf("Paciente envio texto libre repetidamente durante confirmacion de cita.\n"+
@@ -1304,6 +1316,10 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 		)
 		return
 	}
+	if nectarSession {
+		sessCtx["notif_conv_id"] = convID
+		sessID = m.escalatedNotifSession(ctx, p.Phone, convID, sessCtx)
+	}
 
 	// Escalación efectiva: registrar el evento (cuenta en 'Escaladas' y en el KPI de paso from_state) y
 	// la fila en la tabla escalations (SLA por escalación, #11). from_state = NOTIF_PENDING.
@@ -1353,6 +1369,15 @@ func (m *NotificationManager) escalatedNotifSession(ctx context.Context, phone, 
 		}
 		if err := m.sessionRepo.SetContextBatch(ctx, existing.ID, sessCtx); err != nil {
 			slog.Error("escalatedNotifSession: set context", "error", err, "phone", utils.MaskPhone(phone))
+		}
+		// En Néctar el retorno del agente llega horas después: sin renovar el vencimiento, el
+		// barrido de vencidas podría cerrar la sesión antes y el retorno se descartaría. En Bird no
+		// se toca: adelantar o atrasar ese barrido cambiaría lo que el paciente recibe y cuándo.
+		if session.IsNectarSession(phone) {
+			if err := m.sessionRepo.RenewExpiry(ctx, existing.ID, time.Now().Add(24*time.Hour)); err != nil {
+				slog.Error("escalatedNotifSession: renew expiry", "error", err,
+					"phone", utils.MaskPhone(phone), "session_id", existing.ID)
+			}
 		}
 		slog.Info("escalatedNotifSession: reusing active session", "phone", utils.MaskPhone(phone),
 			"session_id", existing.ID, "prev_status", existing.Status)

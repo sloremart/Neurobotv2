@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -33,6 +34,17 @@ type mockSessionCreatorWithLookup struct {
 	batchSession string
 	batchCtx     map[string]string
 	findCalls    int
+	renewed      map[string]time.Time
+}
+
+func (m *mockSessionCreatorWithLookup) RenewExpiry(_ context.Context, sessionID string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.renewed == nil {
+		m.renewed = map[string]time.Time{}
+	}
+	m.renewed[sessionID] = expiresAt
+	return nil
 }
 
 func (m *mockSessionCreatorWithLookup) Create(_ context.Context, s *session.Session) error {
@@ -173,13 +185,19 @@ func TestEscalateNotifToAgent_ReusesExistingSession(t *testing.T) {
 // el registro de escalaciones a la vista.
 func confirmationEscalationManager(t *testing.T, repo *mockSessionCreatorWithLookup) (*NotificationManager, *mockEventLoggerNotif, *mockEscRecorderNotif) {
 	t.Helper()
-	mgr, _ := nectarManager(t, &config.Config{BirdTeamFallback: "team-fallback"})
+	mgr, _, tracker, rec := confirmationEscalationManagerWithBridge(t, repo)
+	return mgr, tracker, rec
+}
+
+func confirmationEscalationManagerWithBridge(t *testing.T, repo *mockSessionCreatorWithLookup) (*NotificationManager, *escalationBridge, *mockEventLoggerNotif, *mockEscRecorderNotif) {
+	t.Helper()
+	mgr, bridge := nectarManager(t, &config.Config{BirdTeamFallback: "team-fallback"})
 	mgr.SetWaitingListDeps(nil, repo, &mockVirtualEnqueuer{})
 	tracker := &mockEventLoggerNotif{}
 	mgr.SetTracker(tracker)
 	rec := &mockEscRecorderNotif{}
 	mgr.SetEscalationRecorder(rec)
-	return mgr, tracker, rec
+	return mgr, bridge, tracker, rec
 }
 
 // P0-2/S25: la escalación por no-respuesta en Néctar no tenía sesión, y el retorno del agente se
@@ -262,5 +280,93 @@ func TestConfirmationEscalate_BirdCreatesNoSession(t *testing.T) {
 	defer repo.mu.Unlock()
 	if repo.findCalls != 0 || repo.createCalls != 0 {
 		t.Errorf("Bird no busca ni crea sesión: find=%d create=%d", repo.findCalls, repo.createCalls)
+	}
+}
+
+// Una escalación de Néctar que FALLA no puede dejar al paciente en una sesión escalada sin agente:
+// el worker ignoraría sus mensajes hasta que el barrido de vencidas la liberara (hasta 24 h). La
+// sesión solo se persiste si la escalación tuvo éxito; la activa que ya tenía queda como estaba.
+func TestNectarNotifEscalation_FailedEscalationLeavesTheSessionAlone(t *testing.T) {
+	for name, escalate := range map[string]func(*NotificationManager){
+		"confirmación": func(m *NotificationManager) {
+			m.escalateToAgent(&PendingNotification{
+				Phone: "nectar:42", AppointmentID: "APT001", Type: "confirmation", ConversationID: "42",
+			}, escalationNoResponse)
+		},
+		"texto libre": func(m *NotificationManager) {
+			m.escalateNotifToAgent(&PendingNotification{
+				Phone: "nectar:42", AppointmentID: "APT001", Type: "confirmation",
+			}, "42")
+		},
+	} {
+		for _, existing := range []*session.Session{nil, {ID: "sess-activa", PhoneNumber: "nectar:42", Status: session.StatusActive}} {
+			t.Run(fmt.Sprintf("%s/activa=%v", name, existing != nil), func(t *testing.T) {
+				repo := &mockSessionCreatorWithLookup{existing: existing}
+				mgr, bridge, tracker, rec := confirmationEscalationManagerWithBridge(t, repo)
+				bridge.fail = errors.New("néctar caído")
+
+				escalate(mgr)
+
+				repo.mu.Lock()
+				defer repo.mu.Unlock()
+				if repo.createCalls != 0 || len(repo.statusCalls) != 0 || repo.batchSession != "" || len(repo.renewed) != 0 {
+					t.Errorf("sin escalación no se toca la sesión: create=%d status=%v batch=%q renew=%v",
+						repo.createCalls, repo.statusCalls, repo.batchSession, repo.renewed)
+				}
+				rec.mu.Lock()
+				rows := rec.created
+				rec.mu.Unlock()
+				tracker.mu.Lock()
+				evs := append([]string{}, tracker.events...)
+				tracker.mu.Unlock()
+				if rows != 0 || slices.Contains(evs, "escalated_to_agent") {
+					t.Errorf("una escalación fallida no se registra: filas=%d eventos=%v", rows, evs)
+				}
+			})
+		}
+	}
+}
+
+// Al reutilizar la sesión activa en Néctar se renueva su vencimiento: si no, el barrido de
+// vencidas podría cerrarla antes de que vuelva el retorno del agente.
+func TestNectarNotifEscalation_ReusedSessionRenewsExpiry(t *testing.T) {
+	repo := &mockSessionCreatorWithLookup{existing: &session.Session{
+		ID: "sess-activa", PhoneNumber: "nectar:42", Status: session.StatusActive,
+		ExpiresAt: time.Now().Add(time.Minute),
+	}}
+	mgr, _, _ := confirmationEscalationManager(t, repo)
+
+	mgr.escalateToAgent(&PendingNotification{
+		Phone: "nectar:42", AppointmentID: "APT001", Type: "confirmation", ConversationID: "42",
+	}, escalationNoResponse)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	until, ok := repo.renewed["sess-activa"]
+	if !ok || time.Until(until) < 23*time.Hour {
+		t.Errorf("el vencimiento se renueva ~24 h: renovada=%v hasta=%v", ok, until)
+	}
+}
+
+// Bird no cambia: la sesión reutilizada conserva su vencimiento.
+func TestEscalateNotifToAgent_BirdReusedSessionKeepsExpiry(t *testing.T) {
+	srv := escalationBirdServer()
+	defer srv.Close()
+	repo := &mockSessionCreatorWithLookup{existing: &session.Session{
+		ID: "sess-existente", PhoneNumber: "+573001234567", Status: session.StatusActive,
+	}}
+	mgr := NewNotificationManager(bird.NewClientForTest(srv.URL),
+		services.NewAppointmentService(&mockApptRepoNotif{}, nil),
+		&config.Config{BirdTeamFallback: "team-fallback"})
+	mgr.SetWaitingListDeps(nil, repo, &mockVirtualEnqueuer{})
+
+	mgr.escalateNotifToAgent(&PendingNotification{
+		Phone: "+573001234567", AppointmentID: "APT001", Type: "confirmation",
+	}, "conv-1")
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.renewed) != 0 {
+		t.Errorf("Bird no renueva el vencimiento: %v", repo.renewed)
 	}
 }

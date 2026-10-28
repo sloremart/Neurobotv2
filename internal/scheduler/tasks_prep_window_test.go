@@ -26,8 +26,9 @@ func (s *windowSessionStub) FindCurrentByPhone(context.Context, string) (*sessio
 func (s *windowSessionStub) SetContextBatch(context.Context, string, map[string]string) error {
 	return nil
 }
-func (s *windowSessionStub) UpdateStatus(context.Context, string, string) error  { return nil }
-func (s *windowSessionStub) CompleteActiveByPhone(context.Context, string) error { return nil }
+func (s *windowSessionStub) UpdateStatus(context.Context, string, string) error   { return nil }
+func (s *windowSessionStub) CompleteActiveByPhone(context.Context, string) error  { return nil }
+func (s *windowSessionStub) RenewExpiry(context.Context, string, time.Time) error { return nil }
 func (s *windowSessionStub) LastPatientMessageAt(context.Context, string) (*time.Time, error) {
 	return s.last, nil
 }

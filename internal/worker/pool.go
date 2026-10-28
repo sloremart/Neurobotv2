@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -143,6 +144,47 @@ type NotificationResponder interface {
 var notifPendingActions = map[string]bool{
 	"confirm": true, "reschedule": true, "cancel": true,
 	"understood": true, "wl_schedule": true, "wl_decline": true,
+}
+
+// notifPendingActionsFor son las acciones que HandleNotifPendingCommand sabe ejecutar para un tipo
+// de notificación. Un tipo desconocido se trata como confirmación, igual que allá.
+func notifPendingActionsFor(notifType string) []string {
+	switch notifType {
+	case "cancellation":
+		return []string{"understood", "reschedule"}
+	case "waiting_list":
+		return []string{"wl_schedule", "wl_decline"}
+	default:
+		return []string{"confirm", "reschedule", "cancel"}
+	}
+}
+
+// refuseNotifPendingAction devuelve al agente una acción de NOTIF_PENDING que no corresponde al tipo
+// de la notificación. En Bird, una nota interna con los comandos válidos; en Néctar, una re-escalada
+// como dato rechazado (su nota interna no tiene dónde aterrizar).
+func (p *MessageWorkerPool) refuseNotifPendingAction(ctx context.Context, sess *session.Session,
+	cmd AgentCommand, convID, notifType, action string, valid []string,
+) {
+	slog.Warn("notif_pending: acción que no corresponde al tipo de notificación",
+		"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "action", action, "notif_type", notifType)
+	if session.IsNectarSession(sess.PhoneNumber) {
+		p.reescalateRejectedAgentInput(ctx, sess, cmd, statemachine.StateNotifPending, statemachine.ReturnInputResult{
+			Written: true,
+			Value:   action,
+			Problem: "La acción no corresponde a este tipo de notificación; elija una de las opciones del menú.",
+		})
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "La acción %q no aplica a esta notificación. Comandos disponibles:\n", action)
+	for _, a := range valid {
+		fmt.Fprintf(&b, "  /bot resume NOTIF_PENDING %s\n", a)
+	}
+	b.WriteString("  /bot cerrar")
+	if _, err := p.birdClient.SendInternalText(sess.PhoneNumber, convID, b.String()); err != nil {
+		slog.Error("notif_pending: nota de acción inválida no enviada", "error", err,
+			"phone", utils.MaskPhone(cmd.Phone), "conversation_id", convID)
+	}
 }
 
 // InboxMarker marks messages as processed in the inbox (WAL pattern).
@@ -886,6 +928,12 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			convID := sess.ConversationID
 			if convID == "" {
 				convID = sess.GetContext("notif_conv_id")
+			}
+			// Una acción de OTRO tipo (confirm sobre una lista de espera) no se ejecuta: la sesión
+			// sigue escalada, sin completar ni desasignar.
+			if valid := notifPendingActionsFor(notifType); !slices.Contains(valid, action) {
+				p.refuseNotifPendingAction(ctx, sess, cmd, convID, notifType, action, valid)
+				return
 			}
 			// N-26: loguear los errores descartados de Complete/UnassignFeedItem en lugar de tragarlos.
 			if err := p.sessionManager.Complete(ctx, sess); err != nil {
