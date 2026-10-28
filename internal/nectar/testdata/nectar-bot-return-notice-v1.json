@@ -1,0 +1,112 @@
+{
+  "__procedencia__": [
+    "VOLCADO REAL DEL CUERPO ENTREGADO Y FIRMADO, no de la columna bot_delivery.payload: leido con botDouble.rawBodyFor en la peticion que el doble del bot recibio.",
+    "generado por la prueba TestTheV1ReturnReachesTheBotOnTheWireAndIsDumped (internal/botnotify/el_retorno_de_v1_en_el_cable_test.go) el 2026-09-14, con NECTAR_ESCRIBIR_VOLCADO=1. Sin esa variable la prueba solo asierta: el event_id y el occurred_at cambian en cada pasada y reescribir el archivo dejaria el arbol sucio sin decir nada nuevo.",
+    "ESTE ES EL RETORNO DE v1 (Plan 37, Tarea 4; acta 1.3, filas C28-C37): el cuerpo de POST /api/conversations/{id}/return pasa de una cadena opaca a {protocol, opcion, valores?}, y viaja al bot dentro de la clave retorno de este aviso. retorno es LA FUENTE DE VERDAD cuando el aviso habla el protocolo; return_value se conserva para el DIALECTO y para el alias heredado que Nectar origina, y VA AUSENTE en estos tres cuerpos.",
+    "EL PREFIJO DEL VALOR SE RETIRA Y LA SEPARACION LO SUSTITUYE (fila C30): opcion es el token y valores es el dato, asi que la bifurcacion pasa a ser POR LA PRESENCIA DE valores. La garantia de que un token rancio nunca se inyecta como dato la da ahora la separacion, que es mas fuerte.",
+    "NECTAR NO VALIDA ESTOS VALORES CONTRA EL DESCRIPTOR GUARDADO (fila C33): el bot es el UNICO VALIDADOR y su rechazo vuelve A UNA PERSONA, nunca al paciente. Lo que la ruta comprueba es la FORMA contra return.schema.json, con motivo en el 400 (fila G61), y ni una regla mas. Lo que el descriptor declara -- requerido, patron, largo, el minimo por repeticion, los campos fijos del item y las dos reglas de conjunto -- lo hace cumplir la pantalla COMO COMODIDAD.",
+    "LOS CAMPOS VACIOS NO VIAJAN, NI COMO CADENA VACIA, Y EL VALOR VA RECORTADO EN LOS BORDES (fila C32): lo hace QUIEN COMPONE valores, que es la pantalla (buildProtocolReturn, web/src/api.ts), y no quien los transporta. El servidor guarda LOS BYTES TAL CUAL, porque el bot mide su tope sobre la serializacion compacta que de verdad viaja.",
+    "Los conversation_id son los de la base desechable de la prueba, no los de produccion: el volcado fija la FORMA del sobre."
+  ],
+  "retorno_del_alias_heredado": {
+    "__que_es__": "UN PASO DE CERO CAMPOS: solo la opcion, sin valores. Y el token es EL ALIAS HEREDADO de la cola vencida, que NO SE RENOMBRA y no tiene fecha de retiro (filas C36-C37): llega COMO opcion y NUNCA dentro de valores, porque el bot lo reconoce ANTES QUE NADA. nectar:* queda RESERVADO para lo que el lado de los agentes origine A PARTIR DE v1, y este token es anterior: no lleva el prefijo.",
+    "aviso": {
+      "protocol": 1,
+      "event_id": "2dcff626-36bf-4a11-988b-cf83e3820aab",
+      "kind": "conversacion_devuelta",
+      "conversation_id": 1,
+      "occurred_at": "2026-09-14T14:11:51.756836Z",
+      "retorno": {
+        "opcion": "cola_vencida"
+      }
+    },
+    "peticion": {
+      "protocol": 1,
+      "opcion": "cola_vencida"
+    }
+  },
+  "retorno_repetible_dos_citas": {
+    "__que_es__": "EL REPETIBLE: la lista va bajo repetible_por.clave del descriptor (cups) y cada repeticion lleva su grupo copiado de la pieza elegida (modalidad), que SIGUE VIAJANDO mientras el bot lo acepte (fila C31, decision sellada 6).",
+    "aviso": {
+      "protocol": 1,
+      "event_id": "bfd52212-1f56-4b85-ab40-96e19d967534",
+      "kind": "conversacion_devuelta",
+      "conversation_id": 1,
+      "occurred_at": "2026-09-14T14:11:51.733221Z",
+      "retorno": {
+        "opcion": "bot_reanudar",
+        "valores": {
+          "cups": [
+            {
+              "cups": [
+                "890374"
+              ],
+              "modalidad": "pgp",
+              "fecha": "2026-09-15",
+              "hora": "9:00 AM",
+              "lugar": "HDG sede X"
+            },
+            {
+              "cups": [
+                "881235"
+              ],
+              "modalidad": "evento",
+              "fecha": "2026-09-16",
+              "hora": "10:00 AM",
+              "lugar": "HDG sede X"
+            }
+          ]
+        }
+      }
+    },
+    "peticion": {
+      "protocol": 1,
+      "opcion": "bot_reanudar",
+      "valores": {
+        "cups": [
+          {
+            "cups": [
+              "890374"
+            ],
+            "modalidad": "pgp",
+            "fecha": "2026-09-15",
+            "hora": "9:00 AM",
+            "lugar": "HDG sede X"
+          },
+          {
+            "cups": [
+              "881235"
+            ],
+            "modalidad": "evento",
+            "fecha": "2026-09-16",
+            "hora": "10:00 AM",
+            "lugar": "HDG sede X"
+          }
+        ]
+      }
+    }
+  },
+  "retorno_simple": {
+    "__que_es__": "UN PASO DE UN CAMPO: valores con UNA SOLA CLAVE, sacada de campos[].clave del descriptor y copiada TAL CUAL, nunca derivada del rotulo (fila B16).",
+    "aviso": {
+      "protocol": 1,
+      "event_id": "6638c16b-f250-4e05-91fd-1e2a3906f5bf",
+      "kind": "conversacion_devuelta",
+      "conversation_id": 1,
+      "occurred_at": "2026-09-14T14:11:51.699736Z",
+      "retorno": {
+        "opcion": "bot_reanudar",
+        "valores": {
+          "documento": "1000000001"
+        }
+      }
+    },
+    "peticion": {
+      "protocol": 1,
+      "opcion": "bot_reanudar",
+      "valores": {
+        "documento": "1000000001"
+      }
+    }
+  }
+}
