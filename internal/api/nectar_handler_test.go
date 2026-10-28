@@ -296,6 +296,27 @@ func TestHandleNectarNotice_DuplicateEventIsAcked(t *testing.T) {
 	}
 }
 
+// Tras un reinicio la memoria de event_id está vacía y Néctar reintenta lo que nunca recibió con
+// 200: el WAL es entonces la ÚNICA guarda contra contestarle dos veces al paciente. Un handler
+// NUEVO (sin nada visto) con la fila ya en el WAL acusa el aviso sin despacharlo.
+func TestHandleNectarNotice_WALDuplicateAfterRestartIsAcked(t *testing.T) {
+	inbox := newMemInbox()
+	if _, err := inbox.InsertIfNotExists(context.Background(), "e-restart", "nectar:1234",
+		inboundBody("e-restart"), nectarInboxType, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &sinkRecorder{}
+	h := newNectarHandler(inbox, sink) // handler fresco: su memoria local no ha visto nada
+
+	if rec := postNotice(h, signedNotice(nectarTestSecret, inboundBody("e-restart"))); rec.Code != http.StatusOK {
+		t.Fatalf("el reintento de un aviso ya persistido → 200, got %d", rec.Code)
+	}
+	if m, c := sink.counts(); m+c != 0 {
+		t.Fatalf("y NO se despacha otra vez: %d mensajes, %d comandos", m, c)
+	}
+}
+
 func TestHandleNectarNotice_DedupesEvenWithoutWAL(t *testing.T) {
 	// Sin inboxRepo (arranque sin BD, pruebas) la memoria local sigue deduplicando: el
 	// peor desenlace —contestarle dos veces al paciente— no depende de que haya BD.

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,7 +70,7 @@ func (f *fakeReplay) HandleInvalidInput(string, string) bool {
 }
 
 func (f *fakeReplay) deps() replayDeps {
-	return replayDeps{webhook: f, notify: f, pool: f, inbox: f}
+	return replayDeps{nectar: f, notify: f, pool: f, inbox: f}
 }
 
 // FindPendingOlderThan hace de fakeReplay un staleInboxRepo.
@@ -282,5 +285,59 @@ func TestStaleReplay_UnreadableNectarRowIsClosed(t *testing.T) {
 	}
 	if len(msgs) != 0 || len(f.done) != 1 || f.done[0] != "e-bad" {
 		t.Fatalf("msgs=%+v done=%v", msgs, f.done)
+	}
+}
+
+// captureLogs redirige slog a un búfer mientras corre fn.
+func captureLogs(t *testing.T, fn func()) string {
+	t.Helper()
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+	fn()
+	return logged.String()
+}
+
+// Las dos rutas de replay despachan una fila de Néctar por el MISMO camino y lo dejan dicho en el
+// registro con su prefijo: el barrido de atascados no puede ser invisible para las filas de Néctar,
+// y el mensaje de error de cada ruta se conserva tal cual.
+func TestReplayNectarRow_LogsTheRedispatchAndKeepsEachPathsErrorString(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		prefix string
+		run    func(f *fakeReplay, row localrepo.InboxRow)
+	}{
+		{"startup replay", "inbox replay", func(f *fakeReplay, row localrepo.InboxRow) {
+			replayPendingRows(context.Background(), []localrepo.InboxRow{row}, f.deps())
+		}},
+		{"stale replay", "stale replay", func(f *fakeReplay, row localrepo.InboxRow) {
+			src := inboxReplaySource{nectar: f, repo: staleRows{fakeReplay: f, rows: []localrepo.InboxRow{row}}}
+			if _, err := src.PendingOlderThan(context.Background(), 5); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			row := localrepo.InboxRow{ID: "e-log", RawBody: nectarInboundBody, MsgType: "nectar_notice"}
+
+			f := &fakeReplay{}
+			logged := captureLogs(t, func() { c.run(f, row) })
+			if !strings.Contains(logged, c.prefix+": re-despachando aviso de Néctar") || !strings.Contains(logged, "id=e-log") {
+				t.Errorf("falta el Info del re-despacho con su prefijo %q y el id: %s", c.prefix, logged)
+			}
+			if strings.Contains(logged, "ilegible") {
+				t.Errorf("un aviso legible no registra error: %s", logged)
+			}
+
+			bad := &fakeReplay{dispatchErr: errors.New("aviso ilegible")}
+			logged = captureLogs(t, func() { c.run(bad, row) })
+			if !strings.Contains(logged, "level=ERROR") || !strings.Contains(logged, c.prefix+": aviso de Néctar ilegible") {
+				t.Errorf("el error conserva su texto %q: %s", c.prefix+": aviso de Néctar ilegible", logged)
+			}
+			if len(bad.done) != 1 || bad.done[0] != "e-log" {
+				t.Errorf("y la fila ilegible se cierra: %v", bad.done)
+			}
+		})
 	}
 }

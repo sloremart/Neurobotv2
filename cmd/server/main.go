@@ -386,7 +386,7 @@ func main() {
 		if err := inboxRepo.MarkReplayAttempt(ctx, ids); err != nil {
 			slog.Error("inbox replay attempt counter failed", "error", err)
 		}
-		deps := replayDeps{webhook: webhookHandler, pool: workerPool, inbox: inboxRepo}
+		deps := replayDeps{nectar: webhookHandler, pool: workerPool, inbox: inboxRepo}
 		if notifyManager != nil { // una interfaz con un *NotificationManager nil NO sería nil
 			deps.notify = notifyManager
 		}
@@ -765,6 +765,9 @@ func healthHandler(localDB, externalDB *sql.DB) http.HandlerFunc {
 type inboxReplaySource struct {
 	repo staleInboxRepo
 	// nectar despacha las filas de Néctar (msg_type nectar_notice), que no son eventos de Bird.
+	// SIEMPRE asignado (main lo construye con el webhookHandler y las pruebas también): no hay un
+	// valor nulo válido, y dejarlo nulo falla ruidoso en la primera fila de Néctar en vez de
+	// dejarla 'pending' para siempre.
 	nectar nectarReplayer
 }
 
@@ -782,15 +785,7 @@ func (s inboxReplaySource) PendingOlderThan(ctx context.Context, minutes int) ([
 	msgs := make([]bird.InboundMessage, 0, len(rows))
 	for _, row := range rows {
 		if api.IsNectarInboxRow(row.MsgType) {
-			// Se despacha directo (un mensaje_entrante entra al pool por Enqueue, que deduplica
-			// por ID igual que esta lista); un aviso ilegible se cierra para no repetirlo.
-			if s.nectar == nil {
-				continue
-			}
-			if err := s.nectar.DispatchNectarNotice(ctx, row.RawBody); err != nil {
-				slog.Error("stale replay: aviso de Néctar ilegible", "id", row.ID, "error", err)
-				_ = s.repo.MarkDone(ctx, row.ID)
-			}
+			replayNectarRow(ctx, "stale replay", row, s.nectar, s.repo)
 			continue
 		}
 		var event bird.WebhookEvent

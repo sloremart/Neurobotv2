@@ -40,11 +40,25 @@ type inboxCloser interface {
 
 // replayDeps agrupa los colaboradores del replay de arranque del WAL.
 type replayDeps struct {
-	webhook nectarReplayer
+	nectar nectarReplayer
 	// notify es nil cuando el bot arranca sin NotificationManager (sin BD de SIESA).
 	notify replayNotifier
 	pool   replayPool
 	inbox  inboxCloser
+}
+
+// replayNectarRow re-despacha UNA fila de Néctar del WAL; lo comparten el replay de arranque y el
+// de atascados (inboxReplaySource), así que las dos rutas no pueden discrepar. logPrefix
+// ("inbox replay" / "stale replay") dice de cuál viene cada línea del registro.
+//
+// Un mensaje_entrante entra al pool por Enqueue (que deduplica por ID); un aviso ilegible se cierra
+// para no repetirlo en cada corrida.
+func replayNectarRow(ctx context.Context, logPrefix string, row localrepo.InboxRow, r nectarReplayer, c inboxCloser) {
+	slog.Info(logPrefix+": re-despachando aviso de Néctar", "id", row.ID)
+	if err := r.DispatchNectarNotice(ctx, row.RawBody); err != nil {
+		slog.Error(logPrefix+": aviso de Néctar ilegible", "id", row.ID, "error", err)
+		_ = c.MarkDone(ctx, row.ID)
+	}
 }
 
 // replayPendingRows reprocesa las filas 'pending' del WAL que quedaron sin terminar antes del
@@ -56,10 +70,7 @@ func replayPendingRows(ctx context.Context, rows []localrepo.InboxRow, deps repl
 		// acabaría encolado como un mensaje sin teléfono). Se vuelve a parsear como aviso y se
 		// despacha como si acabara de llegar; uno ilegible se cierra para no repetirlo.
 		if api.IsNectarInboxRow(row.MsgType) {
-			if err := deps.webhook.DispatchNectarNotice(ctx, row.RawBody); err != nil {
-				slog.Error("inbox replay: aviso de Néctar ilegible", "id", row.ID, "error", err)
-				_ = deps.inbox.MarkDone(ctx, row.ID)
-			}
+			replayNectarRow(ctx, "inbox replay", row, deps.nectar, deps.inbox)
 			continue
 		}
 
