@@ -28,10 +28,10 @@ import (
 // campos, porque los valores ya están separados en la sesión y la fusión es solo del render.
 
 // LAS ETIQUETAS JSON SON DEL CONTRATO CON NÉCTAR. `clave`, `rotulo`, `valor`, `titulo` y
-// `campos`, con su omitempty (o sin él), son idénticas a las de hdg-bot: el esquema de Néctar
-// lleva additionalProperties:false, así que renombrar o añadir una clave rompe la validación.
-// `titulo` va SIN omitempty: un grupo sin título viaja como null, igual que en hdg-bot. (hdg
-// además tiene `items` con omitempty; Neuro no lo usa y su ausencia no cambia el cable.)
+// `campos`, con su omitempty (o sin él), son las del esquema de Néctar, que lleva
+// additionalProperties:false: renombrar o añadir una clave rompe la validación. `titulo` va SIN
+// omitempty: un grupo sin título viaja como null. (El esquema admite además `items` con
+// omitempty; Neuro no lo usa y su ausencia no cambia el cable.)
 //
 // summaryField es un par del resumen estructurado; los identificadores de Go van en inglés.
 type summaryField struct {

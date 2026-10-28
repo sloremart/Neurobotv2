@@ -10,7 +10,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 )
 
-// El REGISTRO DE CAPACIDADES (hdg-bot docs/DISENO-PROTOCOLO-ESCALADO-V1-BOT.md §1.3, D5): se
+// El REGISTRO DE CAPACIDADES (protocolo de escalado v1 de Néctar, D5): se
 // CALCULA del binario, nunca de configuración. Una capacidad declarada que el código no cumple
 // es peor que no declararla, así que lo que estas pruebas persiguen es UNA SOLA cosa: que el
 // registro NO PUEDA MENTIR.

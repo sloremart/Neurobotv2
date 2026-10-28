@@ -481,7 +481,7 @@ func (c *Client) templatesURL() string {
 // Used when outbound webhooks arrive without body (agent messages from Bird Inbox).
 func (c *Client) FetchMessageText(messageID string) string {
 	// Con el puente puesto, un mensaje sin id (los de Néctar no tienen id de Bird) nunca llega a Bird.
-	// Hoy la guarda de abajo ya lo cubre; esta deja la intención escrita (paridad con hdg-bot).
+	// Hoy la guarda de abajo ya lo cubre; esta deja la intención escrita.
 	if c.nectar != nil && messageID == "" {
 		return ""
 	}

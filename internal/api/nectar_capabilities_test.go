@@ -14,8 +14,8 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
 
-// GET /api/nectar/capabilities — la SEGUNDA ruta del bot hacia Néctar (hdg-bot
-// docs/DISENO-PROTOCOLO-ESCALADO-V1-BOT.md §1.3). Lo que se prueba es lo que su regla de fallo
+// GET /api/nectar/capabilities — la SEGUNDA ruta del bot hacia Néctar (protocolo
+// de escalado v1). Lo que se prueba es lo que su regla de fallo
 // castiga: 401 y 405 son ERROR DE CONFIGURACIÓN del otro lado (alerta), 404 es «el adaptador no
 // está desplegado» (sin alerta), así que un método mal registrado o una cadena firmada distinta
 // no pueden pasar de aquí.

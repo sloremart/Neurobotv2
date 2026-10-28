@@ -353,10 +353,4 @@ const (
 	// turnos posteriores: el tope por sesión del handler, el checker de sesiones escaladas
 	// (session.EscalationQueuedForNextDayKey) y el retorno del agente (worker), que la borra.
 	CtxEscalationNextDay = "escalacion_proximo_dia"
-
-	// CtxEscalationGate marca que la ÚLTIMA escalación de esta sesión no llegó a ejecutarse
-	// porque la desvió el reloj ("out_of_hours"). La escribe el handler de escalación y la borra
-	// en cualquier otra salida suya, de modo que hable SIEMPRE de la escalación recién decidida.
-	// Hoy no tiene lector en Neuro.
-	CtxEscalationGate = "escalacion_desvio_gate"
 )

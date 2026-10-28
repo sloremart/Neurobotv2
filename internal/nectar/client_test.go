@@ -256,7 +256,8 @@ func TestSessionKeyRoundTrip(t *testing.T) {
 }
 
 func TestNectarInstructionsArePermanentForTheSendRetry(t *testing.T) {
-	for _, err := range []error{ErrNotMine, ErrWindowClosed, ErrIdempotencyReused} {
+	// 401 y cliente sin configurar también: reintentar con las mismas credenciales falla igual.
+	for _, err := range []error{ErrNotMine, ErrWindowClosed, ErrIdempotencyReused, ErrUnauthorized, ErrNotConfiguredAPI} {
 		if !bird.IsPermanentSendError(err) {
 			t.Fatalf("%v tiene que ser permanente: el pool no lo reintenta", err)
 		}
@@ -364,7 +365,7 @@ func TestTheEscalateBodyCarriesTheResolveGuardAtTopLevel(t *testing.T) {
 	}
 }
 
-// DOBLE EMISIÓN DEL CANDADO (fila A7 del ACTA-PROTOCOLO-DE-ESCALADO-v1, 2026-09-14): el mismo
+// DOBLE EMISIÓN DEL CANDADO (protocolo de escalado v1 de Néctar): el mismo
 // motivo viaja bajo las DOS claves —`candado_resolver`, la de hoy, y `resolve_lock`, la de
 // v1— para que los dos lados no tengan que desplegar a la vez. Néctar lee el nuevo cuando
 // vienen los dos; el viejo se retira cuando el bot deje de emitirlo.

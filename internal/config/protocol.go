@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// --- La bandera del protocolo de escalado (ACTA-PROTOCOLO-DE-ESCALADO-v1) ---
+// --- La bandera del protocolo de escalado v1 de Néctar ---
 //
 // UNA SOLA PALANCA y gobierna la EMISIÓN, nada más: con 0 el sobre del escalado sale
 // exactamente como hoy, byte a byte; con 1 sale en v1. LA RECEPCIÓN NO LA GOBIERNA: el bot

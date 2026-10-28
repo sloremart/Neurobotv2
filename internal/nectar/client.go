@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,8 +35,10 @@ var (
 	// ErrIdempotencyReused es el 409 reason=idempotency_key_reused: defecto de acuñado en el
 	// cliente, no se reintenta ni con otra clave hasta mirar qué pasó.
 	ErrIdempotencyReused = fmt.Errorf("nectar: idempotency_key reutilizada para otra clase de mensaje (409): %w", bird.ErrPermanentSend)
-	ErrUnauthorized      = errors.New("nectar: credenciales rechazadas (401)")
-	ErrNotConfiguredAPI  = errors.New("nectar: cliente sin URL base o sin credenciales")
+	// ErrUnauthorized (401) y ErrNotConfiguredAPI son de CONFIGURACIÓN: reintentar con las mismas
+	// credenciales falla igual, así que también son permanentes para el reintento del envío.
+	ErrUnauthorized     = fmt.Errorf("nectar: credenciales rechazadas (401): %w", bird.ErrPermanentSend)
+	ErrNotConfiguredAPI = fmt.Errorf("nectar: cliente sin URL base o sin credenciales: %w", bird.ErrPermanentSend)
 )
 
 // Client habla con las siete rutas /api/bot/* de Néctar. Cada petición lleva las DOS
@@ -144,10 +145,9 @@ type sendRequest struct {
 type Escalation = bird.Escalation
 
 // reasonDetailShape es la guarda de forma de `reason_detail` (D6): minúsculas, guiones bajos y
-// hasta 64 runas. La promesa del acta —«ninguno escribe texto del paciente ni del agente»— se
-// sostiene con este `if` y no con una revisión manual de los dieciocho sitios que lo escriben,
-// porque el que rompe la promesa es el decimonoveno, que lo escribe alguien que no leyó el
-// acta. El más largo de hoy mide 26 runas, así que el tope no muerde.
+// hasta 64 runas. La promesa del protocolo —«ningún motivo lleva texto del paciente ni del
+// agente»— se sostiene con este `if` y no con una revisión manual de cada sitio que escribe un
+// escalation_reason, porque el que rompe la promesa es el sitio nuevo que alguien añade sin leerla.
 var reasonDetailShape = regexp.MustCompile(`^[a-z_]{1,64}$`)
 
 // safeReasonDetail devuelve el detalle si CASA la guarda, y "" con un ERROR si no. "" no se
@@ -199,8 +199,8 @@ type escalateRequest struct {
 	// Va con omitempty y es 100 % aditivo: sin candado el cuerpo es byte a byte el de hoy, y
 	// una versión de Néctar que aún no lo conozca lo ignora.
 	CandadoResolver string `json:"candado_resolver,omitempty"`
-	// ResolveLock es el MISMO motivo bajo el nombre que adopta el protocolo v1 (fila A7 del
-	// ACTA-PROTOCOLO-DE-ESCALADO-v1, 2026-09-14). Se emiten LAS DOS claves a propósito: si el
+	// ResolveLock es el MISMO motivo bajo el nombre que adopta el protocolo v1 (protocolo de
+	// escalado v1 de Néctar). Se emiten LAS DOS claves a propósito: si el
 	// bot renombrara de golpe, la pérdida que el candado vino a tapar volvería viva hasta que
 	// los dos lados desplegaran a la vez. Néctar lee `resolve_lock` cuando vienen las dos y
 	// traza el alias; `candado_resolver` se retira cuando el bot deje de emitirlo —no hay fecha,

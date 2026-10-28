@@ -24,11 +24,9 @@ import (
 // # Qué conversación es de Néctar
 //
 // La clave de sesión "nectar:<id>" (nectar.SessionKey) ocupa el sitio del teléfono, y SOLO ella
-// desvía. El ConversationID numérico NO basta: en hdg-bot, hasta el 2026-09-12 sí bastaba —"Bird
-// usa UUIDs, así que un id de puros dígitos es inequívocamente de Néctar"— y eso le costó al
-// Néctar REAL 3.301 `POST …/close` y 761 `POST …/messages` con ids sintéticos del arnés de
-// estrés corrido contra el bot local (incidente 2026-09-08). Un id numérico puede venir de
-// cualquier parte; la clave de sesión solo la construye el webhook de Néctar.
+// desvía. El ConversationID numérico NO basta: suponer que "Bird usa UUIDs, así que un id de puros
+// dígitos es de Néctar" manda al Néctar REAL cierres y mensajes con ids que vienen de cualquier
+// otra parte (pruebas, datos viejos). La clave de sesión solo la construye el webhook de Néctar.
 type NectarBridge interface {
 	SendText(ctx context.Context, conversationID int64, text string) (string, error)
 	SendButtons(ctx context.Context, conversationID int64, text string, buttons []Button) (string, error)
@@ -49,8 +47,8 @@ type NectarBridge interface {
 }
 
 // Escalation es TODO lo que viaja en el sobre del escalado, en un solo valor
-// (diseño del protocolo de escalado v1: hdg-bot docs/DISENO-PROTOCOLO-ESCALADO-V1-BOT.md §1.2,
-// «refactor obligado del cable»).
+// (protocolo de escalado v1 de Néctar: el cable lleva más campos que el dialecto de siempre y
+// pasarlos sueltos por la firma de Escalate ya no escalaba).
 //
 // # Por qué vive en este paquete y no en internal/nectar
 //
@@ -76,7 +74,7 @@ type Escalation struct {
 	// ReasonDetail es el motivo INTERNO del bot (escalation_reason), opcional y con guarda de
 	// forma en el emisor (§2.4): vacío no viaja, ni como cadena vacía.
 	ReasonDetail string
-	// Summary es el texto del resumen que lee el agente. No se retira nunca (fila A4).
+	// Summary es el texto del resumen que lee el agente. No se retira nunca.
 	Summary string
 	// Facts es el MISMO resumen estructurado, JSON ya serializado y OPACO aquí. nil = no viaja.
 	Facts []byte
@@ -89,7 +87,7 @@ type Escalation struct {
 	// ausente es un dato — nunca una clave con nulo, que el esquema de Néctar rechaza.
 	Input []byte
 	// ResolveLock es el motivo del candado del botón «Resolver» ("" = sin candado). Viaja bajo
-	// sus DOS nombres de cable mientras el alias siga vivo (fila A7).
+	// sus DOS nombres de cable mientras el alias siga vivo.
 	ResolveLock string
 	// SuggestedTeamID es el EQUIPO de Néctar que el bot sugiere para este caso, según el grupo
 	// de CUPS del procedimiento (NECTAR_TEAM_BY_GROUP: imagenes / neuro / callcenter). Néctar

@@ -8,7 +8,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 )
 
-// --- El registro de capacidades (hdg-bot docs/DISENO-PROTOCOLO-ESCALADO-V1-BOT.md §1.3) ---
+// --- El registro de capacidades del protocolo de escalado v1 de Néctar ---
 //
 // Es lo que el bot contesta en GET /api/nectar/capabilities, la ruta que sustituye las TRES
 // deducciones silenciosas con que Néctar adivinaba qué habla el bot. La forma la fija su

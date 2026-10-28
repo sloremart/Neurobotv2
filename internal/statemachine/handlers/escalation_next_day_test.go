@@ -9,7 +9,7 @@ import (
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
-// COLA DEL PRÓXIMO DÍA HÁBIL (portado de hdg-bot, lo aplicable a Neuro). El bot atiende hasta el
+// COLA DEL PRÓXIMO DÍA HÁBIL (solo sesiones de Néctar). El bot atiende hasta el
 // cierre exacto, pero lo que dependa de UNA PERSONA deja de caber en el día unos minutos antes
 // (BUSINESS_HOURS_CLOSE_MARGIN_MIN) y, por supuesto, con el horario cerrado. En Néctar el caso se
 // escala igual y lo único que cambia es lo que se le dice al paciente; con la apertura lejos
@@ -41,9 +41,6 @@ func TestEscalate_NoAgentsInWorkingHoursStillDiverts(t *testing.T) {
 	})
 	if len(nb.events) != 0 || res.NextState != sm.StateMainMenu {
 		t.Fatalf("sin asesores y en jornada NO se escala: %s %v", res.NextState, nb.events)
-	}
-	if _, set := res.UpdateCtx[sm.CtxEscalationGate]; set || !hasClear(res, sm.CtxEscalationGate) {
-		t.Fatalf("el desvío por no_agents borra la marca del gate: %v / %v", res.UpdateCtx, res.ClearCtx)
 	}
 }
 

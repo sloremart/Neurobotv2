@@ -99,24 +99,24 @@ func TestSignMatchesBirdScheme(t *testing.T) {
 func TestSignRequestPutsBothHeadersAndSignsTheAbsoluteURL(t *testing.T) {
 	// La ida bot→Néctar: Néctar reconstruye scheme://host/ruta?consulta y exige que cuadre.
 	body := []byte(`{"phone":"573001112233"}`)
-	req, _ := http.NewRequest(http.MethodPost, "https://aom.colibrixa.com/api/bot/conversations/resolve?x=1", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, "https://nectar.colibrixa.com/api/bot/conversations/resolve?x=1", bytes.NewReader(body))
 	at := time.Now()
 	SignRequest(req, testSecret, at, body)
 	if req.Header.Get(TimestampHeader) != Timestamp(at) {
 		t.Fatalf("sello: %q", req.Header.Get(TimestampHeader))
 	}
 	if err := VerifyNotice(testSecret, req.Header.Get(SignatureHeader), req.Header.Get(TimestampHeader),
-		"https://aom.colibrixa.com/api/bot/conversations/resolve?x=1", body); err != nil {
+		"https://nectar.colibrixa.com/api/bot/conversations/resolve?x=1", body); err != nil {
 		t.Fatalf("lo firmado tiene que verificarse con la misma URL absoluta: %v", err)
 	}
 }
 
 func TestSignRequestWithNoBodySignsTheEmptyHash(t *testing.T) {
 	// GET /api/bot/attachments/{id}: sin cuerpo, se firma SHA256("").
-	req, _ := http.NewRequest(http.MethodGet, "https://aom.colibrixa.com/api/bot/attachments/abc", nil)
+	req, _ := http.NewRequest(http.MethodGet, "https://nectar.colibrixa.com/api/bot/attachments/abc", nil)
 	SignRequest(req, testSecret, time.Now(), nil)
 	if err := VerifyNotice(testSecret, req.Header.Get(SignatureHeader), req.Header.Get(TimestampHeader),
-		"https://aom.colibrixa.com/api/bot/attachments/abc", nil); err != nil {
+		"https://nectar.colibrixa.com/api/bot/attachments/abc", nil); err != nil {
 		t.Fatal(err)
 	}
 }

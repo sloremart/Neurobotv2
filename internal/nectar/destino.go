@@ -9,13 +9,12 @@ import (
 // Con quién habla el bot: el host de NECTAR_BASE_URL, y si ese host es un stub de pruebas.
 //
 // Vive aquí —y no en cada comando— porque la respuesta tiene que ser LA MISMA en los tres
-// sitios que la preguntan: /health (que la publica), el arnés de estrés (que se niega a
-// martillear un Néctar real) y la sonda manual. El incidente del 2026-09-08 pasó justamente
-// porque nadie preguntaba: el bot local de desarrollo tenía NECTAR_BASE_URL apuntando al
-// Néctar REAL y el humo del arnés le mandó 3.301 cierres y 761 mensajes con ids sintéticos.
+// sitios que la preguntan: /health (que la publica), las pruebas de humo locales (que se niegan
+// a mandarle tráfico sintético a un Néctar real) y la sonda manual. Un bot de desarrollo con
+// NECTAR_BASE_URL apuntando al Néctar REAL le mandaría cierres y mensajes con ids sintéticos.
 
-// hostsDeStub son los destinos que cuentan como "de pruebas". nectar_stub es el nombre del
-// servicio en deploy/estres/docker-compose.stress.yml.
+// hostsDeStub son los destinos que cuentan como "de pruebas". nectar_stub es el nombre de
+// servicio que se le da al stub de Néctar en un compose de pruebas.
 var hostsDeStub = map[string]bool{
 	"localhost":   true,
 	"127.0.0.1":   true,

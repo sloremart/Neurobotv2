@@ -20,7 +20,8 @@ type AgentCommand struct {
 	ReturnV1 *nectar.V1Return
 
 	// Reason es el motivo con que Néctar resolvió la conversación (conversacion_resuelta.motivo,
-	// p. ej. "cola_vencida"). Solo viaja con Action "close"; vacío = resolución sin motivo.
+	// p. ej. "cola_vencida"; CloseReasonResolved si llegó sin motivo). Solo viaja con Action "close";
+	// vacío = el cierre lo decidió el agente desde el menú de retornos (o un comando de Bird).
 	Reason string
 
 	Action string // "resume", "close", "info", "reset", "orden", "cups"
@@ -92,3 +93,10 @@ func ParseAgentCommand(text string) AgentCommand {
 		return AgentCommand{Action: "reset"}
 	}
 }
+
+// CloseReasonResolved es el motivo CENTINELA con que el manejador de avisos despacha un
+// conversacion_resuelta que llegó SIN motivo. Toda resolución de Néctar —con motivo o sin él—
+// viaja así con Reason no vacío, y el worker sabe que la conversación ya no es del bot: no se
+// despide ni cierra (los dos envíos morirían en 404). Reason vacío queda solo para el «cerrar»
+// del menú de retornos, donde la conversación volvió al bot y la despedida sí le toca a él.
+const CloseReasonResolved = "resuelta"

@@ -354,6 +354,11 @@ func TestHandleNectarNotice_ResolvedBecomesClose(t *testing.T) {
 	if c != 1 || sink.commands[0].Action != "close" || sink.commands[0].Phone != "nectar:77" {
 		t.Fatalf("resuelta → comando close sobre la sesión de la conversación, got %+v", sink.commands)
 	}
+	// Sin motivo también la resolvió Néctar: el centinela le dice al worker que no se despida ni
+	// cierre (vacío queda para el «cerrar» del menú de retornos, que sí se despide).
+	if sink.commands[0].Reason != worker.CloseReasonResolved {
+		t.Fatalf("resuelta sin motivo viaja con el centinela %q, got %q", worker.CloseReasonResolved, sink.commands[0].Reason)
+	}
 	// Un aviso sin mensaje no pasa por el worker, así que su fila del WAL se cierra aquí:
 	// si no, el replay de arranque la volvería a despachar cada reinicio.
 	if len(inbox.done) != 1 || inbox.done[0] != "e-res" {

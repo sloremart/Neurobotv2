@@ -95,7 +95,7 @@ type Config struct {
 	//   - NECTAR_NOTICE_SECRET: con la que Néctar FIRMA los avisos que manda al bot
 	//     (verifica X-Nectar-*).
 	//   - NECTAR_REQUEST_SECRET: con la que el bot FIRMA lo que manda a Néctar.
-	NectarBaseURL       string // p. ej. https://aom.colibrixa.com (sin barra final)
+	NectarBaseURL       string // p. ej. https://nectar.colibrixa.com (sin barra final)
 	NectarServiceKey    string
 	NectarNoticeSecret  string
 	NectarRequestSecret string

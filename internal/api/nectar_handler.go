@@ -249,11 +249,16 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 		return
 	case nectar.KindConversationResolved:
 		// El caso se cerró fuera del bot: soltar el estado de sesión (Complete). El motivo
-		// (p. ej. cola_vencida) viaja para que el worker lo deje en la traza.
-		if n.Motivo != "" {
+		// (p. ej. cola_vencida) viaja para que el worker lo deje en la traza; sin motivo viaja el
+		// centinela CloseReasonResolved, para que el worker no se despida ni cierre una
+		// conversación que ya no es suya (el «cerrar» del menú de retornos va por otro camino).
+		reason := n.Motivo
+		if reason == "" {
+			reason = worker.CloseReasonResolved
+		} else {
 			slog.Info("nectar: resuelta con motivo", "conversation_id", n.ConversationID, "motivo", n.Motivo)
 		}
-		sink.EnqueueAgentCommand(worker.AgentCommand{Action: "close", Phone: key, Reason: n.Motivo})
+		sink.EnqueueAgentCommand(worker.AgentCommand{Action: "close", Phone: key, Reason: reason})
 	case nectar.KindConversationReturned:
 		// Vuelve a ser del bot. Si el agente eligió una salida de NUESTRO menú, viaja aquí y
 		// el worker ramifica por ella; ausente = devolución sin decisión, se retoma en

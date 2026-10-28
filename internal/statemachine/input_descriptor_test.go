@@ -1,7 +1,9 @@
 package statemachine
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -305,19 +307,25 @@ func TestStaticInputDescriptor_MatchesTheMachine(t *testing.T) {
 	}
 }
 
-// Un paso con campo no cabe en el descriptor estático: debe ser un error de programación y no un
-// descriptor sin `campos`.
-func TestStaticInputDescriptor_PanicsOnAStepWithInput(t *testing.T) {
+// Un paso con campo no cabe en el descriptor estático: es un error de programación y no puede
+// salir un descriptor sin `campos`. Pero el que llama es el NotificationManager en producción, y
+// un panic ahí tumbaría el envío: se registra como ERROR (nombrando el paso y la alternativa) y
+// el descriptor no viaja (nil). El test de return_menus_test.go que compara con la máquina lo
+// atrapa en CI para el paso real.
+func TestStaticInputDescriptor_LogsAndReturnsNilOnAStepWithInput(t *testing.T) {
 	registerTestMenu(t, stepDescriptor)
 	registerTestInput(t, stepDescriptor, ReturnInput{Label: "Escriba el dato"})
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("esperaba panic con un paso que ofrece ReturnInput")
-		}
-		if msg, _ := r.(string); !strings.Contains(msg, stepDescriptor) || !strings.Contains(msg, "Machine.InputDescriptor") {
-			t.Errorf("el mensaje debe nombrar el paso y la alternativa: %v", r)
-		}
-	}()
-	StaticInputDescriptor(stepDescriptor)
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	if got := StaticInputDescriptor(stepDescriptor); got != nil {
+		t.Fatalf("un paso con ReturnInput no emite descriptor estático: %s", got)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "level=ERROR") || !strings.Contains(logged, stepDescriptor) ||
+		!strings.Contains(logged, "Machine.InputDescriptor") {
+		t.Errorf("el error debe nombrar el paso y la alternativa: %s", logged)
+	}
 }

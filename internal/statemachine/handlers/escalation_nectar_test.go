@@ -445,9 +445,6 @@ func TestEscalate_OutOfHoursFarOpenDiverts(t *testing.T) {
 	if _, queued := res.UpdateCtx[sm.CtxEscalationNextDay]; queued {
 		t.Fatal("nada quedó encolado")
 	}
-	if got := res.UpdateCtx[sm.CtxEscalationGate]; got != gateOutOfHours {
-		t.Fatalf("falta la marca del desvío por horario: %q", got)
-	}
 	ev := sink.FindStep("escalacion", "escalation_no_agents")
 	switch {
 	case ev == nil:
@@ -687,9 +684,6 @@ func TestEscalate_BirdNeverQueues(t *testing.T) {
 		if len(res.Messages) == 0 || sm.OutboundText(res.Messages[0]) != want {
 			t.Fatalf("el texto del desvío es el de hoy: %v", res.Messages)
 		}
-		if got := res.UpdateCtx[sm.CtxEscalationGate]; got != gateOutOfHours {
-			t.Fatalf("marca del gate: %q", got)
-		}
 	})
 }
 
@@ -717,5 +711,50 @@ func TestEscalate_BirdDoesNotEmitSuggestedTeam(t *testing.T) {
 	}
 	if sink.FindStep("escalacion", "equipo_sugerido") != nil {
 		t.Fatal("Bird no anota equipo sugerido")
+	}
+}
+
+// M4: la marca «el paciente pidió la persona» describe ESTA escalación. Si el paso termina sin
+// escalar (tope, desvío del gate, fallo), una marca viva haría que la siguiente escalación —una
+// en que el bot se atasca— saliera como pedida por el paciente (motivo y aviso equivocados).
+func TestEscalate_AskedMarkClearedOnNonEscalatingExits(t *testing.T) {
+	t.Run("tope por sesión", func(t *testing.T) {
+		m, _ := nectarMachine(t, testEscalationConfig(), nil)
+		sess := nectarSession(true)
+		sess.SetContext("escalation_count", "3")
+		res := escalateOnce(t, m, sess)
+		if res.NextState != sm.StateFallbackMenu || !hasClear(res, sm.CtxPatientAskedForAgent) {
+			t.Fatalf("el tope borra la marca: %s %v", res.NextState, res.ClearCtx)
+		}
+	})
+	t.Run("desvío sin asesores", func(t *testing.T) {
+		m, nb := nectarMachine(t, nextDayConfig(), nil)
+		nb.unavailable = true
+		var res *sm.StateResult
+		withTime(at(2026, 10, 27, 10, 0), func() {
+			res = escalateOnce(t, m, nectarSession(true))
+		})
+		if res.NextState != sm.StateMainMenu || !hasClear(res, sm.CtxPatientAskedForAgent) {
+			t.Fatalf("el desvío borra la marca: %s %v", res.NextState, res.ClearCtx)
+		}
+	})
+}
+
+// M7: una re-escalación por un dato del agente que no sirvió la causó una persona, no un lazo del
+// bot: no puede chocar con el tope por sesión (dejaría al paciente sin asesor en la 4.ª vuelta).
+func TestEscalate_AgentRejectionReEscalationExemptFromSessionCap(t *testing.T) {
+	escRepo := &mockEscalationCreator{}
+	m, _ := nectarMachine(t, testEscalationConfig(), escRepo)
+	sess := nectarSession(false)
+	sess.SetContext("escalation_count", "3")
+	raw, err := sm.EncodeRejection(sm.PersistedRejection{Reason: "documento inválido", Attempt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.SetContext(sm.CtxAgentInputRejection, raw)
+
+	res := escalateOnce(t, m, sess)
+	if res.NextState != sm.StateEscalated || escRepo.calls != 1 {
+		t.Fatalf("la re-escalación por rechazo no cuenta para el tope: %s / %d", res.NextState, escRepo.calls)
 	}
 }

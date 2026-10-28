@@ -11,6 +11,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -262,8 +263,8 @@ func TestHandleAgentResume_NectarNoInterstitialText(t *testing.T) {
 	})
 }
 
-// conversacion_resuelta: el agente ya cerró con el paciente en Néctar, así que el bot no se
-// despide otra vez, y el cierre es síncrono (no hay entrega en vuelo que esperar).
+// conversacion_resuelta: el agente ya cerró con el paciente en Néctar, así que el bot ni se
+// despide ni cierra: la conversación ya no es suya y los dos envíos morirían en 404.
 func TestHandleAgentClose_NectarResolvedSkipsFarewell(t *testing.T) {
 	const farewell = "Tu consulta ha sido resuelta. Gracias por comunicarte con nosotros!"
 
@@ -278,7 +279,7 @@ func TestHandleAgentClose_NectarResolvedSkipsFarewell(t *testing.T) {
 		}
 
 		pool.processAgentCommand(context.Background(), AgentCommand{
-			Action: "close", Phone: sess.PhoneNumber, Reason: "resuelta",
+			Action: "close", Phone: sess.PhoneNumber, Reason: CloseReasonResolved,
 		})
 
 		if !completed {
@@ -290,8 +291,8 @@ func TestHandleAgentClose_NectarResolvedSkipsFarewell(t *testing.T) {
 		sender.mu.Lock()
 		closed := append([]string(nil), sender.closedConvs...)
 		sender.mu.Unlock()
-		if len(closed) != 1 || closed[0] != "conv1" {
-			t.Fatalf("en Néctar el cierre es síncrono, got %v", closed)
+		if len(closed) != 0 {
+			t.Fatalf("resuelta en Néctar: el bot no cierra una conversación que ya no es suya, got %v", closed)
 		}
 	})
 
@@ -573,5 +574,23 @@ func TestHandleAgentResume_BirdNotifPendingCommandUnchanged(t *testing.T) {
 
 	if len(spy.actions) != 1 || spy.actions[0] != "confirm" || *completed != 1 || *resumedTo != "" {
 		t.Fatalf("acciones=%v completadas=%d retomó=%q", spy.actions, *completed, *resumedTo)
+	}
+}
+
+// M2: el motivo de conversacion_resuelta queda en la traza de agent_closed (p. ej. cola_vencida).
+func TestHandleAgentClose_NectarTracesReason(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	pool, _, _, sess := escalatedPool(t)
+	asNectar(sess)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "close", Phone: sess.PhoneNumber, Reason: "cola_vencida",
+	})
+	stop()
+
+	ev := sink.FindStep("escalacion", "agent_closed")
+	if ev == nil || ev.Attrs["motivo"] != "cola_vencida" {
+		t.Fatalf("agent_closed lleva el motivo: %+v", ev)
 	}
 }

@@ -14,14 +14,14 @@ func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
 	}
 
 	// URL sin claves: configuración a medias → error, sin puente.
-	partial := &config.Config{NectarBaseURL: "https://aom.colibrixa.com", NectarServiceKey: "k"}
+	partial := &config.Config{NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k"}
 	c, b, err = nectarBridgeFromConfig(partial)
 	if c != nil || b != nil || err == nil {
 		t.Fatalf("a medias: got %v %v %v", c, b, err)
 	}
 
 	// Sin secreto de avisos: también a medias (todos los avisos darían 401).
-	noNotice := &config.Config{NectarBaseURL: "https://aom.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s"}
+	noNotice := &config.Config{NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s"}
 	c, b, err = nectarBridgeFromConfig(noNotice)
 	if c != nil || b != nil || err == nil {
 		t.Fatalf("sin secreto de avisos: got %v %v %v", c, b, err)
@@ -29,7 +29,7 @@ func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
 
 	// Completa: cliente y puente.
 	full := &config.Config{
-		NectarBaseURL: "https://aom.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
+		NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
 		NectarTemplateNames: map[string]string{"p": "n"},
 	}
 	c, b, err = nectarBridgeFromConfig(full)
@@ -42,7 +42,7 @@ func TestNectarHealth(t *testing.T) {
 	if got := nectarHealth(""); got != "none" {
 		t.Errorf("vacío = %q", got)
 	}
-	if got := nectarHealth("https://aom.colibrixa.com:8443/x?k=v"); got != "aom.colibrixa.com" {
+	if got := nectarHealth("https://nectar.colibrixa.com:8443/x?k=v"); got != "nectar.colibrixa.com" {
 		t.Errorf("host = %q", got)
 	}
 }

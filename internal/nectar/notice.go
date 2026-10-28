@@ -24,13 +24,12 @@ const (
 	KindConversationReturned Kind = "conversacion_devuelta"
 )
 
-// KindConversationOpenedByAgent es EL SITIO DEL CUARTO AVISO (§5.5 del diseño del protocolo de
-// escalado v1; D43-bis, Plan 36 de Néctar): el agente abre la conversación con una plantilla y
+// KindConversationOpenedByAgent es EL SITIO DEL CUARTO AVISO (protocolo de escalado v1 de
+// Néctar): el agente abre la conversación con una plantilla y
 // el bot tiene que dejar la sesión PREABIERTA en el paso de esa plantilla, para que la primera
 // respuesta del paciente no caiga en el saludo.
 //
-// Entra en el registro de capacidades y se resuelve de forma SÍNCRONA
-// (hdg-bot docs/DISENO-CUARTO-AVISO-PLANTILLAS.md): el cuerpo es `opened{contact{identifier,
+// Entra en el registro de capacidades y se resuelve de forma SÍNCRONA: el cuerpo es `opened{contact{identifier,
 // profile_name}, channel_id, template_name, variables, agent{id, name}}` (Notice.Opened); la
 // política de a quién responde el paciente —bot o agente— la decide el manejador del aviso
 // (en Neuro siempre «agent»), no este paquete.
@@ -176,8 +175,7 @@ type Notice struct {
 	Opened *NoticeOpened `json:"opened,omitempty"`
 }
 
-// NoticeOpened es el cuerpo de conversacion_abierta_por_agente
-// (hdg-bot docs/DISENO-CUARTO-AVISO-PLANTILLAS.md §2).
+// NoticeOpened es el cuerpo de conversacion_abierta_por_agente (esquema del aviso de Néctar).
 type NoticeOpened struct {
 	Contact NoticeContact `json:"contact"`
 	// ChannelID y Agent.ID llegan como NÚMEROS JSON (`"channel_id": 3`, `"agent": {"id": 17}`,

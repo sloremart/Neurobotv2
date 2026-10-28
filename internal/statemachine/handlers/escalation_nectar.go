@@ -19,7 +19,7 @@ import (
 
 // gateOutOfHours es el gate que corta la escalación por el RELOJ (el horario cerrado, o la
 // ventana con la apertura demasiado lejos), frente a "no_agents", que la corta porque no hay
-// nadie conectado. Es literal de flow_events y de sm.CtxEscalationGate.
+// nadie conectado. Es literal de flow_events.
 const gateOutOfHours = "out_of_hours"
 
 // queuedExpiryExtra es cuánto vive la sesión DESPUÉS de la apertura que termina la espera de una
@@ -113,23 +113,19 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 // escalationExit es LA SALIDA del paso de escalación: todos los `return` del handler pasan por
 // ella, y por eso es donde vive lo que hay que dejar resuelto se escale o no.
 //
-// (1) LA MARCA DEL GATE: deja escrito que ESTA escalación se desvió por el RELOJ y la borra en
-// cualquier otra salida, para que hable siempre de la escalación recién decidida. Hoy NO tiene
-// lector en Neuro (en hdg-bot la lee su reanudador asíncrono del RPA, que aquí no existe): se
-// escribe para que el contrato de la clave quede igual en los dos bots.
-//
-// (2) EL RECHAZO TIPADO se borra en TODAS las salidas: el paso puede terminar sin escalar (tope,
+// (1) EL RECHAZO TIPADO se borra en TODAS las salidas: el paso puede terminar sin escalar (tope,
 // desvío, fallo de canal) y una clave viva emitiría en la siguiente escalación un rechazo que no
 // es el de su caso.
-func escalationExit(gate string, r *sm.StateResult) *sm.StateResult {
+//
+// (2) LA MARCA «EL PACIENTE PIDIÓ LA PERSONA» también: describe ESTA escalación. Si el paso
+// termina sin escalar, una marca viva haría que la siguiente —una en que el bot se atasca—
+// saliera como pedida por el paciente (motivo del sobre y aviso de Néctar equivocados). Si el
+// paciente vuelve a pedir un asesor, el interceptor o el menú la escriben de nuevo.
+func escalationExit(r *sm.StateResult) *sm.StateResult {
 	if r == nil {
 		return r
 	}
-	r = r.WithClearCtx(sm.CtxAgentInputRejection)
-	if gate == gateOutOfHours {
-		return r.WithContext(sm.CtxEscalationGate, gate)
-	}
-	return r.WithClearCtx(sm.CtxEscalationGate)
+	return r.WithClearCtx(sm.CtxAgentInputRejection, sm.CtxPatientAskedForAgent)
 }
 
 // queuedWaitStillOpen dice si la escalación ENCOLADA de esta sesión sigue DENTRO de su espera:

@@ -57,15 +57,15 @@ func TestInbound_AdjuntoSinURLSeComponeDelID(t *testing.T) {
 	body := `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
 	          "message":{"id":1,"kind":"image","attachment":{"id":"abc123"}}}`
 	n, _ := ParseNotice([]byte(body))
-	msg := n.ToInboundMessage("https://aom.colibrixa.com/")
-	if msg.MessageType != "image" || msg.ImageURL != "https://aom.colibrixa.com/api/bot/attachments/abc123" {
+	msg := n.ToInboundMessage("https://nectar.colibrixa.com/")
+	if msg.MessageType != "image" || msg.ImageURL != "https://nectar.colibrixa.com/api/bot/attachments/abc123" {
 		t.Fatalf("la URL se compone del id: %+v", msg)
 	}
 	// Y la `url` explícita MANDA cuando viene: componerla encima sería inventarse un destino.
 	body = `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
 	         "message":{"id":1,"kind":"document","attachment":{"id":"abc123","url":"https://otro/x.pdf"}}}`
 	n, _ = ParseNotice([]byte(body))
-	if msg := n.ToInboundMessage("https://aom.colibrixa.com"); msg.DocumentURL != "https://otro/x.pdf" {
+	if msg := n.ToInboundMessage("https://nectar.colibrixa.com"); msg.DocumentURL != "https://otro/x.pdf" {
 		t.Fatalf("%+v", msg)
 	}
 }
@@ -77,7 +77,7 @@ func TestInbound_AdjuntoSinURLUtilizableNoSeDespachaComoImagen(t *testing.T) {
 		body := `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
 		          "message":{"id":1,"kind":"` + kind + `","attachment":{"id":""}}}`
 		n, _ := ParseNotice([]byte(body))
-		msg := n.ToInboundMessage("https://aom.colibrixa.com")
+		msg := n.ToInboundMessage("https://nectar.colibrixa.com")
 		if msg.MessageType != UnusableAttachmentType {
 			t.Errorf("%s sin url: tipo=%q (se esperaba %q)", kind, msg.MessageType, UnusableAttachmentType)
 		}

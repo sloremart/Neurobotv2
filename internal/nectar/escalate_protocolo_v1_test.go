@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// El sobre del escalado en los DOS dialectos (hdg-bot docs/DISENO-PROTOCOLO-ESCALADO-V1-BOT.md §1.2 y
-// §6.1, prueba 4). Lo que se fija aquí es la promesa de la bandera: **con 0 el cuerpo es BYTE A
+// El sobre del escalado en los DOS dialectos (protocolo de escalado v1 de
+// Néctar). Lo que se fija aquí es la promesa de la bandera: **con 0 el cuerpo es BYTE A
 // BYTE el de hoy**. No es una frase de diseño — es lo único que permite desplegar v1 apagado sin
 // que Néctar note nada.
 
@@ -129,7 +129,7 @@ func TestEscalate_SinDescriptorLaClaveNoViaja(t *testing.T) {
 }
 
 // D6: la guarda de forma de `reason_detail` vive en el EMISOR, que es el único punto por el que
-// pasan los dieciocho motivos —y el decimonoveno, que lo escribirá alguien que no leyó el acta—.
+// pasan todos los motivos —también el próximo, que lo escribirá alguien que no leyó la regla—.
 func TestEscalate_ReasonDetailConFormaInvalidaNoSeEmite(t *testing.T) {
 	casos := map[string]string{
 		"texto del paciente":   "Hola, necesito una cita para mi mamá",

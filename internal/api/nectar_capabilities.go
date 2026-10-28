@@ -10,7 +10,8 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
 
-// La ruta del registro de capacidades (hdg-bot docs/DISENO-PROTOCOLO-ESCALADO-V1-BOT.md §1.3).
+// La ruta del registro de capacidades del protocolo de escalado v1 de Néctar (ver
+// internal/nectar/capabilities.go y el spec docs/superpowers/specs/2026-10-27-migracion-nectar-design.md §6).
 //
 // Es la SEGUNDA ruta del bot hacia Néctar —la otra es POST /api/webhooks/nectar— y vive en el
 // mux PÚBLICO, junto a ella. El patrón se declara aquí, con su método, y cmd/server y las

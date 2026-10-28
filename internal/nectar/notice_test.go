@@ -21,7 +21,7 @@ const inboundNotice = `{
   "message": {
     "id": 55, "external_id": "wamid.HBgL", "sequence": 7,
     "kind": "image", "text": "pie de foto",
-    "attachment": { "id": "abc123", "url": "https://aom.colibrixa.com/api/bot/attachments/abc123" }
+    "attachment": { "id": "abc123", "url": "https://nectar.colibrixa.com/api/bot/attachments/abc123" }
   }
 }`
 
@@ -107,7 +107,7 @@ func TestInboundMessageMapping(t *testing.T) {
 	if msg.Phone != "nectar:1234" || msg.ConversationID != "1234" {
 		t.Fatalf("sesión/conversación mal mapeadas: %+v", msg)
 	}
-	if msg.MessageType != "image" || msg.ImageURL != "https://aom.colibrixa.com/api/bot/attachments/abc123" {
+	if msg.MessageType != "image" || msg.ImageURL != "https://nectar.colibrixa.com/api/bot/attachments/abc123" {
 		t.Fatalf("imagen mal mapeada: %+v", msg)
 	}
 	if msg.Text != "pie de foto" {
@@ -129,14 +129,14 @@ func TestDocumentMappingUsesDocumentURL(t *testing.T) {
 // NO puede llegar al paso de la orden como "image": iría al OCR como si fuera una foto de orden.
 func TestStickerMappingIsUnsupportedNotImage(t *testing.T) {
 	for name, attachment := range map[string]string{
-		"con url":     `"attachment":{"id":"s1","url":"https://aom.colibrixa.com/api/bot/attachments/s1"}`,
+		"con url":     `"attachment":{"id":"s1","url":"https://nectar.colibrixa.com/api/bot/attachments/s1"}`,
 		"solo id":     `"attachment":{"id":"s1"}`,
 		"sin adjunto": `"text":""`,
 	} {
 		body := `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
 		          "message":{"id":1,"kind":"sticker",` + attachment + `}}`
 		n, _ := ParseNotice([]byte(body))
-		msg := n.ToInboundMessage("https://aom.colibrixa.com")
+		msg := n.ToInboundMessage("https://nectar.colibrixa.com")
 		if msg.MessageType != "sticker" {
 			t.Errorf("%s: tipo=%q, el sticker se traduce a %q", name, msg.MessageType, "sticker")
 		}
@@ -330,7 +330,7 @@ func TestOccurredAtAusenteEsElCero(t *testing.T) {
 
 func TestOccurredAtSeSerializaComoRFC3339(t *testing.T) {
 	// El tipo propio no puede cambiar lo que el bot ESCRIBE: los volcados de referencia se
-	// generan serializando este sobre, y el arnés de estrés arma avisos con él.
+	// generan serializando este sobre, y el stub de Néctar arma avisos con él.
 	raw, err := json.Marshal(Notice{
 		EventID: "e", Kind: KindInboundMessage, ConversationID: 9,
 		OccurredAt: NoticeTimeOf(time.Date(2026, 9, 14, 15, 2, 11, 0, time.UTC)),
@@ -344,7 +344,7 @@ func TestOccurredAtSeSerializaComoRFC3339(t *testing.T) {
 }
 
 func TestElCuartoAvisoYaEsConocido(t *testing.T) {
-	// hdg-bot docs/DISENO-CUARTO-AVISO-PLANTILLAS.md: el cuarto aviso entra en el registro de
+	// El cuarto aviso entra en el registro de
 	// capacidades y se resuelve de forma SÍNCRONA — deja de ser "futuro declarado" que cae
 	// en el `default` del despacho.
 	if !KindConversationOpenedByAgent.Known() {
@@ -378,7 +378,7 @@ func TestKnownDerivaDeKnownKinds(t *testing.T) {
 	}
 }
 
-// ---- El cuarto aviso: `opened{…}` (hdg-bot docs/DISENO-CUARTO-AVISO-PLANTILLAS.md §2 y §3.1) ----
+// ---- El cuarto aviso: `opened{…}` ----
 
 const openedBody = `{"event_id":"e-ap-1","kind":"conversacion_abierta_por_agente","conversation_id":9001,
  "occurred_at":"2026-09-18T14:00:00Z",

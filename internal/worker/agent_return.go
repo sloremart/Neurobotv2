@@ -24,24 +24,28 @@ const agentCloseFarewell = "Tu consulta ha sido resuelta. Gracias por comunicart
 // closeNectarConversation es la mitad de handleAgentClose propia de Néctar (la sesión ya está
 // completada cuando se llama).
 //
-// Con motivo (cmd.Reason, de conversacion_resuelta) la resolvió el agente en Néctar y ya cerró
-// con el paciente: el bot no se despide otra vez —además, la conversación ya no es suya y el
-// envío no saldría—. Sin motivo el cierre lo decidió el agente desde el menú de retornos, la
-// conversación volvió al bot, y la despedida sí le toca a él.
+// Con motivo (cmd.Reason, de conversacion_resuelta; CloseReasonResolved si vino sin él) la
+// resolvió el agente en Néctar y ya cerró con el paciente: el bot ni se despide ni cierra —la
+// conversación ya no es suya y los dos envíos morirían en 404—. Sin motivo el cierre lo decidió
+// el agente desde el menú de retornos, la conversación volvió al bot, y la despedida y el cierre
+// sí le tocan a él.
 //
 // El cierre es SÍNCRONO, a diferencia del de Bird (que lo aparca 3 s para que Bird alcance a
 // entregar la despedida): con Néctar el envío es un POST que ya volvió con el id del mensaje, así
 // que no queda nada en vuelo que el cierre pueda cortar.
 func (p *MessageWorkerPool) closeNectarConversation(sess *session.Session, cmd AgentCommand) {
-	if cmd.Reason == "" {
-		if _, err := p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, agentCloseFarewell); err != nil {
-			slog.Warn("farewell on agent close failed (nectar)",
-				"conversation_id", sess.ConversationID, "session_id", sess.ID, "error", err)
-		}
+	if cmd.Reason != "" {
+		slog.Info("nectar: resuelta en Néctar, el bot no se despide ni cierra",
+			"conversation_id", sess.ConversationID, "session_id", sess.ID, "reason", cmd.Reason)
+		return
+	}
+	if _, err := p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, agentCloseFarewell); err != nil {
+		slog.Warn("farewell on agent close failed (nectar)",
+			"conversation_id", sess.ConversationID, "session_id", sess.ID, "error", err)
 	}
 	if err := p.birdClient.CloseFeedItems(sess.PhoneNumber, sess.ConversationID); err != nil {
 		slog.Warn("close conversation on agent close failed (nectar)",
-			"conversation_id", sess.ConversationID, "session_id", sess.ID, "reason", cmd.Reason, "error", err)
+			"conversation_id", sess.ConversationID, "session_id", sess.ID, "error", err)
 	}
 }
 

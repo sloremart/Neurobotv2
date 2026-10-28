@@ -98,7 +98,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			r := sm.NewResult(sm.StateMainMenu).
 				WithEvent("escalation_suppressed_resume", map[string]interface{}{"pre_state": preState})
 			r.Messages = append(r.Messages, buildMainMenuList())
-			return escalationExit("", r), nil
+			return escalationExit(r), nil
 		}
 		//
 		// (2) Tope duro por sesión: a la (escalationSessionCap+1)-ésima escalación de una MISMA
@@ -109,7 +109,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		//     su espera siga abierta (queuedWaitStillOpen): ese caso ya está en la cola de Néctar
 		//     y desviarlo al menú de recuperación lo borraría de ella. La exención caduca con la
 		//     apertura.
-		if n, _ := strconv.Atoi(sess.GetContext("escalation_count")); n >= escalationSessionCap && !queuedWaitStillOpen(sess) {
+		//     EXENTA también la re-escalación por un dato del agente que no sirvió
+		//     (CtxAgentInputRejection): la causó una persona, no un lazo del bot, y cada vuelta
+		//     necesita otra acción humana; cortarla dejaría al paciente sin asesor.
+		if n, _ := strconv.Atoi(sess.GetContext("escalation_count")); n >= escalationSessionCap &&
+			!queuedWaitStillOpen(sess) && sess.GetContext(sm.CtxAgentInputRejection) == "" {
 			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_reached",
 				observability.EmitOpts{
 					Phone: sess.PhoneNumber, Reason: preState,
@@ -117,7 +121,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				})
 			slog.Warn("escalation suppressed (session cap reached)",
 				"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "count", n, "pre_state", preState)
-			return escalationExit("", sm.NewResult(sm.StateFallbackMenu).
+			return escalationExit(sm.NewResult(sm.StateFallbackMenu).
 				WithButtons(
 					"Ya intentamos conectarte con un asesor varias veces en esta conversación. "+
 						"Un miembro de nuestro equipo revisará tu caso. ¿Deseas volver al inicio o terminar el chat?",
@@ -137,7 +141,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		if rc := m.Recovery(); rc != nil && !rc.Active(sess) &&
 			sess.GetContext(sm.CtxAgentInputRejection) == "" {
 			if res, ok := rc.TryStart(ctx, sess, msg, preState); ok {
-				return escalationExit("", res), nil
+				return escalationExit(res), nil
 			}
 		}
 
@@ -183,7 +187,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				WithText("En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.* Por favor escríbenos en ese horario y con gusto te ayudamos. 😊").
 				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState, "gate": gate})
 			r.Messages = append(r.Messages, buildMainMenuList())
-			return escalationExit(gate, r), nil
+			return escalationExit(r), nil
 		}
 
 		slog.Debug(
@@ -389,7 +393,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			// B — No abandonar al paciente: el aviso "te voy a conectar…" viaja en los mensajes del caller, así
 			// que en vez de un menú frío de reinicio se le confirma que un asesor lo contactará (el
 			// pickup manual queda disparado por la alerta ERROR de arriba) y se le deja una salida.
-			return escalationExit("", sm.NewResult(sm.StateFallbackMenu).
+			return escalationExit(sm.NewResult(sm.StateFallbackMenu).
 				WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
 				WithButtons(
 					"Estamos teniendo un inconveniente para conectarte con un asesor en este momento. "+
@@ -473,11 +477,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		} else {
 			r = r.WithClearCtx(sm.CtxEscalationNextDay)
 		}
-		// La marca del paciente y la NOTA son de ESTA escalación y ya viajaron: se borran solo
-		// aquí, cuando el escalate se entregó (si falla, el reintento tiene que volver a llevarlas).
-		return escalationExit("", r).
-			WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts,
-				sm.CtxPatientAskedForAgent, "escalation_note").
+		// La NOTA es de ESTA escalación y ya viajó: se borra solo aquí, cuando el escalate se
+		// entregó (si falla, el reintento tiene que volver a llevarla). La marca del paciente la
+		// borra escalationExit en toda salida.
+		return escalationExit(r).
+			WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts, "escalation_note").
 			WithContext("pre_escalation_state", preState).
 			WithContext("escalation_team", teamID).
 			WithEvent("escalated_to_agent", map[string]interface{}{

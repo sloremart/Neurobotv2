@@ -1051,8 +1051,13 @@ func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.
 		p.tracker.LogEvent(ctx, sess.ID, cmd.Phone, "session_completed", nil)
 		p.tracker.LogEvent(ctx, sess.ID, cmd.Phone, "escalation_closed", nil)
 	}
+	// El motivo de conversacion_resuelta (p. ej. cola_vencida) queda en la traza; vacío no viaja.
+	var attrs map[string]interface{}
+	if cmd.Reason != "" {
+		attrs = map[string]interface{}{"motivo": cmd.Reason}
+	}
 	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "agent_closed",
-		observability.EmitOpts{Phone: cmd.Phone})
+		observability.EmitOpts{Phone: cmd.Phone, Attrs: attrs})
 }
 
 // handleAgentInfo sends a session context summary (visible to the agent in Bird Inbox).
