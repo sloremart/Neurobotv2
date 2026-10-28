@@ -366,3 +366,129 @@ func TestMedicationCheck_NotSanitas_BackToMenu(t *testing.T) {
 		t.Errorf("expected MAIN_MENU, got %s", result.NextState)
 	}
 }
+
+// ==================== Horario: próxima apertura y cola del próximo día ====================
+
+// at arma un instante de prueba en UTC, la misma zona que usan las pruebas del horario de arriba
+// (businessHoursOpen lee la hora tal como la entrega nowFunc).
+func at(year int, month time.Month, day, hour, minute int) time.Time {
+	return time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+}
+
+// nextBusinessOpen: la apertura en que una persona puede atender lo que llegue en ese instante.
+// Con el centro abierto es el instante mismo.
+func TestNextBusinessOpen(t *testing.T) {
+	cases := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		// El brief decía «viernes 18:30 → lunes 07:00»; con el horario de Neuro (sábados de
+		// 7:00 a 12:00) la apertura siguiente es el sábado.
+		{"viernes 18:30 → sábado 07:00", at(2026, 10, 23, 18, 30), at(2026, 10, 24, 7, 0)},
+		{"sábado 12:30 → lunes 07:00", at(2026, 10, 24, 12, 30), at(2026, 10, 26, 7, 0)},
+		{"martes 10:00 abierto → martes 10:00", at(2026, 10, 27, 10, 0), at(2026, 10, 27, 10, 0)},
+		{"martes 05:00 → martes 07:00", at(2026, 10, 27, 5, 0), at(2026, 10, 27, 7, 0)},
+		{"domingo 03:00 → lunes 07:00", at(2026, 10, 25, 3, 0), at(2026, 10, 26, 7, 0)},
+		{"sábado 11:59 abierto → sábado 11:59", at(2026, 10, 24, 11, 59), at(2026, 10, 24, 11, 59)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := nextBusinessOpen(c.now); !got.Equal(c.want) {
+				t.Errorf("nextBusinessOpen(%s) = %s, want %s", c.now, got, c.want)
+			}
+		})
+	}
+}
+
+// QueuedWaitEnd: hasta cuándo espera lo que se encola en ese instante. Con el centro abierto
+// (el margen antes del cierre) no es el instante mismo sino la apertura SIGUIENTE al cierre: si
+// fuera el instante, la exención de la cola caducaría en el mismo momento de encolarse.
+func TestQueuedWaitEnd(t *testing.T) {
+	cases := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{"viernes 17:50 (margen) → sábado 07:00", at(2026, 10, 23, 17, 50), at(2026, 10, 24, 7, 0)},
+		{"sábado 11:50 (margen) → lunes 07:00", at(2026, 10, 24, 11, 50), at(2026, 10, 26, 7, 0)},
+		{"martes 10:00 → miércoles 07:00", at(2026, 10, 27, 10, 0), at(2026, 10, 28, 7, 0)},
+		{"viernes 18:30 → sábado 07:00", at(2026, 10, 23, 18, 30), at(2026, 10, 24, 7, 0)},
+		{"martes 05:00 → martes 07:00", at(2026, 10, 27, 5, 0), at(2026, 10, 27, 7, 0)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := QueuedWaitEnd(c.now); !got.Equal(c.want) {
+				t.Errorf("QueuedWaitEnd(%s) = %s, want %s", c.now, got, c.want)
+			}
+		})
+	}
+}
+
+func TestBusinessHoursDescription(t *testing.T) {
+	want := "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
+	if got := BusinessHoursDescription(); got != want {
+		t.Errorf("BusinessHoursDescription() = %q, want %q", got, want)
+	}
+}
+
+func queueConfig() *config.Config {
+	return &config.Config{BusinessHoursCloseMarginMin: 15, BusinessHoursQueueMaxWaitMin: 1200}
+}
+
+func TestNextBusinessDayQueue(t *testing.T) {
+	cases := []struct {
+		name string
+		now  time.Time
+		want escalationQueue
+	}{
+		{"martes 10:00, en jornada", at(2026, 10, 27, 10, 0), escalationQueue{}},
+		{"martes 17:44, aún alcanza", at(2026, 10, 27, 17, 44), escalationQueue{}},
+		{"martes 17:45, margen", at(2026, 10, 27, 17, 45), escalationQueue{window: true, queue: true, reason: "margen"}},
+		{"viernes 17:50, margen (abre el sábado)", at(2026, 10, 23, 17, 50), escalationQueue{window: true, queue: true, reason: "margen"}},
+		{"martes 18:30, de noche", at(2026, 10, 27, 18, 30), escalationQueue{window: true, queue: true, reason: "fuera_de_horario"}},
+		{"sábado 11:50, margen pero abre el lunes", at(2026, 10, 24, 11, 50), escalationQueue{window: true, queue: false, reason: "margen"}},
+		{"sábado 13:00, abre el lunes", at(2026, 10, 24, 13, 0), escalationQueue{window: true, queue: false, reason: "fuera_de_horario"}},
+		{"domingo 15:00, abre en 16 h", at(2026, 10, 25, 15, 0), escalationQueue{window: true, queue: true, reason: "fuera_de_horario"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got escalationQueue
+			withTime(c.now, func() { got = nextBusinessDayQueue(queueConfig()) })
+			if got != c.want {
+				t.Errorf("nextBusinessDayQueue = %+v, want %+v", got, c.want)
+			}
+			if got.farOpen() != (c.want.window && !c.want.queue) {
+				t.Errorf("farOpen = %v", got.farOpen())
+			}
+		})
+	}
+}
+
+// TESTING_ALWAYS_OPEN apaga la cola igual que apaga el horario; margen o espera en cero también.
+func TestNextBusinessDayQueue_Disabled(t *testing.T) {
+	night := at(2026, 10, 27, 18, 30)
+	alwaysOpen := queueConfig()
+	alwaysOpen.TestingAlwaysOpen = true
+	noWait := queueConfig()
+	noWait.BusinessHoursQueueMaxWaitMin = 0
+	noMargin := queueConfig()
+	noMargin.BusinessHoursCloseMarginMin = 0
+
+	withTime(night, func() {
+		if q := nextBusinessDayQueue(nil); q != (escalationQueue{}) {
+			t.Errorf("cfg nil: %+v", q)
+		}
+		if q := nextBusinessDayQueue(alwaysOpen); q != (escalationQueue{}) {
+			t.Errorf("TESTING_ALWAYS_OPEN: %+v", q)
+		}
+		if q := nextBusinessDayQueue(noWait); q.queue || !q.window {
+			t.Errorf("espera máxima 0 apaga la cola, no la ventana: %+v", q)
+		}
+	})
+	withTime(at(2026, 10, 27, 17, 50), func() {
+		if q := nextBusinessDayQueue(noMargin); q.window {
+			t.Errorf("con margen 0 las 17:50 todavía son de hoy: %+v", q)
+		}
+	})
+}

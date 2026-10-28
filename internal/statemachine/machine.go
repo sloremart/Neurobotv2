@@ -198,6 +198,7 @@ func (m *Machine) Process(ctx context.Context, sess *session.Session, msg bird.I
 		prevEvents := result.Events
 		prevCtx := result.UpdateCtx
 		prevClear := result.ClearCtx
+		prevExpiry := result.ExtendExpiryUntil
 
 		// Aplicar contexto pendiente a la sesión para que el auto handler pueda leerlo
 		for k, v := range prevCtx {
@@ -231,6 +232,14 @@ func (m *Machine) Process(ctx context.Context, sess *session.Session, msg bird.I
 			}
 		}
 		autoResult.ClearCtx = append(prevClear, autoResult.ClearCtx...)
+
+		// El plazo de vencimiento SOBREVIVE al encadenado, y entre dos gana el MÁS LARGO. Lo
+		// pide el paso que sabe por qué esta sesión tiene que durar más de lo normal (la
+		// escalación encolada para el próximo día hábil); el paso automático siguiente —el
+		// terminal ESCALATED, que no hace nada— lo perdería si aquí no se conservara.
+		if prevExpiry.After(autoResult.ExtendExpiryUntil) {
+			autoResult.ExtendExpiryUntil = prevExpiry
+		}
 
 		result = autoResult
 	}

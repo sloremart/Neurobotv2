@@ -57,6 +57,124 @@ func businessHoursOpen(cfg *config.Config) bool {
 	}
 }
 
+// BusinessHoursDescription es el horario de atención EN PALABRAS: el mismo de businessHoursOpen.
+// Lo nombran el aviso de la cola del próximo día hábil y el de la cola vencida (worker).
+func BusinessHoursDescription() string {
+	return "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
+}
+
+// businessWindow devuelve la jornada de ese día en minutos desde medianoche [open, close), u
+// ok=false si ese día no se atiende. Es el MISMO horario de businessHoursOpen (L-V 7:00-17:59,
+// Sáb 7:00-11:59).
+func businessWindow(d time.Weekday) (openMin, closeMin int, ok bool) {
+	switch d {
+	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
+		return 7 * 60, 18 * 60, true
+	case time.Saturday:
+		return 7 * 60, 12 * 60, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// minutesToClose son los minutos que le quedan a la jornada vigente en t, o 0 si está cerrado.
+func minutesToClose(t time.Time) int {
+	openMin, closeMin, ok := businessWindow(t.Weekday())
+	minute := t.Hour()*60 + t.Minute()
+	if !ok || minute < openMin || minute >= closeMin {
+		return 0
+	}
+	return closeMin - minute
+}
+
+// nextBusinessOpen es la apertura en la que una persona puede atender lo que llega en `now`:
+// con el centro abierto es `now` mismo; cerrado, la próxima apertura (en la zona de `now`).
+func nextBusinessOpen(now time.Time) time.Time {
+	if minutesToClose(now) > 0 {
+		return now
+	}
+	minute := now.Hour()*60 + now.Minute()
+	for d := 0; d < 8; d++ {
+		day := now.AddDate(0, 0, d)
+		openMin, _, ok := businessWindow(day.Weekday())
+		if !ok || (d == 0 && minute >= openMin) {
+			continue
+		}
+		return time.Date(day.Year(), day.Month(), day.Day(), openMin/60, openMin%60, 0, 0, now.Location())
+	}
+	return now // inalcanzable: todas las semanas tienen días hábiles
+}
+
+// QueuedWaitEnd es hasta cuándo espera lo que se encola en `t`: la primera apertura DESPUÉS de
+// la jornada vigente. Cerrado coincide con nextBusinessOpen; abierto (el margen antes del
+// cierre) es la apertura siguiente al cierre, no `t` — si no, la espera de una escalación
+// encolada en el margen terminaría en el mismo instante de encolarse.
+//
+// Lo usan la cola (cuánto falta para que alguien lo tome), el vencimiento extendido de la sesión
+// y la caducidad de la exención de la escalación encolada (session.InactivityDeps.NextOpen).
+func QueuedWaitEnd(t time.Time) time.Time {
+	if left := minutesToClose(t); left > 0 {
+		closing := t.Truncate(time.Minute).Add(time.Duration(left) * time.Minute)
+		return nextBusinessOpen(closing)
+	}
+	return nextBusinessOpen(t)
+}
+
+// Motivos por los que una escalación queda para el próximo día hábil. Viajan como attr `motivo`
+// del evento escalacion/encolada_proximo_dia: el margen se puede mover
+// (BUSINESS_HOURS_CLOSE_MARGIN_MIN), la noche no.
+//
+// queueReasonFarOpen no es un motivo de COLA sino de DESVÍO: la ventana está activa, pero abrir
+// queda tan lejos que encolar no serviría (BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN). Viaja como attr
+// del evento del desvío, escalacion/escalation_no_agents.
+const (
+	queueReasonMargin  = "margen"
+	queueReasonClosed  = "fuera_de_horario"
+	queueReasonFarOpen = "apertura_lejana"
+)
+
+// escalationQueue es lo que el horario dice de la escalación que se está decidiendo AHORA.
+//
+// window y queue NO son lo mismo: hay una franja —el fin de semana— en la que el caso ya no le
+// cabe hoy a ninguna persona (window) y sin embargo tampoco se encola (queue), porque el asesor
+// lo tomaría fuera de la ventana de 24 h de WhatsApp. Ahí vuelve el desvío de siempre.
+type escalationQueue struct {
+	window bool
+	queue  bool
+	// reason es por qué no le cabe hoy (margen / fuera_de_horario) cuando window; "" si no.
+	reason string
+}
+
+// farOpen dice que la ventana está activa pero la apertura queda demasiado lejos: el caso NO se
+// encola y se desvía.
+func (q escalationQueue) farOpen() bool { return q.window && !q.queue }
+
+// nextBusinessDayQueue dice si lo que se escale AHORA lo va a atender una persona el próximo día
+// hábil, por cuál de los dos motivos, y si esa espera es lo bastante corta para encolarlo.
+// `window` = cerrado o faltan ≤ BusinessHoursCloseMarginMin para cerrar; `queue` = window y la
+// espera hasta la apertura ≤ BusinessHoursQueueMaxWaitMin.
+//
+// El BOT no cambia: sigue atendiendo hasta el cierre exacto (businessHoursOpen). Esto solo
+// gobierna lo que depende de un asesor humano. TESTING_ALWAYS_OPEN lo apaga, igual que apaga el
+// horario: si no, cada prueba que lo enciende encolaría según la hora a la que corriera la suite.
+func nextBusinessDayQueue(cfg *config.Config) escalationQueue {
+	if cfg == nil || cfg.TestingAlwaysOpen {
+		return escalationQueue{}
+	}
+	now := nowFunc()
+	left := minutesToClose(now)
+	if left > cfg.BusinessHoursCloseMarginMin {
+		return escalationQueue{}
+	}
+	q := escalationQueue{window: true, reason: queueReasonClosed}
+	if left > 0 {
+		q.reason = queueReasonMargin
+	}
+	maxWait := time.Duration(cfg.BusinessHoursQueueMaxWaitMin) * time.Minute
+	q.queue = cfg.BusinessHoursQueueMaxWaitMin > 0 && QueuedWaitEnd(now).Sub(now) <= maxWait
+	return q
+}
+
 // CHECK_BUSINESS_HOURS (automático)
 func checkBusinessHoursHandler(cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {

@@ -186,6 +186,16 @@ var catalog = map[string]stepSpec{
 	// se lo dijo al paciente y cerró. No es un error del bot, pero sí una promesa incumplida: el
 	// número que dice si la cola da abasto.
 	"escalacion/cola_vencida": {LvOutcome, "info", ""},
+	// encolada_proximo_dia: la escalación SÍ se ejecutó (va junto a `escalated`, no en su lugar),
+	// pero entró cuando ya no le cabía a nadie en el día — dentro del margen de cierre (attr
+	// motivo=margen) o con el horario cerrado (motivo=fuera_de_horario). Es un hito: el caso está
+	// vivo en la cola de Néctar. Mide cuánta demanda cae fuera del día y cuánta la produce el
+	// margen, que es la mitad que se puede mover con una variable.
+	"escalacion/encolada_proximo_dia": {LvMilestone, "queued", ""},
+	// equipo_sugerido: el bot le pidió a Néctar que el caso vaya al equipo del grupo de CUPS
+	// (`suggested_team_id`, NECTAR_TEAM_BY_GROUP). Va JUNTO al escalado y solo cuando hay mapeo
+	// para el grupo; es lo único que permite comprobar a qué equipo se pidió cada caso.
+	"escalacion/equipo_sugerido": {LvMilestone, "ok", ""},
 	// Restricción de edad en neurología: menor intenta neurología adultos o adulto intenta pediátrica.
 	// Terminal: se regresa al menú principal para que el paciente elija la especialidad correcta.
 	"agendar/age_restriction_blocked": {LvOutcome, "blocked", ""},
@@ -295,6 +305,12 @@ var allowedAttrKeys = map[string]bool{
 	// identificador del paciente y las variables de la plantilla NO pasan por aquí (van
 	// enmascarados solo en el WAL). Sin estas claves el attr se descartaba en silencio.
 	"plantilla": true, "protocol": true, "soportada": true,
+	// Escalación por Néctar. "motivo" es vocabulario cerrado del bot: por qué una escalación quedó
+	// encolada para el próximo día hábil (margen / fuera_de_horario) o, en el desvío
+	// (escalation_no_agents), apertura_lejana. "gate" es cuál freno cortó la escalación (no_agents
+	// / out_of_hours): se emitía ya y se descartaba en silencio. "team_id" es el equipo de Néctar
+	// sugerido y "grupo" el grupo de CUPS que lo decidió (imagenes / neuro / callcenter). Nada PII.
+	"motivo": true, "gate": true, "team_id": true, "grupo": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

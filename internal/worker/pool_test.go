@@ -33,6 +33,7 @@ type mockSessionMgmt struct {
 	resumeFn          func(ctx context.Context, sess *session.Session, targetState string) error
 	resumeNoShowFn    func(ctx context.Context, sess *session.Session, targetState string) error
 	completeFn        func(ctx context.Context, sess *session.Session) error
+	extendExpiryFn    func(ctx context.Context, sess *session.Session, until time.Time) error
 }
 
 func newMockSessionMgmt() *mockSessionMgmt {
@@ -82,6 +83,13 @@ func (m *mockSessionMgmt) SaveState(ctx context.Context, sess *session.Session, 
 		return m.saveFn(ctx, sess, state, updateCtx, clearCtx)
 	}
 	sess.CurrentState = state
+	return nil
+}
+
+func (m *mockSessionMgmt) ExtendExpiry(ctx context.Context, sess *session.Session, until time.Time) error {
+	if m.extendExpiryFn != nil {
+		return m.extendExpiryFn(ctx, sess, until)
+	}
 	return nil
 }
 

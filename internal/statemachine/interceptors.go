@@ -263,8 +263,11 @@ func EscalationKeywordsInterceptor() Interceptor {
 		}
 
 		sess.RetryCount = 0
+		// La marca dice que el PACIENTE pidió la persona: el handler de escalación la usa para
+		// el `reason` del sobre y para decidir si avisarle en Néctar.
 		return NewResult(StateEscalateToAgent).
 			WithText(EscalationNoticeText).
+			WithContext(CtxPatientAskedForAgent, "1").
 			WithEvent("escalation_requested", map[string]interface{}{
 				"from_state": sess.CurrentState,
 				"keyword":    input,

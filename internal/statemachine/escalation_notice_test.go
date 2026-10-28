@@ -72,3 +72,16 @@ func TestEscalationKeywordInterceptor_CarriesNotice(t *testing.T) {
 		t.Error("la escalación por palabra clave debe avisar al paciente en el result")
 	}
 }
+
+// La palabra clave es el PACIENTE pidiendo la persona: deja la marca que decide el motivo con
+// que se escala y si se le avisa.
+func TestEscalationKeywordInterceptor_MarksPatientAskedForAgent(t *testing.T) {
+	sess := helperSess(StateAskDocument)
+	result, handled := EscalationKeywordsInterceptor()(context.Background(), sess, bird.InboundMessage{Text: "asesor"})
+	if !handled || result == nil {
+		t.Fatal("esperaba escalación por keyword")
+	}
+	if got := result.UpdateCtx[CtxPatientAskedForAgent]; got != "1" {
+		t.Fatalf("falta la marca del paciente: %q (%v)", got, result.UpdateCtx)
+	}
+}

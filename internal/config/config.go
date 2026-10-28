@@ -175,6 +175,26 @@ type Config struct {
 	TestingAlwaysOpen bool // Bypasses business hours check when true
 	MaxRetries        int  // Max invalid response attempts before fallback menu
 
+	// BusinessHoursCloseMarginMin (BUSINESS_HOURS_CLOSE_MARGIN_MIN) son los minutos antes
+	// del cierre a partir de los cuales una escalación ya NO la alcanza a atender una
+	// persona hoy y se encola para el próximo día hábil. El BOT sigue atendiendo hasta el
+	// cierre exacto: esto solo gobierna lo que depende de un asesor.
+	//
+	// El valor CERO —un Config armado a mano en pruebas— apaga la ventana del margen, y
+	// entonces solo encola lo que llegue con el horario ya cerrado. El default de 15 minutos
+	// lo pone Load().
+	BusinessHoursCloseMarginMin int
+
+	// BusinessHoursQueueMaxWaitMin (BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN) es lo máximo que puede
+	// faltar para la próxima apertura para que encolar el caso siga teniendo sentido. Con la
+	// apertura MÁS lejos (un fin de semana) la respuesta del asesor caería fuera de la ventana
+	// de 24 h de WhatsApp, así que se vuelve al desvío de siempre: «escríbenos en horario de
+	// atención».
+	//
+	// El valor CERO —un Config armado a mano en pruebas— apaga la cola entera, que es el
+	// comportamiento conservador. El default de 20 h lo pone Load().
+	BusinessHoursQueueMaxWaitMin int
+
 	// Tope de envíos salientes por teléfono/hora SIN inbound del paciente (0 = off).
 	// Última defensa contra emisores desbocados (incidente 11/12-ago-2026: 1 msg/min toda la noche).
 	SendRateLimitPerHour int
@@ -400,6 +420,21 @@ func Load() *Config {
 	}
 	cfg.NectarTeamByGroup = teams
 
+	// El margen de cierre y la espera máxima de la cola, por el mismo camino: un valor
+	// imposible tiene que verse al arrancar y no el día que alguien pregunte por qué todos los
+	// casos quedaron para mañana (o por qué ninguno).
+	margin, err := parseCloseMarginMin(os.Getenv("BUSINESS_HOURS_CLOSE_MARGIN_MIN"))
+	if err != nil {
+		log.Fatalf("BUSINESS_HOURS_CLOSE_MARGIN_MIN inválido: %v", err)
+	}
+	cfg.BusinessHoursCloseMarginMin = margin
+
+	maxWait, err := parseQueueMaxWaitMin(os.Getenv("BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN"))
+	if err != nil {
+		log.Fatalf("BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN inválido: %v", err)
+	}
+	cfg.BusinessHoursQueueMaxWaitMin = maxWait
+
 	cfg.validate()
 	return cfg
 }
@@ -624,4 +659,68 @@ func getEnvBool(key string, fallback bool) bool {
 		return false
 	}
 	return fallback
+}
+
+// DefaultCloseMarginMin y MaxCloseMarginMin acotan BUSINESS_HOURS_CLOSE_MARGIN_MIN, los minutos
+// ANTES del cierre a partir de los cuales lo que llegue ya no lo alcanza a atender una persona
+// hoy. El tope existe porque un margen mayor que la jornada la anularía entera —todo caería en
+// la cola del próximo día—. 0 es legal: apaga la ventana sin tocar código.
+const (
+	DefaultCloseMarginMin = 15
+	MaxCloseMarginMin     = 120
+)
+
+// DefaultQueueMaxWaitMin es lo máximo que puede faltar para la próxima apertura para que todavía
+// tenga sentido ENCOLAR un caso (BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN, en minutos; 20 h).
+//
+// El límite lo impone WhatsApp: la ventana de 24 h de servicio se cierra sola mientras el caso
+// espera, y un caso del sábado que un asesor toma el lunes ya no se puede contestar sin
+// plantilla. 20 h cubre el salto de una noche (viernes 18:00 → sábado 07:00, 13 h) y deja fuera
+// el de un fin de semana (sábado 12:00 → lunes 07:00, 43 h). 0 apaga la cola entera.
+const DefaultQueueMaxWaitMin = 1200
+
+// validateCloseMarginMin rechaza un margen imposible.
+func validateCloseMarginMin(minutes int) error {
+	if minutes < 0 || minutes > MaxCloseMarginMin {
+		return fmt.Errorf("margen de cierre %d fuera de rango (0..%d)", minutes, MaxCloseMarginMin)
+	}
+	return nil
+}
+
+// parseCloseMarginMin lee BUSINESS_HOURS_CLOSE_MARGIN_MIN: vacío = el default, y cualquier otra
+// cosa tiene que ser un número dentro del rango. NO se lee con getEnvInt porque ese se traga el
+// error de Atoi: `=quince` arrancaría con el default en silencio.
+func parseCloseMarginMin(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultCloseMarginMin, nil
+	}
+	minutes, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("margen de cierre %q no numérico", raw)
+	}
+	return minutes, validateCloseMarginMin(minutes)
+}
+
+// validateQueueMaxWaitMin rechaza el único valor imposible. No hay tope superior: un valor
+// enorme deja la cola siempre encendida, que es una postura legítima del operador.
+func validateQueueMaxWaitMin(minutes int) error {
+	if minutes < 0 {
+		return fmt.Errorf("espera máxima %d negativa", minutes)
+	}
+	return nil
+}
+
+// parseQueueMaxWaitMin lee BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN: vacío = el default, y cualquier
+// otra cosa tiene que ser un número no negativo. Mismo criterio que parseCloseMarginMin.
+func parseQueueMaxWaitMin(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultQueueMaxWaitMin, nil
+	}
+	minutes, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("espera máxima %q no numérica", raw)
+	}
+	return minutes, validateQueueMaxWaitMin(minutes)
 }

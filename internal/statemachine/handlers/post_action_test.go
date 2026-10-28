@@ -140,3 +140,18 @@ func TestTerminated(t *testing.T) {
 		t.Errorf("expected TERMINATED, got %s", result.NextState)
 	}
 }
+
+// Escribir «agente» en el menú post-acción es el paciente pidiendo la persona.
+func TestPostActionMenu_AgenteMarksPatientAskedForAgent(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterPostActionHandlers(m, nil)
+
+	sess := testSess(sm.StatePostActionMenu)
+	result, err := m.Process(context.Background(), sess, textM("agente"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.UpdateCtx[sm.CtxPatientAskedForAgent]; got != "1" {
+		t.Fatalf("falta la marca del paciente: %q (%v)", got, result.UpdateCtx)
+	}
+}

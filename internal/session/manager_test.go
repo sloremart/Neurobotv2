@@ -1455,3 +1455,31 @@ func TestCheckEscalated_QueuedExemptSkipsEverything(t *testing.T) {
 		t.Errorf("la encolada no debe cerrarse, abandoned=%q feeds=%d", abandoned, bird.closedFeeds)
 	}
 }
+
+// ExtendExpiry estira el vencimiento y NUNCA lo acorta.
+func TestExtendExpiry_ExtendsButNeverShortens(t *testing.T) {
+	var calls int
+	var persisted time.Time
+	repo := &mockRepo{renewExpiryFn: func(_ context.Context, _ string, expiresAt time.Time) error {
+		calls++
+		persisted = expiresAt
+		return nil
+	}}
+	mgr := NewSessionManager(repo, 120)
+	sess := &Session{ID: "s1", ExpiresAt: time.Now().Add(time.Hour)}
+
+	until := time.Now().Add(30 * time.Hour)
+	if err := mgr.ExtendExpiry(context.Background(), sess, until); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !persisted.Equal(until) || !sess.ExpiresAt.Equal(until) {
+		t.Fatalf("debía estirar a %s: calls=%d persisted=%s mem=%s", until, calls, persisted, sess.ExpiresAt)
+	}
+
+	if err := mgr.ExtendExpiry(context.Background(), sess, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !sess.ExpiresAt.Equal(until) {
+		t.Fatalf("no debía acortar: calls=%d mem=%s", calls, sess.ExpiresAt)
+	}
+}

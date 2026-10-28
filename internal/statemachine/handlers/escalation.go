@@ -10,6 +10,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/recovery"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -38,7 +39,10 @@ func RegisterEscalationHandlers(m *sm.Machine, birdClient *bird.Client, cfg *con
 }
 
 // ESCALATE_TO_AGENT (automático) — transfiere la conversación a un agente humano.
-// Routes to the correct Bird team based on the CUPS procedure code.
+// Routes to the correct Bird team based on the CUPS procedure code. En Néctar el equipo se
+// SUGIERE por grupo de CUPS en el sobre (escalation_nectar.go).
+//
+// Todas las salidas pasan por escalationExit.
 func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config, escRepo EscalationCreator) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		// 1. Determine team based on service (CUPS code)
@@ -51,6 +55,27 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			preState = sess.CurrentState
 		}
 		sess.SetContext("pre_escalation_state", preState)
+
+		nectarSession := session.IsNectarSession(msg.Phone)
+		// askedForAgent: el PACIENTE pidió la persona (palabra clave o «agente» en el menú
+		// post-acción). Decide el `reason` del sobre y, en Néctar, si se le avisa.
+		askedForAgent := sess.GetContext(sm.CtxPatientAskedForAgent) == "1"
+
+		// COLA DEL PRÓXIMO DÍA HÁBIL, SOLO EN NÉCTAR. En los últimos minutos antes del cierre
+		// (BUSINESS_HOURS_CLOSE_MARGIN_MIN) y con el horario cerrado, lo que se escale ya no le
+		// cabe en el día a una persona: en vez de devolver al paciente al menú, el caso se encola
+		// igual en Néctar y se le dice que lo atienden el próximo día hábil. Salvo que abrir quede
+		// LEJOS (BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN): la ventana de 24 h de WhatsApp se cerraría
+		// mientras espera, y ahí vuelve el desvío de siempre.
+		//
+		// Bird queda como hoy: su aviso («te voy a conectar… un momento») viaja en el resultado
+		// del caller y no puede cambiarse aquí, y su no-show devolvería el caso al bot; encolarlo
+		// le prometería al paciente una atención inmediata que no llega hasta el día siguiente.
+		var queue escalationQueue
+		if nectarSession {
+			queue = nextBusinessDayQueue(cfg)
+		}
+		queuedNextDay := queue.queue
 
 		// CORTACIRCUITO ANTI-BUCLE (incidente 11/12-ago-2026: 18 pacientes con 1 WhatsApp/min
 		// toda la noche, ~10.800 envíos). El no-show devolvía la sesión a un estado AUTOMÁTICO
@@ -73,14 +98,18 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			r := sm.NewResult(sm.StateMainMenu).
 				WithEvent("escalation_suppressed_resume", map[string]interface{}{"pre_state": preState})
 			r.Messages = append(r.Messages, buildMainMenuList())
-			return r, nil
+			return escalationExit("", r), nil
 		}
 		//
 		// (2) Tope duro por sesión: a la (escalationSessionCap+1)-ésima escalación de una MISMA
 		//     sesión se corta, venga por donde venga (keyword, recovery, estado automático nuevo).
 		//     Garantiza que NINGÚN mecanismo futuro pueda cerrar un lazo de escalaciones infinitas:
 		//     el peor caso queda acotado a escalationSessionCap avisos por sesión.
-		if n, _ := strconv.Atoi(sess.GetContext("escalation_count")); n >= escalationSessionCap {
+		//     EXENTO mientras la sesión tenga una escalación ENCOLADA para el próximo día hábil y
+		//     su espera siga abierta (queuedWaitStillOpen): ese caso ya está en la cola de Néctar
+		//     y desviarlo al menú de recuperación lo borraría de ella. La exención caduca con la
+		//     apertura.
+		if n, _ := strconv.Atoi(sess.GetContext("escalation_count")); n >= escalationSessionCap && !queuedWaitStillOpen(sess) {
 			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_reached",
 				observability.EmitOpts{
 					Phone: sess.PhoneNumber, Reason: preState,
@@ -88,22 +117,25 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				})
 			slog.Warn("escalation suppressed (session cap reached)",
 				"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "count", n, "pre_state", preState)
-			return sm.NewResult(sm.StateFallbackMenu).
+			return escalationExit("", sm.NewResult(sm.StateFallbackMenu).
 				WithButtons(
 					"Ya intentamos conectarte con un asesor varias veces en esta conversación. "+
 						"Un miembro de nuestro equipo revisará tu caso. ¿Deseas volver al inicio o terminar el chat?",
 					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
 					sm.Button{Text: "Terminar chat", Payload: "action:end"},
 				).
-				WithEvent("escalation_cap_reached", map[string]interface{}{"pre_state": preState, "count": n}), nil
+				WithEvent("escalation_cap_reached", map[string]interface{}{"pre_state": preState, "count": n})), nil
 		}
 
 		// Capa de recuperación IA (§2.1): antes de escalar de verdad, darle la oportunidad de
 		// desbloquear el input. Solo si el estado es opt-in y NO estamos ya en recuperación (si ya
 		// lo estamos, llegamos aquí por presupuesto agotado o keyword del paciente → escalar).
-		if rc := m.Recovery(); rc != nil && !rc.Active(sess) {
+		// NO se recupera con IA lo que rompió una persona: si llegamos aquí porque el dato que
+		// devolvió un agente no se pudo usar, quien tiene que corregirlo es un agente.
+		if rc := m.Recovery(); rc != nil && !rc.Active(sess) &&
+			sess.GetContext(sm.CtxAgentInputRejected) == "" {
 			if res, ok := rc.TryStart(ctx, sess, msg, preState); ok {
-				return res, nil
+				return escalationExit("", res), nil
 			}
 		}
 
@@ -115,23 +147,41 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// El chequeo de HORARIO existe porque HasAvailableAgents confía en la presencia de Bird, y
 		// un agente que deja su estado encendido al irse mantiene el gate abierto toda la noche —
 		// así pasó el bucle del 11/12-ago-2026 a las 4 a.m. El reloj del centro no depende de nadie.
+		// En Néctar la disponibilidad es por conversación (HasAvailableAgentsFor); en Bird cae en
+		// la presencia global de siempre.
 		gate := ""
-		if birdClient != nil && !birdClient.HasAvailableAgents() {
+		//nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
+		if birdClient != nil && !birdClient.HasAvailableAgentsFor(msg.Phone, sess.ConversationID) {
 			gate = "no_agents"
 		} else if !businessHoursOpen(cfg) {
-			gate = "out_of_hours"
+			gate = gateOutOfHours
 		}
-		if gate != "" {
+		// LA APERTURA LEJANA desvía por sí sola: puede haber asesores, pero el que tome el caso ya
+		// no podrá contestarle al paciente dentro de la ventana de 24 h. Se rotula out_of_hours
+		// porque decide el horario, y el motivo lo separa del gate de disponibilidad.
+		gateReason := ""
+		if queue.farOpen() {
+			gate = gateOutOfHours
+			gateReason = queueReasonFarOpen
+		}
+		// En la ventana del próximo día hábil el gate NO desvía: «fuera de horario» o «no hay
+		// asesores» dicen que el caso no se puede atender AHORA, que es justo lo que la cola
+		// resuelve. Fuera de ella, un «no hay asesores» en plena jornada sigue desviando al menú.
+		if gate != "" && !queuedNextDay {
+			attrs := map[string]interface{}{"gate": gate}
+			if gateReason != "" {
+				attrs["motivo"] = gateReason
+			}
 			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_no_agents",
 				observability.EmitOpts{
 					Phone: sess.PhoneNumber, Reason: preState,
-					Attrs: map[string]interface{}{"gate": gate},
+					Attrs: attrs,
 				})
 			r := sm.NewResult(sm.StateMainMenu).
 				WithText("En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.* Por favor escríbenos en ese horario y con gusto te ayudamos. 😊").
 				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState, "gate": gate})
 			r.Messages = append(r.Messages, buildMainMenuList())
-			return r, nil
+			return escalationExit(gate, r), nil
 		}
 
 		slog.Debug(
@@ -240,9 +290,48 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 		}
 
-		// 5. Try to escalate — reintentos silenciosos ante errores transitorios de la API de Bird.
-		// El paciente ya recibió "Te voy a conectar…" (o lo recibirá del caller); no se le muestra nada
-		// hasta agotar los intentos. Delays: 0s → 1s → 2s entre intentos (≤3s total de espera extra).
+		// 4b. EL AVISO AL PACIENTE DE NÉCTAR VA ANTES DEL ESCALATE, Y ES UNO SOLO. Después del
+		// escalate la conversación ya no es del bot y todo envío muere en 404, así que no puede
+		// viajar en el resultado de este turno. En Bird no se toca: el aviso sigue viajando en el
+		// resultado del caller, como siempre.
+		//
+		// Se calla en dos casos fuera de la cola: si el pre-envío ya sacó el aviso del caller
+		// (CtxEscalationNoticeFlushed), y si el paciente NO pidió la persona — el bot se atascó y,
+		// para él, el flujo continúa cuando el agente devuelva el dato; anunciarle un agente
+		// describe mal lo que va a pasar y cuesta un mensaje. En la cola NO se calla nunca: lo único
+		// que el paciente necesita saber a las 18:30 es que la espera es hasta el próximo día hábil.
+		if nectarSession {
+			notice := escalationNoticeText(queuedNextDay)
+			if sess.GetContext(sm.CtxEscalationNoticeFlushed) == "1" && !queuedNextDay {
+				notice = ""
+			}
+			if !askedForAgent && !queuedNextDay {
+				notice = ""
+			}
+			if notice != "" {
+				//nolint:contextcheck // SendText no toma ctx (patrón existente del pre-envío del paso 4)
+				if _, serr := birdClient.SendText(msg.Phone, conversationID, notice); serr != nil {
+					slog.Warn("escalation: no se pudo avisar al paciente antes de escalar",
+						"error", serr, "session_id", sess.ID)
+				}
+			}
+		}
+
+		// 5. Try to escalate — reintentos silenciosos ante errores transitorios de la API.
+		// El resumen del caso se arma ANTES y viaja con el escalate: en Néctar es el único sitio
+		// donde cabe; en Bird sale como nota interna justo después de asignar, como siempre. El
+		// texto y los grupos (`facts`) salen de la MISMA construcción (summary_groups.go).
+		// Delays: 0s → 1s → 2s entre intentos (≤3s total de espera extra).
+		summary, facts := summaryForAgent(sess, cupsCode, teamName)
+		// Motivo del vocabulario cerrado de Néctar (Bird lo ignora), de la misma marca que decide
+		// el aviso.
+		reason := nectar.ReasonBotCannotAnswer
+		if askedForAgent {
+			reason = nectar.ReasonPatientAskedForHuman
+		}
+		// Candado del botón «Resolver»: lo declara el paso que se atascó, igual que su menú.
+		resolveLock, _ := sm.ResolveGuardFor(preState)
+		envelope := escalationEnvelope(cfg, m, sess, preState, reason, summary, facts, resolveLock)
 		var assignedAgentID, assignedAgentName string
 		var err error
 		for attempt := 0; attempt < escalateMaxRetries; attempt++ {
@@ -252,7 +341,8 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 					"phone", utils.MaskPhone(msg.Phone), "session_id", sess.ID)
 				time.Sleep(time.Duration(attempt) * time.Second)
 			}
-			assignedAgentID, assignedAgentName, err = birdClient.EscalateToAgent(ctx, conversationID, msg.Phone, teamID, teamName, sess.PatientName, cfg.BirdTeamFallback)
+			assignedAgentID, assignedAgentName, err = birdClient.EscalateToAgentWithSummary(ctx, conversationID, msg.Phone,
+				teamID, teamName, sess.PatientName, cfg.BirdTeamFallback, envelope)
 			if err == nil {
 				break
 			}
@@ -297,7 +387,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			// B — No abandonar al paciente: el aviso "te voy a conectar…" viaja en los mensajes del caller, así
 			// que en vez de un menú frío de reinicio se le confirma que un asesor lo contactará (el
 			// pickup manual queda disparado por la alerta ERROR de arriba) y se le deja una salida.
-			return sm.NewResult(sm.StateFallbackMenu).
+			return escalationExit("", sm.NewResult(sm.StateFallbackMenu).
 				WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
 				WithButtons(
 					"Estamos teniendo un inconveniente para conectarte con un asesor en este momento. "+
@@ -305,7 +395,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
 					sm.Button{Text: "Terminar chat", Payload: "action:end"},
 				).
-				WithEvent("escalation_failed", map[string]interface{}{"error": err.Error()}), nil
+				WithEvent("escalation_failed", map[string]interface{}{"error": err.Error()})), nil
 		}
 
 		// 5b. Persist conversationID in session
@@ -316,18 +406,20 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 		}
 
-		// 6. El aviso al paciente YA viene en el StateResult del caller que escaló (texto contextual
-		// propio, o EscalationNoticeText en los helpers/interceptor/post-action/recovery). El envío
-		// directo que iba aquí duplicaba el aviso (~700 msgs/sem cobrados de más). El pre-envío del
-		// paso 4 (:115) se conserva solo para el caso SIN conversationID, donde además resuelve el canal.
+		// 6. En Bird, el aviso al paciente YA viene en el StateResult del caller que escaló (texto
+		// contextual propio, o EscalationNoticeText en los helpers/interceptor/post-action/recovery).
+		// El envío directo que iba aquí duplicaba el aviso (~700 msgs/sem cobrados de más). El
+		// pre-envío del paso 4 se conserva solo para el caso SIN conversationID. En Néctar el aviso
+		// salió en el paso 4b.
 
-		// 7. Send detailed context summary for the agent (Inbox only — invisible to patient)
-		summary := buildAgentSummary(sess, cupsCode, teamName)
-		_, _ = birdClient.SendInternalText(msg.Phone, conversationID, summary)
+		// 7. (el resumen para el agente ya viajó con el escalate, en el paso 5)
 
-		// 8. Send contextual commands for the agent (Inbox only — invisible to patient)
-		commands := buildAgentCommands(sess, cupsCode)
-		_, _ = birdClient.SendInternalText(msg.Phone, conversationID, commands)
+		// 8. Send contextual commands for the agent (Inbox only — invisible to patient). Néctar no
+		// tiene nota interna: lo que el agente puede devolver viaja en el sobre (menú o descriptor).
+		if !nectarSession {
+			commands := buildAgentCommands(sess, cupsCode)
+			_, _ = birdClient.SendInternalText(msg.Phone, conversationID, commands)
+		}
 
 		// 8. Mark session as escalated (in-memory, persisted by worker pool).
 		// Sellar escalated_at / escalated_team aquí: el flujo real persiste vía Save() y, sin esto,
@@ -349,9 +441,37 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		}
 		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalated",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.GetContext("escalation_reason")})
+		emitSuggestedTeam(sess, envelope.SuggestedTeamID)
+		// El caso se encoló para el próximo día hábil: se ANOTA aparte de `escalated` para medir
+		// cuántos casos entran fuera del alcance del día, y por cuál de los dos motivos (el
+		// margen se puede mover con una variable; la noche no).
+		if queuedNextDay {
+			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "encolada_proximo_dia",
+				observability.EmitOpts{
+					Phone: sess.PhoneNumber, Reason: preState,
+					Attrs: map[string]interface{}{"motivo": queue.reason},
+				})
+			slog.Info("escalación encolada para el próximo día hábil",
+				"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber),
+				"motivo", queue.reason, "pre_state", preState)
+		}
 
-		return sm.NewResult(sm.StateEscalated).
-			WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
+		// La MARCA del próximo día describe SIEMPRE la escalación en curso: se borra en toda
+		// escalación y se vuelve a escribir solo si esta se encoló (SaveState borra antes de
+		// escribir, así que el WithContext gana sobre el WithClearCtx). Pegada de una anterior le
+		// regalaría a esta las exenciones de la cola (tope, cierre por silencio, no-show).
+		r := sm.NewResult(sm.StateEscalated).WithClearCtx(sm.CtxEscalationNextDay)
+		if queuedNextDay {
+			// La sesión tiene que vivir hasta que vuelva una persona: con el TTL normal vence de
+			// madrugada y deja de existir para todo lo que filtra expires_at.
+			r = r.WithContext(sm.CtxEscalationNextDay, "1").
+				WithExpiryUntil(queuedExpiryUntil(nowFunc()))
+		}
+		// La marca del paciente y la NOTA son de ESTA escalación y ya viajaron: se borran solo
+		// aquí, cuando el escalate se entregó (si falla, el reintento tiene que volver a llevarlas).
+		return escalationExit("", r).
+			WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts,
+				sm.CtxPatientAskedForAgent, "escalation_note").
 			WithContext("pre_escalation_state", preState).
 			WithContext("escalation_team", teamID).
 			WithEvent("escalated_to_agent", map[string]interface{}{

@@ -1,5 +1,7 @@
 package statemachine
 
+import "time"
+
 // StateResult es el resultado de ejecutar un state handler
 type StateResult struct {
 	NextState string            // Siguiente estado
@@ -7,6 +9,13 @@ type StateResult struct {
 	UpdateCtx map[string]string // Contexto a guardar/actualizar
 	ClearCtx  []string          // Claves de contexto a borrar
 	Events    []Event           // Eventos para tracking
+
+	// ExtendExpiryUntil, si no es cero, es hasta cuándo tiene que seguir VIVA la sesión
+	// (expires_at). Lo pide el paso que sabe que el caso va a quedar esperando más que el TTL
+	// normal —la escalación encolada para el próximo día hábil— y lo aplica quien persiste
+	// (worker.sendAndSave). Es un instante ABSOLUTO porque quien lo calcula es el único que
+	// conoce el horario de atención; nunca acorta el vencimiento que la sesión ya tenga.
+	ExtendExpiryUntil time.Time
 }
 
 // Event representa un evento para tracking/KPI
@@ -61,6 +70,12 @@ func (r *StateResult) WithContextMap(kvs map[string]string) *StateResult {
 // WithClearCtx agrega claves de contexto a borrar
 func (r *StateResult) WithClearCtx(keys ...string) *StateResult {
 	r.ClearCtx = append(r.ClearCtx, keys...)
+	return r
+}
+
+// WithExpiryUntil pide que la sesión siga viva hasta ese instante (ver ExtendExpiryUntil).
+func (r *StateResult) WithExpiryUntil(until time.Time) *StateResult {
+	r.ExtendExpiryUntil = until
 	return r
 }
 

@@ -65,6 +65,10 @@ type SessionManagement interface {
 	TouchPatientActivity(ctx context.Context, sess *session.Session) error
 	TouchAgentActivity(ctx context.Context, phone string) error
 	SaveState(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error
+	// ExtendExpiry estira el vencimiento de la sesión hasta ese instante (nunca lo acorta). Lo
+	// pide el paso cuya escalación queda esperando a una persona más de lo que dura una sesión:
+	// StateResult.ExtendExpiryUntil.
+	ExtendExpiry(ctx context.Context, sess *session.Session, until time.Time) error
 	ClearAllContext(ctx context.Context, sess *session.Session) error
 	Escalate(ctx context.Context, sess *session.Session, teamID string) error
 	ResumeFromEscalation(ctx context.Context, sess *session.Session, targetState string) error
@@ -1424,6 +1428,19 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 				"phone", utils.MaskPhone(phone),
 				"session_id", sess.ID,
 			)
+		}
+	}
+
+	// VENCIMIENTO EXTENDIDO: el paso pidió que la sesión siga viva hasta un instante concreto —la
+	// escalación encolada para el próximo día hábil, que con el TTL normal vence de madrugada—.
+	// Va DESPUÉS del guardado y solo si la sesión NO quedó cerrada: si SaveState falló, el
+	// rescate de arriba la completó y no hay nada que mantener vivo. Un fallo aquí no cambia nada
+	// de lo que ve el paciente, así que se registra y se sigue.
+	if !result.ExtendExpiryUntil.IsZero() && sess.Status != session.StatusCompleted {
+		if err := p.sessionManager.ExtendExpiry(persistCtx, sess, result.ExtendExpiryUntil); err != nil {
+			slog.Error("extend_expiry_error",
+				"phone", utils.MaskPhone(phone), "session_id", sess.ID,
+				"until", result.ExtendExpiryUntil, "error", err)
 		}
 	}
 

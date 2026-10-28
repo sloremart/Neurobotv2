@@ -1034,3 +1034,28 @@ func TestPreEscalationFlush_NectarSendsBeforeEscalate(t *testing.T) {
 		t.Fatalf("la marca es solo del turno y se borra al terminar Process: %q", got)
 	}
 }
+
+// El vencimiento extendido que pide un paso SOBREVIVE al encadenado: ESCALATE_TO_AGENT lo pide y
+// el terminal automático ESCALATED, que no hace nada, no puede perderlo. Entre dos gana el mayor.
+func TestStateMachine_ExtendExpirySurvivesAutoChain(t *testing.T) {
+	m := NewMachine()
+	until := time.Date(2026, 10, 24, 15, 0, 0, 0, time.UTC)
+	m.Register(StateEscalateToAgent, func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*StateResult, error) {
+		return NewResult(StateEscalated).WithExpiryUntil(until), nil
+	})
+	m.Register(StateEscalated, func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*StateResult, error) {
+		return NewResult(StateEscalated).WithExpiryUntil(until.Add(-time.Hour)), nil
+	})
+
+	sess := newTestSession(StateEscalateToAgent)
+	result, err := m.Process(context.Background(), sess, newTestMessage("agente"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != StateEscalated {
+		t.Fatalf("expected ESCALATED, got %s", result.NextState)
+	}
+	if !result.ExtendExpiryUntil.Equal(until) {
+		t.Fatalf("ExtendExpiryUntil = %s, want %s", result.ExtendExpiryUntil, until)
+	}
+}

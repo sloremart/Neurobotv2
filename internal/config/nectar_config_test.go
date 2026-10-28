@@ -289,3 +289,96 @@ func TestLoad_InvalidNectarVarsAbortStartup(t *testing.T) {
 		})
 	}
 }
+
+// La cola del próximo día hábil se gobierna con dos variables: el margen antes del cierre
+// (BUSINESS_HOURS_CLOSE_MARGIN_MIN) y la espera máxima hasta la apertura
+// (BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN). Un valor que no se entiende tumba el arranque.
+
+func TestParseCloseMarginMin(t *testing.T) {
+	if got, err := parseCloseMarginMin(""); err != nil || got != DefaultCloseMarginMin {
+		t.Errorf("sin variable = (%d, %v), want (%d, nil)", got, err, DefaultCloseMarginMin)
+	}
+	if got, err := parseCloseMarginMin("  30 "); err != nil || got != 30 {
+		t.Errorf("«30» = (%d, %v), want (30, nil)", got, err)
+	}
+	if got, err := parseCloseMarginMin("0"); err != nil || got != 0 {
+		t.Errorf("«0» = (%d, %v), want (0, nil): apagar el margen es legal", got, err)
+	}
+	for _, bad := range []string{"quince", "15m", "15.0", "-", "1e2", "-1", "999"} {
+		if _, err := parseCloseMarginMin(bad); err == nil {
+			t.Errorf("%q tiene que ser rechazado, no caer al default", bad)
+		}
+	}
+}
+
+func TestParseQueueMaxWaitMin(t *testing.T) {
+	if got, err := parseQueueMaxWaitMin(""); err != nil || got != DefaultQueueMaxWaitMin {
+		t.Errorf("sin variable = (%d, %v), want (%d, nil)", got, err, DefaultQueueMaxWaitMin)
+	}
+	if got, err := parseQueueMaxWaitMin(" 600 "); err != nil || got != 600 {
+		t.Errorf("«600» = (%d, %v), want (600, nil)", got, err)
+	}
+	if got, err := parseQueueMaxWaitMin("0"); err != nil || got != 0 {
+		t.Errorf("«0» = (%d, %v), want (0, nil): apagar la cola es legal", got, err)
+	}
+	for _, bad := range []string{"-1", "veinte horas", "20h", "1200.0"} {
+		if _, err := parseQueueMaxWaitMin(bad); err == nil {
+			t.Errorf("%q tiene que ser rechazado, no caer al default", bad)
+		}
+	}
+}
+
+func TestLoad_BusinessHoursQueueDefaultsAndValues(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("BUSINESS_HOURS_CLOSE_MARGIN_MIN", "")
+	t.Setenv("BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN", "")
+
+	cfg := Load()
+	if cfg.BusinessHoursCloseMarginMin != 15 {
+		t.Errorf("BusinessHoursCloseMarginMin = %d, want 15", cfg.BusinessHoursCloseMarginMin)
+	}
+	if cfg.BusinessHoursQueueMaxWaitMin != 1200 {
+		t.Errorf("BusinessHoursQueueMaxWaitMin = %d, want 1200", cfg.BusinessHoursQueueMaxWaitMin)
+	}
+
+	t.Setenv("BUSINESS_HOURS_CLOSE_MARGIN_MIN", "10")
+	t.Setenv("BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN", "0")
+	cfg = Load()
+	if cfg.BusinessHoursCloseMarginMin != 10 || cfg.BusinessHoursQueueMaxWaitMin != 0 {
+		t.Errorf("valores leídos: margen=%d espera=%d", cfg.BusinessHoursCloseMarginMin, cfg.BusinessHoursQueueMaxWaitMin)
+	}
+}
+
+// Un valor imposible termina el proceso (log.Fatalf): se verifica en un subproceso.
+func TestLoad_InvalidBusinessHoursQueueVarsAbortStartup(t *testing.T) {
+	if os.Getenv("CONFIG_TEST_FATAL_CHILD") == "1" {
+		Load()
+		return
+	}
+
+	cases := []struct{ envKey, envVal string }{
+		{"BUSINESS_HOURS_CLOSE_MARGIN_MIN", "quince"},
+		{"BUSINESS_HOURS_CLOSE_MARGIN_MIN", "999"},
+		{"BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN", "-1"},
+		{"BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN", "20h"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.envKey+"="+tt.envVal, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestLoad_InvalidBusinessHoursQueueVarsAbortStartup$")
+			cmd.Env = append(os.Environ(),
+				"CONFIG_TEST_FATAL_CHILD=1",
+				"OPENAI_API_KEY=x", "EXTERNAL_DB_PASSWORD=x", "BIRD_API_URL=x", "BIRD_WEBHOOK_SECRET=x",
+				"BIRD_WORKSPACE_ID=x", "INTERNAL_API_KEY=x", "DB_PASSWORD=x", "EXTERNAL_DB_USER=x",
+				"BIRD_API_KEY_WA=x", "BIRD_CHANNEL_ID=x", "BIRD_TEAM_FALLBACK=x",
+				tt.envKey+"="+tt.envVal,
+			)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("Load() con %s=%s debía terminar el proceso; salida: %s", tt.envKey, tt.envVal, out)
+			}
+			if !strings.Contains(string(out), tt.envKey+" inválido") {
+				t.Fatalf("la salida no nombra %s: %s", tt.envKey, out)
+			}
+		})
+	}
+}

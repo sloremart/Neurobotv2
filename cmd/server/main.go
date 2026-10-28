@@ -321,11 +321,8 @@ func main() {
 	workerPool.SetInboxRepo(inboxRepo)
 	workerPool.SetBotEnabled(cfg.BotEnabled)
 	// El horario EN PALABRAS: lo nombra el aviso de cola vencida (Néctar devuelve el caso que
-	// nadie tomó y el bot le dice al paciente cuándo volver). Literal provisional: la Tarea 9b lo
-	// reemplaza por handlers.BusinessHoursDescription().
-	workerPool.SetBusinessHoursText(func() string {
-		return "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
-	})
+	// nadie tomó y el bot le dice al paciente cuándo volver). Sale del mismo horario que el gate.
+	workerPool.SetBusinessHoursText(handlers.BusinessHoursDescription)
 	if notifyManager != nil {
 		workerPool.SetNotifyResponder(notifyManager)
 	}
@@ -344,6 +341,9 @@ func main() {
 			AgentReminderMin:   cfg.EscalationAgentReminderMin,
 			AgentReminderMax:   cfg.EscalationAgentReminderMax,
 			Resumer:            workerPool,
+			// Hasta cuándo espera una escalación encolada para el próximo día hábil: acota su
+			// exención del cierre por silencio y del no-show (sin esto no caducaría nunca).
+			NextOpen: handlers.QueuedWaitEnd,
 		})
 	})
 

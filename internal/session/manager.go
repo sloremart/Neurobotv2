@@ -194,6 +194,21 @@ func (m *SessionManager) RenewTimeout(ctx context.Context, s *Session) error {
 	return m.repo.RenewExpiry(ctx, s.ID, s.ExpiresAt)
 }
 
+// ExtendExpiry estira el vencimiento de la sesión hasta `until`, y NUNCA lo acorta.
+//
+// Existe por la escalación ENCOLADA para el próximo día hábil: el TTL normal
+// (SESSION_TIMEOUT_MINUTES) se agota antes de que abran, y una escalada vencida deja de existir
+// para todo lo que filtra expires_at (la respuesta del agente, el refresco del conversation_id).
+// El plazo lo calcula quien sabe del horario —este paquete no lo conoce—; aquí solo se persiste.
+// No acorta porque el vencimiento que la sesión ya tiene puede venir de un mensaje más reciente.
+func (m *SessionManager) ExtendExpiry(ctx context.Context, s *Session, until time.Time) error {
+	if !until.After(s.ExpiresAt) {
+		return nil
+	}
+	s.ExpiresAt = until
+	return m.repo.RenewExpiry(ctx, s.ID, until)
+}
+
 // TouchPatientActivity registra un mensaje inbound del paciente: renueva el TTL y sella el reloj de
 // actividad del paciente (last_patient_msg_at), reiniciando la ventana de recordatorios al agente.
 // Debe llamarse SOLO desde el flujo del paciente (no desde comandos del agente).

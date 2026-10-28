@@ -91,15 +91,13 @@ type Escalation struct {
 	// ResolveLock es el motivo del candado del botón «Resolver» ("" = sin candado). Viaja bajo
 	// sus DOS nombres de cable mientras el alias siga vivo (fila A7).
 	ResolveLock string
-	// SuggestedTeamID es el EQUIPO de Néctar que el bot sugiere para este caso, según la entidad
-	// del paciente (NECTAR_TEAM_BY_ENTITY). Néctar reparte por canal y no sabe qué EPS atiende
-	// cada equipo, así que es lo único que el bot aporta a la regla del operador «que le toque
-	// al mismo agente, solo si atiende la ruta de la entidad del paciente»
-	// (hdg-bot docs/DISENO-PLANTILLA-HANDOFF-Y-AGENTE-PREFERIDO.md §3.4).
+	// SuggestedTeamID es el EQUIPO de Néctar que el bot sugiere para este caso, según el grupo
+	// de CUPS del procedimiento (NECTAR_TEAM_BY_GROUP: imagenes / neuro / callcenter). Néctar
+	// reparte por canal y no sabe qué equipo atiende qué estudio, así que el bot se lo sugiere.
 	//
-	// nil = no viaja, y el cuerpo es byte a byte el de siempre. Es el estado de hoy: sin equipos
-	// por EPS no hay nada que sugerir. NO lo gobierna la bandera del protocolo — el campo existe
-	// en el esquema de Néctar desde antes de v1.
+	// nil = no viaja, y el cuerpo es byte a byte el de siempre. Es el estado con la variable
+	// vacía: sin equipos por grupo no hay nada que sugerir. NO lo gobierna la bandera del
+	// protocolo — el campo existe en el esquema de Néctar desde antes de v1.
 	SuggestedTeamID *int64
 	// Rejection es el RECHAZO TIPADO de un dato que devolvió un agente (§2.5): la re-escalada
 	// que hoy solo cuenta la prosa de `Nota:`. nil = esta escalación no nace de un dato

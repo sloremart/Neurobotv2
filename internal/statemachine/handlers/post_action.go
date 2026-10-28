@@ -63,6 +63,7 @@ func postActionMenuHandler(birdClient *bird.Client) sm.StateHandler {
 			}
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText(sm.EscalationNoticeText).
+				WithContext(sm.CtxPatientAskedForAgent, "1").
 				WithEvent("post_action_selected", map[string]interface{}{"action": "escalate"}), nil
 		}
 
