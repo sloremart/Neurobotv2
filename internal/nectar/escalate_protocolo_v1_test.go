@@ -12,11 +12,6 @@ import (
 // BYTE el de hoy**. No es una frase de diseño — es lo único que permite desplegar v1 apagado sin
 // que Néctar note nada.
 
-// testReasonBotCannotAnswer es el literal de cable del motivo del vocabulario cerrado de Néctar. Las
-// pruebas de este paquete lo usan en vez de la constante exportada, que llega con el registro de
-// capacidades (capabilities.go): así este archivo no depende de él ni choca con su declaración.
-const testReasonBotCannotAnswer = "bot_cannot_answer"
-
 // cuerpoDeHoy es el sobre del dialecto, escrito a mano y en el orden en que lo serializa
 // escalateRequest. Se escribe A MANO a propósito: si alguien añade una clave sin `omitempty`,
 // esta constante es la que se pone roja, y no una comparación del cuerpo contra sí mismo.
@@ -27,7 +22,7 @@ const cuerpoDeHoy = `{"reason":"bot_cannot_answer","summary":"RESUMEN",` +
 func sobreDePrueba(protocol int, detail string, facts []byte) Escalation {
 	return Escalation{
 		Protocol:     protocol,
-		Reason:       testReasonBotCannotAnswer,
+		Reason:       ReasonBotCannotAnswer,
 		ReasonDetail: detail,
 		Summary:      "RESUMEN",
 		Facts:        facts,

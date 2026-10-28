@@ -14,7 +14,7 @@ import (
 // clave más con la forma que declara el esquema ({motivo, intento, eco, campo?, pieza?}).
 func TestElRechazoViajaConSuFormaYSoloCuandoLoHay(t *testing.T) {
 	sin, err := EncodeEscalateBody(bird.Escalation{
-		Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+		Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +24,7 @@ func TestElRechazoViajaConSuFormaYSoloCuandoLoHay(t *testing.T) {
 	}
 
 	con, err := EncodeEscalateBody(bird.Escalation{
-		Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+		Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 		Rejection: &bird.Rejection{
 			Detail:  "un código no está en los programables: 999999",
 			Attempt: 2,
@@ -63,7 +63,7 @@ func TestElRechazoViajaConSuFormaYSoloCuandoLoHay(t *testing.T) {
 // distintos, y el esquema solo exige `motivo`.
 func TestLasClavesOpcionalesDelRechazoVanAusentes(t *testing.T) {
 	body, err := EncodeEscalateBody(bird.Escalation{
-		Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+		Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 		Rejection: &bird.Rejection{Detail: "la plantilla llegó sin ningún campo con contenido"},
 	}, nil)
 	if err != nil {
@@ -83,7 +83,7 @@ func TestLasClavesOpcionalesDelRechazoVanAusentes(t *testing.T) {
 // clave que su decodificador va a rechazar entera — se queda con el resumen, que ya lo cuenta.
 func TestUnRechazoSinMotivoNoSeEmite(t *testing.T) {
 	body, err := EncodeEscalateBody(bird.Escalation{
-		Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+		Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 		Rejection: &bird.Rejection{Attempt: 1, Echo: "abc", Field: "documento"},
 	}, nil)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestUnRechazoSinMotivoNoSeEmite(t *testing.T) {
 func TestElMotivoYElEcoSeCortanAlTopeDelEsquemaEnRunas(t *testing.T) {
 	largo := strings.Repeat("ñ", 600)
 	body, err := EncodeEscalateBody(bird.Escalation{
-		Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+		Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 		Rejection: &bird.Rejection{Detail: largo, Echo: largo},
 	}, nil)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestElMotivoYElEcoSeCortanAlTopeDelEsquemaEnRunas(t *testing.T) {
 func TestUnIntentoFueraDeRangoVaAusenteYNoRompeElSobre(t *testing.T) {
 	for _, intento := range []int{0, -3} {
 		body, err := EncodeEscalateBody(bird.Escalation{
-			Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+			Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 			Rejection: &bird.Rejection{Detail: "un motivo cualquiera", Attempt: intento},
 		}, nil)
 		if err != nil {
@@ -149,7 +149,7 @@ func TestUnIntentoFueraDeRangoVaAusenteYNoRompeElSobre(t *testing.T) {
 	}
 	// El primero válido sí viaja: el tope es un mínimo, no una prohibición.
 	body, err := EncodeEscalateBody(bird.Escalation{
-		Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+		Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 		Rejection: &bird.Rejection{Detail: "un motivo cualquiera", Attempt: 1},
 	}, nil)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestElEmisorNoTrazaNiElMotivoNiElEco(t *testing.T) {
 	const motivo = "MOTIVO-CANARIO-NO-TRAZABLE"
 	const eco = "ECO-CANARIO-1000000001"
 	if _, err := EncodeEscalateBody(bird.Escalation{
-		Protocol: 1, Reason: testReasonBotCannotAnswer, Summary: "x",
+		Protocol: 1, Reason: ReasonBotCannotAnswer, Summary: "x",
 		// Con un reason_detail INVÁLIDO a propósito: es el único slog de este camino, y hay que
 		// comprobar que ni siquiera esa línea arrastra el rechazo.
 		ReasonDetail: "NO CASA LA GUARDA",
