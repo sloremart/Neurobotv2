@@ -38,3 +38,16 @@ func TestProbe_SendsSignedNoticeToLocalhost(t *testing.T) {
 		t.Fatalf("cuerpo: %s", got.String())
 	}
 }
+
+func TestProbe_RefusesDisguisedOrEmptyURLs(t *testing.T) {
+	for _, u := range []string{
+		"http://localhost@evil.com/api/webhooks/nectar",
+		"http://localhost.evil.com/api/webhooks/nectar",
+		"",
+	} {
+		var out, errOut bytes.Buffer
+		if code := run([]string{"-url", u}, &out, &errOut); code == 0 || !strings.Contains(errOut.String(), "me niego") {
+			t.Errorf("%q debía rechazarse: code=%d err=%q", u, code, errOut.String())
+		}
+	}
+}

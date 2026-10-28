@@ -10,7 +10,7 @@ incidente del 2026-09-08 fue un bot local apuntando al Néctar real.
 > del repo como respaldo, AUNQUE pases `--env-file`: toda variable que tu archivo no defina se
 > rellena con la de `.env`. En la primera pasada de esta receta eso arrastró claves REALES
 > (Telegram, Bird, OpenAI): el bot llegó a loguear «telegram error alerts enabled» y un `ERROR`
-> pudo mandar una alerta al Telegram real. Mitigación obligatoria (sección 2 y 3): montar un
+> pudo mandar una alerta al Telegram real. Mitigación obligatoria (preparación B y C): montar un
 > `/app/.env` VACÍO (`-v …/empty.env:/app/.env:ro`), dar valores ficticios a las variables
 > obligatorias (`BIRD_WORKSPACE_ID`, `BIRD_CHANNEL_ID`, `BIRD_TEAM_FALLBACK`, `OPENAI_API_KEY`)
 > y apuntar `BIRD_API_URL` a un host muerto (`http://127.0.0.1:1`) para que ningún envío pueda salir.
@@ -31,13 +31,13 @@ Todos los secretos de esta receta valen `stub`. No uses ni copies secretos reale
 | Bot | `8091` | `8090` suele estar ocupado por otro bot en la misma máquina; cámbialo en `PORT` y en `-url` |
 | Stub | `9999` | `-addr` del stub y `NECTAR_BASE_URL` del bot |
 
-## 1. BD local del bot
+## Preparación A (paso 1): BD local del bot
 
 ```bash
 docker compose up -d --no-build db        # neuro_bot_db (MySQL del bot), puerto 13308
 ```
 
-## 2. Variables del bot (archivo aparte, sin secretos reales)
+## Preparación B (paso 1): variables del bot (archivo aparte, sin secretos reales)
 
 `.env` NO sirve tal cual: `godotenv` lo carga como respaldo y metería las llaves reales de Bird,
 OpenAI y Telegram (los `ERROR` del log mandarían alertas al Telegram real). Se usa un archivo
@@ -70,7 +70,7 @@ PROTOCOL_ESCALADO_VERSION=1
 
 (Una línea por variable en el archivo real; aquí van juntas para no alargar la receta.)
 
-## 3. Stub y bot (contenedores, sin imágenes nuevas)
+## Preparación C (pasos 1 y 2): stub y bot (contenedores, sin imágenes nuevas)
 
 ```bash
 gocmd='-v "$(pwd):/app" -w /app -v neurobot-go-mod:/go/pkg/mod -v neurobot-go-build:/root/.cache/go-build golang:1.26-alpine'
@@ -90,10 +90,10 @@ MSYS_NO_PATHCONV=1 docker run -d --name nectar-smoke-bot --network neurobotv2_bo
 Comprobar: `curl localhost:8091/health` → `nectar_host: "nectar-stub"`, `external_db: "error"`
 (esperado).
 
-## 4. Los ocho pasos
+## Pasos 3 a 8 (los pasos 1 y 2 son la preparación de arriba)
 
 Sonda: `go run ./cmd/probe-notice -url <url> [-secret stub] [-kind K] [-conversation N] [-text T]
-[-event-id E] [-retorno JSON] [-method GET] [-unsigned]` (en contenedor, `--network host`).
+[-event-id E] [-retorno JSON] [-method GET] [-unsigned]` (en contenedor con `--network host`, que funcionó en Docker Desktop for Windows en la corrida de esta receta; si en tu máquina no, usa `host.docker.internal` en `-url`).
 El estado de sesión se lee de la BD local (`sessions.phone_number = 'nectar:<conversation>'`).
 El stub guarda lo que recibe: `GET localhost:9999/records[?route=messages|escalate|…]`,
 `DELETE localhost:9999/records` lo vacía.
@@ -101,7 +101,7 @@ El stub guarda lo que recibe: `GET localhost:9999/records[?route=messages|escala
 | # | Orden | Esperado |
 |---|---|---|
 | 3 | `probe-notice -url http://localhost:8091/api/webhooks/nectar -conversation 1 -text hola` | `200`; sesión `MAIN_MENU`; el stub registra `POST /messages` tipo `list` |
-| 4 | idem `-text asesor` | `200`; el stub recibe `escalate` con `protocol:1`, `reason: patient_asked_for_human`, `facts`, `input`; sesión `ESCALATED`/`escalated` |
+| 4 | idem `-text asesor` | `200`; el stub recibe `escalate` con `protocol:1`, `reason: patient_asked_for_human`, `facts`, `input`; `sessions.current_state = ESCALATED` y `sessions.status = escalated` |
 | 5 | `-kind conversacion_devuelta -retorno '{"opcion":"bot_reanudar"}'` | `200`; sesión de vuelta en `MAIN_MENU`; el stub recibe el menú (`list`) |
 | 6 | escalar de nuevo (paso 4) y luego `-kind conversacion_resuelta` | `200`; sesión `completed` (ver nota) |
 | 7 | `probe-notice -url http://localhost:8091/api/nectar/capabilities -method GET` y con `-unsigned` | `200` con `protocol:1`; sin firma `401` |
@@ -118,7 +118,7 @@ Notas:
 - `GET /api/internal/sessions?phone=nectar:1` (cabecera `X-API-Key`) devuelve la sesión de
   Néctar: las claves `nectar:` se usan tal cual, sin normalizar a E.164.
 
-## 5. Limpieza
+## Limpieza
 
 ```bash
 docker rm -f nectar-smoke-bot nectar-smoke-stub

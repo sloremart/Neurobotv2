@@ -27,7 +27,7 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 func run(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("probe-notice", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	target := fs.String("url", "http://localhost:8090/api/webhooks/nectar", "URL del bot (solo local/stub)")
+	target := fs.String("url", "http://localhost:8091/api/webhooks/nectar", "URL del bot (solo local/stub)")
 	secret := fs.String("secret", "stub", "secreto de firma de los avisos")
 	kind := fs.String("kind", string(nectar.KindInboundMessage), "tipo de aviso")
 	conv := fs.Int64("conversation", 1, "conversation_id")
