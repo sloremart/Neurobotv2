@@ -1,7 +1,9 @@
 package statemachine
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -182,4 +184,68 @@ func ValidateSearchCount(sess *session.Session, count, maxDisplay int, noMatchMs
 	default:
 		return SearchMultiple, nil
 	}
+}
+
+// CtxAgentInputRejected cuenta cuántas veces, en ESTA sesión, un dato escrito por un agente
+// humano no se pudo usar. El número va en la nota que lee el siguiente agente ("intento 2" le
+// dice que ya hubo uno y que mire el motivo) y hace que el fallo sea contable.
+const CtxAgentInputRejected = "agent_input_rejected_count"
+
+// CtxAgentInputRejection guarda el rechazo ENTERO que causó la re-escalada en curso, en JSON
+// (PersistedRejection). Quien re-escala (el worker) y quien arma el sobre (el handler de
+// escalación) son TURNOS DISTINTOS, y la sesión es lo único que los une. Es UNA clave y no
+// cuatro para que la escritura no pueda quedar a medias: el `rechazo` del sobre es todo-o-nada.
+// Se BORRA en toda escalación: es de ESTA, y pegada le contaría al siguiente agente un error
+// que no es el de su caso.
+const CtxAgentInputRejection = "agent_input_rejection"
+
+// PersistedRejection es la forma con que el rechazo cruza de un turno al otro. Las claves van en
+// español porque son las del cable, y el tipo vive AQUÍ para que quien escribe y quien lee no
+// tengan dos copias que desincronizar.
+//
+// ⚠️ `Reason` y `Echo` NO SE TRAZAN: el eco es lo que una persona escribió sobre un paciente.
+type PersistedRejection struct {
+	Reason  string `json:"motivo"`
+	Attempt int    `json:"intento,omitempty"`
+	Echo    string `json:"eco,omitempty"`
+	Field   string `json:"campo,omitempty"`
+	Piece   string `json:"pieza,omitempty"`
+}
+
+// EncodeRejection rinde el rechazo para la sesión. El error se devuelve y no se traga: el
+// llamador decide, y lo único que se pierde si falla es la clave tipada (la nota del resumen
+// viaja igual).
+func EncodeRejection(r PersistedRejection) (string, error) {
+	raw, err := json.Marshal(r)
+	return string(raw), err
+}
+
+// DecodeRejection lee lo que EncodeRejection guardó. El segundo retorno es «hay rechazo»:
+// ausente, ilegible o sin motivo son lo mismo para quien arma el sobre (no se emite), porque
+// `motivo` es la única clave que el esquema exige. Un JSON ilegible NO se traza: llevaría
+// dentro el motivo y el eco.
+func DecodeRejection(raw string) (PersistedRejection, bool) {
+	if raw == "" {
+		return PersistedRejection{}, false
+	}
+	var r PersistedRejection
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		slog.Warn("no se pudo leer el rechazo persistido, la escalación sale sin `rechazo`")
+		return PersistedRejection{}, false
+	}
+	return r, r.Reason != ""
+}
+
+// RejectedInputMarker es el literal de cable con el que empieza la línea `Nota:` del resumen
+// cuando un dato devuelto por el agente no sirvió. Néctar lo busca tal cual para destacar el
+// aviso; si cambia hay que avisarles antes.
+const RejectedInputMarker = "EL DATO QUE SE DEVOLVIO NO SE PUDO USAR"
+
+// RejectedInputNote arma la nota completa de un dato rechazado. Vive aquí para que quien la
+// escribe y los archivos dorados que la fijan usen la MISMA plantilla.
+func RejectedInputNote(attempt int, received, reason string) string {
+	return fmt.Sprintf(
+		RejectedInputMarker+" (intento %d). Se recibio: %q. Motivo: %s "+
+			"Vuelva a devolver la conversacion escribiendo el valor correcto.",
+		attempt, received, reason)
 }

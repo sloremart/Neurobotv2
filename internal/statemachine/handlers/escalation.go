@@ -46,7 +46,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		teamID := cfg.ResolveTeamForCups(cupsCode)
 
 		// 2. Read actual pre-escalation state (set by machine.go auto-chain)
-		preState := sess.GetContext("_pre_auto_state")
+		preState := sess.GetContext(sm.CtxPreAutoState)
 		if preState == "" || preState == sm.StateEscalateToAgent {
 			preState = sess.CurrentState
 		}

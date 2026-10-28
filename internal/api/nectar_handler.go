@@ -14,6 +14,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
+	"github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/worker"
 )
 
@@ -270,11 +271,11 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 			slog.Info("nectar: devuelta con retorno v1", "conversation_id", n.ConversationID,
 				"opcion", ret.Option, "con_valores", len(ret.Values) > 0)
 		} else if chosen {
-			// El token NO se traza: en el dialecto puede ser `bot_dato:<lo que tecleó el
-			// agente>` —en ASK_DOCUMENT, el documento del paciente— o `bot_citas:{…}` con la
-			// cita entera. Solo queda constancia de que hubo decisión; el worker, que sí
-			// conoce el vocabulario, traza la clase del token.
-			slog.Info("nectar: devuelta con decisión del agente", "conversation_id", n.ConversationID)
+			// El token se traza por su CLASE, no por su contenido: en el dialecto puede ser
+			// `bot_dato:<lo que tecleó el agente>` —en ASK_DOCUMENT, el documento del paciente—.
+			// Misma regla y misma función que el worker.
+			slog.Info("nectar: devuelta con decisión del agente", "conversation_id", n.ConversationID,
+				"return_value", statemachine.ReturnValueForLog(value))
 		}
 		sink.EnqueueAgentCommand(cmd)
 	case nectar.KindConversationOpenedByAgent:

@@ -684,9 +684,11 @@ func TestHandleNectarNotice_AgentDecisionNeverLoggedWithItsContent(t *testing.T)
 		name      string
 		value     string
 		forbidden string
+		want      string
 	}{
-		{"dato", "bot_dato:1000000001", "1000000001"},
-		{"citas", `bot_citas:{"citas":[{"cups":["881235"],"fecha":"2026-09-20"}]}`, "881235"},
+		{"dato", "bot_dato:1000000001", "1000000001", "bot_dato:"},
+		// Un token SIN prefijo lo eligió el agente de un menú del bot: vocabulario nuestro, se traza entero.
+		{"token de menú", "bot_reanudar", "", "bot_reanudar"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -706,8 +708,12 @@ func TestHandleNectarNotice_AgentDecisionNeverLoggedWithItsContent(t *testing.T)
 			if rec := postNotice(h, signedNotice(nectarTestSecret, body)); rec.Code != http.StatusOK {
 				t.Fatalf("código %d", rec.Code)
 			}
-			if line := logged.String(); strings.Contains(line, c.forbidden) {
+			line := logged.String()
+			if c.forbidden != "" && strings.Contains(line, c.forbidden) {
 				t.Fatalf("el registro trae lo que tecleó el agente (%q): %s", c.forbidden, line)
+			}
+			if !strings.Contains(line, c.want) {
+				t.Fatalf("el registro debe traer la CLASE del token (%q): %s", c.want, line)
 			}
 			if _, cmds := sink.counts(); cmds != 1 {
 				t.Fatalf("un comando, got %d", cmds)
