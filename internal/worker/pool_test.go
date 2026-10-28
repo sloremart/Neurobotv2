@@ -186,7 +186,7 @@ func (m *mockMessageSender) SendList(phone, conversationID, body, title string, 
 func (m *mockMessageSender) SendInternalText(phone, _, text string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sent = append(m.sent, sentMsg{phone: "", msgType: "internal", text: text})
+	m.sent = append(m.sent, sentMsg{phone: phone, msgType: "internal", text: text})
 	if m.sendErr != nil {
 		return "", m.sendErr
 	}
@@ -1449,6 +1449,10 @@ func TestHandleAgentOrder_Success(t *testing.T) {
 	for _, s := range sender.sent {
 		if s.msgType == "internal" && s.text != "" {
 			foundInternal = true
+			// (phone, conversationID) son dos strings: el compilador no atrapa un par transpuesto.
+			if s.phone != cmd.Phone {
+				t.Errorf("la nota interna debe salir con el teléfono de la sesión %q, got %q", cmd.Phone, s.phone)
+			}
 			break
 		}
 	}
