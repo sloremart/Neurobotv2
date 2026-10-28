@@ -1253,13 +1253,18 @@ func (p *MessageWorkerPool) PreEscalationFlush(_ context.Context, sess *session.
 	if !session.IsNectarSession(sess.PhoneNumber) {
 		return false
 	}
-	// Con la cola del próximo día el aviso del caller («te voy a conectar… un momento por favor»)
-	// contradice al del próximo día hábil que manda el handler: se descarta sin enviarlo. Se
-	// devuelve true igual: con false los mensajes saldrían tras el escalate y morirían en 404.
+	// Con la cola del próximo día, el aviso GENÉRICO de conexión («te voy a conectar… un momento
+	// por favor») contradice al del próximo día hábil que manda el handler: se quita, y SOLO él.
+	// Lo demás del turno (la confirmación de una cita ya agendada, el motivo del caller) sale
+	// como siempre. Se devuelve true aunque no quede nada: con false los mensajes saldrían tras
+	// el escalate y morirían en 404.
 	if p.escalationQueuedNextDay != nil && p.escalationQueuedNextDay(sess) {
-		slog.Info("pre-escalation: aviso del caller descartado, la escalación se encola para el próximo día",
-			"phone", utils.MaskPhone(sess.PhoneNumber), "session_id", sess.ID, "messages", len(messages))
-		return true
+		kept := statemachine.WithoutConnectionNotice(messages)
+		if len(kept) != len(messages) {
+			slog.Info("pre-escalation: aviso de conexión omitido, la escalación se encola para el próximo día",
+				"phone", utils.MaskPhone(sess.PhoneNumber), "session_id", sess.ID)
+		}
+		messages = kept
 	}
 	for i, m := range statemachine.CoalesceMessages(messages) {
 		if i > 0 {

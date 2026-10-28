@@ -62,9 +62,10 @@ func TestPreEscalationFlush_NectarSendsCoalesced(t *testing.T) {
 	}
 }
 
-// Con la cola del próximo día aplicando, el aviso del caller («te voy a conectar… un momento»)
-// contradice al del próximo día que manda el handler: el gancho lo descarta SIN enviarlo y
-// devuelve true (devolver false lo dejaría para después del escalate, donde muere en 404).
+// Con la cola del próximo día aplicando, el aviso genérico del caller («te voy a conectar… un
+// momento») contradice al del próximo día que manda el handler: se quita SIN enviarlo y se
+// devuelve true (false lo dejaría para después del escalate, donde muere en 404). Si no queda
+// nada más, no se envía nada.
 func TestPreEscalationFlush_NectarQueuedDropsCallerNotice(t *testing.T) {
 	pool, sender, sess := preEscalationPool("nectar:42")
 	pool.SetEscalationQueuedNextDay(func(*session.Session) bool { return true })
@@ -98,5 +99,23 @@ func TestPreEscalationFlush_BirdIgnoresQueuePredicate(t *testing.T) {
 
 	if pool.PreEscalationFlush(context.Background(), sess, msgs) || len(sender.sent) != 0 || asked {
 		t.Fatalf("Bird queda igual: sent=%d asked=%v", len(sender.sent), asked)
+	}
+}
+
+// Con la cola, SOLO se quita el aviso genérico de conexión: lo demás del turno (la confirmación
+// de una cita ya agendada, el motivo del caller) sale por el pre-envío como siempre.
+func TestPreEscalationFlush_NectarQueuedKeepsOtherMessages(t *testing.T) {
+	pool, sender, sess := preEscalationPool("nectar:42")
+	pool.SetEscalationQueuedNextDay(func(*session.Session) bool { return true })
+	msgs := []statemachine.OutboundMessage{
+		&statemachine.TextMessage{Text: "Cita confirmada: viernes 8:00"},
+		&statemachine.TextMessage{Text: statemachine.EscalationNoticeText},
+	}
+
+	if !pool.PreEscalationFlush(context.Background(), sess, msgs) {
+		t.Fatal("el gancho devuelve true")
+	}
+	if len(sender.sent) != 1 || sender.sent[0].text != "Cita confirmada: viernes 8:00" {
+		t.Fatalf("sale la confirmación y solo ella: %+v", sender.sent)
 	}
 }

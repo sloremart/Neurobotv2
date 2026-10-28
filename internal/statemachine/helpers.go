@@ -247,3 +247,20 @@ func RejectedInputNote(attempt int, received, reason string) string {
 			"Vuelva a devolver la conversacion escribiendo el valor correcto.",
 		attempt, received, reason)
 }
+
+// WithoutConnectionNotice quita del turno el aviso GENÉRICO de conexión (EscalationNoticeText, el
+// que usan el interceptor de palabra clave, el menú post-acción, los helpers y la recuperación IA)
+// y deja todo lo demás en su orden. Lo usa el pre-envío de Néctar cuando la escalación se encola
+// para el próximo día hábil: «un momento por favor» contradice al aviso del próximo día, pero la
+// confirmación de una cita ya agendada o el motivo propio del caller tienen que llegar.
+// Se identifica por la constante, nunca por heurística sobre el texto.
+func WithoutConnectionNotice(msgs []OutboundMessage) []OutboundMessage {
+	out := make([]OutboundMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if t, ok := m.(*TextMessage); ok && t.Text == EscalationNoticeText {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}

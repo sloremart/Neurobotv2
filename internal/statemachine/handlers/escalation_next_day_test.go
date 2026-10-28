@@ -2,9 +2,13 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
@@ -137,28 +141,31 @@ func TestNextDayQueueApplies(t *testing.T) {
 	})
 }
 
-// Viernes 17:50, un caller que escala con su aviso «te voy a conectar… un momento»: con el
-// pre-envío cableado como en main (el pool consulta NextDayQueueApplies), el paciente lee UN
-// solo aviso, el del próximo día hábil.
-func TestEscalate_QueuedCallerNoticeYieldsSingleNextDayNotice(t *testing.T) {
-	cfg := nextDayConfig()
-	m, nb := nectarMachine(t, cfg, nil)
+// wireQueuedPreFlush cablea en la máquina el pre-envío con el MISMO contrato que
+// worker.PreEscalationFlush: con la cola aplicando quita solo el aviso genérico de conexión
+// (sm.WithoutConnectionNotice) y manda lo demás coalescido; sin cola lo manda todo.
+func wireQueuedPreFlush(m *sm.Machine, cfg *config.Config, nb *fakeNectarBridge) {
 	applies := NextDayQueueApplies(cfg)
 	client := bird.NewClientForTest("http://nectar.invalid")
 	client.SetNectar(nb)
-	// Mismo contrato que worker.PreEscalationFlush: en la cola descarta sin enviar; si no, envía.
 	m.SetPreEscalationFlush(func(_ context.Context, sess *session.Session, msgs []sm.OutboundMessage) bool {
 		if applies(sess) {
-			return true
+			msgs = sm.WithoutConnectionNotice(msgs)
 		}
-		for _, out := range msgs {
-			if txt, ok := out.(*sm.TextMessage); ok {
-				//nolint:contextcheck // SendText no toma ctx (patrón existente del pre-envío)
-				_, _ = client.SendText(sess.PhoneNumber, sess.ConversationID, txt.Text)
-			}
+		for _, out := range sm.CoalesceMessages(msgs) {
+			//nolint:contextcheck // SendText no toma ctx (patrón existente del pre-envío)
+			_, _ = client.SendText(sess.PhoneNumber, sess.ConversationID, sm.OutboundText(out))
 		}
 		return true
 	})
+}
+
+// Viernes 17:50, la palabra clave «asesor» (el caller escala con el aviso genérico «te voy a
+// conectar… un momento»): el paciente lee UN solo aviso, el del próximo día hábil.
+func TestEscalate_QueuedCallerNoticeYieldsSingleNextDayNotice(t *testing.T) {
+	cfg := nextDayConfig()
+	m, nb := nectarMachine(t, cfg, nil)
+	wireQueuedPreFlush(m, cfg, nb)
 	const callerState = "TEST_CALLER"
 	m.Register(callerState, func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
 		return sm.NewResult(sm.StateEscalateToAgent).WithText(sm.EscalationNoticeText), nil
@@ -171,5 +178,56 @@ func TestEscalate_QueuedCallerNoticeYieldsSingleNextDayNotice(t *testing.T) {
 	})
 	if txt := nb.texts(); len(txt) != 1 || txt[0] != escalationNoticeText(true) {
 		t.Fatalf("un solo aviso, el del próximo día: %q", txt)
+	}
+}
+
+// Viernes 17:50, BOOKING_SUCCESS con otro procedimiento pendiente que es un estudio del sueño:
+// la cadena BOOKING_SUCCESS → CHECK_SPECIAL_CUPS → ESCALATE_TO_AGENT cae en la cola. La cita ya
+// quedó en SIESA, así que el paciente TIENE que leer su confirmación (fecha, hora, preparación) y
+// el motivo de la escalación, y después el aviso del próximo día — nunca «un momento por favor».
+func TestEscalate_QueuedAfterBookingKeepsConfirmation(t *testing.T) {
+	cfg := nextDayConfig()
+	m, nb := nectarMachine(t, cfg, nil)
+	wireQueuedPreFlush(m, cfg, nb)
+	m.Register(sm.StateBookingSuccess, bookingSuccessHandler(nil))
+	m.Register(sm.StateCheckSpecialCups, checkSpecialCupsHandler())
+
+	slots := sampleSlots()
+	groups := []services.CUPSGroup{
+		{Cups: []services.CUPSEntry{{Code: "890271", Name: "Electromiografia", Quantity: 1}}, Espacios: 1},
+		{Cups: []services.CUPSEntry{{Code: "891901", Name: "Polisomnografia", Quantity: 1}}, Espacios: 1},
+	}
+	groupsJSON, _ := json.Marshal(groups)
+	sess := nectarSession(false)
+	sess.CurrentState = sm.StateBookingSuccess
+	sess.Context["available_slots_json"] = slotsJSON(slots)
+	sess.Context["selected_slot_id"] = slotKey(&slots[0])
+	sess.Context["cups_name"] = "Electromiografia"
+	sess.Context["cups_code"] = "890271"
+	sess.Context["cups_preparation"] = "Asistir con el cabello limpio"
+	sess.Context["created_appointment_id"] = "apt-100"
+	sess.Context["total_procedures"] = "2"
+	sess.Context["current_procedure_idx"] = "0"
+	sess.Context["procedures_json"] = string(groupsJSON)
+
+	var res *sm.StateResult
+	withTime(at(2026, 10, 23, 17, 50), func() {
+		res = escalateOnce(t, m, sess)
+	})
+	if res.NextState != sm.StateEscalated {
+		t.Fatalf("la cadena termina escalada y encolada: %s", res.NextState)
+	}
+	txt := nb.texts()
+	all := strings.Join(txt, "\n")
+	for _, want := range []string{"Recuerda presentarte", "Asistir con el cabello limpio", "estudios del sueño"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("el paciente tiene que leer %q: %q", want, txt)
+		}
+	}
+	if strings.Contains(all, sm.EscalationNoticeText) || strings.Contains(all, "Un momento por favor") {
+		t.Errorf("con la cola no sale «un momento por favor»: %q", txt)
+	}
+	if n := strings.Count(all, escalationNoticeText(true)); n != 1 || txt[len(txt)-1] != escalationNoticeText(true) {
+		t.Errorf("el aviso del próximo día sale una vez y al final: %d veces en %q", n, txt)
 	}
 }

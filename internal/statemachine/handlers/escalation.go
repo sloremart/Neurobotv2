@@ -235,7 +235,8 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				"msg_conv_id", msg.ConversationID,
 				"sess_conv_id", sess.ConversationID,
 			)
-			sentMsgID, sendErr := birdClient.SendText(msg.Phone, "", "Te voy a conectar con un agente. Un momento por favor...")
+			//nolint:contextcheck // SendText no toma ctx (patrón existente del pre-envío)
+			sentMsgID, sendErr := birdClient.SendText(msg.Phone, "", sm.EscalationNoticeText)
 			diagSentOK = sentMsgID != ""
 			if sendErr != nil {
 				slog.Error(
