@@ -421,6 +421,12 @@ func RegisterSlotHandlers(
 ) {
 	m.Register(sm.StateSearchSlots, searchSlotsHandler(slotSvc, apptSvc, procRepo, priceRepo, entityRepo))
 	m.Register(sm.StateCoverageNoConvenio, coverageNoConvenioHandler())
+	// Salidas del agente cuando el contrato no cubre el procedimiento: seguir como particular
+	// (el payload del botón del paciente) o volver al menú principal.
+	sm.RegisterStaticReturnMenu(sm.StateCoverageNoConvenio,
+		sm.ReturnOption{Label: "Continuar como particular", Value: "cov_particular", Data: "cov_particular"},
+		sm.ReturnOption{Label: "Volver al menú", Value: "cov_menu", Target: sm.StateMainMenu},
+	)
 	m.Register(sm.StateSlotSearchRetry, slotSearchRetryHandler())
 	m.Register(sm.StateShowSlots, showSlotsHandler(addrMapper))
 	m.Register(sm.StateNoSlotsAvailable, noSlotsHandler(waitingListRepo))

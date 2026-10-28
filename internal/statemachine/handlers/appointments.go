@@ -119,6 +119,14 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 			sm.Button{Text: "Cancelar cita", Payload: "cancel"},
 		)
 	}
+	// El agente resuelve la notificación por el paciente (`/bot resume NOTIF_PENDING <acción>`).
+	// ESTÁTICO a propósito: el descriptor de este paso se arma también sin sesión ni máquina. El
+	// worker reconoce State == NOTIF_PENDING con Data = acción y la ejecuta sin reanudar el flujo.
+	sm.RegisterStaticReturnMenu(sm.StateNotifPending,
+		sm.ReturnOption{Label: "Confirmar la cita", Value: "confirm", Target: sm.StateNotifPending, Data: "confirm"},
+		sm.ReturnOption{Label: "Reprogramar la cita", Value: "reschedule", Target: sm.StateNotifPending, Data: "reschedule"},
+		sm.ReturnOption{Label: "Cancelar la cita", Value: "cancel", Target: sm.StateNotifPending, Data: "cancel"},
+	)
 	m.RegisterWithConfig(sm.StateNotifPending, sm.HandlerConfig{
 		InputType:   sm.InputButton,
 		Options:     []string{"confirm", "reschedule", "cancel"},

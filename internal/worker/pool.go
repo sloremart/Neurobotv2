@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1176,31 +1175,14 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		return "No se escribió ningún código CUPS."
 	}
 
-	// Parse each token: "883141" or "883141:2"
-	tokens := strings.Fields(cmd.Data)
-	var cups []services.CUPSEntry
-	for _, tok := range tokens {
-		parts := strings.SplitN(tok, ":", 2)
-		code := strings.TrimSpace(parts[0])
-		if code == "" {
-			continue
-		}
-		qty := 1
-		if len(parts) == 2 {
-			if n, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && n > 0 {
-				qty = n
-			}
-		}
-		cups = append(cups, services.CUPSEntry{
-			Code:     code,
-			Quantity: qty,
-			// Name is intentionally empty — VALIDATE_OCR enriches from procedure DB
-		})
-	}
+	// Cada token: "883141" o "883141:2". La gramática vive en services.ParseAgentCups, que
+	// también valida el campo de CUPS del menú de retornos. El nombre queda vacío: VALIDATE_OCR
+	// lo completa desde el catálogo de procedimientos.
+	cups := services.ParseAgentCups(cmd.Data)
 
 	if len(cups) == 0 {
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "No se encontraron codigos CUPS validos en el comando.")
-		return "No se encontraron códigos CUPS válidos en lo escrito (formato: 883141 o 883141:2, separados por espacios)."
+		return services.AgentCupsNoCodesProblem
 	}
 
 	cupsJSON, _ := json.Marshal(cups)

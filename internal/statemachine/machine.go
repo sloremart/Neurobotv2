@@ -100,6 +100,13 @@ func (m *Machine) Register(state string, handler StateHandler) {
 	m.handlers[state] = handler
 }
 
+// IsRegistered dice si el estado tiene handler. Lo usan las pruebas que cruzan destinos
+// declarados (p. ej. el Target de un menú de retornos) contra la máquina real.
+func (m *Machine) IsRegistered(state string) bool {
+	_, ok := m.handlers[state]
+	return ok
+}
+
 // Config devuelve la HandlerConfig declarativa de un estado, si fue registrado con
 // RegisterWithConfig. ok=false si el estado no tiene config declarativa.
 func (m *Machine) Config(state string) (HandlerConfig, bool) {

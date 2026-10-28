@@ -35,11 +35,44 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	m.Register(sm.StateAskManualCups, askManualCupsHandler(procedureRepo))
 	m.Register(sm.StateSelectProcedure, selectProcedureHandler())
 
+	// Retorno del agente de Néctar en los pasos de la orden médica: escribe los CUPS que leyó de
+	// la orden y el comando de CUPS del asesor (el de `/bot cups`) los inyecta en VALIDATE_OCR.
+	// Ningún paso sabría leer ese texto: lo mandaría de nuevo a escalar.
+	for _, step := range []string{
+		sm.StateAskMedicalOrder, sm.StateUploadMedicalOrder, sm.StateValidateOCR,
+		sm.StateOCRFailed, sm.StateConfirmOCRResult, sm.StateAskManualCups,
+	} {
+		sm.RegisterReturnInput(step, agentCupsReturnInput())
+	}
+	// Reintentar la subida de la foto (`/bot resume UPLOAD_MEDICAL_ORDER`): no lleva dato.
+	sm.RegisterStaticReturnMenu(sm.StateAskMedicalOrder, sm.ReturnOption{
+		Label: "Pedir de nuevo la foto de la orden", Value: "pedir_orden",
+		Target: sm.StateUploadMedicalOrder, NoInput: true,
+	})
+
 	// Consolidación EMG/NC entre órdenes separadas.
 	m.Register(sm.StateCheckEmgConsolidation, checkEmgConsolidationHandler(apptSvc))
 	m.Register(sm.StateConfirmConsolidate, confirmConsolidateHandler(apptSvc))
 	m.Register(sm.StateAskEmgOrder, askEmgOrderHandler())
 	m.Register(sm.StateUploadEmgOrder, uploadEmgOrderHandler(ocrSvc, birdClient))
+}
+
+// agentCupsReturnInput es el campo de CUPS que el agente de Néctar llena en los pasos de la orden.
+// Validate lee con services.ParseAgentCups, la MISMA gramática del comando `/bot cups`, para que
+// un dato que el campo acepta nunca sea uno que el comando rechaza.
+func agentCupsReturnInput() sm.ReturnInput {
+	return sm.ReturnInput{
+		Kind:     sm.InputKindText,
+		Label:    "CUPS leídos de la orden (código[:cantidad], separados por espacio)",
+		Required: true,
+		Command:  sm.ReturnCommandCups,
+		Validate: func(_ *session.Session, value string) sm.InputRejection {
+			if len(services.ParseAgentCups(value)) == 0 {
+				return sm.Reject(services.AgentCupsNoCodesProblem)
+			}
+			return sm.InputRejection{}
+		},
+	}
 }
 
 // ocrRetryButtons builds the retry/escalation buttons for OCR errors.
