@@ -328,45 +328,33 @@ func IsAutomatic(state string) bool {
 	return st == StateTypeAutomatic
 }
 
-// Claves del contexto de sesión que comparten la máquina, el handler de escalación y el worker.
-// Viven aquí, y no como literales en cada paquete, para que quien escribe y quien lee no se
+// Claves del contexto de sesión que compartirán la máquina, el handler de escalación y el worker.
+// Viven aquí, y no como literales en cada paquete, para que quien escriba y quien lea no se
 // separen.
 const (
 	// CtxPreAutoState es el paso en que se quedó el paciente ANTES de encadenar hacia un estado
-	// automático (la escalación, sobre todo). El handler de escalación lo lee para decir en el
-	// resumen del agente, y en el menú de retornos, dónde se atascó la conversación; sin él
-	// diría «ESCALATE_TO_AGENT», que no le sirve a nadie. Lo escribe la máquina al encadenar
-	// (solo en memoria, mientras dura el turno) y el worker cuando reanuda una sesión escalada.
+	// automático (la escalación, sobre todo). Sirve para decir dónde se atascó la conversación;
+	// sin él el paso sería «ESCALATE_TO_AGENT», que no le sirve a nadie. Hoy lo escribe la
+	// máquina al encadenar y lo lee el handler de escalación.
 	CtxPreAutoState = "_pre_auto_state"
 
-	// CtxPatientAskedForAgent ("1") marca que EL PACIENTE PIDIÓ la persona (opción de menú o
-	// palabra clave), frente a las escalaciones donde el bot se atasca y lo que hace el agente
-	// es desbloquearlo devolviéndole el dato. La diferencia decide dos cosas: si se le avisa al
-	// paciente que viene alguien, y el `reason` con que se escala (patient_asked_for_human frente
-	// a bot_cannot_answer). Es una marca aparte y no un valor de `escalation_reason` porque ese
-	// campo ya lleva los motivos de diagnóstico y mezclarlos cambiaría, sin querer, lo que ve el
-	// paciente. La borra toda escalación que sale.
+	// CtxPatientAskedForAgent ("1") marcará que EL PACIENTE PIDIÓ la persona (opción de menú o
+	// palabra clave), frente a las escalaciones donde el bot se atasca. Lo usarán el handler de
+	// escalación y los sitios donde el paciente pide agente, para decidir el `reason` con que se
+	// escala y si se le avisa al paciente. Es una marca aparte y no un valor de
+	// `escalation_reason` para no mezclar motivos de diagnóstico con lo que ve el paciente.
 	CtxPatientAskedForAgent = "patient_asked_for_agent"
 
-	// CtxEscalationNextDay ("1") marca que la escalación VIVA de esta sesión quedó encolada para
-	// que una persona la atienda al abrir el siguiente día hábil: el bot atiende hasta el cierre,
-	// pero lo que depende de un asesor deja de caber en el día unos minutos antes. La escribe el
-	// handler de escalación cuando escala dentro de esa ventana y la borra en cualquier otra
-	// escalación: describe SIEMPRE la escalación en curso.
-	//
-	// Un caso encolado tiene que sobrevivir la noche: el tope de escalaciones por sesión no lo
-	// desvía ni el cierre por silencio lo cierra, porque el paciente ya no espera al bot sino a
-	// alguien que llega mañana. Por eso se PERSISTE (WithContext) y no vive solo en memoria:
-	// quien la lee son el turno siguiente y el revisor de sesiones escaladas, que la lee del
-	// session_context por SQL (internal/session guarda el literal espejo, porque aquel paquete
-	// no puede importar este).
+	// CtxEscalationNextDay ("1") marcará que la escalación en curso de esta sesión quedó
+	// encolada para que una persona la atienda al abrir el siguiente día hábil. La escribirá el
+	// handler de escalación cuando escale dentro de esa ventana y la borrará en cualquier otra
+	// escalación: describirá SIEMPRE la escalación en curso. Se persistirá (WithContext) porque
+	// la leerán turnos posteriores.
 	CtxEscalationNextDay = "escalacion_proximo_dia"
 
-	// CtxEscalationGate dice que la ÚLTIMA escalación de esta sesión no llegó a ejecutarse porque
-	// la desvió el RELOJ ("out_of_hours"): el horario cerrado con la próxima apertura demasiado
-	// lejos para encolar el caso. La escribe el handler de escalación y la borra en cualquier otra
-	// salida suya, así que habla SIEMPRE de la escalación recién decidida. Quien comprueba que
-	// una escalación ocurriera de verdad la lee para no confundir un desvío por horario, que es
-	// un desenlace previsto, con una escalación perdida.
+	// CtxEscalationGate marcará que la ÚLTIMA escalación de esta sesión no llegó a ejecutarse
+	// porque la desvió el reloj ("out_of_hours"). La escribirá el handler de escalación y la
+	// borrará en cualquier otra salida suya, de modo que hable SIEMPRE de la escalación recién
+	// decidida.
 	CtxEscalationGate = "escalacion_desvio_gate"
 )

@@ -186,17 +186,15 @@ func ValidateSearchCount(sess *session.Session, count, maxDisplay int, noMatchMs
 	}
 }
 
-// CtxAgentInputRejected cuenta cuántas veces, en ESTA sesión, un dato escrito por un agente
-// humano no se pudo usar. El número va en la nota que lee el siguiente agente ("intento 2" le
-// dice que ya hubo uno y que mire el motivo) y hace que el fallo sea contable.
+// CtxAgentInputRejected contará cuántas veces, en ESTA sesión, un dato escrito por un agente
+// humano no se pudo usar. Lo escribirá el worker al re-escalar y alimentará el número de
+// intento de la nota para el siguiente agente.
 const CtxAgentInputRejected = "agent_input_rejected_count"
 
-// CtxAgentInputRejection guarda el rechazo ENTERO que causó la re-escalada en curso, en JSON
-// (PersistedRejection). Quien re-escala (el worker) y quien arma el sobre (el handler de
-// escalación) son TURNOS DISTINTOS, y la sesión es lo único que los une. Es UNA clave y no
+// CtxAgentInputRejection guardará el rechazo ENTERO que cause la re-escalada en curso, en JSON
+// (PersistedRejection). El worker lo escribirá al re-escalar y el handler de escalación lo leerá
+// al armar el sobre: son turnos distintos y la sesión es lo único que los une. Es UNA clave y no
 // cuatro para que la escritura no pueda quedar a medias: el `rechazo` del sobre es todo-o-nada.
-// Se BORRA en toda escalación: es de ESTA, y pegada le contaría al siguiente agente un error
-// que no es el de su caso.
 const CtxAgentInputRejection = "agent_input_rejection"
 
 // PersistedRejection es la forma con que el rechazo cruza de un turno al otro. Las claves van en

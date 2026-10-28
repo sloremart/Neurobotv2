@@ -2,6 +2,7 @@ package statemachine
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -244,7 +245,9 @@ type ReturnInput struct {
 	// escaló. Existe porque hay pasos que NO saben recibir lo que trae el agente (el de la orden
 	// médica lee una foto con OCR): inyectarles un texto los haría escalar otra vez.
 	Target string
-	// Required publica `requerido` (y `minimo_campos` de uno): el bot rechaza el campo vacío.
+	// Required hace que el campo vacío se rechace («Se devolvió el campo vacío.») y publica
+	// `requerido` y `minimo_campos` de uno. Sin Required, un valor vacío no se rechaza por estar
+	// vacío: el bot lo acepta como «sin dato».
 	Required bool
 	// MaxLen publica `largo` (en caracteres). 0 = ninguno declarado.
 	MaxLen int
@@ -258,8 +261,9 @@ type ReturnInput struct {
 	// vuelve a él, y "no se pudo usar" a secas lo deja adivinando. Recibe la sesión porque la
 	// validación fina suele depender de ella. nil = basta con el TextValidate del paso.
 	Validate func(sess *session.Session, value string) InputRejection
-	// Command, si no es vacío ("cups" u "orden"), hace que el worker entregue el dato escrito al
-	// comando del asesor correspondiente en vez de inyectarlo como mensaje virtual.
+	// Command, si no es vacío (ReturnCommandCups o ReturnCommandOrder), hace que el worker
+	// entregue el dato escrito al comando del asesor correspondiente en vez de inyectarlo como
+	// mensaje virtual. RegisterReturnInput hace panic con cualquier otro valor.
 	Command string
 }
 
@@ -267,9 +271,19 @@ type ReturnInput struct {
 // rechazo (el valor cero = válido), cuyo motivo es el literal que el agente lee para corregirse.
 type ReturnValuesParser func(sess *session.Session, values json.RawMessage) (value string, problem InputRejection)
 
+// Los dos comandos del asesor a los que un ReturnInput puede entregar el dato escrito.
+const (
+	ReturnCommandCups  = "cups"
+	ReturnCommandOrder = "orden"
+)
+
 // RegisterReturnInput declara que un paso ofrece campo de texto al agente. Se llama donde se
-// registra el estado, por la misma razón que el menú.
+// registra el estado, por la misma razón que el menú. Un Command que no sea ninguno de los dos
+// conocidos es un error de programación y se detecta al arrancar: hace panic.
 func RegisterReturnInput(state string, in ReturnInput) {
+	if in.Command != "" && in.Command != ReturnCommandCups && in.Command != ReturnCommandOrder {
+		panic(fmt.Sprintf("RegisterReturnInput(%s): Command %q desconocido", state, in.Command))
+	}
 	returnMenusMu.Lock()
 	defer returnMenusMu.Unlock()
 	returnInputs[state] = in
@@ -408,7 +422,11 @@ func (m *Machine) judge(sess *session.Session, step, data string, revalidate boo
 	}
 	res := ReturnInputResult{Written: true, Value: data, Target: in.Target, Command: in.Command}
 	if data == "" {
-		res.Problem = "Se devolvió el campo vacío."
+		// Solo un campo requerido rechaza el vacío; uno opcional lo acepta como «sin dato» y no
+		// pasa por los validadores, que juzgan datos y no su ausencia.
+		if in.Required {
+			res.Problem = "Se devolvió el campo vacío."
+		}
 		return res
 	}
 	if !revalidate {

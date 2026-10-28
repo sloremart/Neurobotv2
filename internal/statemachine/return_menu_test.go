@@ -64,7 +64,7 @@ func textStepMachine(t *testing.T) *Machine {
 		ErrorMsg:     "Escribe al menos cuatro caracteres.",
 		Handler:      noopHandler,
 	})
-	registerTestInput(t, stepText, ReturnInput{Label: "Escribir el dato"})
+	registerTestInput(t, stepText, ReturnInput{Label: "Escribir el dato", Required: true})
 
 	m.RegisterWithConfig(stepButton, HandlerConfig{
 		InputType: InputButton,
@@ -727,4 +727,43 @@ func TestRejectedInputNote_UsesTheWireMarker(t *testing.T) {
 			t.Errorf("la nota no trae %q: %s", want, note)
 		}
 	}
+}
+
+// Solo un campo requerido rechaza el vacío: uno opcional lo acepta como «sin dato». Vale por las
+// dos puertas, y «sin campo» sigue yendo antes que «vacío».
+func TestResolveReturnInput_RequiredGovernsEmptyValue(t *testing.T) {
+	m := textStepMachine(t)
+	sess := &session.Session{}
+
+	// stepPlain se registró sin Required.
+	res := m.ResolveReturnInput(sess, stepPlain, ReturnInputPrefix+"   ")
+	if !res.OK() || res.Value != "" {
+		t.Fatalf("un campo opcional vacío no se rechaza por estar vacío: %+v", res)
+	}
+	if res := m.ResolveReturnV1(sess, stepPlain, json.RawMessage(`{"dato":"  "}`)); !res.OK() {
+		t.Fatalf("v1 igual: %+v", res)
+	}
+
+	registerTestInput(t, stepPlain, ReturnInput{Required: true})
+	if res := m.ResolveReturnInput(sess, stepPlain, ReturnInputPrefix+"   "); !res.Rejected() {
+		t.Fatalf("un campo requerido vacío se rechaza: %+v", res)
+	}
+	if res := m.ResolveReturnV1(sess, stepPlain, json.RawMessage(`{"dato":"  "}`)); !res.Rejected() {
+		t.Fatalf("v1 igual: %+v", res)
+	}
+}
+
+func TestRegisterReturnInput_UnknownCommandPanics(t *testing.T) {
+	for _, cmd := range []string{"", ReturnCommandCups, ReturnCommandOrder} {
+		registerTestInput(t, "RETURN_TEST_CMD", ReturnInput{Command: cmd}) // no hace panic
+	}
+	if ReturnCommandCups != "cups" || ReturnCommandOrder != "orden" {
+		t.Fatalf("literales: %q %q", ReturnCommandCups, ReturnCommandOrder)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("un Command desconocido es un error de programación y debe hacer panic")
+		}
+	}()
+	RegisterReturnInput("RETURN_TEST_CMD_BAD", ReturnInput{Command: "otro"})
 }
