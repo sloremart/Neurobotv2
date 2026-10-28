@@ -647,6 +647,13 @@ como Bird (`nectar_enabled=false`, `nectar_host=none`). Completar las variables 
 **Adjuntos**: las URL de adjuntos de Néctar se descargan con clave de servicio + firma; si el OCR falla con
 `download document status 401/404`, revisar `NECTAR_SERVICE_KEY` y `NECTAR_REQUEST_SECRET`.
 
+**Fin de una escalación de Néctar**: el fin NORMAL es el aviso `conversacion_resuelta` (o `conversacion_devuelta`
+si el agente la devuelve al bot). Mientras el agente es dueño de la conversación, Néctar NO manda `mensaje_entrante`,
+así que `last_patient_msg_at` no se mueve. El cierre por silencio del bot (`escalation_expired`) es solo una red de
+seguridad y usa `ESCALATION_NECTAR_CLOSE_MIN` (default 480 = 8 h), no `ESCALATION_PATIENT_CLOSE_MIN` de Bird. En una
+escalación encolada para el próximo día hábil, ese silencio se cuenta desde la apertura, no desde la víspera. Si se ven
+`escalation_expired` de sesiones `nectar:*` con agentes todavía atendiendo, subir el valor.
+
 ---
 
 ## Backup de la BD Interna

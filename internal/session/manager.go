@@ -69,8 +69,13 @@ type InactivityDeps struct {
 
 	// Escalated chats (agente humano)
 	EscalationCloseMin int // Cierre por silencio del PACIENTE (no del agente)
-	AgentReminderMin   int // Minutos sin respuesta del agente antes de recordarle
-	AgentReminderMax   int // Máximo de recordatorios por ventana de espera
+	// NectarEscalationCloseMin es el umbral de cierre por silencio de las sesiones nectar:*.
+	// Es más largo que el de Bird porque Néctar NO manda mensaje_entrante mientras el agente es
+	// dueño de la conversación (last_patient_msg_at no se mueve): el fin normal de una escalación
+	// de Néctar es conversacion_resuelta y este cierre es solo la red de seguridad. 0 = no cierra.
+	NectarEscalationCloseMin int
+	AgentReminderMin         int // Minutos sin respuesta del agente antes de recordarle
+	AgentReminderMax         int // Máximo de recordatorios por ventana de espera
 	// Resumer devuelve al bot las escalaciones no atendidas por el agente (no-show). nil = no actúa
 	// (en ese caso el no-show no se procesa y la escalación sigue hasta el cierre por silencio).
 	Resumer EscalationResumer
@@ -495,6 +500,20 @@ func (m *SessionManager) closeEscalatedBySilence(ctx context.Context, deps Inact
 		"patient_silent_min", int(patientSilent.Minutes()))
 }
 
+// nectarSilenceAnchor devuelve desde cuándo se cuenta el silencio del paciente en una sesión de
+// Néctar. Normalmente es su último mensaje; pero en una escalación ENCOLADA para el próximo día
+// ese mensaje es de la víspera (~12 h antes de abrir) y, al caducar la exención, el primer tick
+// la cerraría como abandonada. Para la encolada el silencio se cuenta desde la apertura.
+func nectarSilenceAnchor(s EscalatedSession, nextOpen func(time.Time) time.Time) time.Time {
+	since := s.LastPatientMsg
+	if s.QueuedForNextDay && nextOpen != nil && !s.EscalatedAt.IsZero() {
+		if open := nextOpen(s.EscalatedAt); open.After(since) {
+			since = open
+		}
+	}
+	return since
+}
+
 // checkEscalatedSessions, por cada chat escalado, decide UNA de dos cosas:
 //  1. Cerrar (marcar abandonado + cerrar feed) si el PACIENTE lleva EscalationCloseMin en silencio.
 //     El silencio del agente NUNCA cierra el chat (last_patient_msg_at solo lo mueve el paciente).
@@ -524,8 +543,9 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 		// agente. Lo único que el bot hace con la sesión es cerrarla por silencio del PACIENTE
 		// (aunque ningún agente haya respondido: no hay Resumer al que devolverla).
 		if IsNectarSession(s.PhoneNumber) {
-			if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute {
-				m.closeEscalatedBySilence(ctx, deps, s, patientSilent)
+			silent := now.Sub(nectarSilenceAnchor(s, deps.NextOpen))
+			if deps.NectarEscalationCloseMin > 0 && silent >= time.Duration(deps.NectarEscalationCloseMin)*time.Minute {
+				m.closeEscalatedBySilence(ctx, deps, s, silent)
 			}
 			continue
 		}

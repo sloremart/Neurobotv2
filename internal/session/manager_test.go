@@ -781,12 +781,16 @@ func (m *mockInactivityBird) CloseFeedItems(_, _ string) error {
 	return nil
 }
 
+// nectarCloseMinForTest es el umbral de cierre por silencio de las sesiones de Néctar en las pruebas.
+const nectarCloseMinForTest = 480
+
 func escalationDeps(bird *mockInactivityBird) InactivityDeps {
 	return InactivityDeps{
-		BirdClient:         bird,
-		EscalationCloseMin: 120,
-		AgentReminderMin:   15,
-		AgentReminderMax:   3,
+		BirdClient:               bird,
+		EscalationCloseMin:       120,
+		NectarEscalationCloseMin: nectarCloseMinForTest,
+		AgentReminderMin:         15,
+		AgentReminderMax:         3,
 	}
 }
 
@@ -1358,7 +1362,7 @@ func TestCheckEscalated_NectarSkipsNoShowAndReminders(t *testing.T) {
 	bird := &mockInactivityBird{}
 	resumer := &mockResumer{}
 	deps := escalationDeps(bird)
-	deps.EscalationCloseMin = 1000 // aislar: que el cierre por silencio no actúe
+	deps.NectarEscalationCloseMin = 1000 // aislar: que el cierre por silencio no actúe
 	deps.Resumer = resumer
 
 	mgr.checkEscalatedSessions(context.Background(), deps)
@@ -1380,8 +1384,8 @@ func TestCheckEscalated_NectarClosesByPatientSilence(t *testing.T) {
 		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
 			return []EscalatedSession{{
 				ID: "s1", PhoneNumber: "nectar:7", ConversationID: "7",
-				LastPatientMsg: time.Now().Add(-130 * time.Minute),
-				EscalatedAt:    time.Now().Add(-130 * time.Minute),
+				LastPatientMsg: time.Now().Add(-(nectarCloseMinForTest + 10) * time.Minute),
+				EscalatedAt:    time.Now().Add(-(nectarCloseMinForTest + 10) * time.Minute),
 			}}, nil
 		},
 		markAbandonedFn: func(_ context.Context, id string) error { abandoned = id; return nil },
@@ -1511,5 +1515,92 @@ func TestTouchPatientActivity_NeverShortensExtendedExpiry(t *testing.T) {
 	}
 	if sess.ExpiresAt.Before(before.Add(119 * time.Minute)) {
 		t.Fatalf("debía renovar a now+timeout: %s", sess.ExpiresAt)
+	}
+}
+
+// TestCheckEscalated_NectarQueuedMeasuresSilenceFromOpening (C1): una escalación encolada a las
+// 18:30 trae ~12 h de "silencio" medido desde el último mensaje del paciente. Al abrir (07:00) la
+// exención caduca; en el primer tick posterior (07:05) NO debe cerrarse por abandono: el silencio
+// se cuenta desde la apertura, no desde la víspera.
+func TestCheckEscalated_NectarQueuedMeasuresSilenceFromOpening(t *testing.T) {
+	now := time.Now()
+	opening := now.Add(-5 * time.Minute)       // 07:00
+	escalatedAt := now.Add(-755 * time.Minute) // 18:30 de la víspera
+	abandoned := ""
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "nectar:7", ConversationID: "7",
+				LastPatientMsg: escalatedAt, EscalatedAt: escalatedAt, QueuedForNextDay: true,
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, id string) error { abandoned = id; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.SetEscalationRecorder(&mockEscalationRecorder{})
+	bird := &mockInactivityBird{}
+	deps := escalationDeps(bird)
+	deps.NextOpen = func(time.Time) time.Time { return opening }
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if abandoned != "" || bird.closedFeeds != 0 {
+		t.Fatalf("la encolada no debe cerrarse 5 min después de abrir, abandoned=%q feeds=%d", abandoned, bird.closedFeeds)
+	}
+}
+
+// TestCheckEscalated_NectarQueuedClosesLongAfterOpening (C1): si el paciente nunca vuelve, la
+// red de seguridad sí cierra una vez pasado el umbral contado DESDE la apertura.
+func TestCheckEscalated_NectarQueuedClosesLongAfterOpening(t *testing.T) {
+	now := time.Now()
+	opening := now.Add(-(nectarCloseMinForTest + 5) * time.Minute)
+	escalatedAt := opening.Add(-750 * time.Minute)
+	abandoned := ""
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "nectar:7", ConversationID: "7",
+				LastPatientMsg: escalatedAt, EscalatedAt: escalatedAt, QueuedForNextDay: true,
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, id string) error { abandoned = id; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.SetEscalationRecorder(&mockEscalationRecorder{})
+	bird := &mockInactivityBird{}
+	deps := escalationDeps(bird)
+	deps.NextOpen = func(time.Time) time.Time { return opening }
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if abandoned != "s1" {
+		t.Fatalf("pasado el umbral desde la apertura debe cerrarse, abandoned=%q", abandoned)
+	}
+}
+
+// TestCheckEscalated_NectarUsesOwnThreshold (I1): Néctar no manda mensaje_entrante mientras el
+// agente es dueño de la conversación, así que last_patient_msg_at no se mueve. Una atención de
+// 3 h NO debe abandonar la sesión con el umbral de Bird (120); el de Néctar es más largo.
+func TestCheckEscalated_NectarUsesOwnThreshold(t *testing.T) {
+	abandoned := ""
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "nectar:7", ConversationID: "7",
+				LastPatientMsg: time.Now().Add(-180 * time.Minute),
+				EscalatedAt:    time.Now().Add(-180 * time.Minute),
+			}}, nil
+		},
+		markAbandonedFn: func(_ context.Context, id string) error { abandoned = id; return nil },
+	}
+	mgr := NewSessionManager(repo, 120)
+	mgr.SetEscalationRecorder(&mockEscalationRecorder{})
+	bird := &mockInactivityBird{}
+	deps := escalationDeps(bird) // EscalationCloseMin=120 (Bird)
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if abandoned != "" {
+		t.Fatalf("una atención de Néctar de 3 h no debe cerrarse con el umbral de Bird, abandoned=%q", abandoned)
 	}
 }

@@ -146,7 +146,10 @@ type Config struct {
 	InactivityCloseMin    int // Silent close (no message)
 
 	// Escalation (chat con agente humano)
-	EscalationPatientCloseMin  int // Cierre escalada por silencio del PACIENTE (no del agente)
+	EscalationPatientCloseMin int // Cierre escalada por silencio del PACIENTE (no del agente)
+	// EscalationNectarCloseMin (ESCALATION_NECTAR_CLOSE_MIN) es el cierre por silencio de las escalaciones
+	// de Néctar: red de seguridad, el fin normal es conversacion_resuelta. Ver parseNectarCloseMin.
+	EscalationNectarCloseMin   int
 	EscalationAgentReminderMin int // Minutos sin respuesta del agente antes de recordarle
 	// EscalationAgentReminderMax: máximo de recordatorios. La ventana total del agente antes de
 	// devolver el chat al bot = AgentReminderMin*(AgentReminderMax+1). Con 75 y 3 → 5h (recordatorios
@@ -434,6 +437,12 @@ func Load() *Config {
 		log.Fatalf("BUSINESS_HOURS_QUEUE_MAX_WAIT_MIN inválido: %v", err)
 	}
 	cfg.BusinessHoursQueueMaxWaitMin = maxWait
+
+	nectarClose, err := parseNectarCloseMin(os.Getenv("ESCALATION_NECTAR_CLOSE_MIN"))
+	if err != nil {
+		log.Fatalf("ESCALATION_NECTAR_CLOSE_MIN inválido: %v", err)
+	}
+	cfg.EscalationNectarCloseMin = nectarClose
 
 	cfg.validate()
 	return cfg
@@ -723,4 +732,30 @@ func parseQueueMaxWaitMin(raw string) (int, error) {
 		return 0, fmt.Errorf("espera máxima %q no numérica", raw)
 	}
 	return minutes, validateQueueMaxWaitMin(minutes)
+}
+
+// DefaultNectarCloseMin es el cierre por silencio de una escalación de Néctar (8 h). Es mucho
+// más largo que el de Bird porque Néctar NO manda mensaje_entrante mientras el agente es dueño
+// de la conversación: last_patient_msg_at no se mueve aunque paciente y agente estén hablando, y
+// con 120 min se abandonaba la sesión de una atención larga y se perdía la conversacion_devuelta
+// posterior. El fin normal de una escalación de Néctar es conversacion_resuelta; esto es solo la
+// red de seguridad para que la sesión no quede escalada para siempre.
+const DefaultNectarCloseMin = 480
+
+// parseNectarCloseMin lee ESCALATION_NECTAR_CLOSE_MIN: vacío = el default, y cualquier otra cosa
+// tiene que ser un número positivo. El 0 se rechaza: apagaría la red de seguridad y una
+// escalación cuyo conversacion_resuelta se pierda quedaría escalada para siempre.
+func parseNectarCloseMin(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultNectarCloseMin, nil
+	}
+	minutes, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("cierre de Néctar %q no numérico", raw)
+	}
+	if minutes <= 0 {
+		return 0, fmt.Errorf("cierre de Néctar %d debe ser positivo", minutes)
+	}
+	return minutes, nil
 }

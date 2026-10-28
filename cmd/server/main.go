@@ -349,14 +349,15 @@ func main() {
 	// (devolver al bot las escalaciones que el agente nunca atendió — necesita la state machine del worker).
 	safeGo("inactivity-checker", func() {
 		sessionManager.StartInactivityChecker(ctx, session.InactivityDeps{
-			BirdClient:         birdClient,
-			Tracker:            tracker,
-			ReminderMin:        cfg.InactivityReminderMin,
-			CloseMin:           cfg.InactivityCloseMin,
-			EscalationCloseMin: cfg.EscalationPatientCloseMin,
-			AgentReminderMin:   cfg.EscalationAgentReminderMin,
-			AgentReminderMax:   cfg.EscalationAgentReminderMax,
-			Resumer:            workerPool,
+			BirdClient:               birdClient,
+			Tracker:                  tracker,
+			ReminderMin:              cfg.InactivityReminderMin,
+			CloseMin:                 cfg.InactivityCloseMin,
+			EscalationCloseMin:       cfg.EscalationPatientCloseMin,
+			NectarEscalationCloseMin: cfg.EscalationNectarCloseMin,
+			AgentReminderMin:         cfg.EscalationAgentReminderMin,
+			AgentReminderMax:         cfg.EscalationAgentReminderMax,
+			Resumer:                  workerPool,
 			// Hasta cuándo espera una escalación encolada para el próximo día hábil: acota su
 			// exención del cierre por silencio y del no-show (sin esto no caducaría nunca).
 			NextOpen: handlers.QueuedWaitEnd,

@@ -382,3 +382,20 @@ func TestLoad_InvalidBusinessHoursQueueVarsAbortStartup(t *testing.T) {
 		})
 	}
 }
+
+func TestParseNectarCloseMin(t *testing.T) {
+	if got, err := parseNectarCloseMin(""); err != nil || got != DefaultNectarCloseMin {
+		t.Errorf("sin variable = (%d, %v), want (%d, nil)", got, err, DefaultNectarCloseMin)
+	}
+	if DefaultNectarCloseMin != 480 {
+		t.Errorf("el default debe ser 480 min (8 h), got %d", DefaultNectarCloseMin)
+	}
+	if got, err := parseNectarCloseMin(" 600 "); err != nil || got != 600 {
+		t.Errorf("«600» = (%d, %v), want (600, nil)", got, err)
+	}
+	for _, bad := range []string{"0", "-1", "ocho horas", "8h", "480.0"} {
+		if _, err := parseNectarCloseMin(bad); err == nil {
+			t.Errorf("%q tiene que ser rechazado, no caer al default", bad)
+		}
+	}
+}
