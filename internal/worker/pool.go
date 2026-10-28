@@ -977,12 +977,25 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		// El dato (escrito o de la opción) era para el paso que no existe: inyectado como texto en
 		// el saludo sería una respuesta a una pregunta que no se hizo.
 		cmd.Data = ""
+		cmd.DataIsPostback = false
 	}
 
 	// Resume session in DB
 	if err := p.sessionManager.ResumeFromEscalation(ctx, sess, targetState); err != nil {
 		slog.Error("resume from escalation failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 		return
+	}
+	// Las claves que la opción elegida manda olvidar se borran ANTES del turno: el paso al que se
+	// vuelve no puede verlas. Si no se pudieran persistir, se borran igual en memoria para este
+	// turno.
+	if len(cmd.ClearCtx) > 0 {
+		if err := p.sessionManager.SaveState(ctx, sess, targetState, nil, cmd.ClearCtx); err != nil {
+			slog.Error("no se pudo borrar el contexto de la opción elegida", "error", err,
+				"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID)
+		}
+		for _, k := range cmd.ClearCtx {
+			delete(sess.Context, k)
+		}
 	}
 	// La espera de esta escalación se acabó: una persona tomó el caso. Va ANTES del turno de
 	// abajo, para que si ese turno vuelve a escalar no herede la marca.
@@ -1006,6 +1019,13 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			Text:        cmd.Data,
 			MessageType: "text",
 			ReceivedAt:  time.Now(),
+		}
+		// El Data de una opción del menú es la respuesta a un botón: viaja como el postback del
+		// webhook (tipo, bandera y payload) y además como texto.
+		if cmd.DataIsPostback {
+			virtualMsg.MessageType = "postback"
+			virtualMsg.IsPostback = true
+			virtualMsg.PostbackPayload = cmd.Data
 		}
 
 		result, err := p.machine.Process(ctx, sess, virtualMsg)

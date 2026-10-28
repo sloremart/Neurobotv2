@@ -105,8 +105,17 @@ func (p *MessageWorkerPool) applyAgentReturn(ctx context.Context, sess *session.
 	// Primero: ¿el agente ESCRIBIÓ la respuesta? Se mira antes que el menú porque un dato escrito
 	// no es un token y no se debe buscar entre ellos. En v1 el dato viaja en `valores`, aparte del
 	// token; los tres desenlaces son los mismos, por eso las dos formas desembocan en este switch.
+	// La excepción es una opción sin dato, que manda sobre lo escrito (abajo).
 	written, token := p.resolveAgentReturn(sess, step, cmd)
 	opt, ok := statemachine.ResolveReturnValue(sess, step, token)
+	// Una opción que no lleva dato (cerrar, reanudar_sin_dato) MANDA sobre lo escrito: el agente
+	// pudo llenar el campo y luego cambiar de idea. Lo escrito se ignora sin trazarlo.
+	if ok && (opt.Close || opt.NoInput) && written.Written {
+		slog.Info("agent return: la opción elegida no lleva dato, lo escrito se ignora",
+			"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "step", step,
+			"return_value", token)
+		written = statemachine.ReturnInputResult{}
+	}
 	switch {
 	case written.OK():
 		cmd.Data = written.Value
@@ -146,6 +155,13 @@ func (p *MessageWorkerPool) applyAgentReturn(ctx context.Context, sess *session.
 		// persona con el motivo escrito.
 		p.reescalateRejectedAgentInput(ctx, sess, cmd, step, written)
 		return cmd, true
+	case !written.Written && ok && !opt.Close && !opt.NoInput && statemachine.ReturnInputRequired(step):
+		// Una salida «reanudar» sin `valores` en un paso de campo requerido: la consola de Néctar
+		// solo lo exige en el cliente. Reanudar con __resume__ re-ejecutaría el paso (y uno
+		// automático volvería a escalar en bucle): vuelve a una persona con el motivo.
+		p.reescalateRejectedAgentInput(ctx, sess, cmd, step,
+			statemachine.ReturnInputResult{Written: true, Problem: statemachine.ReturnInputEmptyProblem})
+		return cmd, true
 	case !ok:
 		// Token que no pertenece a este paso (menú viejo, o el paso cambió entre el escalate y la
 		// vuelta). NO se adivina una rama: se reanuda sin decisión, que es lo mismo que pasa
@@ -168,6 +184,10 @@ func (p *MessageWorkerPool) applyAgentReturn(ctx context.Context, sess *session.
 		if opt.Data != "" {
 			cmd.Data = opt.Data
 		}
+		cmd.ClearCtx = opt.Clear
+		// El Data de una opción es la respuesta a un botón: los pasos de botones solo aceptan
+		// postback.
+		cmd.DataIsPostback = opt.Data != ""
 		slog.Info("agent return: retomando por la salida elegida", "phone", utils.MaskPhone(cmd.Phone),
 			"session_id", sess.ID, "step", step, "return_value", token,
 			"target_state", cmd.State, "data", cmd.Data != "")

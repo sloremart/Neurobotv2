@@ -745,3 +745,123 @@ func TestReescalateRejected_WritesReason(t *testing.T) {
 		t.Fatalf("motivo persistido = %q, quería dato_agente_rechazado", got)
 	}
 }
+
+// El agente llenó el campo y además pulsó una opción que no lleva dato: manda la opción. Lo
+// escrito se ignora y no entra al flujo.
+func TestApplyAgentReturn_NoInputOptionIgnoresWrittenValues(t *testing.T) {
+	statemachine.RegisterStaticReturnMenu(testReturnStep,
+		statemachine.ReturnOption{Label: "Sin dato", Value: "opt_sin_dato", NoInput: true, Data: "dato_de_la_opcion"})
+	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+
+	pool, _, _, sess, resumedTo, processed := returnSession(t, testReturnStep)
+	asNectar(sess)
+	pool.machine.(*mockMessageProcessor).returnInput = statemachine.ReturnInputResult{Written: true, Value: "x"}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber,
+		ReturnV1: &nectar.V1Return{Option: "opt_sin_dato", Values: json.RawMessage(`{"dato":"x"}`)},
+	})
+
+	if *resumedTo != testReturnStep {
+		t.Fatalf("se retoma por la opción, got %q", *resumedTo)
+	}
+	if processed.Text != "dato_de_la_opcion" {
+		t.Fatalf("entra el dato de la opción y no lo escrito, got %q", processed.Text)
+	}
+}
+
+// `reanudar` sin `valores` en un paso de campo requerido (Néctar solo lo valida en la consola):
+// vuelve a una persona con «Se devolvió el campo vacío.», nunca un __resume__.
+func TestApplyAgentReturn_ResumeWithoutValuesOnRequiredFieldReescalates(t *testing.T) {
+	const step = "PASO_REQUERIDO_T5"
+	statemachine.RegisterReturnInput(step, statemachine.ReturnInput{Label: "Dato", Required: true})
+
+	pool, sm, _, sess, resumedTo, processed := returnSession(t, step)
+	asNectar(sess)
+	db := persistedContext(sm)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber,
+		ReturnV1: &nectar.V1Return{Option: statemachine.ReturnResume},
+	})
+
+	if *resumedTo != statemachine.StateEscalateToAgent {
+		t.Fatalf("re-escala, got %q", *resumedTo)
+	}
+	if processed.Text != "__agent_input_rejected__" {
+		t.Fatalf("el turno es el de la re-escalada, got %q", processed.Text)
+	}
+	rej, ok := statemachine.DecodeRejection(db[statemachine.CtxAgentInputRejection])
+	if !ok || rej.Reason != "Se devolvió el campo vacío." {
+		t.Fatalf("rechazo = %+v (ok=%v)", rej, ok)
+	}
+}
+
+// Una opción con Clear borra esas claves del contexto al retomar.
+func TestHandleAgentResume_OptionClearsContext(t *testing.T) {
+	statemachine.RegisterStaticReturnMenu(testReturnStep,
+		statemachine.ReturnOption{Label: "Corregir", Value: "corregir", Target: "OTRO_PASO", Clear: []string{"patient_contract"}})
+	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+
+	pool, sm, _, sess, _, processed := returnSession(t, testReturnStep)
+	asNectar(sess)
+	sess.Context["patient_contract"] = "7"
+	var cleared []string
+	var clearedBeforeProcess bool
+	sm.saveFn = func(_ context.Context, s *session.Session, state string, _ map[string]string, clr []string) error {
+		s.CurrentState = state
+		cleared = append(cleared, clr...)
+		for _, k := range clr {
+			delete(s.Context, k)
+		}
+		return nil
+	}
+	pool.machine.(*mockMessageProcessor).processFn = func(_ context.Context, s *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error) {
+		*processed = msg
+		clearedBeforeProcess = s.GetContext("patient_contract") == ""
+		return &statemachine.StateResult{NextState: "OTRO_PASO"}, nil
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnV1: &nectar.V1Return{Option: "corregir"},
+	})
+
+	if strings.Join(cleared, ",") != "patient_contract" {
+		t.Fatalf("SaveState borra las claves de la opción, got %v", cleared)
+	}
+	if !clearedBeforeProcess {
+		t.Fatal("el turno ya no ve la clave borrada")
+	}
+}
+
+// El Data de una OPCIÓN viaja como postback y como texto a la vez: los pasos de botones solo
+// aceptan postback.
+func TestHandleAgentResume_OptionDataArrivesAsPostback(t *testing.T) {
+	statemachine.RegisterStaticReturnMenu(testReturnStep,
+		statemachine.ReturnOption{Label: "Elegir", Value: "elegir", Data: "proc_2"})
+	defer statemachine.RegisterStaticReturnMenu(testReturnStep)
+
+	pool, _, _, sess, _, processed := returnSession(t, testReturnStep)
+	asNectar(sess)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnV1: &nectar.V1Return{Option: "elegir"},
+	})
+
+	if !processed.IsPostback || processed.PostbackPayload != "proc_2" || processed.Text != "proc_2" {
+		t.Fatalf("la opción llega como postback y como texto: %+v", *processed)
+	}
+}
+
+// Un comando de Bird (`/bot resume X y`) sigue llegando como texto, igual que hoy.
+func TestHandleAgentResume_BirdCommandStaysText(t *testing.T) {
+	pool, _, _, sess, _, processed := returnSession(t, testReturnStep)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", State: "X", Data: "y", Phone: sess.PhoneNumber,
+	})
+
+	if processed.IsPostback || processed.PostbackPayload != "" || processed.Text != "y" || processed.MessageType != "text" {
+		t.Fatalf("un comando de Bird llega como texto: %+v", *processed)
+	}
+}

@@ -18,10 +18,26 @@ import (
 // LA FUENTE NO CAMBIA: se leen los MISMOS registros que `ReturnMenu` (las opciones y la entrada
 // del paso), así que esto es un cambio de forma de emisión y no una segunda declaración.
 
-// InputKindText es el `tipo` de campo que este bot emite: los pasos de Neuro solo le piden al agente texto. Un
-// tipo nuevo se añade aquí Y al registro de capacidades en el mismo cambio
-// (TestElRegistroDelDescriptorNoMiente los cruza).
-const InputKindText = "texto"
+// Los `tipo` de campo que el bot sabe declarar, literales de cable. Un tipo se añade al registro
+// de capacidades en el MISMO cambio que hace que un paso lo emita
+// (TestElRegistroDelDescriptorNoMiente los cruza en los dos sentidos).
+const (
+	InputKindText   = "texto"
+	InputKindDate   = "fecha"
+	InputKindNumber = "numero"
+	// InputKindList es un `<select>`: el campo lleva sus `opciones`.
+	InputKindList = "lista"
+)
+
+// InputFormatISO es el `formato` con que la consola pinta el selector nativo de fecha u hora.
+const InputFormatISO = "iso"
+
+// InputChoice es una de las `opciones` de un campo `lista`. El `valor` es lo que vuelve en
+// `valores` y lo que el bot valida.
+type InputChoice struct {
+	Label string `json:"rotulo"`
+	Value string `json:"valor"`
+}
 
 // InputFieldKey es la `clave` del campo único de una entrada registrada: la que Néctar devuelve
 // dentro de `valores`. Es vocabulario nuestro y es una sola porque un paso ofrece UN campo.
@@ -67,6 +83,8 @@ type InputField struct {
 	Format   string `json:"formato,omitempty"`
 	Help     string `json:"ayuda,omitempty"`
 	MaxRunes int    `json:"largo,omitempty"`
+	// Options son las `opciones` de un campo `lista`; ausente en los demás.
+	Options []InputChoice `json:"opciones,omitempty"`
 }
 
 // InputDescriptor arma el descriptor de un paso. Es hermana de ReturnMenu y método de la máquina
@@ -81,7 +99,10 @@ func (m *Machine) InputDescriptor(sess *session.Session, step string) InputDescr
 	}
 	field := InputField{
 		Key: InputFieldKey, Label: in.Label, Kind: in.Kind, Help: in.Help,
-		Required: in.Required, Pattern: in.Pattern, MaxRunes: in.MaxLen,
+		Required: in.Required, Pattern: in.Pattern, Format: in.Format, MaxRunes: in.MaxLen,
+	}
+	if in.Options != nil {
+		field.Options = in.Options(sess)
 	}
 	// Rótulo y ayuda salen de donde ya salían en el dialecto: el registro, o el ErrorMsg del
 	// paso. Rellenarlo aquí evita la segunda copia que se queda vieja.

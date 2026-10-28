@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 
@@ -40,6 +41,9 @@ type ReturnOption struct {
 	// dato quedaría deshabilitada en un paso con campo. Un `tipo` que su interfaz aún no conozca
 	// se trata como "reanudar" (lectura conservadora, exige el dato).
 	NoInput bool
+	// Clear son las claves de contexto que se borran al retomar por ESTA opción (p. ej. corregir
+	// la entidad exige olvidar el contrato ya elegido). nil = no se borra nada.
+	Clear []string
 }
 
 // Tokens de control, válidos desde CUALQUIER paso. Van en todos los menús porque son las dos
@@ -48,6 +52,15 @@ const (
 	ReturnResume = "bot_reanudar"
 	ReturnClose  = "bot_cerrar"
 )
+
+// defaultResumeLabel es el rótulo de ReturnResume cuando el paso no registró otro.
+const defaultResumeLabel = "Devolver al bot en el mismo paso"
+
+// IsUniversalReturnValue dice si un token es de las salidas que ReturnOptionsFor añade a TODOS
+// los menús, es decir, que no declara ningún paso.
+func IsUniversalReturnValue(v string) bool {
+	return v == ReturnResume || v == ReturnClose
+}
 
 // ReturnValueQueueExpired es el token con que Néctar DEVUELVE al bot una conversación que pasó 8
 // horas hábiles en cola sin que ningún asesor la tomara. NO es una opción de ningún menú: no lo
@@ -117,7 +130,35 @@ var (
 	resolveGuards = map[string]string{}
 	// hiddenPlainResume son los pasos donde «devolver en el mismo paso» no lleva a ninguna parte.
 	hiddenPlainResume = map[string]bool{}
+	// resumeLabels son los rótulos propios de «devolver en el mismo paso», por paso.
+	resumeLabels = map[string]string{}
 )
+
+// RegisterResumeLabel cambia el rótulo de ReturnResume en ese paso; el token no cambia. Es para
+// los pasos con campo, donde «devolver en el mismo paso» es la salida que lleva lo escrito y no
+// se puede ocultar (Néctar solo manda los `valores` con la primera salida «reanudar»).
+func RegisterResumeLabel(state, label string) {
+	returnMenusMu.Lock()
+	defer returnMenusMu.Unlock()
+	resumeLabels[state] = label
+}
+
+// RegisteredReturnSteps son los pasos que registraron menú o entrada, ordenados y sin repetir.
+func RegisteredReturnSteps() []string {
+	returnMenusMu.RLock()
+	defer returnMenusMu.RUnlock()
+	steps := make([]string, 0, len(returnMenus)+len(returnInputs))
+	for s := range returnMenus {
+		steps = append(steps, s)
+	}
+	for s := range returnInputs {
+		if _, dup := returnMenus[s]; !dup {
+			steps = append(steps, s)
+		}
+	}
+	slices.Sort(steps)
+	return steps
+}
 
 // HidePlainResume hace que ReturnOptionsFor omita «Devolver al bot en el mismo paso» en ese paso
 // (las demás universales siguen). Es para pasos que no son un estado de la máquina: reanudar en
@@ -148,14 +189,18 @@ func ReturnOptionsFor(sess *session.Session, step string) []ReturnOption {
 	returnMenusMu.RLock()
 	build := returnMenus[step]
 	hidePlain := hiddenPlainResume[step]
+	resumeLabel := resumeLabels[step]
 	returnMenusMu.RUnlock()
+	if resumeLabel == "" {
+		resumeLabel = defaultResumeLabel
+	}
 
 	var opts []ReturnOption
 	if build != nil {
 		opts = append(opts, build(sess)...)
 	}
 	if !hidePlain {
-		opts = append(opts, ReturnOption{Label: "Devolver al bot en el mismo paso", Value: ReturnResume})
+		opts = append(opts, ReturnOption{Label: resumeLabel, Value: ReturnResume})
 	}
 	return append(opts, ReturnOption{Label: "Caso cerrado, no reanudar", Value: ReturnClose, Close: true})
 }
@@ -246,8 +291,16 @@ func ReturnValueForLog(token string) string {
 // MaxLen y Pattern se PUBLICAN para que la pantalla del agente pre-valide, pero la autoridad es
 // Validate (el bot es el único validador).
 type ReturnInput struct {
-	// Kind es el `tipo` del campo (hoy solo InputKindText). "" = InputKindText.
+	// Kind es el `tipo` del campo (InputKindText, InputKindDate, InputKindNumber o InputKindList).
+	// "" = InputKindText.
 	Kind string
+	// Format publica `formato` (InputFormatISO hace que la consola pinte el selector nativo de
+	// fecha u hora). "" = ninguno declarado.
+	Format string
+	// Options son las opciones de un campo InputKindList, armadas con la sesión: se publican como
+	// `opciones` y el bot rechaza un valor que no esté entre ellas. Con sess == nil devuelve nil.
+	// Va con Kind == InputKindList y solo con él (RegisterReturnInput hace panic si no).
+	Options func(sess *session.Session) []InputChoice
 	// Label es el rótulo del campo en la pantalla del agente.
 	Label string
 	// Help explica el formato esperado. Por omisión sale del ErrorMsg del paso cuando este espera
@@ -271,7 +324,9 @@ type ReturnInput struct {
 	Parse ReturnValuesParser
 	// Validate rechaza lo que el agente escribió ANTES de inyectarlo, y DICE POR QUÉ: el rechazo
 	// vuelve a él, y "no se pudo usar" a secas lo deja adivinando. Recibe la sesión porque la
-	// validación fina suele depender de ella. nil = basta con el TextValidate del paso.
+	// validación fina suele depender de ella. Si está, ES la regla y el TextValidate del paso NO
+	// se aplica (el campo puede aceptar lo que el paso le rechaza al paciente, p. ej. «NA»).
+	// nil = se aplica el TextValidate del paso.
 	Validate func(sess *session.Session, value string) InputRejection
 	// Command, si no es vacío (ReturnCommandCups o ReturnCommandOrder), hace que el worker
 	// entregue el dato escrito al comando del asesor correspondiente en vez de inyectarlo como
@@ -291,10 +346,14 @@ const (
 
 // RegisterReturnInput declara que un paso ofrece campo de texto al agente. Se llama donde se
 // registra el estado, por la misma razón que el menú. Un Command que no sea ninguno de los dos
-// conocidos es un error de programación y se detecta al arrancar: hace panic.
+// conocidos, o unas Options sin Kind lista (o una lista sin Options), es un error de programación
+// y se detecta al arrancar: hace panic.
 func RegisterReturnInput(state string, in ReturnInput) {
 	if in.Command != "" && in.Command != ReturnCommandCups && in.Command != ReturnCommandOrder {
 		panic(fmt.Sprintf("RegisterReturnInput(%s): Command %q desconocido", state, in.Command))
+	}
+	if (in.Options != nil) != (in.Kind == InputKindList) {
+		panic(fmt.Sprintf("RegisterReturnInput(%s): Options va con Kind %q y solo con él", state, InputKindList))
 	}
 	returnMenusMu.Lock()
 	defer returnMenusMu.Unlock()
@@ -308,6 +367,18 @@ func returnInputFor(step string) (ReturnInput, bool) {
 	in, ok := returnInputs[step]
 	return in, ok
 }
+
+// ReturnInputRequired dice si el paso registró un campo requerido.
+func ReturnInputRequired(step string) bool {
+	in, ok := returnInputFor(step)
+	return ok && in.Required
+}
+
+// ReturnInputEmptyProblem es el motivo de un campo requerido que volvió vacío o sin `valores`.
+const ReturnInputEmptyProblem = "Se devolvió el campo vacío."
+
+// ReturnInputNotInListProblem es el motivo de un valor de `lista` que no está entre sus opciones.
+const ReturnInputNotInListProblem = "El valor elegido no está en la lista de este paso."
 
 // InputRejection es el veredicto NEGATIVO sobre un dato que escribió un agente, con sus piezas
 // SEPARADAS. Los motivos son literales y NOMBRAN la clave o el código dentro de la frase; la
@@ -421,8 +492,8 @@ func (m *Machine) ResolveReturnInput(sess *session.Session, step, value string) 
 }
 
 // judge aplica las reglas comunes a un dato ya AISLADO de su envoltorio (el prefijo del dialecto,
-// o la clave de `valores` en v1): paso que no ofrece campo, campo vacío, validador del paso,
-// Validate de la entrada y destino. revalidate=false es para el dato que el Parse del paso ya
+// o la clave de `valores` en v1): paso que no ofrece campo, campo vacío, opciones de una lista,
+// Validate de la entrada —o, si no lo declara, el validador del paso— y destino. revalidate=false es para el dato que el Parse del paso ya
 // validó y rindió: se le aplican las reglas del paso pero no se vuelve a juzgar la rendición.
 func (m *Machine) judge(sess *session.Session, step, data string, revalidate bool) ReturnInputResult {
 	in, offers := returnInputFor(step)
@@ -440,23 +511,32 @@ func (m *Machine) judge(sess *session.Session, step, data string, revalidate boo
 		if !in.Required {
 			return ReturnInputResult{}
 		}
-		res.Problem = "Se devolvió el campo vacío."
+		res.Problem = ReturnInputEmptyProblem
 		return res
 	}
 	if !revalidate {
 		return res
 	}
-	// El mismo validador que Process le aplica al paciente en un paso de texto. Sin config
-	// declarativa no hay validador de texto: Validate de la entrada es la única regla.
+	// Una lista solo admite sus opciones: la consola lo valida en el cliente y el bot no se fía.
+	if in.Kind == InputKindList && in.Options != nil {
+		if opts := in.Options(sess); len(opts) > 0 && !slices.ContainsFunc(opts, func(c InputChoice) bool {
+			return c.Value == data
+		}) {
+			res.Problem = ReturnInputNotInListProblem
+			return res
+		}
+	}
+	// Validate de la entrada, si lo hay, ES la regla. Si no, el mismo validador que Process le
+	// aplica al paciente en un paso de texto; sin config declarativa no hay ninguno.
+	if in.Validate != nil {
+		res.reject(in.Validate(sess, data))
+		return res
+	}
 	if cfg, ok := m.textConfig(step); ok && cfg.TextValidate != nil && !cfg.TextValidate(data) {
 		res.Problem = cfg.ErrorMsg
 		if res.Problem == "" {
 			res.Problem = "El formato no es el que espera este paso."
 		}
-		return res
-	}
-	if in.Validate != nil {
-		res.reject(in.Validate(sess, data))
 	}
 	return res
 }

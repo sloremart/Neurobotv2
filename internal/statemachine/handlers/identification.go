@@ -56,10 +56,9 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 			sm.ReturnOption{Label: d.Label + " (" + d.Code + ")", Value: d.Code, Data: d.Code})
 	}
 	sm.RegisterStaticReturnMenu(sm.StateAskDocumentType, docTypeOptions...)
-	// El agente escribe el número de documento. NO lleva Validate propio: el paso ya declara
-	// TextValidate (validators.Document) y ErrorMsg, y ResolveReturnInput los aplica ANTES de
-	// inyectar, con el mismo veredicto que recibe el paciente. Un Validate aquí sería una segunda
-	// copia de la regla.
+	// El agente escribe el número de documento. NO lleva Validate propio: sin él, ResolveReturnInput
+	// aplica el TextValidate del paso (validators.Document) y su ErrorMsg ANTES de inyectar, con el
+	// mismo veredicto que recibe el paciente. Un Validate aquí SUSTITUIRÍA esa regla.
 	sm.RegisterReturnInput(sm.StateAskDocument, sm.ReturnInput{
 		Kind:     sm.InputKindText,
 		Label:    "Número de documento",

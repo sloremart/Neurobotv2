@@ -792,3 +792,121 @@ func TestReturnOptionsFor_HiddenPlainResume(t *testing.T) {
 		t.Error("las demás universales siguen")
 	}
 }
+
+// Un valor de `lista` que no está entre las opciones del paso se rechaza ANTES de la validación
+// propia: la consola solo valida en el cliente, y el bot no se fía.
+func TestResolveReturnV1_ListValueOutsideOptionsIsRejected(t *testing.T) {
+	m := NewMachine()
+	const step = "T5_LIST"
+	validated := false
+	registerTestInput(t, step, ReturnInput{
+		Kind: InputKindList, Label: "Entidad",
+		Options: func(sess *session.Session) []InputChoice {
+			if sess == nil {
+				return nil
+			}
+			return []InputChoice{{Label: "Uno", Value: "1"}, {Label: "Dos", Value: "2"}}
+		},
+		Validate: func(*session.Session, string) InputRejection {
+			validated = true
+			return InputRejection{}
+		},
+	})
+	sess := &session.Session{Context: map[string]string{}}
+
+	res := m.ResolveReturnV1(sess, step, json.RawMessage(`{"dato":"7"}`))
+	if !res.Rejected() || res.Problem != "El valor elegido no está en la lista de este paso." {
+		t.Fatalf("fuera de la lista se rechaza: %+v", res)
+	}
+	if validated {
+		t.Error("el rechazo por lista va antes de Validate")
+	}
+	if res := m.ResolveReturnV1(sess, step, json.RawMessage(`{"dato":"2"}`)); !res.OK() || res.Value != "2" {
+		t.Fatalf("un valor de la lista se acepta: %+v", res)
+	}
+}
+
+// Si la entrada declara Validate, ésa es LA regla: el TextValidate del paso no se aplica. Sin
+// Validate, se aplica el del paso (ASK_DOCUMENT sigue igual).
+func TestResolveReturnInput_ValidateReplacesTheStepTextValidate(t *testing.T) {
+	m := NewMachine()
+	const step = "T5_VALIDATE"
+	m.RegisterWithConfig(step, HandlerConfig{
+		InputType:    InputText,
+		TextValidate: func(s string) bool { return s != "NA" },
+		ErrorMsg:     "No se acepta NA.",
+		Handler:      noopHandler,
+	})
+	registerTestInput(t, step, ReturnInput{Label: "Correo"})
+	sess := &session.Session{}
+	if res := m.ResolveReturnInput(sess, step, ReturnInputPrefix+"NA"); !res.Rejected() {
+		t.Fatalf("sin Validate se aplica el TextValidate del paso: %+v", res)
+	}
+
+	registerTestInput(t, step, ReturnInput{
+		Label:    "Correo",
+		Validate: func(*session.Session, string) InputRejection { return InputRejection{} },
+	})
+	if res := m.ResolveReturnInput(sess, step, ReturnInputPrefix+"NA"); !res.OK() {
+		t.Fatalf("con Validate, el TextValidate del paso no se aplica: %+v", res)
+	}
+}
+
+// RegisterResumeLabel re-rotula «devolver en el mismo paso» sin cambiar su token.
+func TestReturnOptionsFor_ResumeLabelOverride(t *testing.T) {
+	const step = "T5_RESUME_LABEL"
+	t.Cleanup(func() {
+		returnMenusMu.Lock()
+		defer returnMenusMu.Unlock()
+		delete(resumeLabels, step)
+	})
+	RegisterResumeLabel(step, "Devolver con el dato escrito")
+
+	var found bool
+	for _, o := range ReturnOptionsFor(nil, step) {
+		if o.Value == ReturnResume {
+			found = true
+			if o.Label != "Devolver con el dato escrito" {
+				t.Errorf("rótulo = %q", o.Label)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("la opción bot_reanudar sigue en el menú")
+	}
+	for _, o := range ReturnOptionsFor(nil, "T5_OTRO_PASO") {
+		if o.Value == ReturnResume && o.Label != "Devolver al bot en el mismo paso" {
+			t.Errorf("los demás pasos conservan el rótulo: %q", o.Label)
+		}
+	}
+	if !IsUniversalReturnValue(ReturnResume) || !IsUniversalReturnValue(ReturnClose) || IsUniversalReturnValue("otra") {
+		t.Error("IsUniversalReturnValue reconoce solo las universales")
+	}
+}
+
+// RegisteredReturnSteps lista, ordenados y sin repetir, los pasos con menú o con entrada.
+func TestRegisteredReturnSteps_ListsMenusAndInputs(t *testing.T) {
+	registerTestMenu(t, "T5_REG_B", ReturnOption{Label: "x", Value: "x"})
+	registerTestInput(t, "T5_REG_A", ReturnInput{Label: "y", Required: true})
+	registerTestMenu(t, "T5_REG_C", ReturnOption{Label: "z", Value: "z"})
+	registerTestInput(t, "T5_REG_C", ReturnInput{Label: "z"})
+
+	steps := RegisteredReturnSteps()
+	var mine []string
+	for _, s := range steps {
+		if strings.HasPrefix(s, "T5_REG_") {
+			mine = append(mine, s)
+		}
+	}
+	if strings.Join(mine, ",") != "T5_REG_A,T5_REG_B,T5_REG_C" {
+		t.Fatalf("pasos registrados = %v", mine)
+	}
+	for i := 1; i < len(steps); i++ {
+		if steps[i-1] >= steps[i] {
+			t.Fatalf("ordenados y sin repetir: %v", steps)
+		}
+	}
+	if !ReturnInputRequired("T5_REG_A") || ReturnInputRequired("T5_REG_C") || ReturnInputRequired("T5_REG_B") {
+		t.Error("ReturnInputRequired lee el Required de la entrada")
+	}
+}

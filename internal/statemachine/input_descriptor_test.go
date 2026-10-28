@@ -362,3 +362,74 @@ func TestStaticInputDescriptor_UsesTheSessionView(t *testing.T) {
 		t.Errorf("sin sesión sale el menú por defecto: %s", def)
 	}
 }
+
+// Un campo `lista` lleva sus `opciones` armadas con la sesión: el `<select>` del agente muestra
+// exactamente lo que el paciente vería en su lista.
+func TestInputDescriptor_ListFieldCarriesOptionsFromTheSession(t *testing.T) {
+	m := NewMachine()
+	registerTestInput(t, stepDescriptor, ReturnInput{
+		Kind: InputKindList, Label: "Entidad",
+		Options: func(sess *session.Session) []InputChoice {
+			if sess == nil {
+				return nil
+			}
+			return []InputChoice{
+				{Label: sess.GetContext("primera"), Value: "1"},
+				{Label: "Otra", Value: "2"},
+			}
+		},
+	})
+	sess := &session.Session{Context: map[string]string{"primera": "Sanitas"}}
+
+	raw, err := json.Marshal(m.InputDescriptor(sess, stepDescriptor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Campos []struct {
+			Tipo     string            `json:"tipo"`
+			Opciones []json.RawMessage `json:"opciones"`
+		} `json:"campos"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Campos) != 1 || got.Campos[0].Tipo != "lista" {
+		t.Fatalf("un campo `lista`: %s", raw)
+	}
+	if len(got.Campos[0].Opciones) != 2 {
+		t.Fatalf("las opciones salen de la sesión: %s", raw)
+	}
+	if k := keysOf(t, got.Campos[0].Opciones[0]); len(k) != 2 || !k["rotulo"] || !k["valor"] {
+		t.Fatalf("cada opción lleva exactamente rotulo y valor: %v", k)
+	}
+	if !strings.Contains(string(raw), `{"rotulo":"Sanitas","valor":"1"}`) {
+		t.Fatalf("la opción viaja con su rótulo y valor: %s", raw)
+	}
+
+	// Un campo que no es lista no lleva `opciones`.
+	registerTestInput(t, stepDescriptor, ReturnInput{Label: "Texto"})
+	d := m.InputDescriptor(sess, stepDescriptor)
+	field, err := json.Marshal(d.Fields[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keysOf(t, field)["opciones"] {
+		t.Fatalf("un campo de texto no lleva opciones: %s", field)
+	}
+}
+
+// Un campo `fecha` con formato iso lo declara: es lo que hace que la consola pinte el selector.
+func TestInputDescriptor_DateFieldDeclaresIsoFormat(t *testing.T) {
+	d := buildDescriptor(t, nil, &ReturnInput{Kind: InputKindDate, Format: InputFormatISO, Label: "Fecha"})
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"tipo":"fecha"`) || !strings.Contains(string(raw), `"formato":"iso"`) {
+		t.Fatalf("el campo fecha declara formato iso: %s", raw)
+	}
+	if InputKindNumber != "numero" || InputKindList != "lista" || InputKindDate != "fecha" || InputFormatISO != "iso" {
+		t.Fatal("literales de cable")
+	}
+}

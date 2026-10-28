@@ -27,36 +27,37 @@ func returnMenuMachine() *sm.Machine {
 	RegisterMedicalOrderHandlers(m, nil, nil, nil, nil, nil)
 	RegisterAppointmentHandlers(m, nil, nil, nil, nil)
 	RegisterSlotHandlers(m, nil, nil, nil, nil, nil, nil, nil, nil)
+	// BOT_DISABLED registra su menú aquí: sin él, que figurara o no en RegisteredReturnSteps
+	// dependería del orden de las pruebas.
+	RegisterEscalationHandlers(m, nil, nil, nil)
 	return m
 }
 
-// stepsWithReturnMenu son los pasos que 9c declara, con lo que ofrecen.
-var (
-	// cupsSteps entregan lo escrito al comando de CUPS del asesor.
-	cupsSteps = []string{
-		sm.StateAskMedicalOrder, sm.StateUploadMedicalOrder, sm.StateValidateOCR,
-		sm.StateOCRFailed, sm.StateConfirmOCRResult, sm.StateAskManualCups,
-	}
-	declaredSteps = append([]string{
-		sm.StateMainMenu, sm.StateAskDocumentType, sm.StateAskDocument,
-		sm.StateNotifPending, sm.StateCoverageNoConvenio,
-	}, cupsSteps...)
-)
+// cupsSteps entregan lo escrito al comando de CUPS del asesor.
+var cupsSteps = []string{
+	sm.StateAskMedicalOrder, sm.StateUploadMedicalOrder, sm.StateValidateOCR,
+	sm.StateOCRFailed, sm.StateConfirmOCRResult, sm.StateAskManualCups,
+}
 
-// universalReturnOptions es cuántas opciones lleva TODO paso aunque no declare ninguna (las
-// universales de ReturnOptionsFor), medido sobre un paso sin registro.
-var universalReturnOptions = len(sm.ReturnOptionsFor(nil, "PASO_SIN_REGISTRO_9C"))
-
-// hasReturnEntry dice si un paso ofrece al agente algún botón propio o un campo.
+// hasReturnEntry dice si un paso ofrece al agente algún botón propio (no universal) o un campo.
 func hasReturnEntry(m *sm.Machine, step string) bool {
 	d := m.InputDescriptor(nil, step)
-	return len(d.Fields) > 0 || len(d.Options) > universalReturnOptions
+	if len(d.Fields) > 0 {
+		return true
+	}
+	for _, o := range d.Options {
+		if !sm.IsUniversalReturnValue(o.Value) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestReturnMenuValuesExistInTheStateMachine(t *testing.T) {
 	m := returnMenuMachine()
-	for _, step := range declaredSteps {
-		if !m.IsRegistered(step) {
+	for _, step := range sm.RegisteredReturnSteps() {
+		// BOT_DISABLED es el único paso con menú que no es un estado (el del kill switch).
+		if step != sm.BotDisabledStep && !m.IsRegistered(step) {
 			t.Errorf("%s: el paso declara retorno pero no está registrado", step)
 		}
 		if !hasReturnEntry(m, step) {
@@ -230,7 +231,7 @@ func TestReturnMenusCoverAgentCommands(t *testing.T) {
 func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 	m := returnMenuMachine()
 	kinds, exits := map[string]bool{}, map[string]bool{}
-	for _, step := range declaredSteps {
+	for _, step := range sm.RegisteredReturnSteps() {
 		d := m.InputDescriptor(nil, step)
 		for _, f := range d.Fields {
 			kinds[f.Kind] = true
