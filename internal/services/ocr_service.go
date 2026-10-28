@@ -45,6 +45,7 @@ type OCRService struct {
 	birdAccessKey string // Bird API key for downloading media files
 	// Néctar: adjuntos de GET /api/bot/attachments/{id}; solo se adjuntan si el anfitrión coincide.
 	nectarHost          string
+	nectarScheme        string // el esquema también cuenta: http al mismo host no recibe credenciales
 	nectarServiceKey    string
 	nectarRequestSecret string
 	// analyzeTimeout es el techo de UN análisis completo (download + Vision + reintentos). 0 = default.
@@ -457,6 +458,7 @@ func (s *OCRService) AnalyzeImage(ctx context.Context, imageURL string) (*OCRRes
 func (s *OCRService) SetNectarCredentials(baseURL, serviceKey, requestSecret string) {
 	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
 		s.nectarHost = strings.ToLower(u.Host)
+		s.nectarScheme = strings.ToLower(u.Scheme)
 	}
 	s.nectarServiceKey = serviceKey
 	s.nectarRequestSecret = requestSecret
@@ -474,7 +476,7 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 	if u, perr := url.Parse(documentURL); perr == nil {
 		host := strings.ToLower(u.Hostname())
 		switch {
-		case s.nectarHost != "" && strings.ToLower(u.Host) == s.nectarHost:
+		case s.nectarHost != "" && strings.ToLower(u.Host) == s.nectarHost && strings.ToLower(u.Scheme) == s.nectarScheme:
 			// Néctar: SUS credenciales, nunca la de Bird. Se firma al enviar (ventana de 5 min del
 			// otro lado); un GET sin cuerpo firma SHA256("").
 			req.Header.Set(nectar.ServiceKeyHeader, s.nectarServiceKey)

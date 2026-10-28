@@ -352,6 +352,20 @@ func TestDownloadMedia_NectarHostSignsRequest(t *testing.T) {
 	}
 }
 
+func TestDownloadMedia_NectarHostWrongSchemeNoCredential(t *testing.T) {
+	rt := &capturingTransport{}
+	s := newDownloadSvc(rt)
+	s.SetNectarCredentials("https://aom.colibrixa.com", "service-key", "req-secret")
+
+	if _, err := s.downloadMedia(context.Background(), "http://aom.colibrixa.com/api/bot/attachments/7"); err != nil {
+		t.Fatalf("downloadMedia: %v", err)
+	}
+	h := rt.last.Header
+	if h.Get("X-Bot-Service-Key") != "" || h.Get("X-Nectar-Signature") != "" || h.Get("Authorization") != "" {
+		t.Errorf("http no debe recibir credenciales: %v", h)
+	}
+}
+
 func TestDownloadMedia_BirdHostUnchanged(t *testing.T) {
 	rt := &capturingTransport{}
 	s := newDownloadSvc(rt)

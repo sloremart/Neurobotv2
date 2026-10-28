@@ -640,9 +640,9 @@ esas cabeceras; si las pierde, la URL reconstruida no coincide y todo aviso da 4
 **¿A qué Néctar apunta este bot?** `GET /health` publica `nectar_host` (solo el host, `none` si no hay
 puente). `GET /health/debug` agrega `nectar_enabled` y `protocol_escalado_version`.
 
-**Puente apagado por configuración a medias**: con `NECTAR_BASE_URL` puesta pero sin `NECTAR_SERVICE_KEY`
-o `NECTAR_REQUEST_SECRET`, el arranque registra el error «el desvío a Néctar queda APAGADO» y el bot sigue
-como Bird (`nectar_enabled=false`). Completar las variables y reiniciar.
+**Puente apagado por configuración a medias**: con `NECTAR_BASE_URL` puesta pero sin `NECTAR_SERVICE_KEY`,
+`NECTAR_REQUEST_SECRET` o `NECTAR_NOTICE_SECRET`, el arranque registra el error «el desvío a Néctar queda APAGADO» y el bot sigue
+como Bird (`nectar_enabled=false`, `nectar_host=none`). Completar las variables y reiniciar.
 
 **Adjuntos**: las URL de adjuntos de Néctar se descargan con clave de servicio + firma; si el OCR falla con
 `download document status 401/404`, revisar `NECTAR_SERVICE_KEY` y `NECTAR_REQUEST_SECRET`.

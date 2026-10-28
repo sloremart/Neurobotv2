@@ -338,7 +338,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 
 - La mensajería migra de Bird a Néctar portando el puente de hdg-bot (`internal/nectar`, `bird.NectarBridge`);
   diseño en `docs/superpowers/specs/2026-10-27-migracion-nectar-design.md`.
-- `NECTAR_BASE_URL` vacía = puente apagado (todo por Bird). Configuración a medias = puente apagado + error en
+- `NECTAR_BASE_URL` vacía = puente apagado (todo por Bird). Configuración a medias (faltan clave, secreto de ida o de avisos) = puente apagado + error en
   el arranque (`nectarBridgeFromConfig`). `/health` publica `nectar_host` (solo host).
 - Secretos: `NECTAR_SERVICE_KEY` y `NECTAR_NOTICE_SECRET` por cuenta (`openssl rand -hex 32`);
   `NECTAR_REQUEST_SECRET` = `BOT_WEBHOOK_SECRET_INBOUND` compartido. Nunca valores reales en el repo.

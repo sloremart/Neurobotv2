@@ -526,7 +526,13 @@ func main() {
 
 	// HTTP Server
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, cfg.NectarBaseURL))
+	// nectar_host refleja el puente REAL: con la configuración a medias el puente quedó apagado y
+	// la salud tiene que decir "none", no el host al que se quería apuntar.
+	nectarHealthURL := ""
+	if nectarBridge != nil {
+		nectarHealthURL = cfg.NectarBaseURL
+	}
+	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, nectarHealthURL))
 	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg, nectarBridge != nil))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)

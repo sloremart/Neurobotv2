@@ -20,9 +20,16 @@ func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
 		t.Fatalf("a medias: got %v %v %v", c, b, err)
 	}
 
+	// Sin secreto de avisos: también a medias (todos los avisos darían 401).
+	noNotice := &config.Config{NectarBaseURL: "https://aom.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s"}
+	c, b, err = nectarBridgeFromConfig(noNotice)
+	if c != nil || b != nil || err == nil {
+		t.Fatalf("sin secreto de avisos: got %v %v %v", c, b, err)
+	}
+
 	// Completa: cliente y puente.
 	full := &config.Config{
-		NectarBaseURL: "https://aom.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s",
+		NectarBaseURL: "https://aom.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
 		NectarTemplateNames: map[string]string{"p": "n"},
 	}
 	c, b, err = nectarBridgeFromConfig(full)

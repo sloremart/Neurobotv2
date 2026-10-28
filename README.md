@@ -93,7 +93,7 @@ WhatsApp (usuario)
 Con `NECTAR_BASE_URL` puesta, las conversaciones `nectar:*` salen por Néctar (`/api/bot/*`) y sus avisos
 entran por `POST /api/webhooks/nectar` (firma `X-Nectar-*`, dedupe por `event_id`, WAL); el resto sigue por
 Bird. Vacía, el bot funciona exactamente como antes (puente apagado). Si la configuración está a medias
-(URL sin clave de servicio o sin secreto de ida) el puente queda apagado y se registra un error al arrancar.
+(URL sin clave de servicio, sin secreto de ida o sin secreto de avisos) el puente queda apagado y se registra un error al arrancar.
 `GET /api/nectar/capabilities` publica los pasos escalables y sus opciones de retorno.
 
 - Sesiones de Néctar: sin recordatorio ni no-show del agente de Bird; se cierran solo por silencio del
