@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -86,6 +87,30 @@ type Config struct {
 	BirdVoiceNumber    string // número "from" para llamadas salientes
 	BirdVoiceFlowID    string // UUID del Bird Flow IVR (tiene paso webhook para DTMF result)
 	ServerPublicURL    string // URL pública del servidor (para webhooks Bird)
+
+	// Néctar (mensajería WhatsApp que reemplaza a Bird; la voz sigue en Bird). Ninguna de estas
+	// variables es obligatoria: vacías, el bot sigue hablando por Bird como hasta hoy.
+	// Tres secretos, y no son intercambiables:
+	//   - NECTAR_SERVICE_KEY: con la que el bot se identifica en las rutas /api/bot/*.
+	//   - NECTAR_NOTICE_SECRET: con la que Néctar FIRMA los avisos que manda al bot
+	//     (verifica X-Nectar-*).
+	//   - NECTAR_REQUEST_SECRET: con la que el bot FIRMA lo que manda a Néctar.
+	NectarBaseURL       string // p. ej. https://aom.colibrixa.com (sin barra final)
+	NectarServiceKey    string
+	NectarNoticeSecret  string
+	NectarRequestSecret string
+	// NectarTemplateNames: "project_id_de_bird=nombre_meta,..." — la correspondencia entre la
+	// plantilla de Bird y el nombre que tiene en Meta/Néctar. Vacía: las plantillas por Néctar
+	// fallan diciendo qué falta.
+	NectarTemplateNames map[string]string
+	// NectarTeamByGroup: "imagenes:7,neuro:8,callcenter:9" — el EQUIPO de Néctar de cada grupo de
+	// CUPS (ver CupsGroup). Néctar reparte por canal y no sabe qué equipo atiende qué estudio, así
+	// que el bot se lo SUGIERE al escalar (SuggestedTeamForCups). Vacía: no se sugiere nada.
+	NectarTeamByGroup map[string]int64
+	// ProtocolEscaladoVersion (PROTOCOL_ESCALADO_VERSION) es la versión del protocolo de
+	// escalado que el bot EMITE: 0 = el dialecto de hoy, 1 = v1. NO gobierna la recepción (dual
+	// siempre). Se lee con ProtocolVersion()/EmitsProtocolV1() — protocol.go.
+	ProtocolEscaladoVersion int
 
 	// OpenAI
 	OpenAIAPIKey string
@@ -268,6 +293,13 @@ func Load() *Config {
 		BirdVoiceFlowID:    os.Getenv("BIRD_VOICE_FLOW_ID"),
 		ServerPublicURL:    os.Getenv("SERVER_PUBLIC_URL"),
 
+		// Néctar
+		NectarBaseURL:       strings.TrimRight(os.Getenv("NECTAR_BASE_URL"), "/"),
+		NectarServiceKey:    os.Getenv("NECTAR_SERVICE_KEY"),
+		NectarNoticeSecret:  os.Getenv("NECTAR_NOTICE_SECRET"),
+		NectarRequestSecret: os.Getenv("NECTAR_REQUEST_SECRET"),
+		NectarTemplateNames: parseKeyValueList(os.Getenv("NECTAR_TEMPLATE_NAMES")),
+
 		// OpenAI
 		OpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -352,6 +384,22 @@ func Load() *Config {
 		HTTPIdleTimeout:      getEnvInt("HTTP_IDLE_TIMEOUT", 60),
 	}
 
+	// La versión del protocolo de escalado y el equipo de Néctar por grupo de CUPS NO se leen con
+	// getEnvInt: un valor que no se entendió tiene que verse al arrancar. Interpretarlo como
+	// «0 por si acaso» dejaría al bot hablando el dialecto de hoy creyendo que habla v1, y un par
+	// de equipos mal escrito dejaría de sugerir equipo sin que nadie lo note.
+	protoVer, err := parseProtocolEscaladoVersion(os.Getenv("PROTOCOL_ESCALADO_VERSION"))
+	if err != nil {
+		log.Fatalf("PROTOCOL_ESCALADO_VERSION inválida: %v", err)
+	}
+	cfg.ProtocolEscaladoVersion = protoVer
+
+	teams, err := parseNectarTeamByGroup(os.Getenv("NECTAR_TEAM_BY_GROUP"))
+	if err != nil {
+		log.Fatalf("NECTAR_TEAM_BY_GROUP inválida: %v", err)
+	}
+	cfg.NectarTeamByGroup = teams
+
 	cfg.validate()
 	return cfg
 }
@@ -430,6 +478,41 @@ func (c *Config) IsPhoneWhitelisted(phone string) bool {
 	return false
 }
 
+// Grupos de CUPS que deciden a qué equipo se escala. Los valores son las claves de
+// NECTAR_TEAM_BY_GROUP.
+const (
+	CupsGroupImaging    = "imagenes"   // Ecografía, RX, Resonancia, TAC (Grupo A)
+	CupsGroupNeuro      = "neuro"      // EMG / Fisiatría, Neurología (Grupo B)
+	CupsGroupCallCenter = "callcenter" // todo lo demás (genérico)
+)
+
+// CupsGroup devuelve el grupo de CUPS de un código de procedimiento: CupsGroupImaging,
+// CupsGroupNeuro o CupsGroupCallCenter (lo desconocido y lo demasiado corto). Es la única tabla
+// de prefijos: de ella cuelgan tanto ResolveTeamForCups (equipo de Bird) como
+// SuggestedTeamForCups (equipo de Néctar).
+func (*Config) CupsGroup(cupsCode string) string {
+	if len(cupsCode) < 3 {
+		return CupsGroupCallCenter
+	}
+	p3 := cupsCode[:3]
+	switch {
+	case p3 == "881" || p3 == "882": // Ecografía
+		return CupsGroupImaging
+	case p3 == "883": // Resonancia Magnética
+		return CupsGroupImaging
+	case p3 == "871" || p3 == "879": // Tomografía (TAC)
+		return CupsGroupImaging
+	case p3 == "870" || (p3 >= "873" && p3 <= "878"): // Rayos X
+		return CupsGroupImaging
+	case p3 == "291" || p3 == "930" || p3 == "892": // EMG / Fisiatría
+		return CupsGroupNeuro
+	case cupsCode == "890274" || cupsCode == "890374" || cupsCode == "053105": // Neurología
+		return CupsGroupNeuro
+	default:
+		return CupsGroupCallCenter
+	}
+}
+
 // ResolveTeamForCups returns the Bird team ID based on the CUPS procedure code.
 // Falls back to BirdTeamFallback (Call Center) for unknown codes.
 // When TeamRoutingEnabled is false, always returns Call Center.
@@ -437,26 +520,82 @@ func (c *Config) ResolveTeamForCups(cupsCode string) string {
 	if !c.TeamRoutingEnabled {
 		return c.BirdTeamFallback
 	}
-	if len(cupsCode) < 3 {
-		return c.BirdTeamFallback
-	}
-	p3 := cupsCode[:3]
-	switch {
-	case p3 == "881" || p3 == "882": // Ecografía
+	switch c.CupsGroup(cupsCode) {
+	case CupsGroupImaging:
 		return c.BirdTeamGrupoA
-	case p3 == "883": // Resonancia Magnética
-		return c.BirdTeamGrupoA
-	case p3 == "871" || p3 == "879": // Tomografía (TAC)
-		return c.BirdTeamGrupoA
-	case p3 == "870" || (p3 >= "873" && p3 <= "878"): // Rayos X
-		return c.BirdTeamGrupoA
-	case p3 == "291" || p3 == "930" || p3 == "892": // EMG / Fisiatría
-		return c.BirdTeamGrupoB
-	case cupsCode == "890274" || cupsCode == "890374" || cupsCode == "053105": // Neurología
+	case CupsGroupNeuro:
 		return c.BirdTeamGrupoB
 	default:
 		return c.BirdTeamFallback
 	}
+}
+
+// SuggestedTeamForCups devuelve el equipo de Néctar del grupo de ese CUPS, o nil si no hay
+// mapa configurado o el grupo no tiene id (el estado de hoy, con la variable vacía: el escalado
+// no sugiere equipo). Devuelve una copia: quien la reciba no altera el mapa de la config.
+func (c *Config) SuggestedTeamForCups(cupsCode string) *int64 {
+	if c == nil || len(c.NectarTeamByGroup) == 0 {
+		return nil
+	}
+	team, ok := c.NectarTeamByGroup[c.CupsGroup(cupsCode)]
+	if !ok {
+		return nil
+	}
+	return &team
+}
+
+// parseNectarTeamByGroup lee "imagenes:7, neuro:8, callcenter:9" en un mapa grupo → id de
+// equipo de Néctar. Vacía (o solo espacios) da un mapa vacío. Las claves válidas son SOLO los
+// grupos de CupsGroup; todo lo que no se entienda (grupo desconocido o repetido, par sin ':',
+// id no numérico o <= 0) es ERROR de arranque, porque tragarse un par malo dejaría ese grupo
+// escalando sin equipo sugerido y nadie se enteraría. El grupo se normaliza a minúsculas y se
+// toleran espacios alrededor de cada pieza.
+func parseNectarTeamByGroup(raw string) (map[string]int64, error) {
+	out := map[string]int64{}
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		name, id, ok := strings.Cut(item, ":")
+		if !ok {
+			return nil, fmt.Errorf("par %q sin ':' (forma: grupo:id_de_equipo)", item)
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		switch name {
+		case CupsGroupImaging, CupsGroupNeuro, CupsGroupCallCenter:
+		default:
+			return nil, fmt.Errorf("grupo %q desconocido (válidos: %s, %s, %s)",
+				name, CupsGroupImaging, CupsGroupNeuro, CupsGroupCallCenter)
+		}
+		team, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("grupo %q: id de equipo %q no numérico", name, strings.TrimSpace(id))
+		}
+		if team <= 0 {
+			return nil, fmt.Errorf("grupo %q: id de equipo %d, tiene que ser mayor que cero", name, team)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("grupo %q repetido", name)
+		}
+		out[name] = team
+	}
+	return out, nil
+}
+
+// parseKeyValueList lee "a=b,c=d" en un mapa; entradas vacías o sin '=' se ignoran.
+func parseKeyValueList(raw string) map[string]string {
+	out := map[string]string{}
+	for _, item := range strings.Split(raw, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(item), "=")
+		if ok && strings.TrimSpace(k) != "" {
+			out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	return out
 }
 
 // ResolveOutboundWebhookSecret returns the outbound webhook secret, falling back to the main secret.
