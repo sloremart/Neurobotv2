@@ -166,9 +166,10 @@ pruebas de entrada/escalado/retorno no dependen de esto y van antes.
    misma clave de cuenta y firma que las otras ocho rutas. Cuerpo:
    `{idempotency_key (UUID, obligatorio), channel_id (obligatorio, de la cuenta de la clave),
    recipient: {phone} | {bsuid} (exactamente una; phone se normaliza a E.164 sin «+»),
-   template: {name, language, parameters: [{key, value}]} (igual que `POST {id}/messages`, que
-   resuelve la plantilla por nombre+idioma dentro del catálogo de la cuenta; corrección de
-   `nectar-cd` sobre su primera forma, que la ponía por id),
+   template: {name, language, parameters: {"<marcador>": "<valor>"}} (igual que
+   `POST {id}/messages`: plantilla por nombre+idioma dentro del catálogo de la cuenta y
+   parámetros como OBJETO marcador → valor, la misma forma que `nectar.TemplateBody.Parameters
+   map[string]string` del puente; correcciones de `nectar-cd` del 2026-10-27, Plan 44 de Néctar),
    name (opcional; solo se escribe en un contacto sin nombre)}`.
    Respuestas: `201 {conversation_id, channel_id, message_id}`; `400 reason`
    `idempotency_key_invalid | phone_invalid | recipient_required | recipient_ambiguous |
