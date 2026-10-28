@@ -429,7 +429,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 	if !ocrResult.Success || len(ocrResult.Cups) == 0 {
 		cause := ocrResult.Error
 		if cause == "" {
-			cause = "ocr_sin_procedimientos"
+			cause = sm.OCRFailureNoProcedures
 		}
 		return sm.NewResult(sess.CurrentState).
 			WithButtons(
@@ -458,12 +458,18 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 	if len(validCups) == 0 {
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_no_cups_code",
 			observability.EmitOpts{Phone: sess.PhoneNumber})
-		return sm.NewResult(sm.StateEscalateToAgent).
+		res := sm.NewResult(sm.StateEscalateToAgent).
 			WithText("No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita.").
 			WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
-			WithContext(sm.CtxOCRUnreadNames, unread).
 			WithClearCtx(sm.CtxOCRFailureCause).
-			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)}), nil
+			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
+		if unread != "" {
+			// El nombre es lo único que el agente tiene de lo que no tenía código.
+			res.WithContext(sm.CtxOCRUnreadNames, unread)
+		} else {
+			res.WithClearCtx(sm.CtxOCRUnreadNames)
+		}
+		return res, nil
 	}
 	ocrResult.Cups = validCups
 
@@ -472,7 +478,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 
 	r := sm.NewResult(sm.StateValidateOCR).
 		WithContext("ocr_cups_json", string(cupsJSON)).
-		WithClearCtx(sm.CtxOCRFailureCause).
+		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames).
 		WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
 		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})

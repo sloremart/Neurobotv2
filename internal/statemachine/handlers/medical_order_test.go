@@ -920,3 +920,63 @@ func TestProcessOrderMedia_NoCodeKeepsUnreadNames(t *testing.T) {
 		t.Errorf("nombres sin código = %q", got)
 	}
 }
+
+// La lectura exitosa borra lo que dejó una anterior que falló o venía sin código, y un no-code sin
+// nombres no escribe la clave.
+func TestProcessOrderMedia_SuccessClearsUnreadNamesAndNoCodeWithoutNamesWritesNone(t *testing.T) {
+	ctx := context.Background()
+	fileSrv := newMockFileServer()
+	defer fileSrv.Close()
+
+	okSrv := newMockOCRServer(ocrCupsResponse("883141", "RM"))
+	defer okSrv.Close()
+	res, err := processOrderMedia(ctx, testSess(sm.StateUploadMedicalOrder), services.NewOCRServiceForTest(okSrv.URL), nil, fileSrv.URL+"/p1.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasClear(res, sm.CtxOCRUnreadNames) {
+		t.Errorf("el éxito debía borrar los nombres sin código: %v", res.ClearCtx)
+	}
+
+	noNameSrv := newMockOCRServer(ocrCupsResponse("", ""))
+	defer noNameSrv.Close()
+	res, err = processOrderMedia(ctx, testSess(sm.StateUploadMedicalOrder), services.NewOCRServiceForTest(noNameSrv.URL), nil, fileSrv.URL+"/p1.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, wrote := res.UpdateCtx[sm.CtxOCRUnreadNames]; wrote {
+		t.Error("sin nombres no se escribe CtxOCRUnreadNames")
+	}
+	if !hasClear(res, sm.CtxOCRUnreadNames) {
+		t.Error("sin nombres se borra lo que hubiera de una lectura anterior")
+	}
+}
+
+// has_order_no ata el id de la entrada de lista de espera al caso, solo si se creó.
+func TestAskMedicalOrder_NoOrderWritesWaitingListID(t *testing.T) {
+	ctx := context.Background()
+	run := func(createErr error) (*sm.StateResult, string) {
+		var createdID string
+		repo := &testutil.MockWaitingListCreator{CreateFn: func(_ context.Context, e *domain.WaitingListEntry) error {
+			createdID = e.ID
+			return createErr
+		}}
+		sess := testSess(sm.StateAskMedicalOrder)
+		sess.SetContext("entity_category", "PARTICULAR")
+		sess.SetContext("_prompted_has_order", "1")
+		res, err := askMedicalOrderHandler(repo, nil, nil)(ctx, sess, postbackM("has_order_no"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res, createdID
+	}
+
+	res, id := run(nil)
+	if id == "" || res.UpdateCtx[sm.CtxEscalationWaitingListID] != id {
+		t.Errorf("lista_espera = %q, quería %q", res.UpdateCtx[sm.CtxEscalationWaitingListID], id)
+	}
+	res, _ = run(fmt.Errorf("db caída"))
+	if _, wrote := res.UpdateCtx[sm.CtxEscalationWaitingListID]; wrote {
+		t.Error("si la entrada no se creó no se escribe el id")
+	}
+}

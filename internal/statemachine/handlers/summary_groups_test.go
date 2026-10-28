@@ -75,13 +75,6 @@ func TestSummaryForAgent_FactsMatchText(t *testing.T) {
 					}
 					continue
 				}
-				if cita, ok := fields["Procedimiento"]; ok && label == "Procedimiento" && cita.Key == "procedimiento" {
-					// El «Procedimiento» del grupo cita es un campo normal (la fusionada no lo es).
-					if cita.Value != value {
-						t.Errorf("línea %q / campo %+v", line, cita)
-					}
-					continue
-				}
 				if label == "Procedimiento" {
 					if fields["Procedimiento"].Key != "" {
 						t.Error("Procedimiento es una línea fusionada: va partida en cups_nombre y cups_codigo")
@@ -224,5 +217,38 @@ func TestSummaryForAgent_PendingGroupsAndChosenSlot(t *testing.T) {
 	}
 	if _, ok := groupField(groups, "agenda", "horarios_ofrecidos"); ok {
 		t.Error("con horario elegido no se listan los ofrecidos")
+	}
+}
+
+// Con un CUPS elegido (línea fusionada «Procedimiento:») y una cita de notificación a la vez, el
+// agente ve dos líneas con rótulos distintos y facts no las confunde.
+func TestSummaryForAgent_ProcedureAndAppointmentProcedureDoNotCollide(t *testing.T) {
+	sess := summaryCases()[3].sess()
+	sess.SetContext("service_name", "RESONANCIA")
+	sess.SetContext("cups_name", "RM DE CEREBRO SIMPLE")
+	text, groups := summaryForAgent(sess, "883141", "Call Center")
+
+	for _, want := range []string{
+		"Procedimiento: RM DE CEREBRO SIMPLE (883141)",
+		"Procedimiento de la cita: RM DE CEREBRO",
+	} {
+		if !hasLine(text, want) {
+			t.Errorf("falta la línea %q en:\n%s", want, text)
+		}
+	}
+	labels := map[string]bool{}
+	for _, g := range groups {
+		for _, f := range g.Fields {
+			if labels[f.Label] {
+				t.Errorf("rótulo repetido %q", f.Label)
+			}
+			labels[f.Label] = true
+		}
+	}
+	if v, _ := groupField(groups, "cita", "procedimiento"); v != "RM DE CEREBRO" {
+		t.Errorf("cita.procedimiento = %q", v)
+	}
+	if v, _ := groupField(groups, "procedimiento", "cups_codigo"); v != "883141" {
+		t.Errorf("procedimiento.cups_codigo = %q", v)
 	}
 }

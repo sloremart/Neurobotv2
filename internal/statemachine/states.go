@@ -370,6 +370,10 @@ const (
 	// resumen del agente (grupo `orden`).
 	CtxOCRFailureCause = "ocr_failure_cause"
 
+	// OCRFailureNoProcedures es la causa que se guarda cuando la lectura falló sin que el OCR diera
+	// un motivo (`ocrResult.Error` vacío).
+	OCRFailureNoProcedures = "ocr_sin_procedimientos"
+
 	// CtxOCRUnreadNames son los nombres de los procedimientos que el OCR leyó SIN código, unidos por
 	// «; ». Es lo único que el agente tiene de ellos. Lo escribe processOrderMedia y lo lee el
 	// resumen del agente (grupo `orden`).

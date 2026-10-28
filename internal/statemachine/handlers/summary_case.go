@@ -157,7 +157,7 @@ func writeAppointmentGroup(doc *summaryDoc, sess *session.Session) {
 	g.optional("id", "Cita", id)
 	g.optional("fecha", "Fecha", sess.GetContext("notif_appt_date"))
 	g.optional("hora", "Hora", sess.GetContext("notif_appt_time"))
-	g.optional("procedimiento", "Procedimiento", oneLine(sess.GetContext("notif_cups_name")))
+	g.optional("procedimiento", "Procedimiento de la cita", oneLine(sess.GetContext("notif_cups_name")))
 	g.optional("tipo_notificacion", "Notificación", sess.GetContext("notif_type"))
 }
 

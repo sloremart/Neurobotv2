@@ -127,13 +127,15 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 // rotularía la siguiente escalación, que escribe el suyo, con el motivo de la anterior.
 //
 // (4) LO ÚLTIMO QUE ESCRIBIÓ EL PACIENTE y la lista de espera atada al caso (CtxEscalationLastInput,
-// CtxEscalationWaitingListID) igual: son datos de ESTA escalación y el resumen los pinta tal cual.
+// CtxEscalationWaitingListID) igual, y también lo que dejó la lectura de la orden
+// (CtxOCRFailureCause, CtxOCRUnreadNames): son datos de ESTA escalación y el resumen los pinta
+// tal cual. Regla: toda clave que describe UNA escalación se borra al salir.
 func escalationExit(r *sm.StateResult) *sm.StateResult {
 	if r == nil {
 		return r
 	}
 	return r.WithClearCtx(sm.CtxAgentInputRejection, sm.CtxPatientAskedForAgent, sm.CtxEscalationReason,
-		sm.CtxEscalationLastInput, sm.CtxEscalationWaitingListID)
+		sm.CtxEscalationLastInput, sm.CtxEscalationWaitingListID, sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames)
 }
 
 // reasonNotifiesPatient dice si el motivo interno obliga a avisarle al paciente de Néctar aunque

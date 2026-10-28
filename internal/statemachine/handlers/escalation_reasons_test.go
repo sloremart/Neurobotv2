@@ -283,3 +283,17 @@ func TestEscalate_NectarPreSendNoticeIsNotRepeated(t *testing.T) {
 		t.Fatalf("el aviso salió %d veces: %v", count, nb.events)
 	}
 }
+
+// Toda clave que describe UNA escalación se borra al salir: lo contrario rotularía la siguiente
+// con datos de la anterior.
+func TestEscalationExit_ClearsEveryPerEscalationKey(t *testing.T) {
+	res := escalationExit(sm.NewResult(sm.StateMainMenu))
+	for _, key := range []string{
+		sm.CtxEscalationLastInput, sm.CtxEscalationWaitingListID,
+		sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames,
+	} {
+		if !hasClear(res, key) {
+			t.Errorf("escalationExit debe borrar %q", key)
+		}
+	}
+}
