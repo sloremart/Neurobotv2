@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -153,10 +154,9 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 	// con la vista de la sesión. El worker reconoce State == NOTIF_PENDING con Data = acción y la
 	// ejecuta sin reanudar el flujo.
 	sm.RegisterReturnMenu(sm.StateNotifPending, notifPendingReturnOptions)
-	// Sin «Devolver al bot en el mismo paso»: reanudar tal cual re-pide la confirmación con
-	// botones, y la sesión escalada guarda la cita como notif_appointment_id mientras el handler
-	// lee notif_appt_id → «No pudimos encontrar tu cita» y cierre. El agente elige la acción.
-	sm.HidePlainResume(sm.StateNotifPending)
+	// «Devolver al bot en el mismo paso» re-pide la confirmación con los 3 botones: solo se
+	// ofrece donde esos botones corresponden a la notificación.
+	sm.HidePlainResumeWhen(sm.StateNotifPending, notifPendingButtonsDontApply)
 	// La notificación deja una cita (o una acción de cita) por resolver.
 	sm.RegisterResolveGuard(sm.StateNotifPending, sm.ResolveGuardPendingAppointment)
 	m.RegisterWithConfig(sm.StateNotifPending, sm.HandlerConfig{
@@ -597,7 +597,7 @@ func confirmRescheduleNotifHandler(apptSvc *services.AppointmentService, procRep
 			// CUÁL reprogramar (no se pueden reagendar todas a un mismo horario).
 			apptID := sess.GetContext("reschedule_appt_id")
 			if apptID == "" {
-				apptID = sess.GetContext("notif_appt_id")
+				apptID = notifAppointmentID(sess)
 			}
 			if a, dayAppts, ferr := apptSvc.FindBlockByAppointmentID(ctx, apptID); ferr == nil && a != nil && len(dayAppts) > 1 {
 				apptJSON, _ := json.Marshal(dayAppts)
@@ -637,16 +637,12 @@ func confirmCancelNotifHandler(apptSvc *services.AppointmentService, onCancel Ca
 		switch selected {
 		case "cancel_yes":
 			// Get all appointment IDs stored by startConfirmCancelSession
-			allIDsJSON := sess.GetContext("notif_appt_ids")
-			var allIDs []string
-			if allIDsJSON != "" {
-				json.Unmarshal([]byte(allIDsJSON), &allIDs)
-			}
+			apptID := notifAppointmentID(sess)
+			allIDs := notifAppointmentIDs(sess, apptID)
 
 			// Cargar el bloque (citas) ANTES de cancelar: sirve (a) de fallback para los IDs y (b) para
 			// obtener los (médico, agenda) liberados que se avisan a la lista de espera por slot.
 			// FindBlockByAppointmentID acepta cualquier ID del grupo.
-			apptID := sess.GetContext("notif_appt_id")
 			if apptID == "" {
 				apptID = sess.GetContext("reschedule_appt_id")
 			}
@@ -705,7 +701,7 @@ func confirmCancelNotifHandler(apptSvc *services.AppointmentService, onCancel Ca
 func notifPendingHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
-		apptID := sess.GetContext("notif_appt_id")
+		apptID := notifAppointmentID(sess)
 		if apptID == "" {
 			apptID = sess.GetContext("reschedule_appt_id")
 		}
@@ -1313,6 +1309,50 @@ func truncate(s string, maxLen int) string {
 // escalada, según su tipo y el motivo de la escalación (contexto de la sesión). Cada `Data` es una
 // acción que el atajo de NOTIF_PENDING del worker entrega a HandleNotifPendingCommand. Sin sesión
 // sale el menú de la confirmación, el de siempre.
+// notifAppointmentID es la cita de la notificación en curso. La sesión escalada de una
+// notificación (escalateToAgent y escalateNotifToAgent en internal/notifications) la guarda como
+// notif_appointment_id; la de confirmación/cancelación desde la plantilla, como notif_appt_id.
+// Manda notif_appointment_id: si la escalación reusó una sesión que ya traía otra cita, la que
+// escribió la escalación es la de los botones que ven el agente y el paciente.
+func notifAppointmentID(sess *session.Session) string {
+	if id := sess.GetContext("notif_appointment_id"); id != "" {
+		return id
+	}
+	return sess.GetContext("notif_appt_id")
+}
+
+// notifAppointmentIDs son las citas del día que startConfirmCancelSession guardó en
+// notif_appt_ids, solo si incluyen apptID: la sesión escalada no las guarda, y unas que no
+// incluyen la cita en curso son de otra notificación. Sin ellas, quien llama usa el bloque del día.
+func notifAppointmentIDs(sess *session.Session, apptID string) []string {
+	var ids []string
+	if raw := sess.GetContext("notif_appt_ids"); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &ids)
+	}
+	if apptID != "" && !slices.Contains(ids, apptID) {
+		return nil
+	}
+	return ids
+}
+
+// notifPendingButtonsDontApply dice si los 3 botones de NOTIF_PENDING (confirmar, reprogramar,
+// cancelar) NO corresponden a la notificación de la sesión: la lista de espera y la cancelación
+// de la clínica tienen otras acciones, y tras el fallo de SIESA el paciente ya confirmó. Ahí el
+// agente elige la acción del menú y no se le ofrece reanudar tal cual.
+func notifPendingButtonsDontApply(sess *session.Session) bool {
+	if sess == nil {
+		return false
+	}
+	if sess.GetContext(sm.CtxNotifEscalationDetail) == sm.EscalationReasonNotifSystemFailure {
+		return true
+	}
+	switch sess.GetContext("notif_type") {
+	case "waiting_list", "cancellation":
+		return true
+	}
+	return false
+}
+
 func notifPendingReturnOptions(sess *session.Session) []sm.ReturnOption {
 	np := sm.StateNotifPending
 	action := func(label, value string) sm.ReturnOption {

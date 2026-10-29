@@ -138,8 +138,9 @@ var (
 	returnMenus   = map[string]ReturnOptionsBuilder{}
 	returnInputs  = map[string]ReturnInput{}
 	resolveGuards = map[string]string{}
-	// hiddenPlainResume son los pasos donde «devolver en el mismo paso» no lleva a ninguna parte.
-	hiddenPlainResume = map[string]bool{}
+	// hiddenPlainResume son los pasos donde «devolver en el mismo paso» no lleva a ninguna parte:
+	// el predicado dice en qué sesiones (HidePlainResume lo oculta siempre).
+	hiddenPlainResume = map[string]func(*session.Session) bool{}
 	// resumeLabels son los rótulos propios de «devolver en el mismo paso», por paso.
 	resumeLabels = map[string]string{}
 )
@@ -176,9 +177,16 @@ func RegisteredReturnSteps() []string {
 // ellos dejaría la sesión sin handler— y para pasos SIN campo donde reanudar tal cual repite la
 // misma escalación (P1-5). Un paso con campo no se oculta: se re-rotula (RegisterResumeLabel).
 func HidePlainResume(state string) {
+	HidePlainResumeWhen(state, func(*session.Session) bool { return true })
+}
+
+// HidePlainResumeWhen es HidePlainResume solo para las sesiones en que hide da true: es para
+// pasos donde reanudar tal cual sirve en unos casos y no en otros (NOTIF_PENDING según el tipo de
+// notificación). hide recibe la sesión de ReturnOptionsFor, que puede ser nil.
+func HidePlainResumeWhen(state string, hide func(*session.Session) bool) {
 	returnMenusMu.Lock()
 	defer returnMenusMu.Unlock()
-	hiddenPlainResume[state] = true
+	hiddenPlainResume[state] = hide
 }
 
 // RegisterReturnMenu declara las salidas de un paso. Se llama donde se registra el estado,
@@ -200,9 +208,10 @@ func RegisterStaticReturnMenu(state string, options ...ReturnOption) {
 func ReturnOptionsFor(sess *session.Session, step string) []ReturnOption {
 	returnMenusMu.RLock()
 	build := returnMenus[step]
-	hidePlain := hiddenPlainResume[step]
+	hidePlainFor := hiddenPlainResume[step]
 	resumeLabel := resumeLabels[step]
 	returnMenusMu.RUnlock()
+	hidePlain := hidePlainFor != nil && hidePlainFor(sess)
 	if resumeLabel == "" {
 		resumeLabel = defaultResumeLabel
 	}

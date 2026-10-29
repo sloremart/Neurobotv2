@@ -794,6 +794,37 @@ func TestReturnOptionsFor_HiddenPlainResume(t *testing.T) {
 	}
 }
 
+// HidePlainResumeWhen oculta «Devolver al bot en el mismo paso» solo en las sesiones que el
+// predicado señala; en las demás (y sin sesión, si el predicado lo dice) se ofrece.
+func TestReturnOptionsFor_HiddenPlainResumeWhen(t *testing.T) {
+	const step = "T1_HIDE_WHEN"
+	registerTestMenu(t, step, ReturnOption{Label: "Otra", Value: "otra", Target: StateGreeting})
+	t.Cleanup(func() {
+		returnMenusMu.Lock()
+		defer returnMenusMu.Unlock()
+		delete(hiddenPlainResume, step)
+	})
+	HidePlainResumeWhen(step, func(sess *session.Session) bool {
+		return sess != nil && sess.GetContext("tipo") == "otro"
+	})
+	offers := func(sess *session.Session) bool {
+		for _, o := range ReturnOptionsFor(sess, step) {
+			if o.Value == ReturnResume {
+				return true
+			}
+		}
+		return false
+	}
+	hidden := &session.Session{Context: map[string]string{"tipo": "otro"}}
+	shown := &session.Session{Context: map[string]string{"tipo": "normal"}}
+	if offers(hidden) {
+		t.Error("el predicado oculta la reanudación en esa sesión")
+	}
+	if !offers(shown) || !offers(nil) {
+		t.Error("donde el predicado no la oculta, se ofrece")
+	}
+}
+
 // Un valor de `lista` que no está entre las opciones del paso se rechaza ANTES de la validación
 // propia: la consola solo valida en el cliente, y el bot no se fía.
 func TestResolveReturnV1_ListValueOutsideOptionsIsRejected(t *testing.T) {
