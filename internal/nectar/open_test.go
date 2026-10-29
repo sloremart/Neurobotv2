@@ -261,12 +261,16 @@ func TestOpenConversation_NoRetryOnDoubt(t *testing.T) {
 		{status: http.StatusConflict, body: `{"error":"x","reason":"attempt_sent_unrecorded"}`},
 		{status: http.StatusBadGateway, body: `{"error":"x","reason":"meta_no_answer"}`},
 		{status: http.StatusBadGateway, body: `{"error":"x","reason":"sent_but_not_recorded"}`},
+		// Un 502 de un proxy (sin cuerpo JSON) o con un motivo desconocido también está en duda.
+		{status: http.StatusBadGateway},
+		{status: http.StatusBadGateway, body: `<html>502 Bad Gateway</html>`},
+		{status: http.StatusBadGateway, body: `{"error":"x","reason":"algo_nuevo"}`},
 	}
 	for _, reply := range cases {
 		f := newFakeOpen(t, reply)
 		c, _ := newOpenClient(f)
 		_, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
-		if !errors.Is(err, ErrOpenInDoubt) || !errors.Is(err, bird.ErrPermanentSend) {
+		if !errors.Is(err, ErrOpenInDoubt) || !bird.IsPermanentSendError(err) {
 			t.Fatalf("%d %s: quiero ErrOpenInDoubt permanente, tengo %v", reply.status, reply.body, err)
 		}
 		if f.calls() != 1 {

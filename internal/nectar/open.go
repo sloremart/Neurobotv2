@@ -166,12 +166,13 @@ func decodeOpen(resp reply) (Opened, error) {
 			return Opened{}, fmt.Errorf("%w (400 %s)", ErrTemplateRejected, reason)
 		}
 	case http.StatusBadGateway:
-		switch reason {
-		case "meta_no_answer", "sent_but_not_recorded":
-			return Opened{}, fmt.Errorf("%w (502 %s)", ErrOpenInDoubt, reason)
-		case "meta_rejected":
+		if reason == "meta_rejected" {
 			return Opened{}, fmt.Errorf("%w (502 %s)", ErrTemplateRejected, reason)
 		}
+		// Todo 502 es «en duda», con cualquier motivo o sin cuerpo (un 502 de un proxy delante de
+		// Néctar incluido): la plantilla pudo llegar a Meta, y un reintento de quien llama acuñaría
+		// otra clave y Néctar mandaría una SEGUNDA plantilla.
+		return Opened{}, fmt.Errorf("%w (502 %q)", ErrOpenInDoubt, reason)
 	}
 	// 4xx con otro motivo (channel_inactive, phone_invalid…) es un defecto de configuración o del
 	// cuerpo: permanente. 5xx sin motivo conocido (503 agotado incluido) se deja transitorio.
