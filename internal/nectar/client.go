@@ -39,6 +39,10 @@ var (
 	// credenciales falla igual, así que también son permanentes para el reintento del envío.
 	ErrUnauthorized     = fmt.Errorf("nectar: credenciales rechazadas (401): %w", bird.ErrPermanentSend)
 	ErrNotConfiguredAPI = fmt.Errorf("nectar: cliente sin URL base o sin credenciales: %w", bird.ErrPermanentSend)
+	// ErrEscalationDisabled es el 403 reason=escalation_disabled del escalado: la entidad tiene
+	// apagada la escalación a humanos. Es una decisión de configuración de Néctar: reintentar
+	// falla igual, y al paciente no se le puede prometer un asesor que no va a venir.
+	ErrEscalationDisabled = fmt.Errorf("nectar: escalado apagado para la entidad (403): %w", bird.ErrPermanentSend)
 )
 
 // Client habla con las siete rutas /api/bot/* de Néctar. Cada petición lleva las DOS
@@ -437,6 +441,15 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		return ErrNotMine
 	case resp.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorized
+	case resp.StatusCode == http.StatusForbidden:
+		var e struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal(raw, &e)
+		if e.Reason == "escalation_disabled" {
+			return ErrEscalationDisabled
+		}
+		return fmt.Errorf("nectar: %s %s: status 403 %s", method, path, strings.TrimSpace(string(raw)))
 	case resp.StatusCode == http.StatusConflict:
 		var e struct {
 			Error  string `json:"error"`

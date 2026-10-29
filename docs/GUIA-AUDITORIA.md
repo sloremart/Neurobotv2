@@ -487,6 +487,13 @@ Eventos nuevos: `escalacion/equipo_sugerido` (equipo de Néctar por grupo de CUP
   Las sesiones de Néctar NO emiten `agent_no_show` ni `agent_reminder_sent`.
 - CAZAR: [BUG] `agent_no_show`/`agent_reminder_sent` en una sesión `nectar:*` · [BUG] `escalation_expired`
   de un caso encolado dentro de horario (no debe vencer) · `cola_vencida` frecuente sin plantilla mapeada.
+- Eventos de esta tanda: `escalacion/retorno_estado_inexistente` (ERROR: el agente devolvió a un estado sin
+  handler; la sesión cae a GREETING; CAZAR: cualquier ocurrencia), `escalacion/siguiente_procedimiento` (el agente
+  dio por gestionado el procedimiento y el bot siguió con el siguiente grupo) y `escalacion/escalation_disabled`
+  (Néctar 403: escalado apagado para la entidad; un intento, sin promesa de asesor; CAZAR: ráfagas = entidad mal
+  configurada en Néctar). Cada `escalated` trae `reason_detail` (literales de `EscalationReasons()`, forma
+  `^[a-z_]{1,64}$`): un `escalated` sin detalle o con literal fuera de esa lista es [BUG]. El equipo sugerido sale
+  del CUPS de la sesión o, antes de agrupar, del primero de la orden leída.
 - `agent_resume_reprompt` (evento de sesión, solo `nectar:*`): el agente devolvió el caso sin dato
   (`__resume__`) y el paso re-preguntó SIN gastar reintento ni escalar (no es `invalid_input`). Marca
   `_agent_resume_turn` solo viva durante ese turno. CAZAR: [BUG] `agent_resume_reprompt` en una sesión

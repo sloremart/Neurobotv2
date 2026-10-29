@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
+	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
@@ -26,6 +28,26 @@ const gateOutOfHours = "out_of_hours"
 // escalación encolada: el plazo tiene que cubrir el tiempo de ATENCIÓN, no solo la espera.
 const queuedExpiryExtra = 8 * time.Hour
 
+// teamCupsCode es el CUPS que decide el equipo sugerido: el de la sesión (`cups_code`, ya
+// agrupado) o, ANTES de agrupar, el primero de la orden leída (`ocr_cups_json`). Sin él, una
+// escalación en el paso de la orden saldría sin equipo aunque la orden ya diga el grupo. Sobre y
+// evento usan esta misma función para no contar equipos distintos.
+func teamCupsCode(sess *session.Session) string {
+	if code := sess.GetContext("cups_code"); code != "" {
+		return code
+	}
+	var cups []services.CUPSEntry
+	if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil {
+		return ""
+	}
+	for _, c := range cups {
+		if code := strings.TrimSpace(c.Code); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
 // emitSuggestedTeam deja `escalacion/equipo_sugerido` DESPUÉS de que Néctar aceptó el escalado:
 // emitirlo al armar el sobre contaría equipos sugeridos de casos que Néctar nunca recibió. Solo
 // cuando hay algo que sugerir: un evento por cada escalación sin mapeo no diría nada.
@@ -35,7 +57,7 @@ func emitSuggestedTeam(cfg *config.Config, sess *session.Session, team *int64) {
 	}
 	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "equipo_sugerido",
 		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{
-			"grupo": cfg.CupsGroup(sess.GetContext("cups_code")), "team_id": *team,
+			"grupo": cfg.CupsGroup(teamCupsCode(sess)), "team_id": *team,
 		}})
 }
 
@@ -66,7 +88,7 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 		Reason:          reason,
 		Summary:         summary,
 		ResolveLock:     resolveLock,
-		SuggestedTeamID: cfg.SuggestedTeamForCups(sess.GetContext("cups_code")),
+		SuggestedTeamID: cfg.SuggestedTeamForCups(teamCupsCode(sess)),
 	}
 	if cfg == nil || !cfg.EmitsProtocolV1() {
 		// Menú de retornos: las salidas válidas DESDE ESTE PASO. Si no se puede serializar se

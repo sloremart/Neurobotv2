@@ -202,6 +202,9 @@ var catalog = map[string]stepSpec{
 	// siguiente_procedimiento: el agente de Néctar dio por gestionado el procedimiento actual y el
 	// bot siguió con el siguiente grupo de la orden (ADVANCE_NEXT_PROCEDURE).
 	"escalacion/siguiente_procedimiento": {LvMilestone, "ok", ""},
+	// escalation_disabled: Néctar respondió 403 escalation_disabled (la entidad tiene apagado el
+	// escalado a humanos). El paciente vuelve al menú sin promesa de asesor; no se reintenta.
+	"escalacion/escalation_disabled": {LvOutcome, "blocked", ""},
 	// Restricción de edad en neurología: menor intenta neurología adultos o adulto intenta pediátrica.
 	// Terminal: se regresa al menú principal para que el paciente elija la especialidad correcta.
 	"agendar/age_restriction_blocked": {LvOutcome, "blocked", ""},

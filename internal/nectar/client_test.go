@@ -458,3 +458,35 @@ func TestBridgeEscalate_SinEquipoElCuerpoEsElDeSiempre(t *testing.T) {
 		t.Fatal("sin equipo sugerido no se manda el campo")
 	}
 }
+
+// P2-7: el 403 reason=escalation_disabled del escalado es un error tipado y permanente; otro 403
+// sigue siendo un fallo genérico.
+func TestClientEscalate_403DisabledIsTyped(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		typed      bool
+	}{
+		{"apagado", `{"error":"x","reason":"escalation_disabled"}`, true},
+		{"otro motivo", `{"error":"x","reason":"other"}`, false},
+		{"sin cuerpo", ``, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			_, err := NewClient(srv.URL, svcKey, reqSecret).Escalate(context.Background(), 1234,
+				Escalation{Reason: "bot_cannot_answer", Summary: "s"}, nil)
+			if err == nil {
+				t.Fatal("un 403 es error")
+			}
+			if got := errors.Is(err, ErrEscalationDisabled); got != tc.typed {
+				t.Fatalf("typed=%v err=%v", got, err)
+			}
+			if tc.typed && !errors.Is(err, bird.ErrPermanentSend) {
+				t.Fatal("tiene que ser permanente")
+			}
+		})
+	}
+}

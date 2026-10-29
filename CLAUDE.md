@@ -343,3 +343,5 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Secretos: `NECTAR_SERVICE_KEY` y `NECTAR_NOTICE_SECRET` por cuenta (`openssl rand -hex 32`);
   `NECTAR_REQUEST_SECRET` = `BOT_WEBHOOK_SECRET_INBOUND` compartido. Nunca valores reales en el repo.
 - Lo que Neuro pide a Néctar es aditivo: no debe romper a hdg-bot.
+- Menús del agente por paso: cada paso escalable registra sus opciones/campos (`sm.RegisterReturnMenu` y afines, llamado
+  donde se registra el estado), más las universales `bot_reanudar`/`bot_reiniciar`/`bot_cerrar`; no hay lista de pasos aplazados.

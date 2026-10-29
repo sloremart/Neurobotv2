@@ -100,7 +100,10 @@ Bird. Vacía, el bot funciona exactamente como antes (puente apagado). Si la con
   paciente; los casos encolados dentro de horario no vencen; la cola al próximo día hábil es solo suya.
 - El agente de Néctar devuelve el caso por las opciones del menú o por un único campo de texto («dato»).
 - Límites de la fase A: la descripción libre de la orden escrita por el agente no llega desde Néctar (solo
-  los CUPS); 39 estados escalables vuelven solo con las opciones universales (reanudar/cerrar) hasta la fase B;
+  los CUPS). Todo paso escalable tiene menú propio, campo de entrada o candado de «Resolver», y cada
+  escalación viaja con su `reason_detail`, los grupos de datos del caso (`facts`) y las opciones universales
+  `bot_reanudar` / `bot_reiniciar` / `bot_cerrar`; los literales de candado `retorno_pendiente` y `cita_pendiente`
+  son provisionales (Néctar los guarda, aún no actúa sobre ellos);
   los envíos proactivos (recordatorios, lista de espera, plantillas administrativas) siguen por Bird hasta el Plan B.
 - Pendiente del operador: plantilla de Meta para el aviso de cola vencida, mapeada como
   `cola_vencida=<nombre meta>` (un parámetro, `horario`) en `NECTAR_TEMPLATE_NAMES`.

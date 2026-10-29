@@ -123,7 +123,14 @@ Toda resolución se archiva con estado + conversation_id (evidencia); limpieza 4
 **Retorno por menú (sesiones de Néctar):** en lugar de `/bot`, el agente elige en Néctar una opción del
 menú de retorno del paso escalado (o escribe un único campo de texto, «dato»); la opción se traduce a la
 entrada del paso y la sesión retoma. Una entrada que el paso no acepta se rechaza al agente
-(`escalacion/agent_input_rejected`). Los 39 pasos sin menú propio solo ofrecen reanudar/cerrar (fase A).
+(`escalacion/agent_input_rejected`). Todo paso escalable
+tiene menú propio, campo de entrada (texto, fecha, número o lista) o candado de «Resolver»; además siempre hay
+tres opciones universales: `bot_reanudar` (lleva lo escrito), `bot_reiniciar` (saludo) y `bot_cerrar`. Con
+varios procedimientos pendientes se ofrece «Seguir con el siguiente procedimiento». Cada escalación lleva su
+`reason_detail` y grupos de datos del caso (`facts`: entidad, orden leída, grupos pendientes, agenda, cita,
+último intento); las de notificación persisten la sesión de Néctar solo si el escalado tuvo éxito. Si Néctar
+responde 403 `escalation_disabled` (entidad con escalado apagado) no se reintenta y el paciente no recibe la
+promesa de un asesor. El candado `retorno_pendiente`/`cita_pendiente` es provisional: Néctar lo guarda, no actúa.
 
 ---
 

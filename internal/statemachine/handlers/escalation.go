@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -26,6 +27,11 @@ const escalationSessionCap = 3
 // escalateMaxRetries: intentos totales para EscalateToAgent ante errores transitorios de la API.
 // Delays: 0s → 1s → 2s entre intentos; peor caso ~3s extra antes de mostrar el fallback.
 const escalateMaxRetries = 3
+
+// escalationDisabledText es lo que oye el paciente cuando Néctar tiene apagado el escalado de su
+// entidad (403 escalation_disabled): no se le promete un asesor ni se le dice que lo contactarán.
+const escalationDisabledText = "En este momento no podemos comunicarte con un asesor por este medio. " +
+	"¿Deseas volver al inicio o terminar el chat?"
 
 // resumeSuppressedNectarText es lo que oye el paciente de Néctar cuando el corte anti-bucle del
 // `__resume__` lo devuelve al menú: allá no hay un aviso de no-show previo que lo explique.
@@ -191,7 +197,10 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// En la ventana del próximo día hábil el gate NO desvía: «fuera de horario» o «no hay
 		// asesores» dicen que el caso no se puede atender AHORA, que es justo lo que la cola
 		// resuelve. Fuera de ella, un «no hay asesores» en plena jornada sigue desviando al menú.
-		if gate != "" && !queuedNextDay {
+		// La re-escalación por un dato del agente que no sirvió (CtxAgentInputRejection) tampoco
+		// se desvía: la causó una persona y desviarla al menú dejaría al paciente sin asesor (igual
+		// que se exime del tope y de la IA).
+		if gate != "" && !queuedNextDay && sess.GetContext(sm.CtxAgentInputRejection) == "" {
 			attrs := map[string]interface{}{"gate": gate}
 			if gateReason != "" {
 				attrs["motivo"] = gateReason
@@ -379,9 +388,24 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			}
 			assignedAgentID, assignedAgentName, err = birdClient.EscalateToAgentWithSummary(ctx, conversationID, msg.Phone,
 				teamID, teamName, sess.PatientName, cfg.BirdTeamFallback, envelope)
-			if err == nil {
+			if err == nil || errors.Is(err, nectar.ErrEscalationDisabled) {
 				break
 			}
+		}
+		if errors.Is(err, nectar.ErrEscalationDisabled) {
+			// El escalado está apagado para la entidad: no es un fallo de canal ni se reintenta, y
+			// el paciente no recibe la promesa de un asesor que no va a venir.
+			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_disabled",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: preState})
+			slog.Warn("escalation: escalado apagado para la entidad en Néctar",
+				"session_id", sess.ID, "phone", utils.MaskPhone(msg.Phone), "pre_state", preState)
+			return escalationExit(sm.NewResult(sm.StateFallbackMenu).
+				WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
+				WithButtons(escalationDisabledText,
+					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
+					sm.Button{Text: "Terminar chat", Payload: "action:end"},
+				).
+				WithEvent("escalation_disabled", map[string]interface{}{"pre_state": preState})), nil
 		}
 		if err != nil {
 			// Diagnóstico por-capa (ciclo 98) + directiva de PICKUP MANUAL. El log ERROR va a Telegram

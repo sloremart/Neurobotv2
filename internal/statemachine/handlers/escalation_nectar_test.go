@@ -827,3 +827,115 @@ func TestEscalate_EnvelopeCarriesResolveLock(t *testing.T) {
 		t.Errorf("ResolveLock = %q, quiero retorno_pendiente", got)
 	}
 }
+
+// P2-2: ANTES de agrupar la sesión no tiene cups_code, solo la orden leída: el equipo sugerido
+// sale del primer CUPS de ocr_cups_json (sobre y evento usan el mismo código).
+func TestEscalationEnvelope_TeamFromOCRBeforeGrouping(t *testing.T) {
+	cfg := testEscalationConfig()
+	cfg.NectarTeamByGroup = map[string]int64{"imagenes": 7}
+	m, nb := nectarMachine(t, cfg, nil)
+	sess := nectarSession(true)
+	sess.SetContext("ocr_cups_json", `[{"cups_code":"883101","cups_name":"RM","quantity":1}]`)
+
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	escalateOnce(t, m, sess)
+	stop()
+
+	if len(nb.escalations) != 1 || nb.escalations[0].SuggestedTeamID == nil || *nb.escalations[0].SuggestedTeamID != 7 {
+		t.Fatalf("el equipo sugerido tiene que salir de la orden leída: %+v", nb.escalations)
+	}
+	if ev := sink.FindStep("escalacion", "equipo_sugerido"); ev == nil || ev.Attrs["grupo"] != "imagenes" {
+		t.Fatalf("el evento usa el mismo código que el sobre: %+v", ev)
+	}
+}
+
+// El cups_code de la sesión manda sobre la orden leída.
+func TestTeamCupsCode_PrefersSessionCode(t *testing.T) {
+	sess := nectarSession(false)
+	sess.SetContext("ocr_cups_json", `[{"cups_code":"883101","quantity":1}]`)
+	if got := teamCupsCode(sess); got != "883101" {
+		t.Fatalf("sin cups_code sale de la orden: %q", got)
+	}
+	sess.SetContext("cups_code", "890274")
+	if got := teamCupsCode(sess); got != "890274" {
+		t.Fatalf("con cups_code manda el de la sesión: %q", got)
+	}
+	sess.SetContext("cups_code", "")
+	sess.SetContext("ocr_cups_json", "no-es-json")
+	if got := teamCupsCode(sess); got != "" {
+		t.Fatalf("JSON inválido no inventa código: %q", got)
+	}
+}
+
+// P2-6: la re-escalación por un dato del agente que no sirvió no la desvía el gate de
+// disponibilidad (la causó una persona; desviarla dejaría al paciente sin asesor).
+func TestEscalate_RejectedReescalationSkipsGate(t *testing.T) {
+	m, nb := nectarMachine(t, testEscalationConfig(), nil)
+	nb.unavailable = true
+	sess := nectarSession(false)
+	raw, err := sm.EncodeRejection(sm.PersistedRejection{Reason: "documento inválido", Attempt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.SetContext(sm.CtxAgentInputRejection, raw)
+
+	res := escalateOnce(t, m, sess)
+	if res.NextState != sm.StateEscalated || len(nb.escalations) != 1 {
+		t.Fatalf("la re-escalación por rechazo escala igual: %s / %d", res.NextState, len(nb.escalations))
+	}
+
+	// Control: sin rechazo, el mismo escenario sí se desvía.
+	m2, nb2 := nectarMachine(t, testEscalationConfig(), nil)
+	nb2.unavailable = true
+	res2 := escalateOnce(t, m2, nectarSession(false))
+	if res2.NextState != sm.StateMainMenu || len(nb2.escalations) != 0 {
+		t.Fatalf("sin rechazo el gate desvía: %s / %d", res2.NextState, len(nb2.escalations))
+	}
+}
+
+// P2-7: con el escalado apagado para la entidad no se reintenta ni se promete un asesor.
+func TestEscalate_DisabledDoesNotPromiseAnAgent(t *testing.T) {
+	m, nb := nectarMachine(t, testEscalationConfig(), nil)
+	nb.escalateErr = nectar.ErrEscalationDisabled
+	sess := nectarSession(true)
+
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	res := escalateOnce(t, m, sess)
+	stop()
+
+	if len(nb.escalations) != 1 {
+		t.Fatalf("un 403 permanente no se reintenta: %d intentos", len(nb.escalations))
+	}
+	if res.NextState != sm.StateFallbackMenu {
+		t.Fatalf("estado: %s", res.NextState)
+	}
+	var text string
+	for _, msg := range res.Messages {
+		if b, ok := msg.(*sm.ButtonMessage); ok {
+			text = b.Text
+		}
+	}
+	if text != escalationDisabledText {
+		t.Fatalf("texto: %q", text)
+	}
+	if sink.FindStep("escalacion", "escalation_disabled") == nil {
+		t.Fatal("falta escalacion/escalation_disabled")
+	}
+}
+
+// Cualquier otro fallo conserva el texto de siempre y se reintenta.
+func TestEscalate_OtherFailureKeepsTheUsualText(t *testing.T) {
+	m, nb := nectarMachine(t, testEscalationConfig(), nil)
+	nb.escalateErr = io.ErrUnexpectedEOF
+	res := escalateOnce(t, m, nectarSession(true))
+	if len(nb.escalations) != escalateMaxRetries {
+		t.Fatalf("intentos: %d", len(nb.escalations))
+	}
+	for _, msg := range res.Messages {
+		if b, ok := msg.(*sm.ButtonMessage); ok && b.Text == escalationDisabledText {
+			t.Fatal("un fallo transitorio no dice «apagado»")
+		}
+	}
+}
