@@ -448,3 +448,32 @@ func TestRetryOrEscalate_AgentResumeTurnDoesNotCountRetry(t *testing.T) {
 		t.Fatalf("next=%s retry=%d", result.NextState, sess.RetryCount)
 	}
 }
+
+// Con la pregunta del paso declarada en su campo (ReturnInput.Prompt), el retorno sin dato del
+// agente le repite al paciente esa pregunta y no el aviso de error; sin la marca (Bird) sale el
+// aviso de error de siempre.
+func TestValidateWithRetry_AgentResumeTurnUsesTheStepPrompt(t *testing.T) {
+	const step = "T_RESUME_PROMPT"
+	registerTestInput(t, step, ReturnInput{Label: "Dato", Prompt: "¿Cuál es el dato?"})
+	invalid := func(string) bool { return false }
+
+	sess := helperSess(step)
+	sess.SetContext(CtxAgentResumeTurn, "1")
+	r := ValidateWithRetry(sess, "", invalid, "Dato no válido.")
+	if len(r.Messages) != 1 || r.Messages[0].(*TextMessage).Text != "¿Cuál es el dato?" {
+		t.Fatalf("Néctar: quería solo la pregunta, obtuve %+v", r.Messages)
+	}
+	r = RetryOrEscalate(sess, "Dato no válido.")
+	if len(r.Messages) != 1 || r.Messages[0].(*TextMessage).Text != "¿Cuál es el dato?" {
+		t.Fatalf("RetryOrEscalate en Néctar: quería solo la pregunta, obtuve %+v", r.Messages)
+	}
+	if sess.RetryCount != 0 {
+		t.Errorf("RetryCount = %d, el retorno no gasta reintentos", sess.RetryCount)
+	}
+
+	bird := helperSess(step)
+	r = ValidateWithRetry(bird, "", invalid, "Dato no válido.")
+	if r.Messages[0].(*TextMessage).Text != "Dato no válido." || bird.RetryCount != 1 {
+		t.Fatalf("Bird no cambia: %+v retry=%d", r.Messages, bird.RetryCount)
+	}
+}

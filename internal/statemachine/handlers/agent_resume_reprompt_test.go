@@ -254,3 +254,52 @@ func TestSearchSteps_NectarResumeDoesNotSearch(t *testing.T) {
 		})
 	}
 }
+
+// «Volver a preguntarle» en un paso de texto: en Néctar el paciente recibe solo la pregunta normal
+// del paso (no el aviso de error de algo que no escribió) y no se gasta reintento; en Bird el
+// mismo texto inválido sigue dando el aviso de error y cuenta el reintento.
+func TestTextSteps_NectarResumeAsksTheStepQuestion(t *testing.T) {
+	cases := []struct {
+		step, question, birdError string
+	}{
+		{sm.StateAskDocument, documentNumberQuestion, "Por favor ingresa un número de documento válido"},
+		{sm.StateGfrCreatinine, creatinineQuestion, "Valor no válido."},
+		{sm.StateGfrExamDate, examDateQuestion, "No entendí la fecha."},
+		{sm.StateGfrHeight, heightQuestion, "Estatura no válida."},
+		{sm.StateRegPhone, mainPhoneQuestion, "Número no válido."},
+		{sm.StateRegEmail, regEmailQuestion, "Email no válido."},
+		{sm.StateAskUpdateEmail, contactEmailQuestion, "Email no válido."},
+	}
+	m := returnMenuMachine()
+	for _, c := range cases {
+		t.Run(c.step, func(t *testing.T) {
+			sess := resumeTurnSess(c.step, true)
+			sess.RetryCount = 1
+			result, err := m.Process(context.Background(), sess, resumeMsg())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.NextState != c.step || sess.RetryCount != 1 {
+				t.Fatalf("next=%s retry=%d", result.NextState, sess.RetryCount)
+			}
+			if len(result.Messages) != 1 {
+				t.Fatalf("quería solo la pregunta, hay %d mensajes", len(result.Messages))
+			}
+			if tm, ok := result.Messages[0].(*sm.TextMessage); !ok || tm.Text != c.question {
+				t.Errorf("Néctar: quería la pregunta del paso %q, obtuve %+v", c.question, result.Messages[0])
+			}
+
+			bird := resumeTurnSess(c.step, false)
+			result, err = m.Process(context.Background(), bird, textM("xx"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bird.RetryCount != 1 {
+				t.Errorf("Bird: RetryCount = %d, quería 1", bird.RetryCount)
+			}
+			if tm, ok := result.Messages[0].(*sm.TextMessage); !ok || !strings.HasPrefix(tm.Text, c.birdError) {
+				t.Errorf("Bird: quería el aviso %q, obtuve %+v", c.birdError, result.Messages[0])
+			}
+		})
+	}
+}

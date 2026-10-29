@@ -217,15 +217,15 @@ func registerRegistrationAgentFields() {
 	registerAgentField(sm.StateRegBirthDate,
 		agentTextInput("Fecha de nacimiento", sm.InputKindDate, validBirthDate,
 			"Debe ser una fecha válida, no futura y desde 1900."), askAgainOption())
-	registerAgentField(sm.StateRegPhone,
+	registerAgentField(sm.StateRegPhone, asking(mainPhoneQuestion,
 		agentTextInput("Celular principal (10 dígitos)", sm.InputKindNumber, validators.ColombianPhone,
-			"Debe ser un celular colombiano de 10 dígitos (ej: 3001234567)."), askAgainOption())
+			"Debe ser un celular colombiano de 10 dígitos (ej: 3001234567).")), askAgainOption())
 	registerAgentField(sm.StateRegPhone2,
 		agentTextInput("Celular secundario (o NA si no tiene)", sm.InputKindText, optionalPhone,
 			"Debe ser un celular colombiano de 10 dígitos o NA si no tiene."))
-	registerAgentField(sm.StateRegEmail,
+	registerAgentField(sm.StateRegEmail, asking(regEmailQuestion,
 		agentTextInput("Correo electrónico (o NA si no tiene)", sm.InputKindText, emailOr(noResponses),
-			"Debe ser un correo válido (ejemplo@correo.com) o NA si no tiene."), askAgainOption())
+			"Debe ser un correo válido (ejemplo@correo.com) o NA si no tiene.")), askAgainOption())
 	// Texto libre (C12): ante una palabra reservada el handler re-pregunta sin guardarla; el plan
 	// no ofrece «volver a preguntar» en estos pasos.
 	registerAgentField(sm.StateRegAddress,
@@ -640,6 +640,13 @@ func regEducationLevelHandler() sm.StateHandler {
 	}
 }
 
+// Preguntas de REG_PHONE y REG_EMAIL: las hace el paso anterior y las repite el retorno sin dato
+// del agente de Néctar (ReturnInput.Prompt).
+const (
+	mainPhoneQuestion = "Ingresa tu *celular principal* preferiblemente con WhatsApp (ej: 3001234567):"
+	regEmailQuestion  = "Indica tu correo electrónico o responde *NA*:"
+)
+
 // occupationQuestion es la pregunta de REG_OCCUPATION.
 const occupationQuestion = "¿Cuál es tu *ocupación* u oficio? (ej: docente, comerciante, ama de casa, estudiante). Si prefieres, responde *NA*:"
 
@@ -659,7 +666,7 @@ func regOccupationHandler() sm.StateHandler {
 		sess.RetryCount = 0
 		return sm.NewResult(sm.StateRegPhone).
 			WithContext("reg_occupation", occupation).
-			WithText("Ingresa tu *celular principal* preferiblemente con WhatsApp (ej: 3001234567):"), nil
+			WithText(mainPhoneQuestion), nil
 	}
 }
 
@@ -693,7 +700,7 @@ func regOptionalPhoneHandler() sm.StateHandler {
 		phone2 := utils.ParseColombianPhone(input)
 		return sm.NewResult(sm.StateRegEmail).
 			WithContext("reg_phone2", phone2).
-			WithText("Indica tu correo electrónico o responde *NA*:"), nil
+			WithText(regEmailQuestion), nil
 	}
 }
 
@@ -713,7 +720,7 @@ func regEmailHandler() sm.StateHandler {
 
 		if !validEmail(lower) {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
-				"Email no válido. Indica tu correo electrónico o responde *NA*:")
+				"Email no válido. "+regEmailQuestion)
 			return retryResult, nil
 		}
 
@@ -1498,7 +1505,7 @@ func correctionFields() []correctionField {
 		{
 			ID: "corr_email", Title: "Email", State: sm.StateRegEmail,
 			Prompt: func() sm.OutboundMessage {
-				return &sm.TextMessage{Text: "Indica tu correo electrónico o responde *NA*:"}
+				return &sm.TextMessage{Text: regEmailQuestion}
 			},
 		},
 		{

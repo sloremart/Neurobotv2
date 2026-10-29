@@ -73,6 +73,13 @@ func agentTextInput(label, kind string, validate func(string) bool, problem stri
 	return in
 }
 
+// asking le pone al campo la pregunta normal de su paso: es lo que el paciente recibe cuando el
+// agente lo devuelve sin dato («Volver a preguntarle»), en vez del aviso de error del paso.
+func asking(prompt string, in sm.ReturnInput) sm.ReturnInput {
+	in.Prompt = prompt
+	return in
+}
+
 // askAgainOption reanuda el paso sin dato: el handler recibe __resume__, lo rechaza y le vuelve a
 // hacer la pregunta al paciente. Solo va en pasos cuyo handler re-pregunta ante una palabra
 // reservada (TestAskAgainOnlyWhereTheHandlerRejectsReservedKeywords).

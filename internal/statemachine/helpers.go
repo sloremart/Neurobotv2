@@ -79,6 +79,15 @@ func ResumeRePrompt(sess *session.Session, input, prompt string) *StateResult {
 	return nil
 }
 
+// stepResumePrompt es la pregunta normal que el campo del agente declaró para el paso
+// (ReturnInput.Prompt), o fallback si el paso no la declaró.
+func stepResumePrompt(step, fallback string) string {
+	if in, ok := returnInputFor(step); ok && in.Prompt != "" {
+		return in.Prompt
+	}
+	return fallback
+}
+
 // agentResumeReprompt es la respuesta de un paso que recibe el retorno sin dato del agente: se
 // queda donde está con su texto de siempre, sin gastar reintento ni escalar (el paciente no
 // escribió nada que pudiera estar mal).
@@ -98,7 +107,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 	}
 
 	if IsAgentResumeTurn(sess) {
-		return agentResumeReprompt(sess, errorMsg)
+		return agentResumeReprompt(sess, ResumeText(sess, errorMsg, stepResumePrompt(sess.CurrentState, errorMsg)))
 	}
 
 	sess.RetryCount++
@@ -199,7 +208,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 // Siempre retorna un *StateResult (nunca nil).
 func RetryOrEscalate(sess *session.Session, errorMsg string) *StateResult {
 	if IsAgentResumeTurn(sess) {
-		return agentResumeReprompt(sess, errorMsg)
+		return agentResumeReprompt(sess, ResumeText(sess, errorMsg, stepResumePrompt(sess.CurrentState, errorMsg)))
 	}
 
 	sess.RetryCount++

@@ -81,15 +81,15 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 // clínicos de texto, cada uno con el validador de su handler. El peso no lleva Validate propio:
 // lo juzga el TextValidate del paso.
 func registerMedicalAgentFields() {
-	registerAgentField(sm.StateGfrCreatinine,
+	registerAgentField(sm.StateGfrCreatinine, asking(creatinineQuestion,
 		agentTextInput("Creatinina en mg/dL (ej: 0.96)", sm.InputKindNumber, validCreatinine,
-			"Debe ser un número mayor que 0 y hasta 30 (mg/dL)."), askAgainOption())
-	registerAgentField(sm.StateGfrExamDate,
+			"Debe ser un número mayor que 0 y hasta 30 (mg/dL).")), askAgainOption())
+	registerAgentField(sm.StateGfrExamDate, asking(examDateQuestion,
 		agentTextInput("Fecha de toma del examen de creatinina", sm.InputKindDate, validExamDate,
-			"Debe ser una fecha válida que no sea futura."), askAgainOption())
-	registerAgentField(sm.StateGfrHeight,
+			"Debe ser una fecha válida que no sea futura.")), askAgainOption())
+	registerAgentField(sm.StateGfrHeight, asking(heightQuestion,
 		agentTextInput("Estatura en centímetros (ej: 170)", sm.InputKindNumber, validHeightCm,
-			"Debe ser la estatura en centímetros, entre 30 y 250."), askAgainOption())
+			"Debe ser la estatura en centímetros, entre 30 y 250.")), askAgainOption())
 	registerAgentField(sm.StateGfrWeight,
 		agentTextInput("Peso en kilogramos (ej: 70)", sm.InputKindNumber, nil, ""), askAgainOption())
 	// weeks_yes / weeks_no son los comandos del agente que el handler ya reconoce (sin número).
@@ -202,7 +202,7 @@ func askContrastedHandler() sm.StateHandler {
 				})
 			} else {
 				r.NextState = sm.StateGfrCreatinine
-				r.Messages = append(r.Messages, &sm.TextMessage{Text: "Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*"})
+				r.Messages = append(r.Messages, &sm.TextMessage{Text: creatinineQuestion})
 			}
 
 			return r, nil
@@ -255,7 +255,7 @@ func askContrastedHandler() sm.StateHandler {
 			} else {
 				// Hombre >= 1 → directo a creatinina
 				r.NextState = sm.StateGfrCreatinine
-				r.WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*")
+				r.WithText(creatinineQuestion)
 			}
 
 			return r, nil
@@ -287,7 +287,7 @@ func askPregnancyHandler() sm.StateHandler {
 				nextState = sm.StateAskBabyWeight
 				r.NextState = nextState
 			} else {
-				r.WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*")
+				r.WithText(creatinineQuestion)
 			}
 			return r, nil
 		}
@@ -327,7 +327,7 @@ func askPregnancyHandler() sm.StateHandler {
 			r := sm.NewResult(sm.StateGfrCreatinine).
 				WithContext("is_pregnant", "0").
 				WithClearCtx("_prompted_pregnancy").
-				WithText("Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*").
+				WithText(creatinineQuestion).
 				WithEvent("pregnant_selected", map[string]interface{}{"pregnant": false})
 			return r, nil
 		}
@@ -385,7 +385,7 @@ func gfrCreatinineHandler() sm.StateHandler {
 		// Tras el valor, pedir la FECHA de toma del examen (vigencia de 30 días).
 		return sm.NewResult(sm.StateGfrExamDate).
 			WithContext("gfr_creatinine", fmt.Sprintf("%.2f", value)).
-			WithText("¿Qué día te tomaste el examen de creatinina?\n\nEscríbelo como *DD/MM/AAAA* (por ejemplo *05/07/2026*).\n\nEl examen debe tener *máximo 30 días* al momento de tu cita."), nil
+			WithText(examDateQuestion), nil
 	}
 }
 
@@ -428,7 +428,7 @@ func gfrExamDateHandler() sm.StateHandler {
 		case age <= 14:
 			// Schwartz necesita altura
 			r.NextState = sm.StateGfrHeight
-			r.WithText("Escribe la altura del paciente en centímetros. (Ejemplo: si mide 1.70 m, escribir 170)")
+			r.WithText(heightQuestion)
 		case age < 40:
 			// 15-39: preguntar enfermedad
 			r.NextState = sm.StateGfrDisease
@@ -486,7 +486,7 @@ func gfrHeightHandler() sm.StateHandler {
 		value, ok := parseHeightCm(msg.Text)
 		if !ok {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
-				"Estatura no válida. Escribe la altura del paciente en centímetros. (Ejemplo: si mide 1.70 m, escribir 170)")
+				"Estatura no válida. "+heightQuestion)
 			return retryResult, nil
 		}
 
@@ -925,3 +925,11 @@ func askGestationalWeeksHandler() sm.StateHandler {
 		return result, nil
 	}
 }
+
+// Preguntas de los pasos de la función renal: las hace el paso anterior y las repite el retorno
+// sin dato del agente de Néctar (ReturnInput.Prompt).
+const (
+	creatinineQuestion = "Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*"
+	examDateQuestion   = "¿Qué día te tomaste el examen de creatinina?\n\nEscríbelo como *DD/MM/AAAA* (por ejemplo *05/07/2026*).\n\nEl examen debe tener *máximo 30 días* al momento de tu cita."
+	heightQuestion     = "Escribe la altura del paciente en centímetros. (Ejemplo: si mide 1.70 m, escribir 170)"
+)

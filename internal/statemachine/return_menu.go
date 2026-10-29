@@ -330,6 +330,10 @@ type ReturnInput struct {
 	// Help explica el formato esperado. Por omisión sale del ErrorMsg del paso cuando este espera
 	// texto: es el texto que el bot ya le da al paciente cuando se equivoca.
 	Help string
+	// Prompt es la pregunta normal del paso. En el retorno sin dato del agente de Néctar
+	// ValidateWithRetry y RetryOrEscalate le repiten esto al paciente en vez de su aviso de error
+	// (no escribió nada). "" = se repite el aviso de error. No se publica a Néctar.
+	Prompt string
 	// Target es el estado en el que se retoma con el dato escrito. "" = el paso en el que se
 	// escaló. Existe porque hay pasos que NO saben recibir lo que trae el agente (el de la orden
 	// médica lee una foto con OCR): inyectarles un texto los haría escalar otra vez.

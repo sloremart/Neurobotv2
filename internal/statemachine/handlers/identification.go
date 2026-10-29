@@ -58,6 +58,7 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 		Kind:     sm.InputKindText,
 		Label:    "Número de documento",
 		Required: true,
+		Prompt:   documentNumberQuestion,
 	}, askAgainOption())
 	// Sin el documento el flujo no sigue: el candado de Resolver espera el retorno del agente.
 	sm.RegisterResolveGuard(sm.StateAskDocument, sm.ResolveGuardPendingReturn)
@@ -112,9 +113,9 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	registerAgentField(sm.StateAskUpdatePhone,
 		agentTextInput("Celular nuevo del paciente (10 dígitos)", sm.InputKindNumber, nil, ""),
 		askAgainOption())
-	registerAgentField(sm.StateAskUpdateEmail,
+	registerAgentField(sm.StateAskUpdateEmail, asking(contactEmailQuestion,
 		agentTextInput("Correo nuevo del paciente (o NA si no tiene)", sm.InputKindText, emailOr(contactEmailNoAnswers),
-			"Debe ser un correo válido (ejemplo@correo.com) o NA si el paciente no tiene."),
+			"Debe ser un correo válido (ejemplo@correo.com) o NA si el paciente no tiene.")),
 		askAgainOption())
 	m.Register(sm.StateUpdateContactInfo, updateContactInfoHandler(patientSvc))
 }
@@ -153,7 +154,7 @@ func askDocumentTypeHandler() sm.StateHandler {
 		return sm.NewResult(sm.StateAskDocument).
 			WithContext("patient_doc_type", code).
 			WithContext("reg_document_type", code). // reusado por el flujo de registro si el paciente no existe
-			WithText("Ahora ingresa tu *número de documento* (sin puntos ni espacios):").
+			WithText(documentNumberQuestion).
 			WithEvent("document_type_selected", map[string]interface{}{"type": code}), nil
 	}
 }
@@ -487,7 +488,7 @@ func askUpdatePhoneHandler() sm.StateHandler {
 
 		return sm.NewResult(sm.StateAskUpdateEmail).
 			WithContext("contact_new_phone", parsed).
-			WithText("Ingresa tu correo electrónico o responde *NA* si no tienes:").
+			WithText(contactEmailQuestion).
 			WithEvent("contact_phone_updated", map[string]interface{}{"phone": parsed}), nil
 	}
 }
@@ -552,3 +553,10 @@ func updateContactInfoHandler(patientSvc *services.PatientService) sm.StateHandl
 		return r, nil
 	}
 }
+
+// Preguntas de ASK_DOCUMENT y ASK_UPDATE_EMAIL: las hace el paso anterior y las repite el retorno
+// sin dato del agente de Néctar (ReturnInput.Prompt).
+const (
+	documentNumberQuestion = "Ahora ingresa tu *número de documento* (sin puntos ni espacios):"
+	contactEmailQuestion   = "Ingresa tu correo electrónico o responde *NA* si no tienes:"
+)
