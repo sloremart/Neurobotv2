@@ -712,25 +712,7 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 		// followup (que es justo lo que este flag deshabilita).
 		duration := time.Duration(safeMinutes(m.cfg.ConfirmPostIVRMinutes, 30)) * time.Minute
 		p.ExpiresAt = time.Now().Add(duration)
-		p.Timer = time.AfterFunc(duration, func() {
-			if !m.lockPhone(phone) {
-				return
-			}
-			defer m.unlockPhone(phone)
-			pp, ok := m.takePending(phone)
-			if !ok {
-				return // el DTMF ya lo consumió
-			}
-			if pp.CallID != "" {
-				m.callIDMap.Delete(pp.CallID) // evita el leak de callIDMap en llamadas sin respuesta
-			}
-			if m.persister != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				_ = m.persister.Resolve(ctx, phone, "escalated_to_ivr")
-			}
-			slog.Info("IVR grace window expired (followup disabled), pending cleared", "phone", utils.MaskPhone(phone))
-		})
+		p.Timer = time.AfterFunc(duration, func() { m.expireIVRGrace(phone) })
 		m.storePending(phone, p)
 		if m.persister != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -764,6 +746,29 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 	}
 
 	slog.Info("IVR sent, post-IVR timer started", "phone", utils.MaskPhone(phone), "retry", p.RetryCount, "minutes", safeMinutes(m.cfg.ConfirmPostIVRMinutes, 30))
+}
+
+// expireIVRGrace cierra la ventana de gracia post-IVR (seguimiento deshabilitado) cuando el paciente
+// no contestó el DTMF: limpia el pending y el callIDMap y lo resuelve como escalado a IVR, sin cadena.
+func (m *NotificationManager) expireIVRGrace(phone string) {
+	if !m.lockPhone(phone) {
+		return
+	}
+	defer m.unlockPhone(phone)
+	pp, ok := m.takePending(phone)
+	if !ok {
+		return // el DTMF ya lo consumió
+	}
+	if pp.CallID != "" {
+		m.callIDMap.Delete(pp.CallID) // evita el leak de callIDMap en llamadas sin respuesta
+	}
+	if m.persister != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = m.persister.Resolve(ctx, phone, "escalated_to_ivr")
+	}
+	slog.Info("IVR grace window expired (followup disabled), pending cleared", "phone", utils.MaskPhone(phone))
+	m.closeIdleNectarConversation(pp)
 }
 
 // RegisterCallID stores the mapping callId → phone so that when Bird sends the
@@ -1223,11 +1228,41 @@ func (m *NotificationManager) handleTimeout(phone string) {
 		m.handleConfirmationTimeout(pending) // Same behavior
 	case "cancellation":
 		// No timeout action — patient didn't respond to confirmation step
+		m.closeIdleNectarConversation(pending)
 	case "waiting_list":
 		if m.waitingListRepo != nil {
 			m.handleWaitingListTimeout(pending)
 		}
 	}
+}
+
+// closeIdleNectarConversation cierra en Néctar la conversación que el bot abrió con una plantilla
+// cuando el pending ya terminó SIN respuesta y sin escalar: se llama solo desde esas ramas, después
+// de que la lógica de siempre acabó con la cita o la entrada, y no cambia nada de ella. Solo para
+// claves "nectar:<id>" y solo si no hay sesión viva bajo la clave (activa o escalada); sin poder
+// comprobarlo, no se cierra. Con el puente apagado no sale nada (sin ConversationID, CloseFeedItems
+// no tiene a quién cerrar en Bird). «Ya no es mía» lo ignora CloseFeedItems: el objetivo está cumplido.
+func (m *NotificationManager) closeIdleNectarConversation(p *PendingNotification) {
+	if p == nil || !session.IsNectarSession(p.Phone) || m.sessionRepo == nil || m.birdClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	current, err := m.sessionRepo.FindCurrentByPhone(ctx, p.Phone)
+	if err != nil {
+		slog.Warn("nectar: no se pudo consultar la sesión; la conversación no se cierra",
+			"phone", utils.MaskPhone(p.Phone), "type", p.Type, "error", err)
+		return
+	}
+	if current != nil {
+		return // la conversación sigue en uso
+	}
+	if err := m.birdClient.CloseFeedItems(p.Phone, ""); err != nil {
+		slog.Warn("nectar: cerrar la conversación sin respuesta falló",
+			"phone", utils.MaskPhone(p.Phone), "type", p.Type, "error", err)
+		return
+	}
+	slog.Info("nectar: conversación sin respuesta cerrada", "phone", utils.MaskPhone(p.Phone), "type", p.Type)
 }
 
 // normalizePostback maps Bird template postbacks to internal actions.

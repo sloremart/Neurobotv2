@@ -192,6 +192,7 @@ func (m *NotificationManager) handleWaitingListTimeout(pending *PendingNotificat
 	observability.Emit(observability.TraceWaitingList(pending.WaitingListID), "lista_espera",
 		"expired", observability.EmitOpts{Phone: pending.Phone, Reason: "timeout_6h"})
 	slog.Info("waiting list notification expired", "phone", utils.MaskPhone(pending.Phone), "entry_id", pending.WaitingListID)
+	m.closeIdleNectarConversation(pending)
 }
 
 func boolToStr(b bool) string {

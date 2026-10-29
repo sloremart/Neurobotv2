@@ -226,6 +226,7 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 	if !m.cfg.ConfirmFollowupEnabled {
 		slog.Debug("confirmation followup disabled, timeout silently cleaned up",
 			"phone", utils.MaskPhone(pending.Phone))
+		m.closeIdleNectarConversation(pending)
 		return
 	}
 	// Recordatorio de corta antelación (D1, §8.1 #2): es de UN solo disparo. Si el paciente no
@@ -237,6 +238,7 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 			observability.EmitOpts{Phone: pending.Phone})
 		slog.Info("same-day reminder expired without response, silently cleaned up",
 			"phone", utils.MaskPhone(pending.Phone), "appointment_id", pending.AppointmentID)
+		m.closeIdleNectarConversation(pending)
 		return
 	}
 	// Los TEXTOS de followup por WhatsApp fueron eliminados (06-ago-2026): eran texto libre que

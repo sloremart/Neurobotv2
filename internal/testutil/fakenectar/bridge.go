@@ -24,10 +24,16 @@ type Bridge struct {
 	Window    bool
 	WindowErr error
 
+	// CloseErr es lo que contesta Close; NotMineErr es el error que IsNotMine reconoce como
+	// «ya no es mía» (nil = no reconoce ninguno).
+	CloseErr   error
+	NotMineErr error
+
 	OpenPhones  []string // a qué teléfonos se intentó abrir
 	TemplateIDs []int64  // a qué conversaciones se mandó una plantilla
 	TextIDs     []int64  // a qué conversaciones se mandó un texto
 	WindowAsks  []int64  // por qué conversaciones se preguntó la ventana
+	CloseIDs    []int64  // qué conversaciones se cerraron
 }
 
 var _ bird.NectarBridge = (*Bridge)(nil)
@@ -44,6 +50,13 @@ func (f *Bridge) Texts() []int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]int64(nil), f.TextIDs...)
+}
+
+// Closes devuelve una copia de las conversaciones que se cerraron.
+func (f *Bridge) Closes() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.CloseIDs...)
 }
 
 // WindowQuestions devuelve una copia de las conversaciones por las que se preguntó la ventana.
@@ -109,16 +122,23 @@ func (f *Bridge) Available(context.Context, int64) (bool, string, error) {
 // Escalate no hace nada.
 func (f *Bridge) Escalate(context.Context, int64, bird.Escalation) error { return nil }
 
-// Close no hace nada.
-func (f *Bridge) Close(context.Context, int64) error { return nil }
+// Close anota la conversación y contesta CloseErr.
+func (f *Bridge) Close(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.CloseIDs = append(f.CloseIDs, id)
+	return f.CloseErr
+}
 
 // ConversationState contesta un estado vacío.
 func (f *Bridge) ConversationState(context.Context, int64) (string, error) {
 	return "", nil
 }
 
-// IsNotMine nunca reconoce el «ya no es mía».
-func (f *Bridge) IsNotMine(error) bool { return false }
+// IsNotMine reconoce como «ya no es mía» solo NotMineErr.
+func (f *Bridge) IsNotMine(err error) bool {
+	return f.NotMineErr != nil && errors.Is(err, f.NotMineErr)
+}
 
 // Contact contesta un contacto vacío.
 func (f *Bridge) Contact(context.Context, int64) (bird.NectarContact, error) {
