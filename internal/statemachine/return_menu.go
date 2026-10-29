@@ -166,8 +166,9 @@ func RegisteredReturnSteps() []string {
 }
 
 // HidePlainResume hace que ReturnOptionsFor omita «Devolver al bot en el mismo paso» en ese paso
-// (las demás universales siguen). Es para pasos que no son un estado de la máquina: reanudar en
-// ellos dejaría la sesión sin handler.
+// (las demás universales siguen). Es para pasos que no son un estado de la máquina —reanudar en
+// ellos dejaría la sesión sin handler— y para pasos SIN campo donde reanudar tal cual repite la
+// misma escalación (P1-5). Un paso con campo no se oculta: se re-rotula (RegisterResumeLabel).
 func HidePlainResume(state string) {
 	returnMenusMu.Lock()
 	defer returnMenusMu.Unlock()

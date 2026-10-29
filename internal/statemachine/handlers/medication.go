@@ -58,6 +58,11 @@ func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingR
 		Handler: medicationConfirmOrdenHandler(),
 	})
 	m.Register(sm.StateMedicationPrepareSchedule, medicationPrepareScheduleHandler())
+	// Paso automático sin campo: devolverlo tal cual lo re-ejecuta y vuelve a escalar (P1-5).
+	sm.HidePlainResume(sm.StateMedicationPrepareSchedule)
+	sm.RegisterStaticReturnMenu(sm.StateMedicationPrepareSchedule,
+		sm.ReturnOption{Label: "Volver al menú principal", Value: "menu_principal", Target: sm.StateMainMenu},
+	)
 }
 
 // MEDICATION_CHECK_EXCEL (automático) — busca al paciente en el listado de medicamentos pendientes.

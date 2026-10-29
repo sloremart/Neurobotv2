@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -1216,5 +1217,88 @@ func TestSlotReturnOptions_SameLengthDifferentSlotsRePrompts(t *testing.T) {
 	}
 	if _, set := res.UpdateCtx["selected_slot_id"]; set {
 		t.Fatal("no se elige ningún horario")
+	}
+}
+
+// twoGroupsSess es una sesión con dos grupos de procedimientos, en el índice idx.
+func twoGroupsSess(state string, idx int) *session.Session {
+	groups := []services.CUPSGroup{
+		{ServiceType: "Neurofisiologia", Cups: []services.CUPSEntry{{Code: "890271", Name: "Electromiografia", Quantity: 1}}, Espacios: 1},
+		{ServiceType: "Resonancia", Cups: []services.CUPSEntry{{Code: "883533", Name: "Resonancia de rodilla", Quantity: 1}}, Espacios: 2},
+	}
+	b, _ := json.Marshal(groups)
+	sess := testSess(state)
+	sess.Context["procedures_json"] = string(b)
+	sess.Context["total_procedures"] = "2"
+	sess.Context["current_procedure_idx"] = fmt.Sprintf("%d", idx)
+	return sess
+}
+
+// El agente dejó gestionado el procedimiento actual: el bot sigue con el siguiente grupo.
+func TestAdvanceNextProcedure_MovesToNextGroup(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
+	sess := twoGroupsSess(sm.StateAdvanceNextProcedure, 0)
+
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	res, err := m.Process(context.Background(), sess, textM("__resume__"))
+	stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateCheckSpecialCups {
+		t.Fatalf("NextState = %s, quiero CHECK_SPECIAL_CUPS", res.NextState)
+	}
+	if res.UpdateCtx["current_procedure_idx"] != "1" || res.UpdateCtx["cups_code"] != "883533" {
+		t.Errorf("contexto = %v, quiero el grupo 1 (883533)", res.UpdateCtx)
+	}
+	if sink.FindStep("escalacion", "siguiente_procedimiento") == nil {
+		t.Error("falta el evento escalacion/siguiente_procedimiento")
+	}
+}
+
+// Sin grupo siguiente no hay nada que seguir: el caso queda gestionado y la sesión se cierra.
+func TestAdvanceNextProcedure_NothingLeftCloses(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
+	sess := twoGroupsSess(sm.StateAdvanceNextProcedure, 1)
+
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	res, err := m.Process(context.Background(), sess, textM("__resume__"))
+	stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateTerminated {
+		t.Fatalf("NextState = %s, quiero TERMINATED", res.NextState)
+	}
+	if sink.FindStep("escalacion", "siguiente_procedimiento") != nil {
+		t.Error("sin grupo siguiente no se emite siguiente_procedimiento")
+	}
+}
+
+func TestNextProcedureOption_OnlyWhenGroupsRemain(t *testing.T) {
+	got := nextProcedureOption(twoGroupsSess(sm.StateSearchSlots, 0))
+	if len(got) != 1 {
+		t.Fatalf("con un grupo pendiente quiero una opción, fueron %+v", got)
+	}
+	want := sm.ReturnOption{
+		Label: "Ya quedó gestionado: seguir con Resonancia de rodilla", Value: "siguiente_procedimiento",
+		Target: sm.StateAdvanceNextProcedure, NoInput: true,
+	}
+	if o := got[0]; o.Label != want.Label || o.Value != want.Value || o.Target != want.Target || !o.NoInput ||
+		o.Data != "" || o.Close {
+		t.Errorf("opción = %+v, quiero %+v", o, want)
+	}
+	if got := nextProcedureOption(twoGroupsSess(sm.StateSearchSlots, 1)); len(got) != 0 {
+		t.Errorf("en el último grupo no hay opción, fue %+v", got)
+	}
+	if got := nextProcedureOption(testSess(sm.StateSearchSlots)); len(got) != 0 {
+		t.Errorf("sin grupos no hay opción, fue %+v", got)
+	}
+	if got := nextProcedureOption(nil); len(got) != 0 {
+		t.Errorf("sin sesión no hay opción, fue %+v", got)
 	}
 }

@@ -353,26 +353,64 @@ func waitingListDedup(ctx context.Context, wlRepo WaitingListCreator, patientID 
 	return false, supersedeIDs
 }
 
-// advanceToNextProcedure checks if there are more procedure groups to process.
-// If yes, returns a result that transitions to the next group. If no, returns nil.
-func advanceToNextProcedure(sess *session.Session) *sm.StateResult {
+// nextProcedureGroup devuelve el grupo de procedimientos que sigue al actual, si queda uno con
+// CUPS. Lo comparten advanceToNextProcedure y la opción del agente, para que el botón solo
+// aparezca cuando de verdad hay a dónde seguir.
+func nextProcedureGroup(sess *session.Session) (int, services.CUPSGroup, bool) {
 	totalProc, _ := strconv.Atoi(sess.GetContext("total_procedures"))
 	currentIdx, _ := strconv.Atoi(sess.GetContext("current_procedure_idx"))
-
 	if currentIdx+1 >= totalProc {
-		return nil
+		return 0, services.CUPSGroup{}, false
 	}
-
 	nextIdx := currentIdx + 1
 	var groups []services.CUPSGroup
 	if err := json.Unmarshal([]byte(sess.GetContext("procedures_json")), &groups); err != nil {
-		return nil
+		return 0, services.CUPSGroup{}, false
 	}
 	if nextIdx >= len(groups) || len(groups[nextIdx].Cups) == 0 {
+		return 0, services.CUPSGroup{}, false
+	}
+	return nextIdx, groups[nextIdx], true
+}
+
+// nextProcedureOption es la salida del agente de Néctar que da por gestionado el procedimiento
+// actual (lo agendó él, o no procede) y deja que el bot siga con el siguiente grupo de la orden.
+// Sin ella, cerrar el caso perdía los grupos restantes. Solo existe si queda un grupo.
+func nextProcedureOption(sess *session.Session) []sm.ReturnOption {
+	if sess == nil {
 		return nil
 	}
+	_, next, ok := nextProcedureGroup(sess)
+	if !ok {
+		return nil
+	}
+	return []sm.ReturnOption{{
+		Label:  "Ya quedó gestionado: seguir con " + next.Cups[0].Name,
+		Value:  "siguiente_procedimiento",
+		Target: sm.StateAdvanceNextProcedure, NoInput: true,
+	}}
+}
 
-	nextGroup := groups[nextIdx]
+// ADVANCE_NEXT_PROCEDURE (automático) — el agente dejó gestionado el procedimiento actual: se
+// sigue con el siguiente grupo o, si ya no queda, se cierra la sesión.
+func advanceNextProcedureHandler() sm.StateHandler {
+	return func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		if next := advanceToNextProcedure(sess); next != nil {
+			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "siguiente_procedimiento",
+				observability.EmitOpts{Phone: sess.PhoneNumber})
+			return next, nil
+		}
+		return buildAutoCloseResult("Tu solicitud quedó gestionada por nuestro equipo."), nil
+	}
+}
+
+// advanceToNextProcedure checks if there are more procedure groups to process.
+// If yes, returns a result that transitions to the next group. If no, returns nil.
+func advanceToNextProcedure(sess *session.Session) *sm.StateResult {
+	nextIdx, nextGroup, ok := nextProcedureGroup(sess)
+	if !ok {
+		return nil
+	}
 	r := sm.NewResult(sm.StateCheckSpecialCups).
 		WithText(fmt.Sprintf("Ahora procesaremos el siguiente procedimiento:\n*%s*", nextGroup.Cups[0].Name)).
 		WithContext("current_procedure_idx", fmt.Sprintf("%d", nextIdx)).
@@ -422,6 +460,13 @@ func RegisterSlotHandlers(
 	birdClient *bird.Client,
 ) {
 	m.Register(sm.StateSearchSlots, searchSlotsHandler(slotSvc, apptSvc, procRepo, priceRepo, entityRepo))
+	// SEARCH_SLOTS es automático y escala de forma determinista: devolverlo tal cual lo re-ejecuta y
+	// vuelve a escalar (P1-5). La salida que reanuda lleva los CUPS que el agente escribió (C6), y
+	// si el agente ya gestionó este procedimiento, el bot sigue con el siguiente grupo.
+	sm.RegisterReturnInput(sm.StateSearchSlots, agentCupsReturnInput())
+	sm.RegisterResumeLabel(sm.StateSearchSlots, agentCupsResumeLabel)
+	sm.RegisterReturnMenu(sm.StateSearchSlots, nextProcedureOption)
+	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
 	m.Register(sm.StateCoverageNoConvenio, coverageNoConvenioHandler())
 	// Salidas del agente cuando el contrato no cubre el procedimiento: seguir como particular
 	// (el payload del botón del paciente), volver al menú principal o corregir la entidad por el
@@ -484,6 +529,10 @@ func RegisterSlotHandlers(
 		payloadOption("No, volver a los horarios", "reconfirm_no"),
 	)
 	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, priceRepo, entityRepo, procRepo, waitingListRepo))
+	// CREATE_APPOINTMENT no tiene campo: devolverlo tal cual repetiría la misma creación fallida y
+	// la misma escalación, así que esa salida se oculta (P1-5).
+	sm.HidePlainResume(sm.StateCreateAppointment)
+	sm.RegisterReturnMenu(sm.StateCreateAppointment, nextProcedureOption)
 	m.Register(sm.StateBookingSuccess, bookingSuccessHandler(addrMapper))
 	m.Register(sm.StateBookingFailed, bookingFailedHandler())
 }

@@ -758,3 +758,54 @@ func TestEscalate_AgentRejectionReEscalationExemptFromSessionCap(t *testing.T) {
 		t.Fatalf("la re-escalación por rechazo no cuenta para el tope: %s / %d", res.NextState, escRepo.calls)
 	}
 }
+
+// P1-5(d): en Néctar el corte anti-bucle del `__resume__` le dice al paciente por qué vuelve al
+// menú (allá no hubo aviso de no-show antes); el menú va después.
+func TestEscalate_NectarResumeSuppressionTellsThePatient(t *testing.T) {
+	m, _ := nectarMachine(t, testEscalationConfig(), nil)
+	sess := nectarSession(false)
+	msg := nectarMsg()
+	msg.Text = "__resume__"
+
+	res, err := m.Process(context.Background(), sess, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateMainMenu {
+		t.Fatalf("el corte deja la sesión en el menú, fue %s", res.NextState)
+	}
+	if len(res.Messages) != 2 {
+		t.Fatalf("quiero el aviso y el menú, fueron %d mensajes: %+v", len(res.Messages), res.Messages)
+	}
+	if txt, ok := res.Messages[0].(*sm.TextMessage); !ok || txt.Text != resumeSuppressedNectarText {
+		t.Errorf("primer mensaje = %+v, quiero el aviso %q", res.Messages[0], resumeSuppressedNectarText)
+	}
+	if _, ok := res.Messages[1].(*sm.ListMessage); !ok {
+		t.Errorf("segundo mensaje = %+v, quiero el menú principal", res.Messages[1])
+	}
+}
+
+// En Bird el corte del `__resume__` sigue mandando SOLO el menú: el aviso «No pudimos
+// conectarte…» ya salió en el no-show.
+func TestEscalate_BirdResumeSuppressionUnchanged(t *testing.T) {
+	srv := escalationTestServer(t)
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(srv.URL), testEscalationConfig(), nil)
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+
+	res, err := m.Process(context.Background(), sess, textM("__resume__"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateMainMenu {
+		t.Fatalf("esperaba MAIN_MENU, fue %s", res.NextState)
+	}
+	if len(res.Messages) != 1 {
+		t.Fatalf("Bird: solo el menú, fueron %d mensajes: %+v", len(res.Messages), res.Messages)
+	}
+	list, ok := res.Messages[0].(*sm.ListMessage)
+	if !ok || list.Body != buildMainMenuList().Body {
+		t.Errorf("Bird: el mensaje es el menú principal de hoy, fue %+v", res.Messages[0])
+	}
+}

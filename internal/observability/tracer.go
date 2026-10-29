@@ -199,6 +199,9 @@ var catalog = map[string]stepSpec{
 	// (`suggested_team_id`, NECTAR_TEAM_BY_GROUP). Va JUNTO al escalado y solo cuando hay mapeo
 	// para el grupo; es lo único que permite comprobar a qué equipo se pidió cada caso.
 	"escalacion/equipo_sugerido": {LvMilestone, "ok", ""},
+	// siguiente_procedimiento: el agente de Néctar dio por gestionado el procedimiento actual y el
+	// bot siguió con el siguiente grupo de la orden (ADVANCE_NEXT_PROCEDURE).
+	"escalacion/siguiente_procedimiento": {LvMilestone, "ok", ""},
 	// Restricción de edad en neurología: menor intenta neurología adultos o adulto intenta pediátrica.
 	// Terminal: se regresa al menú principal para que el paciente elija la especialidad correcta.
 	"agendar/age_restriction_blocked": {LvOutcome, "blocked", ""},

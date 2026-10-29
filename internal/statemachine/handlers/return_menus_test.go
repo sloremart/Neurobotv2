@@ -50,6 +50,7 @@ func returnMenuMachine() *sm.Machine {
 var cupsSteps = []string{
 	sm.StateAskMedicalOrder, sm.StateUploadMedicalOrder, sm.StateValidateOCR,
 	sm.StateOCRFailed, sm.StateConfirmOCRResult, sm.StateAskManualCups,
+	sm.StateSearchSlots, sm.StateCheckSpecialCups,
 }
 
 // hasReturnEntry dice si un paso ofrece al agente algún botón propio (no universal) o un campo,
@@ -161,16 +162,6 @@ func TestReturnMenus_CupsInputUsesTheAgentCommandGrammar(t *testing.T) {
 	}
 }
 
-// deferredAgentCommandSteps son los estados que buildAgentCommands nombra y que 9c NO declara:
-// la tarea cubre los pasos de su alcance (menú, identificación, orden médica, notificación y
-// cobertura). Cada uno de estos conserva hoy SOLO el comando `/bot resume` de Bird. Declararlos
-// es trabajo de la fase B: hasta entonces estos pasos devuelven SOLO con las opciones universales
-// (reanudar / cerrar). La lista está FIJADA aquí para que nadie quede fuera en silencio: un paso
-// nuevo en buildAgentCommands, o uno de estos que gane registro, hace fallar la prueba.
-var deferredAgentCommandSteps = []string{
-	"CHECK_SPECIAL_CUPS",
-}
-
 // unreachableAgentCommandSteps son pasos que buildAgentCommands nombra pero que NO son un estado
 // de la máquina (sin handler): nunca se escala desde ellos, así que no llevan menú.
 var unreachableAgentCommandSteps = []string{"CANCEL_REASON"}
@@ -220,20 +211,53 @@ func TestReturnMenusCoverAgentCommands(t *testing.T) {
 			}
 			continue
 		}
-		covered := hasReturnEntry(m, step)
-		deferred := slices.Contains(deferredAgentCommandSteps, step)
-		switch {
-		case !covered && !deferred:
-			t.Errorf("%s: buildAgentCommands lo nombra pero no tiene menú ni entrada, y no está en la lista de aplazados", step)
-		case covered && deferred:
-			t.Errorf("%s: ya declara retorno; quitarlo de deferredAgentCommandSteps", step)
+		// Todo estado que buildAgentCommands nombra tiene que darle al agente de Néctar algo más
+		// que las salidas universales: no hay pasos aplazados.
+		if !hasReturnEntry(m, step) {
+			t.Errorf("%s: buildAgentCommands lo nombra pero no tiene menú ni entrada", step)
 		}
 	}
-	// Los aplazados deben seguir siendo estados que buildAgentCommands nombra.
+	// Los inalcanzables deben seguir siendo estados que buildAgentCommands nombra.
 	named := agentCommandSteps(t)
-	for _, step := range append(slices.Clone(deferredAgentCommandSteps), unreachableAgentCommandSteps...) {
+	for _, step := range unreachableAgentCommandSteps {
 		if !slices.Contains(named, step) {
-			t.Errorf("%s: figura como aplazado pero buildAgentCommands ya no lo nombra", step)
+			t.Errorf("%s: figura como inalcanzable pero buildAgentCommands ya no lo nombra", step)
+		}
+	}
+}
+
+// deterministicAutomaticSteps son pasos AUTOMÁTICOS que escalan de forma determinista (o el paso
+// interactivo que los precede): «devolver en el mismo paso» sin dato los re-ejecuta con el mismo
+// contexto, vuelve a escalar con `__resume__` y el corte anti-bucle manda al paciente al menú.
+var deterministicAutomaticSteps = []string{
+	sm.StateSearchSlots, sm.StateCreateAppointment, sm.StateCheckSpecialCups, sm.StateValidateOCR,
+	sm.StateOCRFailed, sm.StateAskMedicalOrder, sm.StateShowEntityList, sm.StateMedicationPrepareSchedule,
+}
+
+// P1-5: en esos pasos, o no se ofrece bot_reanudar, o es la salida que lleva un dato requerido
+// (C6: en los pasos con campo se re-rotula, no se oculta). Y ocultarlo en un paso con campo
+// dejaría a Néctar sin opción que lleve lo escrito.
+func TestReturnMenus_NoPlainResumeIntoADeterministicAutomaticStep(t *testing.T) {
+	m := returnMenuMachine()
+	offersResume := func(step string) bool {
+		for _, o := range sm.ReturnOptionsFor(representativeSess(step), step) {
+			if o.Value == sm.ReturnResume {
+				return true
+			}
+		}
+		return false
+	}
+	for _, step := range deterministicAutomaticSteps {
+		if !m.IsRegistered(step) {
+			t.Errorf("%s: no es un estado registrado", step)
+		}
+		if offersResume(step) && !sm.ReturnInputRequired(step) {
+			t.Errorf("%s: ofrece «devolver en el mismo paso» sin un dato requerido: re-escala en bucle", step)
+		}
+	}
+	for _, step := range sm.RegisteredReturnSteps() {
+		if !offersResume(step) && len(m.InputDescriptor(nil, step).Fields) > 0 {
+			t.Errorf("%s: oculta bot_reanudar pero tiene campo: lo escrito no tendría cómo volver", step)
 		}
 	}
 }
@@ -681,6 +705,9 @@ func representativeSess(step string) *session.Session {
 		sess.Context["entity_list_names"] = "SANITAS|NUEVA EPS|FAMISANAR"
 		sess.Context["entity_list_codes"] = "EPS005,EPS037,EPS017"
 		sess.Context["entity_list_count"] = "3"
+	case sm.StateCreateAppointment:
+		// Su única salida propia es seguir con el siguiente grupo: solo existe si queda uno.
+		sess = twoGroupsSess(step, 0)
 	}
 	return sess
 }

@@ -20,6 +20,12 @@ import (
 // RegisterMedicalValidationHandlers registra los handlers de validaciones médicas (Fase 9).
 func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRService, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) {
 	m.Register(sm.StateCheckSpecialCups, checkSpecialCupsHandler())
+	// CHECK_SPECIAL_CUPS es automático y escala de forma determinista con el mismo CUPS: la salida
+	// que reanuda lleva los CUPS que el agente escribió (C6), y si el agente ya gestionó este
+	// procedimiento, el bot sigue con el siguiente grupo (P1-5).
+	sm.RegisterReturnInput(sm.StateCheckSpecialCups, agentCupsReturnInput())
+	sm.RegisterResumeLabel(sm.StateCheckSpecialCups, agentCupsResumeLabel)
+	sm.RegisterReturnMenu(sm.StateCheckSpecialCups, nextProcedureOption)
 	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
 	m.Register(sm.StateAskContrasted, askContrastedHandler())
 	sm.RegisterStaticReturnMenu(sm.StateAskContrasted,

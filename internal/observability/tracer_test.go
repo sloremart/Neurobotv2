@@ -169,7 +169,7 @@ func TestCatalog_AllEmittedStepsRegistered(t *testing.T) {
 		},
 		"escalacion": {
 			"escalated", "agent_resumed", "agent_closed", "agent_reminder_sent", "escalation_expired",
-			"agent_no_show", "escalation_no_channel",
+			"agent_no_show", "escalation_no_channel", "siguiente_procedimiento",
 		},
 		"recuperacion": {
 			"ai_recovery_started", "ai_recovered", "ai_resolved_by_bot", "ai_clarified",

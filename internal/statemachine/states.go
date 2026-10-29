@@ -154,6 +154,9 @@ const (
 	StateCreateAppointment  = "CREATE_APPOINTMENT"
 	StateBookingSuccess     = "BOOKING_SUCCESS"
 	StateBookingFailed      = "BOOKING_FAILED"
+	// StateAdvanceNextProcedure es la vuelta del agente de Néctar que dio por gestionado el
+	// procedimiento actual: el bot sigue con el siguiente grupo de la orden, o cierra si no queda.
+	StateAdvanceNextProcedure = "ADVANCE_NEXT_PROCEDURE"
 )
 
 // === Post-Acción y Cierre ===
@@ -296,17 +299,18 @@ var stateTypes = map[string]StateType{
 	StateCheckAgeRestriction: StateTypeAutomatic,
 
 	// Búsqueda y Agendamiento
-	StateSearchSlots:        StateTypeAutomatic,
-	StateCoverageNoConvenio: StateTypeInteractive,
-	StateSlotSearchRetry:    StateTypeInteractive,
-	StateShowSlots:          StateTypeInteractive,
-	StateNoSlotsAvailable:   StateTypeAutomatic,
-	StateOfferWaitingList:   StateTypeInteractive,
-	StateConfirmBooking:     StateTypeInteractive,
-	StateReconfirmBooking:   StateTypeInteractive,
-	StateCreateAppointment:  StateTypeAutomatic,
-	StateBookingSuccess:     StateTypeAutomatic,
-	StateBookingFailed:      StateTypeAutomatic,
+	StateSearchSlots:          StateTypeAutomatic,
+	StateCoverageNoConvenio:   StateTypeInteractive,
+	StateSlotSearchRetry:      StateTypeInteractive,
+	StateShowSlots:            StateTypeInteractive,
+	StateNoSlotsAvailable:     StateTypeAutomatic,
+	StateOfferWaitingList:     StateTypeInteractive,
+	StateConfirmBooking:       StateTypeInteractive,
+	StateReconfirmBooking:     StateTypeInteractive,
+	StateCreateAppointment:    StateTypeAutomatic,
+	StateBookingSuccess:       StateTypeAutomatic,
+	StateBookingFailed:        StateTypeAutomatic,
+	StateAdvanceNextProcedure: StateTypeAutomatic,
 
 	// Post-Acción y Cierre
 	StatePostActionMenu:  StateTypeInteractive,

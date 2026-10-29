@@ -27,6 +27,10 @@ const escalationSessionCap = 3
 // Delays: 0s → 1s → 2s entre intentos; peor caso ~3s extra antes de mostrar el fallback.
 const escalateMaxRetries = 3
 
+// resumeSuppressedNectarText es lo que oye el paciente de Néctar cuando el corte anti-bucle del
+// `__resume__` lo devuelve al menú: allá no hay un aviso de no-show previo que lo explique.
+const resumeSuppressedNectarText = "Sigamos por aquí 👍 Elige una opción del menú para continuar."
+
 // EscalationCreator registra una fila por escalación (tabla escalations). Opcional (nil = no registra).
 type EscalationCreator interface {
 	Create(ctx context.Context, sessionID, phone, fromState, teamID, agentID, agentName string) error
@@ -104,8 +108,13 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			// AHORRO: solo el menú (1 mensaje cobrado, no 2). El aviso "No pudimos conectarte…"
 			// ya salió en handleAgentNoShow justo antes de este __resume__; repetirlo con otro
 			// texto era pagar un mensaje redundante en cada no-show (~decenas/día).
+			// En Néctar no hubo aviso de no-show: sin una línea que lo explique, el paciente recibiría
+			// el menú de golpe (P1-5(d)). Bird queda como hoy: el menú solo.
 			r := sm.NewResult(sm.StateMainMenu).
 				WithEvent("escalation_suppressed_resume", map[string]interface{}{"pre_state": preState})
+			if nectarSession {
+				r.Messages = append(r.Messages, &sm.TextMessage{Text: resumeSuppressedNectarText})
+			}
 			r.Messages = append(r.Messages, buildMainMenuList())
 			return escalationExit(r), nil
 		}
