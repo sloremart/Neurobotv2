@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -488,5 +489,57 @@ func TestOpenConversation_NotConfiguredIsNotInDoubt(t *testing.T) {
 	_, err := NewClient("", "", "").OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
 	if err == nil || errors.Is(err, ErrOpenInDoubt) {
 		t.Fatalf("sin configurar no hay duda: %v", err)
+	}
+}
+
+// countingTransport cuenta las peticiones que el cliente intenta, lleguen o no a un servidor.
+type countingTransport struct{ calls atomic.Int32 }
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// Conexión rechazada (puerto cerrado): la petición nunca llegó a Néctar, así que NO está en duda.
+// Sale como error transitorio (ni ErrOpenInDoubt ni permanente) y sin reintento aquí.
+func TestOpenConversation_DialErrorIsTransient(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close() // puerto cerrado: connection refused
+
+	c := NewClient("http://"+addr, svcKey, reqSecret)
+	rt := &countingTransport{}
+	c.http = &http.Client{Transport: rt, Timeout: 5 * time.Second}
+	_, err = c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+	if err == nil || errors.Is(err, ErrOpenInDoubt) || bird.IsPermanentSendError(err) {
+		t.Fatalf("quiero un error transitorio, tengo %v", err)
+	}
+	var op *net.OpError
+	if !errors.As(err, &op) || op.Op != "dial" {
+		t.Fatalf("la causa (dial) se conserva: %v", err)
+	}
+	if n := rt.calls.Load(); n != 1 {
+		t.Fatalf("exactamente una llamada: %d", n)
+	}
+}
+
+func TestNotSent(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"dial", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
+		{"dns", &net.DNSError{Err: "no such host", Name: "nectar.invalid"}, true},
+		{"read tras conectar", &net.OpError{Op: "read", Err: errors.New("connection reset")}, false},
+		{"eof", io.EOF, false},
+	}
+	for _, tc := range cases {
+		if got := notSent(&transportError{err: tc.err}); got != tc.want {
+			t.Errorf("%s: notSent = %v, quiero %v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,7 +26,7 @@ import (
 var (
 	// ErrOpenInDoubt dice que no se sabe si la plantilla salió, o salió y Néctar no dejó el hilo
 	// (409 attempt_in_doubt / attempt_sent_unrecorded, todo 502, el 504 y un fallo de transporte
-	// con la petición ya enviada).
+	// con la conexión ya hecha; un fallo al conectar o de DNS no está en duda: nada salió).
 	// NO SE REINTENTA, ni con la misma clave ni con otra: podría llegarle dos veces al paciente.
 	ErrOpenInDoubt = fmt.Errorf("nectar: apertura en duda, la plantilla pudo haber salido: %w", bird.ErrPermanentSend)
 	// ErrTemplateRejected dice que la plantilla no sirve tal como se pidió (400 template_parameters,
@@ -90,13 +91,14 @@ func (c *Client) OpenConversation(ctx context.Context, channelID int64, to OpenR
 	for attempt := 0; ; attempt++ {
 		resp, err := c.exchange(ctx, http.MethodPost, openPath, req)
 		var transport *transportError
-		if errors.As(err, &transport) {
+		if errors.As(err, &transport) && !notSent(err) {
 			// La petición salió y no hubo respuesta: Néctar pudo abrir y mandar la plantilla. En
 			// duda — no se reintenta aquí ni, con otra clave, en quien llama (costo primero).
 			return Opened{}, fmt.Errorf("%w (%w)", ErrOpenInDoubt, err)
 		}
 		if err != nil {
-			// Antes de enviar (sin configurar, cuerpo inválido): nada salió.
+			// Nada salió: antes de enviar (sin configurar, cuerpo inválido) o sin llegar a conectar
+			// (dial, DNS). Transitorio: quien llama decide como ante cualquier caída pasajera.
 			return Opened{}, err
 		}
 		wait, retry := openRetryAfter(resp)
@@ -108,6 +110,18 @@ func (c *Client) OpenConversation(ctx context.Context, channelID int64, to OpenR
 		}
 		return decodeOpen(resp)
 	}
+}
+
+// notSent dice si un fallo de transporte ocurrió ANTES de que la petición llegara a Néctar: no se
+// pudo conectar (dial: conexión rechazada, sin ruta) o no se resolvió el nombre (DNS). Un fallo con
+// la conexión ya hecha (reset, EOF, timeout tras escribir) NO entra: ahí la plantilla pudo salir.
+func notSent(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	var dns *net.DNSError
+	return errors.As(err, &dns)
 }
 
 // openRetryAfter dice si la respuesta es el 503 reintentable y cuánto esperar. El 503 SIN

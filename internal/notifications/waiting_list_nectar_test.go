@@ -3,6 +3,8 @@ package notifications
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -237,6 +239,25 @@ func TestWaitingList_OpenNotConfiguredRevertsToWaiting(t *testing.T) {
 	bridge := &fakenectar.Bridge{OpenErr: nectar.ErrOpenNotConfigured}
 	mgr, wl, _, _ := nectarWLRig(t, bridge, wlEntry("+573005551234"))
 	mgr.CheckWaitingListForCups(context.Background(), "890271")
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+	if wl.updatedStatus != "waiting" {
+		t.Fatalf("esperaba 'waiting', got %q", wl.updatedStatus)
+	}
+}
+
+// Un error transitorio de la apertura (Néctar caído: conexión rechazada) no está en duda — nada
+// salió—: la entrada vuelve a 'waiting' por el camino de siempre y el próximo ciclo la reintenta.
+func TestWaitingList_TransientOpenErrorRevertsToWaiting(t *testing.T) {
+	dial := fmt.Errorf("nectar: POST /api/bot/conversations/open: %w",
+		&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})
+	bridge := &fakenectar.Bridge{OpenErr: dial}
+	mgr, wl, events, _ := nectarWLRig(t, bridge, wlEntry("+573005551234"))
+	mgr.CheckWaitingListForCups(context.Background(), "890271")
+
+	if _, ok := events.find("notification_in_doubt"); ok {
+		t.Fatal("un error de conexión no está en duda")
+	}
 	wl.mu.Lock()
 	defer wl.mu.Unlock()
 	if wl.updatedStatus != "waiting" {
