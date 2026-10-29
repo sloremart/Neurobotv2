@@ -59,6 +59,26 @@ func IsAgentResumeTurn(sess *session.Session) bool {
 	return sess.GetContext(CtxAgentResumeTurn) != ""
 }
 
+// ResumeText elige el texto de un paso que valida con reintentos: en el retorno sin dato del
+// agente el paciente no escribió nada, así que se le repite solo la pregunta (prompt) y no el
+// aviso de error (errMsg).
+func ResumeText(sess *session.Session, errMsg, prompt string) string {
+	if IsAgentResumeTurn(sess) {
+		return prompt
+	}
+	return errMsg
+}
+
+// ResumeRePrompt es el guard de los pasos que buscan el texto en un catálogo: si el turno es el
+// retorno sin dato del agente (`__resume__`) NO se busca; el paso re-pregunta con su pregunta normal,
+// sin error ni reintento. Devuelve nil en cualquier otro turno (Bird incluido).
+func ResumeRePrompt(sess *session.Session, input, prompt string) *StateResult {
+	if IsAgentResumeTurn(sess) && IsReservedKeyword(input) {
+		return agentResumeReprompt(sess, prompt)
+	}
+	return nil
+}
+
 // agentResumeReprompt es la respuesta de un paso que recibe el retorno sin dato del agente: se
 // queda donde está con su texto de siempre, sin gastar reintento ni escalar (el paciente no
 // escribió nada que pudiera estar mal).

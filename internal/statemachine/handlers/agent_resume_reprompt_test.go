@@ -148,3 +148,109 @@ func TestRegBirthDate_NectarResumeRePromptsWithoutRetryOrComplaint(t *testing.T)
 		}
 	}
 }
+
+func firstText(t *testing.T, result *sm.StateResult) string {
+	t.Helper()
+	for _, msg := range result.Messages {
+		if tm, ok := msg.(*sm.TextMessage); ok {
+			return tm.Text
+		}
+	}
+	t.Fatalf("el resultado no trae texto: %+v", result.Messages)
+	return ""
+}
+
+// Los pasos de campo con validación re-preguntan con SU pregunta, sin el «Respuesta no válida».
+func TestRegFields_NectarResumeSendsOnlyThePrompt(t *testing.T) {
+	const prompt = "Escribe tu *primer apellido*:"
+	cases := map[string]sm.StateHandler{
+		"obligatorio": regFieldHandler("k", prompt, validateName, sm.StateRegSecondSurname, ""),
+		"opcional":    regOptionalFieldHandler("k", prompt, sm.StateRegSecondSurname, ""),
+	}
+	for name, handler := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := sm.NewMachine()
+			m.Register(sm.StateRegFirstSurname, handler)
+
+			nectar := resumeTurnSess(sm.StateRegFirstSurname, true)
+			nectar.RetryCount = 1
+			result, err := m.Process(context.Background(), nectar, resumeMsg())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.NextState != sm.StateRegFirstSurname || nectar.RetryCount != 1 {
+				t.Fatalf("next=%s retry=%d", result.NextState, nectar.RetryCount)
+			}
+			if got := firstText(t, result); got != prompt {
+				t.Errorf("texto = %q, quería solo la pregunta", got)
+			}
+
+			bird := resumeTurnSess(sm.StateRegFirstSurname, false)
+			result, err = m.Process(context.Background(), bird, resumeMsg())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := firstText(t, result); !strings.HasPrefix(got, "Respuesta no válida.") || bird.RetryCount != 1 {
+				t.Errorf("Bird cambió: texto=%q retry=%d", got, bird.RetryCount)
+			}
+		})
+	}
+}
+
+// Los pasos que buscan el texto en un catálogo no buscan `__resume__`: re-preguntan sin error
+// ni reintento. En Bird buscan como siempre.
+func TestSearchSteps_NectarResumeDoesNotSearch(t *testing.T) {
+	searched := 0
+	muniRepo := &mockMunicipalityRepo{
+		searchFn: func(context.Context, string) ([]domain.Municipality, error) {
+			searched++
+			return nil, nil
+		},
+	}
+	entityRepo := &testutil.MockEntityRepo{
+		FindActiveFn: func(context.Context) ([]domain.Entity, error) {
+			searched++
+			return nil, nil
+		},
+	}
+	steps := []struct {
+		name    string
+		state   string
+		handler sm.StateHandler
+	}{
+		{"municipio de registro", sm.StateRegMunicipality, regMunicipalityHandler(muniRepo)},
+		{"municipio SANITAS", sm.StateConfirmMunicipality, confirmMunicipalityHandler(muniRepo, nil)},
+		{"entidad", sm.StateChangeEntity, changeEntityHandler(entityRepo, &testutil.MockPatientRepo{})},
+	}
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			m := sm.NewMachine()
+			m.Register(step.state, step.handler)
+
+			searched = 0
+			nectar := resumeTurnSess(step.state, true)
+			nectar.RetryCount = 1
+			result, err := m.Process(context.Background(), nectar, resumeMsg())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if searched != 0 {
+				t.Fatal("__resume__ se buscó en el catálogo")
+			}
+			if result.NextState != step.state || nectar.RetryCount != 1 {
+				t.Fatalf("next=%s retry=%d", result.NextState, nectar.RetryCount)
+			}
+			if txt := firstText(t, result); strings.Contains(txt, "No encontré") {
+				t.Errorf("error de búsqueda tras un retorno: %q", txt)
+			}
+
+			searched = 0
+			if _, err := m.Process(context.Background(), resumeTurnSess(step.state, false), resumeMsg()); err != nil {
+				t.Fatal(err)
+			}
+			if searched != 1 {
+				t.Errorf("Bird conserva su comportamiento: búsquedas = %d, quería 1", searched)
+			}
+		})
+	}
+}

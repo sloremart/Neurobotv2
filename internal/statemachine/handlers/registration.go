@@ -325,7 +325,7 @@ func regFieldHandler(ctxKey, prompt string, validate func(string) bool, nextStat
 			input = ""
 		}
 
-		retryResult := sm.ValidateWithRetry(sess, input, validate, "Respuesta no válida. "+prompt)
+		retryResult := sm.ValidateWithRetry(sess, input, validate, sm.ResumeText(sess, "Respuesta no válida. "+prompt, prompt))
 		if retryResult != nil {
 			return retryResult, nil
 		}
@@ -346,7 +346,7 @@ func regOptionalFieldHandler(ctxKey, prompt, nextState, nextPrompt string) sm.St
 		input := strings.TrimSpace(msg.Text)
 
 		if !optionalName(input) {
-			return sm.ValidateWithRetry(sess, input, optionalName, "Respuesta no válida. "+prompt), nil
+			return sm.ValidateWithRetry(sess, input, optionalName, sm.ResumeText(sess, "Respuesta no válida. "+prompt, prompt)), nil
 		}
 
 		value := strings.ToUpper(input)
@@ -562,12 +562,8 @@ func regBirthDateHandler() sm.StateHandler {
 		parsedDate, verdict := judgeBirthDate(msg.Text)
 		switch verdict {
 		case birthDateUnreadable:
-			complaint := "No entendí la fecha. " + dateHelp
-			if sm.IsAgentResumeTurn(sess) {
-				// El paciente no escribió nada: se le vuelve a pedir la fecha, sin decirle que no la entendió.
-				complaint = dateHelp
-			}
-			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false }, complaint)
+			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
+				sm.ResumeText(sess, "No entendí la fecha. "+dateHelp, dateHelp))
 			return retryResult, nil
 		case birthDateInFuture:
 			return sm.NewResult(sess.CurrentState).
@@ -756,9 +752,13 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 		}
 
 		input := strings.TrimSpace(msg.Text)
+		const municipalityPrompt = "Nombre completo de tu municipio y departamento de residencia. Ejemplo: Villavicencio - Meta:"
+		if r := sm.ResumeRePrompt(sess, input, municipalityPrompt); r != nil {
+			return r, nil
+		}
 		if !validateNotEmpty(input) {
 			return sm.NewResult(sess.CurrentState).
-				WithText("Nombre completo de tu municipio y departamento de residencia. Ejemplo: Villavicencio - Meta:"), nil
+				WithText(municipalityPrompt), nil
 		}
 
 		// Atajo: si el paciente escribe "0" usa Villavicencio por defecto
@@ -920,9 +920,13 @@ func confirmMunicipalityHandler(municipalityRepo repository.MunicipalityReposito
 		}
 
 		input := strings.TrimSpace(msg.Text)
+		const municipalityPrompt = "Escribe tu municipio y departamento de residencia (ej: *Acacías - Meta*):"
+		if r := sm.ResumeRePrompt(sess, input, municipalityPrompt); r != nil {
+			return r, nil
+		}
 		if input == "" {
 			return sm.NewResult(sm.StateConfirmMunicipality).
-				WithText("Escribe tu municipio y departamento de residencia (ej: *Acacías - Meta*):"), nil
+				WithText(municipalityPrompt), nil
 		}
 
 		results, err := municipalityRepo.Search(ctx, input)

@@ -642,9 +642,13 @@ func changeEntityHandler(entityRepo repository.EntityRepository, patientRepo rep
 		}
 
 		input := strings.TrimSpace(msg.Text)
+		const entityPrompt = "Escribe el nombre de tu *entidad o EPS*:"
+		if r := sm.ResumeRePrompt(sess, input, entityPrompt); r != nil {
+			return r, nil
+		}
 		if !validateNotEmpty(input) {
 			return sm.NewResult(sess.CurrentState).
-				WithText("Escribe el nombre de tu *entidad o EPS*:"), nil
+				WithText(entityPrompt), nil
 		}
 
 		if entityRepo == nil {

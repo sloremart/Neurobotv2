@@ -487,6 +487,10 @@ Eventos nuevos: `escalacion/equipo_sugerido` (equipo de Néctar por grupo de CUP
   Las sesiones de Néctar NO emiten `agent_no_show` ni `agent_reminder_sent`.
 - CAZAR: [BUG] `agent_no_show`/`agent_reminder_sent` en una sesión `nectar:*` · [BUG] `escalation_expired`
   de un caso encolado dentro de horario (no debe vencer) · `cola_vencida` frecuente sin plantilla mapeada.
+- `agent_resume_reprompt` (evento de sesión, solo `nectar:*`): el agente devolvió el caso sin dato
+  (`__resume__`) y el paso re-preguntó SIN gastar reintento ni escalar (no es `invalid_input`). Marca
+  `_agent_resume_turn` solo viva durante ese turno. CAZAR: [BUG] `agent_resume_reprompt` en una sesión
+  de Bird · `max_retries_reached` justo después de un retorno del agente en Néctar.
 
 ### F) 3ª tanda jul-2026 (variantes de entrada + proactivos nuevos)
 - `entidad/greeting_midflow_redirected` y tipo-doc: saludo/intención a mitad de flujo re-muestra la
