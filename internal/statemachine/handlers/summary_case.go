@@ -6,10 +6,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // LOS DATOS DEL CASO EN EL RESUMEN.
@@ -156,11 +158,37 @@ func writeAppointmentGroup(doc *summaryDoc, sess *session.Session) {
 	if id == "" {
 		id = sess.GetContext("consolidate_appt_id")
 	}
+	date, hour, procedure := sess.GetContext("notif_appt_date"), sess.GetContext("notif_appt_time"), sess.GetContext("notif_cups_name")
+	// «Reprogramar» sin horarios: el caso es la cita que se reprogramaba (reschedule_appt_id), venga
+	// de una notificación o de «Mis citas». Si está en la lista que vio el paciente, sus datos salen
+	// de ahí (con varias citas la notificada puede ser otra); si no, de las claves de la notificación.
+	if sess.GetContext(sm.CtxEscalationReason) == sm.EscalationReasonRescheduleNoSlots {
+		if rid := sess.GetContext("reschedule_appt_id"); rid != "" {
+			id = rid
+			if a := appointmentInList(sess, rid); a != nil {
+				date, hour, procedure = utils.FormatFriendlyDate(a.Date), services.FormatTimeSlot(a.TimeSlot), services.GetFirstCupName(*a)
+			}
+		}
+	}
 	g.optional(nectar.FactAppointmentID.Key, nectar.FactAppointmentID.Label, id)
-	g.optional(nectar.FactAppointmentDate.Key, nectar.FactAppointmentDate.Label, sess.GetContext("notif_appt_date"))
-	g.optional(nectar.FactAppointmentTime.Key, nectar.FactAppointmentTime.Label, sess.GetContext("notif_appt_time"))
-	g.optional(nectar.FactProcedure.Key, nectar.FactProcedure.Label, oneLine(sess.GetContext("notif_cups_name")))
+	g.optional(nectar.FactAppointmentDate.Key, nectar.FactAppointmentDate.Label, date)
+	g.optional(nectar.FactAppointmentTime.Key, nectar.FactAppointmentTime.Label, hour)
+	g.optional(nectar.FactProcedure.Key, nectar.FactProcedure.Label, oneLine(procedure))
 	g.optional(nectar.FactNotifType.Key, nectar.FactNotifType.Label, sess.GetContext("notif_type"))
+}
+
+// appointmentInList es la cita id de la lista que vio el paciente (appointments_json), o nil.
+func appointmentInList(sess *session.Session, id string) *domain.Appointment {
+	var appts []domain.Appointment
+	if err := json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appts); err != nil {
+		return nil
+	}
+	for i := range appts {
+		if appts[i].ID == id {
+			return &appts[i]
+		}
+	}
+	return nil
 }
 
 // writeSearchGroup muestra lo que devolvió la búsqueda manual de procedimientos.
