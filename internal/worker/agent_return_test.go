@@ -1012,3 +1012,82 @@ func TestHandleAgentCups_BirdEmgStepStillReplaces(t *testing.T) {
 		t.Error("en Bird los dependientes no se tocan")
 	}
 }
+
+// Una opción FreshTurn es una decisión nueva del agente: el turno no viaja con `__resume__`, para
+// que una escalación que el paso de destino necesite por mérito propio no la corte el anti-bucle.
+func TestHandleAgentResume_FreshTurnOptionIsNotAResume(t *testing.T) {
+	statemachine.RegisterStaticReturnMenu(testReturnStep,
+		statemachine.ReturnOption{Label: "Seguir", Value: "seguir", Target: "OTRO_PASO", NoInput: true, FreshTurn: true})
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
+
+	pool, _, _, sess, resumedTo, processed := returnSession(t, testReturnStep)
+	asNectar(sess)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnV1: &nectar.V1Return{Option: "seguir"},
+	})
+
+	if *resumedTo != "OTRO_PASO" {
+		t.Fatalf("se retoma en el Target, got %q", *resumedTo)
+	}
+	if processed.Text != "" || processed.IsPostback {
+		t.Fatalf("el turno de una opción FreshTurn va sin texto ni postback: %+v", *processed)
+	}
+}
+
+// Una opción sin FreshTurn sigue retomando con `__resume__`, como hoy.
+func TestHandleAgentResume_PlainOptionStillResumes(t *testing.T) {
+	statemachine.RegisterStaticReturnMenu(testReturnStep,
+		statemachine.ReturnOption{Label: "Volver", Value: "volver", Target: "OTRO_PASO", NoInput: true})
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
+
+	pool, _, _, sess, _, processed := returnSession(t, testReturnStep)
+	asNectar(sess)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnV1: &nectar.V1Return{Option: "volver"},
+	})
+
+	if processed.Text != "__resume__" {
+		t.Fatalf("sin FreshTurn el turno es __resume__, got %q", processed.Text)
+	}
+}
+
+// Los CUPS escritos en un paso cuya entrada declara Clear borran esas claves (en memoria y en la
+// BD) antes del turno de VALIDATE_OCR.
+func TestHandleAgentCups_WrittenInputClearsDeclaredKeys(t *testing.T) {
+	pool, sm, _, sess, resumedTo, _ := returnSession(t, statemachine.StateSearchSlots)
+	asNectar(sess)
+	sess.Context["waiting_list_entry_id"] = "55"
+	sess.Context["selected_slot_id"] = "s1"
+	var cleared []string
+	sm.saveFn = func(_ context.Context, _ *session.Session, _ string, _ map[string]string, clr []string) error {
+		cleared = append(cleared, clr...)
+		return nil
+	}
+	var sawStale bool
+	pool.machine.(*mockMessageProcessor).processFn = func(_ context.Context, s *session.Session, _ bird.InboundMessage) (*statemachine.StateResult, error) {
+		sawStale = s.GetContext("waiting_list_entry_id") != "" || s.GetContext("selected_slot_id") != ""
+		return &statemachine.StateResult{NextState: statemachine.StateValidateOCR}, nil
+	}
+	pool.machine.(*mockMessageProcessor).returnInput = statemachine.ReturnInputResult{
+		Written: true, Value: "883141", Command: statemachine.ReturnCommandCups,
+		Clear: []string{"waiting_list_entry_id", "selected_slot_id"},
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnInputPrefix + "883141",
+	})
+
+	if *resumedTo != statemachine.StateValidateOCR {
+		t.Fatalf("el comando cups reanuda en VALIDATE_OCR, got %q", *resumedTo)
+	}
+	if sawStale {
+		t.Error("VALIDATE_OCR no puede ver las claves del grupo anterior")
+	}
+	for _, k := range []string{"waiting_list_entry_id", "selected_slot_id"} {
+		if !slices.Contains(cleared, k) {
+			t.Errorf("%s debe borrarse en la BD, borrado = %v", k, cleared)
+		}
+	}
+}

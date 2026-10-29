@@ -44,6 +44,12 @@ type ReturnOption struct {
 	// Clear son las claves de contexto que se borran al retomar por ESTA opción (p. ej. corregir
 	// la entidad exige olvidar el contrato ya elegido). nil = no se borra nada.
 	Clear []string
+	// FreshTurn hace que el turno con que se retoma NO viaje con `__resume__` (va sin texto, como
+	// el del comando de CUPS). `__resume__` es «el bot vuelve al mismo punto sin nada nuevo», y el
+	// corte anti-bucle del handler de escalación lo suprime. Una opción que es una decisión NUEVA
+	// del agente (seguir con el siguiente procedimiento) lleva a pasos que pueden necesitar su
+	// propia escalación, y esa sí tiene que salir. Sin Data: con Data el turno ya lleva texto.
+	FreshTurn bool
 	// Reset reinicia la conversación desde el saludo y olvida todo el contexto (el /bot de Bird).
 	// Quien la ejecuta es el worker, no el paso: no depende de dónde se escaló.
 	Reset bool
@@ -342,6 +348,10 @@ type ReturnInput struct {
 	// entregue el dato escrito al comando del asesor correspondiente en vez de inyectarlo como
 	// mensaje virtual. RegisterReturnInput hace panic con cualquier otro valor.
 	Command string
+	// Clear son las claves de contexto que se borran cuando lo escrito se acepta (p. ej. los CUPS
+	// escritos tras agrupar la orden la reemplazan, y lo de los grupos viejos no puede quedar).
+	// nil = no se borra nada.
+	Clear []string
 }
 
 // ReturnValuesParser lee el `valores` de un retorno v1 y devuelve el dato que se inyecta y el
@@ -491,6 +501,8 @@ type ReturnInputResult struct {
 	// Command es el comando del asesor ("cups" u "orden") al que se entrega el dato; "" = se
 	// inyecta como mensaje virtual.
 	Command string
+	// Clear son las claves que el worker borra al usar el dato (las de ReturnInput.Clear).
+	Clear []string
 }
 
 // reject vuelca un InputRejection en el veredicto, para que ningún sitio olvide una pieza.
@@ -529,7 +541,8 @@ func (m *Machine) judge(sess *session.Session, step, data string, revalidate boo
 		slog.Warn("retorno escrito en un paso que no ofrece campo", "step", step)
 		return ReturnInputResult{}
 	}
-	res := ReturnInputResult{Written: true, Value: data, Target: in.Target, Command: in.Command}
+	// Clear viaja con cualquier veredicto, pero el worker solo lo aplica al dato aceptado.
+	res := ReturnInputResult{Written: true, Value: data, Target: in.Target, Command: in.Command, Clear: in.Clear}
 	if data == "" {
 		// Solo un campo requerido rechaza el vacío. Uno opcional vacío es «sin dato», o sea NO
 		// escrito: el worker cae a la opción elegida o a reanudar sin decisión, y no despacha

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
@@ -1256,6 +1257,77 @@ func TestAdvanceNextProcedure_MovesToNextGroup(t *testing.T) {
 	if sink.FindStep("escalacion", "siguiente_procedimiento") == nil {
 		t.Error("falta el evento escalacion/siguiente_procedimiento")
 	}
+	// Lo del grupo anterior no puede llegar al siguiente: el horario, la cita creada y, sobre
+	// todo, la entrada de lista de espera (la cita nueva la marcaría como agendada).
+	for _, k := range []string{"selected_slot_id", "created_appointment_id", "waiting_list_entry_id"} {
+		if !hasClear(res, k) {
+			t.Errorf("al seguir con el siguiente grupo se borra %s; ClearCtx = %v", k, res.ClearCtx)
+		}
+	}
+}
+
+// groupSess es una sesión en ADVANCE_NEXT_PROCEDURE cuyo siguiente grupo es el CUPS dado.
+func groupSess(nextCups string) *session.Session {
+	groups := []services.CUPSGroup{
+		{ServiceType: "Resonancia", Cups: []services.CUPSEntry{{Code: "883533", Name: "Resonancia de rodilla", Quantity: 1}}, Espacios: 1},
+		{ServiceType: "Siguiente", Cups: []services.CUPSEntry{{Code: nextCups, Name: "Siguiente", Quantity: 1}}, Espacios: 1},
+	}
+	b, _ := json.Marshal(groups)
+	sess := nectarSession(false)
+	sess.CurrentState = sm.StateAdvanceNextProcedure
+	sess.Context["procedures_json"] = string(b)
+	sess.Context["total_procedures"] = "2"
+	sess.Context["current_procedure_idx"] = "0"
+	sess.Context["patient_gender"] = "M"
+	sess.Context["patient_age"] = "40"
+	return sess
+}
+
+// freshTurnMsg es el mensaje virtual con que el worker retoma por una opción FreshTurn: sin texto,
+// como el del comando de CUPS (nunca `__resume__`).
+func freshTurnMsg() bird.InboundMessage {
+	msg := nectarMsg()
+	msg.Text = ""
+	return msg
+}
+
+// La cadena REAL: si el siguiente grupo escala por mérito propio (estudio del sueño), la
+// escalación sale; el corte anti-bucle del `__resume__` no se la traga.
+func TestAdvanceNextProcedure_NextGroupThatEscalatesReachesAnAgent(t *testing.T) {
+	m, nb := nectarMachine(t, testEscalationConfig(), nil)
+	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
+	RegisterMedicalValidationHandlers(m, services.NewGFRService(), services.NewAppointmentService(&mockApptRepo{}, nil), nil)
+
+	res, err := m.Process(context.Background(), groupSess("891901"), freshTurnMsg()) // polisomnografía
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalated {
+		t.Fatalf("NextState = %s, quiero ESCALATED", res.NextState)
+	}
+	if len(nb.escalations) != 1 {
+		t.Fatalf("se esperaba una escalación a Néctar, hubo %d", len(nb.escalations))
+	}
+}
+
+// La cadena REAL con un grupo normal llega a la búsqueda de horarios del siguiente grupo.
+func TestAdvanceNextProcedure_NormalNextGroupReachesSlotSearch(t *testing.T) {
+	m, _ := nectarMachine(t, testEscalationConfig(), nil)
+	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
+	RegisterMedicalValidationHandlers(m, services.NewGFRService(), services.NewAppointmentService(&mockApptRepo{}, nil), nil)
+	var searched string
+	m.Register(sm.StateSearchSlots, func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		searched = sess.GetContext("cups_code")
+		return sm.NewResult(sm.StateShowSlots), nil
+	})
+
+	res, err := m.Process(context.Background(), groupSess("890271"), freshTurnMsg()) // sin contraste ni sedación
+	if err != nil {
+		t.Fatal(err)
+	}
+	if searched != "890271" || res.NextState != sm.StateShowSlots {
+		t.Fatalf("se buscó %q y se terminó en %s; quiero la búsqueda del 890271", searched, res.NextState)
+	}
 }
 
 // Sin grupo siguiente no hay nada que seguir: el caso queda gestionado y la sesión se cierra.
@@ -1286,10 +1358,10 @@ func TestNextProcedureOption_OnlyWhenGroupsRemain(t *testing.T) {
 	}
 	want := sm.ReturnOption{
 		Label: "Ya quedó gestionado: seguir con Resonancia de rodilla", Value: "siguiente_procedimiento",
-		Target: sm.StateAdvanceNextProcedure, NoInput: true,
+		Target: sm.StateAdvanceNextProcedure, NoInput: true, FreshTurn: true,
 	}
 	if o := got[0]; o.Label != want.Label || o.Value != want.Value || o.Target != want.Target || !o.NoInput ||
-		o.Data != "" || o.Close {
+		!o.FreshTurn || o.Data != "" || o.Close {
 		t.Errorf("opción = %+v, quiero %+v", o, want)
 	}
 	if got := nextProcedureOption(twoGroupsSess(sm.StateSearchSlots, 1)); len(got) != 0 {

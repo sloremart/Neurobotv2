@@ -353,6 +353,32 @@ func waitingListDedup(ctx context.Context, wlRepo WaitingListCreator, patientID 
 	return false, supersedeIDs
 }
 
+// procedureGroupContextKeys son las claves que pertenecen a UN grupo de procedimientos y no pueden
+// pasar a otro. Las borra advanceToNextProcedure al seguir con el siguiente grupo, y las borra el
+// campo de CUPS del agente en SEARCH_SLOTS y CHECK_SPECIAL_CUPS, donde lo escrito reemplaza la
+// orden ya agrupada.
+var procedureGroupContextKeys = []string{
+	"is_contrasted", "is_sedated", "is_pregnant",
+	"gfr_creatinine", "gfr_height_cm", "gfr_weight_kg",
+	"gfr_disease_type", "gfr_calculated",
+	"selected_slot_id", "available_slots_json", "slots_after_date",
+	"preferred_doctor_doc", "ocr_is_sedated", "ocr_is_contrasted",
+	"_prompted_contrast", "_prompted_sedation", "_prompted_pregnancy",
+	"cups_preparation", "cups_video_url", "cups_audio_url",
+	"alternative_cups_codes", "created_appointment_id",
+	// La entrada de lista de espera pertenece al procedimiento ANTERIOR (el que se quedó sin
+	// slots); no debe propagarse al siguiente, o al agendarlo createAppointmentHandler marcaría
+	// esa entrada como 'scheduled' por error y la sacaría de la lista. Solo el flujo de
+	// notificación (notifications/waiting_list.go) setea esta clave para el CUPS correcto.
+	"waiting_list_entry_id",
+}
+
+// nextProcedureValue es el token de la salida «seguir con el siguiente procedimiento».
+const nextProcedureValue = "siguiente_procedimiento"
+
+// nextProcedureClosingText es el cierre cuando el agente dio por gestionado el último grupo.
+const nextProcedureClosingText = "Tu solicitud quedó gestionada por nuestro equipo."
+
 // nextProcedureGroup devuelve el grupo de procedimientos que sigue al actual, si queda uno con
 // CUPS. Lo comparten advanceToNextProcedure y la opción del agente, para que el botón solo
 // aparezca cuando de verdad hay a dónde seguir.
@@ -386,8 +412,11 @@ func nextProcedureOption(sess *session.Session) []sm.ReturnOption {
 	}
 	return []sm.ReturnOption{{
 		Label:  "Ya quedó gestionado: seguir con " + next.Cups[0].Name,
-		Value:  "siguiente_procedimiento",
+		Value:  nextProcedureValue,
 		Target: sm.StateAdvanceNextProcedure, NoInput: true,
+		// Es una decisión nueva: si el siguiente grupo necesita su propia escalación (estudio del
+		// sueño, bloqueo, tope), un `__resume__` haría que el anti-bucle se la tragara.
+		FreshTurn: true,
 	}}
 }
 
@@ -400,7 +429,7 @@ func advanceNextProcedureHandler() sm.StateHandler {
 				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return next, nil
 		}
-		return buildAutoCloseResult("Tu solicitud quedó gestionada por nuestro equipo."), nil
+		return buildAutoCloseResult(nextProcedureClosingText), nil
 	}
 }
 
@@ -417,19 +446,7 @@ func advanceToNextProcedure(sess *session.Session) *sm.StateResult {
 		WithContext("cups_code", nextGroup.Cups[0].Code).
 		WithContext("cups_name", nextGroup.Cups[0].Name).
 		WithContext("espacios", fmt.Sprintf("%d", nextGroup.Espacios)).
-		WithClearCtx("is_contrasted", "is_sedated", "is_pregnant",
-			"gfr_creatinine", "gfr_height_cm", "gfr_weight_kg",
-			"gfr_disease_type", "gfr_calculated",
-			"selected_slot_id", "available_slots_json", "slots_after_date",
-			"preferred_doctor_doc", "ocr_is_sedated", "ocr_is_contrasted",
-			"_prompted_contrast", "_prompted_sedation", "_prompted_pregnancy",
-			"cups_preparation", "cups_video_url", "cups_audio_url",
-			"alternative_cups_codes", "created_appointment_id",
-			// La entrada de lista de espera pertenece al procedimiento ANTERIOR (el que se quedó sin
-			// slots); no debe propagarse al siguiente, o al agendarlo createAppointmentHandler marcaría
-			// esa entrada como 'scheduled' por error y la sacaría de la lista. Solo el flujo de
-			// notificación (notifications/waiting_list.go) setea esta clave para el CUPS correcto.
-			"waiting_list_entry_id")
+		WithClearCtx(procedureGroupContextKeys...)
 
 	// Propagate OCR sedation/contrast detection for next group
 	for _, c := range nextGroup.Cups {
@@ -463,7 +480,7 @@ func RegisterSlotHandlers(
 	// SEARCH_SLOTS es automático y escala de forma determinista: devolverlo tal cual lo re-ejecuta y
 	// vuelve a escalar (P1-5). La salida que reanuda lleva los CUPS que el agente escribió (C6), y
 	// si el agente ya gestionó este procedimiento, el bot sigue con el siguiente grupo.
-	sm.RegisterReturnInput(sm.StateSearchSlots, agentCupsReturnInput())
+	sm.RegisterReturnInput(sm.StateSearchSlots, agentCupsReplaceOrderInput())
 	sm.RegisterResumeLabel(sm.StateSearchSlots, agentCupsResumeLabel)
 	sm.RegisterReturnMenu(sm.StateSearchSlots, nextProcedureOption)
 	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())

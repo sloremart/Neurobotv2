@@ -978,6 +978,7 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		// el saludo sería una respuesta a una pregunta que no se hizo.
 		cmd.Data = ""
 		cmd.DataIsPostback = false
+		cmd.FreshTurn = false
 	}
 
 	// Resume session in DB
@@ -1048,6 +1049,11 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			Text:        "__resume__",
 			MessageType: "text",
 			ReceivedAt:  time.Now(),
+		}
+		// Una decisión nueva del agente no es «el bot vuelve al mismo punto»: sin `__resume__`, el
+		// corte anti-bucle no se traga la escalación que el paso de destino pueda necesitar.
+		if cmd.FreshTurn {
+			virtualMsg.Text = ""
 		}
 		result, err := p.machine.Process(ctx, sess, virtualMsg)
 		if err != nil {
@@ -1322,11 +1328,20 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
 		return agentCommandResumeProblem
 	}
-	// Los dependientes ya fusionados se borran también en la BD, como el handler de la foto.
+	// Los dependientes ya fusionados se borran también en la BD, como el handler de la foto. Y lo
+	// que el campo del paso manda olvidar (ReturnInput.Clear: lo de los grupos de una orden que lo
+	// escrito reemplaza) se borra antes del turno, también en memoria si no se pudo persistir.
+	clearCtx := slices.Clone(cmd.ClearCtx)
 	if mergeEmg {
-		if err := p.sessionManager.SaveState(ctx, sess, statemachine.StateValidateOCR, nil, []string{"emg_dep_cups_json"}); err != nil {
-			slog.Error("no se pudieron borrar los dependientes de EMG ya fusionados", "error", err,
+		clearCtx = append(clearCtx, "emg_dep_cups_json")
+	}
+	if len(clearCtx) > 0 {
+		if err := p.sessionManager.SaveState(ctx, sess, statemachine.StateValidateOCR, nil, clearCtx); err != nil {
+			slog.Error("no se pudo borrar el contexto antes de validar los CUPS", "error", err,
 				"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID)
+		}
+		for _, k := range cmd.ClearCtx {
+			delete(sess.Context, k)
 		}
 	}
 	p.clearNextDayQueueMark(ctx, sess)

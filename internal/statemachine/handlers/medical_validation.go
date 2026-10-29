@@ -23,7 +23,7 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	// CHECK_SPECIAL_CUPS es automático y escala de forma determinista con el mismo CUPS: la salida
 	// que reanuda lleva los CUPS que el agente escribió (C6), y si el agente ya gestionó este
 	// procedimiento, el bot sigue con el siguiente grupo (P1-5).
-	sm.RegisterReturnInput(sm.StateCheckSpecialCups, agentCupsReturnInput())
+	sm.RegisterReturnInput(sm.StateCheckSpecialCups, agentCupsReplaceOrderInput())
 	sm.RegisterResumeLabel(sm.StateCheckSpecialCups, agentCupsResumeLabel)
 	sm.RegisterReturnMenu(sm.StateCheckSpecialCups, nextProcedureOption)
 	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())

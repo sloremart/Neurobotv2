@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -104,6 +105,17 @@ func agentCupsReturnInput() sm.ReturnInput {
 			return sm.InputRejection{}
 		},
 	}
+}
+
+// agentCupsReplaceOrderInput es el campo de CUPS de los pasos donde la orden ya está agrupada
+// (SEARCH_SLOTS, CHECK_SPECIAL_CUPS): lo escrito vuelve a VALIDATE_OCR y REEMPLAZA la orden entera,
+// así que se borra todo lo que pertenecía a sus grupos (procedureGroupContextKeys) y el agente lo
+// lee en la ayuda del campo.
+func agentCupsReplaceOrderInput() sm.ReturnInput {
+	in := agentCupsReturnInput()
+	in.Help = "Lo escrito reemplaza la orden completa, procedimientos pendientes incluidos."
+	in.Clear = slices.Clone(procedureGroupContextKeys)
+	return in
 }
 
 // ocrRetryButtons builds the retry/escalation buttons for OCR errors.

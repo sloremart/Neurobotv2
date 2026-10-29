@@ -909,3 +909,29 @@ func TestUploadEmgOrderReturn_CupsFieldAndAskAgain(t *testing.T) {
 		t.Errorf("menú de UPLOAD_EMG_ORDER: reanudar=%v pedir=%v", resume, again)
 	}
 }
+
+// En SEARCH_SLOTS y CHECK_SPECIAL_CUPS lo escrito REEMPLAZA la orden ya agrupada: se borran las
+// mismas claves por grupo que borra seguir con el siguiente procedimiento (entre ellas la entrada
+// de lista de espera, que la cita nueva marcaría como agendada) y el rótulo lo dice. En los pasos
+// de la orden, donde aún no hay grupos, no se borra nada.
+func TestReturnMenus_CupsFieldAfterGroupingResetsTheGroupContext(t *testing.T) {
+	m := returnMenuMachine()
+	for _, step := range []string{sm.StateSearchSlots, sm.StateCheckSpecialCups} {
+		r := m.ResolveReturnInput(testSess(step), step, sm.ReturnInputPrefix+"883141")
+		if !r.OK() || !slices.Equal(r.Clear, procedureGroupContextKeys) {
+			t.Errorf("%s: Clear = %v, quiero las claves por grupo", step, r.Clear)
+		}
+		if !slices.Contains(r.Clear, "waiting_list_entry_id") {
+			t.Errorf("%s: falta waiting_list_entry_id en %v", step, r.Clear)
+		}
+		in := m.InputDescriptor(nil, step)
+		if len(in.Fields) != 1 || !strings.Contains(in.Fields[0].Label+" "+in.Fields[0].Help, "reemplaza la orden completa") {
+			t.Errorf("%s: el campo debe decir que reemplaza la orden completa: %+v", step, in.Fields)
+		}
+	}
+	for _, step := range []string{sm.StateAskMedicalOrder, sm.StateValidateOCR} {
+		if r := m.ResolveReturnInput(testSess(step), step, sm.ReturnInputPrefix+"883141"); len(r.Clear) != 0 {
+			t.Errorf("%s: no hay grupos que borrar, Clear = %v", step, r.Clear)
+		}
+	}
+}

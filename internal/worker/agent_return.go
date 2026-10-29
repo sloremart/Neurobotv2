@@ -125,6 +125,7 @@ func (p *MessageWorkerPool) applyAgentReturn(ctx context.Context, sess *session.
 		return cmd, true
 	case written.OK():
 		cmd.Data = written.Value
+		cmd.ClearCtx = written.Clear
 		if written.Command != "" {
 			// El paso entrega el dato al comando del asesor (lista de CUPS u orden en texto)
 			// en vez de inyectarlo: ese comando es quien sabe consumirlo.
@@ -194,6 +195,7 @@ func (p *MessageWorkerPool) applyAgentReturn(ctx context.Context, sess *session.
 		// El Data de una opción es la respuesta a un botón: los pasos de botones solo aceptan
 		// postback.
 		cmd.DataIsPostback = opt.Data != ""
+		cmd.FreshTurn = opt.FreshTurn && opt.Data == ""
 		slog.Info("agent return: retomando por la salida elegida", "phone", utils.MaskPhone(cmd.Phone),
 			"session_id", sess.ID, "step", step, "return_value", token,
 			"target_state", cmd.State, "data", cmd.Data != "")

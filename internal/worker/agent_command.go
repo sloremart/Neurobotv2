@@ -29,13 +29,20 @@ type AgentCommand struct {
 	Data   string // Corrected data (optional, for resume with data / orden description)
 	Phone  string // Patient phone number
 
-	// ClearCtx son las claves de contexto que handleAgentResume borra al retomar: las de la
-	// opción del menú que eligió el agente (ReturnOption.Clear). Un comando de Bird no las trae.
+	// ClearCtx son las claves de contexto que se borran al retomar: las de la opción del menú que
+	// eligió el agente (ReturnOption.Clear) o las del campo cuyo dato se aceptó
+	// (ReturnInput.Clear). Las borran handleAgentResume y handleAgentCups. Un comando de Bird no
+	// las trae.
 	ClearCtx []string
 	// DataIsPostback hace que Data entre al flujo como postback además de como texto: es el Data
 	// de una OPCIÓN del menú, la respuesta a un botón. Lo escrito por el agente y los comandos de
 	// Bird viajan como texto.
 	DataIsPostback bool
+	// FreshTurn hace que la reanudación SIN dato viaje sin texto en vez de con `__resume__`: es
+	// una opción que es una decisión nueva del agente (ReturnOption.FreshTurn), y una escalación
+	// que el paso de destino necesite no la debe cortar el anti-bucle. Un comando de Bird no la
+	// trae.
+	FreshTurn bool
 }
 
 // ChosenOption es el TOKEN que el agente eligió, venga por donde venga: la `opcion` del retorno
