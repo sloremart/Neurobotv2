@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1090,13 +1091,14 @@ func nSlots(n int) []services.AvailableSlot {
 // donde el paciente lo ve (5 o más), y siempre buscar de nuevo.
 func TestSlotReturnOptions_OnePerOfferedSlot(t *testing.T) {
 	sess := testSess(sm.StateShowSlots)
-	sess.Context["available_slots_json"] = slotsJSON(nSlots(3))
+	threeSlots := nSlots(3)
+	sess.Context["available_slots_json"] = slotsJSON(threeSlots)
 
 	got := slotReturnOptions(sess)
 	want := []sm.ReturnOption{
-		{Value: "slot_1", Data: "1"},
-		{Value: "slot_2", Data: "2"},
-		{Value: "slot_3", Data: "3"},
+		{Value: slotReturnToken(&threeSlots[0]), Data: "1"},
+		{Value: slotReturnToken(&threeSlots[1]), Data: "2"},
+		{Value: slotReturnToken(&threeSlots[2]), Data: "3"},
 		{Label: "Buscar horarios de nuevo", Value: "buscar_horarios", Target: sm.StateSearchSlots},
 	}
 	if len(got) != len(want) {
@@ -1159,5 +1161,60 @@ func TestSlotReturnOptions_StaleSlotTokenRePrompts(t *testing.T) {
 	returnMenuMachine()
 	if _, ok := sm.ResolveReturnValue(sess, sm.StateShowSlots, "slot_3"); ok {
 		t.Fatal("slot_3 no pertenece a una sesión con 2 horarios")
+	}
+}
+
+// El token de un horario identifica EL HORARIO (slotKey), con la forma de token del menú.
+func TestSlotReturnToken_IdentifiesTheSlotInTokenShape(t *testing.T) {
+	shape := regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	a := services.AvailableSlot{AgendaID: 712, DoctorSiesaCode: "20", TimeSlot: "202611030930"}
+	otherDoctor := a
+	otherDoctor.DoctorSiesaCode = "Dr-22/X"
+	for _, s := range []services.AvailableSlot{a, otherDoctor} {
+		if tok := slotReturnToken(&s); !shape.MatchString(tok) {
+			t.Errorf("token %q fuera de [a-z0-9_]{1,64}", tok)
+		}
+	}
+	if slotReturnToken(&a) == slotReturnToken(&otherDoctor) {
+		t.Error("dos horarios a la misma hora con distinto médico deben tener tokens distintos")
+	}
+	again := a
+	if slotReturnToken(&a) != slotReturnToken(&again) {
+		t.Error("el mismo horario da siempre el mismo token")
+	}
+}
+
+// Review Focus 3 (Ruling A3): si la lista cambió y tiene el MISMO largo, el token del horario
+// que eligió el agente ya no resuelve; el bot reanuda sin decisión y el paso re-pregunta, sin
+// proponer el horario que ahora ocupa esa posición.
+func TestSlotReturnOptions_SameLengthDifferentSlotsRePrompts(t *testing.T) {
+	returnMenuMachine()
+	before := testSess(sm.StateShowSlots)
+	before.Context["available_slots_json"] = slotsJSON(nSlots(3))
+	chosen := slotReturnOptions(before)[1]
+
+	after := testSess(sm.StateShowSlots)
+	changed := nSlots(3)
+	for i := range changed {
+		changed[i].TimeSlot = fmt.Sprintf("2026032114%02d", i)
+		changed[i].Date = "2026-03-21"
+	}
+	after.Context["available_slots_json"] = slotsJSON(changed)
+
+	if o, ok := sm.ResolveReturnValue(after, sm.StateShowSlots, chosen.Value); ok {
+		t.Fatalf("el horario elegido ya no está y el token resolvió a %+v", o)
+	}
+	// Sin decisión el worker reanuda con __resume__: el paso re-pregunta y no elige nada.
+	m := sm.NewMachine()
+	m.Register(sm.StateShowSlots, showSlotsHandler(nil))
+	res, err := m.Process(context.Background(), after, textM("__resume__"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateShowSlots {
+		t.Fatalf("re-pregunta en SHOW_SLOTS, fue a %s", res.NextState)
+	}
+	if _, set := res.UpdateCtx["selected_slot_id"]; set {
+		t.Fatal("no se elige ningún horario")
 	}
 }

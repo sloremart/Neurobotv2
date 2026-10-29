@@ -76,10 +76,10 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 		payloadOption("No tiene la orden", "emg_order_no"),
 	)
 	m.Register(sm.StateUploadEmgOrder, uploadEmgOrderHandler(ocrSvc, birdClient))
-	// Los CUPS escritos aquí son los de la orden de EMG: el comando de CUPS los suma a los
-	// dependientes de la 1ª orden (emg_dep_cups_json), como hace el handler con la foto (C5).
+	// Los CUPS escritos aquí son los de la orden de EMG: en Néctar el comando de CUPS los suma a
+	// los dependientes de la 1ª orden (emg_dep_cups_json) si los hay, como el handler con la foto (C5).
 	emgCups := agentCupsReturnInput()
-	emgCups.Label = "CUPS de la orden de electromiografía (se suman a los dependientes ya leídos)"
+	emgCups.Label = "CUPS de la orden de electromiografía (si ya se leyeron dependientes de la 1ª orden, se suman)"
 	sm.RegisterReturnInput(sm.StateUploadEmgOrder, emgCups)
 	sm.RegisterResumeLabel(sm.StateUploadEmgOrder, agentCupsResumeLabel)
 	sm.RegisterStaticReturnMenu(sm.StateUploadEmgOrder, sm.ReturnOption{
@@ -1022,22 +1022,27 @@ func searchedProcedures(sess *session.Session) ([]searchedProcedure, error) {
 	return procs, err
 }
 
-// procedureReturnOptions son los procedimientos de la lista que vio el paciente: el Data es el ID
-// de la fila, que selectProcedureHandler solo acepta como postback (llega así, Tarea 5).
+// procedureReturnOptions son los procedimientos de la lista que vio el paciente, más buscar de
+// nuevo (la salida cuando la lista no está). El Data es el ID de la fila, que
+// selectProcedureHandler solo acepta como postback (llega así, Tarea 5); un ID que ya no está en la
+// sesión deja el token desconocido.
 func procedureReturnOptions(sess *session.Session) []sm.ReturnOption {
+	searchAgain := sm.ReturnOption{
+		Label: "Buscar de nuevo", Value: "buscar_procedimiento", Target: sm.StateAskManualCups, NoInput: true,
+	}
 	if sess == nil {
-		return nil
+		return []sm.ReturnOption{searchAgain}
 	}
 	procs, err := searchedProcedures(sess)
 	if err != nil {
-		return nil
+		return []sm.ReturnOption{searchAgain}
 	}
-	options := make([]sm.ReturnOption, 0, len(procs))
+	options := make([]sm.ReturnOption, 0, len(procs)+1)
 	for _, p := range procs {
 		id := strconv.Itoa(p.ID)
 		options = append(options, sm.ReturnOption{Label: p.Code + " — " + p.Name, Value: "proc_" + id, Data: id})
 	}
-	return options
+	return append(options, searchAgain)
 }
 
 // ocrSpecialtyMismatch detecta cuando el nombre leído por el OCR indica una especialidad médica

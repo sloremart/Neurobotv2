@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -828,10 +829,34 @@ func slotDoctorInfo(slot services.AvailableSlot) string {
 	return fmt.Sprintf(" con Dr. %s", slot.DoctorName)
 }
 
-// slotReturnOptions son los horarios que el paciente ve en SHOW_SLOTS, cada uno con el número que
-// él escribiría (el Data), más «ver más» donde él lo ve y buscar de nuevo. El token lleva el
-// número y no el horario: si al volver la sesión ya no tiene ese número, el handler re-pregunta
-// («Opción inválida…») y no agenda otro.
+// slotReturnToken es el token de un horario en el menú del agente: identifica EL HORARIO (la misma
+// clave que selected_slot_id, slotKey), no su posición en la lista. Lleva la hora legible y un
+// hash corto de la clave para quedar dentro de [a-z0-9_].
+func slotReturnToken(slot *services.AvailableSlot) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(slotKey(slot)))
+	return fmt.Sprintf("slot_%s_%08x", returnTokenPart(slot.TimeSlot), h.Sum32())
+}
+
+// returnTokenPart deja un dato de sesión en la forma de token del menú ([a-z0-9_]): minúsculas,
+// y cualquier otro carácter como «_».
+func returnTokenPart(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		}
+		return '_'
+	}, s)
+}
+
+// slotReturnOptions son los horarios que el paciente ve en SHOW_SLOTS, más «ver más» donde él lo
+// ve y buscar de nuevo. El token identifica el horario y el Data es su número ACTUAL en la lista
+// (lo que el paciente escribiría): el menú se reconstruye con la sesión al volver, así que si ese
+// horario ya no está, el token es desconocido, el bot reanuda sin decisión y el paso re-pregunta;
+// nunca propone otro horario en su lugar.
 func slotReturnOptions(sess *session.Session) []sm.ReturnOption {
 	searchAgain := sm.ReturnOption{Label: "Buscar horarios de nuevo", Value: "buscar_horarios", Target: sm.StateSearchSlots}
 	if sess == nil {
@@ -846,7 +871,7 @@ func slotReturnOptions(sess *session.Session) []sm.ReturnOption {
 		n := strconv.Itoa(i + 1)
 		options = append(options, sm.ReturnOption{
 			Label: utils.FormatFriendlyDateShortStr(slot.Date) + " " + slot.TimeDisplay + slotDoctorInfo(slot),
-			Value: "slot_" + n, Data: n,
+			Value: slotReturnToken(&slots[i]), Data: n,
 		})
 	}
 	if moreSlotsOffered(len(slots)) {

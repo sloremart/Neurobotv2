@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
@@ -50,7 +51,7 @@ func notifyFreedSlots(ctx context.Context, onCancel CancellationCallback, block 
 func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
 	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo))
 	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo))
-	sm.RegisterReturnMenu(sm.StateListAppointments, appointmentReturnOptions)
+	sm.RegisterReturnMenu(sm.StateListAppointments, appointmentReturnOptions(procRepo))
 	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper))
 	sm.RegisterStaticReturnMenu(sm.StateAppointmentAction,
 		payloadOption("Confirmar la cita", "appt_confirm"),
@@ -1192,29 +1193,58 @@ type appointmentListData struct {
 // appointmentListMax es cuántas citas muestra la lista de LIST_APPOINTMENTS.
 const appointmentListMax = 10
 
-// appointmentReturnOptions son las citas que el paciente ve en LIST_APPOINTMENTS (las mismas
-// appointmentListMax primeras de appointments_json): el Data es el ID de la cita, el payload de
-// su fila, que el handler reconoce como postback. Un ID que ya no esté en la sesión no elige
-// ninguna cita: el handler vuelve a mostrar la lista.
-func appointmentReturnOptions(sess *session.Session) []sm.ReturnOption {
-	reload := sm.ReturnOption{Label: "Recargar citas desde el sistema", Value: "recargar_citas", Target: sm.StateFetchAppointments}
-	if sess == nil {
-		return []sm.ReturnOption{reload}
+// appointmentLabelLookupTimeout acota la búsqueda de nombres de procedimiento al armar el menú
+// del agente, que no tiene el ctx de un turno.
+const appointmentLabelLookupTimeout = 3 * time.Second
+
+// appointmentListTitle es la fecha y hora de una fila de la lista de citas.
+func appointmentListTitle(appt domain.Appointment) string {
+	return fmt.Sprintf("%s %s", utils.FormatFriendlyDateShort(appt.Date), services.FormatTimeSlot(appt.TimeSlot))
+}
+
+// appointmentListCupName es el procedimiento de una fila de la lista de citas: el nombre de la
+// cita, o el del catálogo si la cita solo trae el código.
+func appointmentListCupName(ctx context.Context, appt domain.Appointment, procRepo repository.ProcedureRepository) string {
+	cupName := services.GetFirstCupName(appt)
+	cupCode := services.GetFirstCupCode(appt)
+	if (cupName == "" || cupName == cupCode) && procRepo != nil {
+		if p, err := procRepo.FindByCode(ctx, utils.BaseCupCode(cupCode)); err == nil && p != nil && p.Name != "" {
+			cupName = p.Name
+		}
 	}
-	var appts []domain.Appointment
-	if err := json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appts); err != nil {
-		return []sm.ReturnOption{reload}
+	return cupName
+}
+
+// appointmentReturnOptions arma las citas que el paciente ve en LIST_APPOINTMENTS (las mismas
+// appointmentListMax primeras de appointments_json), con la fecha, el médico y el procedimiento
+// de su fila. El token identifica la cita (cita_<ID>) y el Data es su ID, el payload de la fila
+// que el handler reconoce como postback: una cita que ya no esté en la sesión deja el token
+// desconocido y el paso vuelve a mostrar la lista.
+func appointmentReturnOptions(procRepo repository.ProcedureRepository) sm.ReturnOptionsBuilder {
+	return func(sess *session.Session) []sm.ReturnOption {
+		reload := sm.ReturnOption{
+			Label: "Recargar citas desde el sistema", Value: "recargar_citas", Target: sm.StateFetchAppointments,
+		}
+		if sess == nil {
+			return []sm.ReturnOption{reload}
+		}
+		var appts []domain.Appointment
+		if err := json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appts); err != nil {
+			return []sm.ReturnOption{reload}
+		}
+		if len(appts) > appointmentListMax {
+			appts = appts[:appointmentListMax]
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), appointmentLabelLookupTimeout)
+		defer cancel()
+		options := make([]sm.ReturnOption, 0, len(appts)+1)
+		for _, a := range appts {
+			label := fmt.Sprintf("%s — Dr. %s — %s", appointmentListTitle(a), a.DoctorName,
+				appointmentListCupName(ctx, a, procRepo))
+			options = append(options, sm.ReturnOption{Label: label, Value: "cita_" + returnTokenPart(a.ID), Data: a.ID})
+		}
+		return append(options, reload)
 	}
-	if len(appts) > appointmentListMax {
-		appts = appts[:appointmentListMax]
-	}
-	options := make([]sm.ReturnOption, 0, len(appts)+1)
-	for i, a := range appts {
-		label := fmt.Sprintf("%s %s — %s", utils.FormatFriendlyDateShort(a.Date),
-			services.FormatTimeSlot(a.TimeSlot), services.GetFirstCupName(a))
-		options = append(options, sm.ReturnOption{Label: label, Value: fmt.Sprintf("cita_%d", i+1), Data: a.ID})
-	}
-	return append(options, reload)
 }
 
 // buildAppointmentList constructs the list display for appointments.
@@ -1227,16 +1257,10 @@ func buildAppointmentList(ctx context.Context, _ *services.AppointmentService, a
 
 	rows := make([]sm.ListRow, 0, maxShow)
 	for _, appt := range appointments {
-		cupName := services.GetFirstCupName(appt)
-		cupCode := services.GetFirstCupCode(appt)
-		if (cupName == "" || cupName == cupCode) && procRepo != nil {
-			if p, err := procRepo.FindByCode(ctx, utils.BaseCupCode(cupCode)); err == nil && p != nil && p.Name != "" {
-				cupName = p.Name
-			}
-		}
+		cupName := appointmentListCupName(ctx, appt, procRepo)
 		// DoctorName comes already resolved from SIESA (RTRIM(sis_medi.nombre)).
 		doctorName := appt.DoctorName
-		title := fmt.Sprintf("%s %s", utils.FormatFriendlyDateShort(appt.Date), services.FormatTimeSlot(appt.TimeSlot))
+		title := appointmentListTitle(appt)
 		desc := fmt.Sprintf("Dr. %s - %s", doctorName, cupName)
 
 		rows = append(rows, sm.ListRow{

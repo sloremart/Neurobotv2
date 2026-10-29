@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -18,6 +17,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/testutil"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -686,19 +686,37 @@ func representativeSess(step string) *session.Session {
 }
 
 func TestAppointmentReturnOptions_DataIsTheAppointmentID(t *testing.T) {
-	sess := representativeSess(sm.StateListAppointments)
-	got := appointmentReturnOptions(sess)
 	appts := sampleAppointments()
+	// La 2ª cita solo trae el código: el nombre sale del catálogo, como en la lista del paciente.
+	appts[1].Procedures[0].CupName = ""
+	b, _ := json.Marshal(appts)
+	sess := testSess(sm.StateListAppointments)
+	sess.Context["appointments_json"] = string(b)
+	procRepo := &testutil.MockProcedureRepo{
+		FindByCodeFn: func(_ context.Context, code string) (*domain.Procedure, error) {
+			return &domain.Procedure{Code: code, Name: "RM CEREBRO SIMPLE"}, nil
+		},
+	}
+	got := appointmentReturnOptions(procRepo)(sess)
 	if len(got) != 3 {
 		t.Fatalf("opciones = %+v, quiero una por cita y recargar", got)
 	}
+	wantCup := []string{"CONSULTA NEUROLOGIA", "RM CEREBRO SIMPLE"}
 	for i, a := range appts {
-		wantLabel := utils.FormatFriendlyDateShort(a.Date) + " " + services.FormatTimeSlot(a.TimeSlot) + " — " + a.Procedures[0].CupName
+		wantLabel := utils.FormatFriendlyDateShort(a.Date) + " " + services.FormatTimeSlot(a.TimeSlot) +
+			" — Dr. " + a.DoctorName + " — " + wantCup[i]
 		o := got[i]
-		if o.Label != wantLabel || o.Value != fmt.Sprintf("cita_%d", i+1) || o.Data != a.ID || o.Target != "" {
-			t.Errorf("opción %d = %+v, quiero rótulo %q y Data %q", i, o, wantLabel, a.ID)
+		if o.Label != wantLabel || o.Value != "cita_"+a.ID || o.Data != a.ID || o.Target != "" {
+			t.Errorf("opción %d = %+v, quiero rótulo %q, token cita_%s y Data %q", i, o, wantLabel, a.ID, a.ID)
 		}
 	}
+	// Una cita que ya no está en la sesión deja su token sin resolver.
+	returnMenuMachine()
+	sess.Context["appointments_json"] = "[]"
+	if _, ok := sm.ResolveReturnValue(sess, sm.StateListAppointments, got[0].Value); ok {
+		t.Error("el token de una cita que ya no está no debe resolver")
+	}
+	sess.Context["appointments_json"] = string(b)
 	if r := got[2]; r.Value != "recargar_citas" || r.Target != sm.StateFetchAppointments || r.Data != "" ||
 		r.Label != "Recargar citas desde el sistema" {
 		t.Errorf("recargar = %+v", r)
@@ -801,17 +819,19 @@ func TestSelectProcedureReturnOptions_PostbackIDs(t *testing.T) {
 	want := []sm.ReturnOption{
 		{Label: "883141 — RM CEREBRO", Value: "proc_7", Data: "7"},
 		{Label: "883101 — RM COLUMNA", Value: "proc_9", Data: "9"},
+		{Label: "Buscar de nuevo", Value: "buscar_procedimiento", Target: sm.StateAskManualCups, NoInput: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("opciones = %+v", got)
 	}
 	for i, w := range want {
-		if o := got[i]; o.Label != w.Label || o.Value != w.Value || o.Data != w.Data || o.Target != "" {
+		if o := got[i]; o.Label != w.Label || o.Value != w.Value || o.Data != w.Data || o.Target != w.Target || o.NoInput != w.NoInput {
 			t.Errorf("opción %d = %+v, quiero %+v", i, o, w)
 		}
 	}
-	if got := procedureReturnOptions(nil); len(got) != 0 {
-		t.Errorf("sin sesión no hay procedimientos: %+v", got)
+	// Sin la lista queda la salida de buscar de nuevo.
+	if got := procedureReturnOptions(nil); len(got) != 1 || got[0].Value != "buscar_procedimiento" {
+		t.Errorf("sin sesión solo queda buscar de nuevo: %+v", got)
 	}
 
 	m := sm.NewMachine()
@@ -842,7 +862,7 @@ func TestCoverageReturn_CorrectEntityClearsContract(t *testing.T) {
 func TestUploadEmgOrderReturn_CupsFieldAndAskAgain(t *testing.T) {
 	m := returnMenuMachine()
 	d := m.InputDescriptor(nil, sm.StateUploadEmgOrder)
-	if len(d.Fields) != 1 || d.Fields[0].Label != "CUPS de la orden de electromiografía (se suman a los dependientes ya leídos)" {
+	if len(d.Fields) != 1 || d.Fields[0].Label != "CUPS de la orden de electromiografía (si ya se leyeron dependientes de la 1ª orden, se suman)" {
 		t.Fatalf("campo = %+v", d.Fields)
 	}
 	r := m.ResolveReturnInput(testSess(sm.StateUploadEmgOrder), sm.StateUploadEmgOrder, sm.ReturnInputPrefix+"930860:2")

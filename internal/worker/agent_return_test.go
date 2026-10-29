@@ -923,11 +923,11 @@ func TestHandleAgentReset_BirdUnchanged(t *testing.T) {
 	}
 }
 
-// C5: en UPLOAD_EMG_ORDER los CUPS escritos son los de la orden de EMG y se SUMAN a los
-// dependientes ya leídos de la 1ª orden, como hace el handler con la foto; la clave de los
-// dependientes se borra (en memoria y en la BD).
+// C5: en Néctar, en UPLOAD_EMG_ORDER los CUPS escritos son los de la orden de EMG y se SUMAN a
+// los dependientes ya leídos de la 1ª orden, como hace el handler con la foto; la clave de los
+// dependientes se borra (en memoria y en la BD) y el resumen al agente lista lo fusionado.
 func TestHandleAgentCups_EmgMergesDependents(t *testing.T) {
-	pool, sm, _, sess, resumedTo, _ := returnSession(t, statemachine.StateUploadEmgOrder)
+	pool, sm, sender, sess, resumedTo, _ := returnSession(t, statemachine.StateUploadEmgOrder)
 	asNectar(sess)
 	var cleared []string
 	sm.saveFn = func(_ context.Context, _ *session.Session, _ string, _ map[string]string, clr []string) error {
@@ -959,6 +959,15 @@ func TestHandleAgentCups_EmgMergesDependents(t *testing.T) {
 	if !slices.Contains(cleared, "emg_dep_cups_json") {
 		t.Errorf("emg_dep_cups_json debe borrarse en la BD, borrado = %v", cleared)
 	}
+	var summary string
+	for _, txt := range sentTexts(sender) {
+		if strings.Contains(txt, "Codigos CUPS inyectados") {
+			summary = txt
+		}
+	}
+	if !strings.Contains(summary, "930860 (x2)") || !strings.Contains(summary, "891514 (x1)") {
+		t.Errorf("el resumen al agente lista lo fusionado, fue %q", summary)
+	}
 }
 
 // Fuera de UPLOAD_EMG_ORDER los CUPS escritos REEMPLAZAN lo leído, como siempre, aunque quede
@@ -978,5 +987,28 @@ func TestHandleAgentCups_OutsideEmgStepReplaces(t *testing.T) {
 	var cups []services.CUPSEntry
 	if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil || len(cups) != 1 || cups[0].Code != "883141" {
 		t.Fatalf("ocr_cups_json = %q, quiero solo lo escrito", sess.GetContext("ocr_cups_json"))
+	}
+}
+
+// Bird no cambia: `/bot cups` en UPLOAD_EMG_ORDER REEMPLAZA lo leído, como siempre, y los
+// dependientes guardados se quedan donde estaban.
+func TestHandleAgentCups_BirdEmgStepStillReplaces(t *testing.T) {
+	pool, _, _, sess, resumedTo, _ := returnSession(t, statemachine.StateUploadEmgOrder)
+	const deps = `[{"cups_code":"891514","quantity":1}]`
+	sess.Context["emg_dep_cups_json"] = deps
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "cups", Phone: sess.PhoneNumber, Data: "930860:2",
+	})
+
+	if *resumedTo != statemachine.StateValidateOCR {
+		t.Fatalf("el comando cups reanuda en VALIDATE_OCR, got %q", *resumedTo)
+	}
+	var cups []services.CUPSEntry
+	if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil || len(cups) != 1 || cups[0].Code != "930860" {
+		t.Fatalf("ocr_cups_json = %q, en Bird quiero solo lo escrito", sess.GetContext("ocr_cups_json"))
+	}
+	if sess.GetContext("emg_dep_cups_json") != deps {
+		t.Error("en Bird los dependientes no se tocan")
 	}
 }

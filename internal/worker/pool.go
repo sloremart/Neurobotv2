@@ -1296,14 +1296,22 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		return services.AgentCupsNoCodesProblem
 	}
 
-	// En UPLOAD_EMG_ORDER lo escrito es la orden de EMG: se SUMA a los dependientes de la 1ª
-	// orden, como hace el handler con la foto (C5); fuera de ese paso, lo escrito reemplaza.
+	// En Néctar, en UPLOAD_EMG_ORDER lo escrito es la orden de EMG: se SUMA a los dependientes de
+	// la 1ª orden, como hace el handler con la foto (C5). En Bird, y fuera de ese paso, lo escrito
+	// reemplaza, como siempre.
 	depCupsJSON := sess.GetContext("emg_dep_cups_json")
-	mergeEmg := sess.GetContext("pre_escalation_state") == statemachine.StateUploadEmgOrder && depCupsJSON != ""
+	mergeEmg := session.IsNectarSession(sess.PhoneNumber) &&
+		sess.GetContext("pre_escalation_state") == statemachine.StateUploadEmgOrder && depCupsJSON != ""
 	if mergeEmg {
 		mergedJSON, _, _ := services.MergeEmgAndDependentCups(cups, depCupsJSON)
 		sess.SetContext("ocr_cups_json", mergedJSON)
 		delete(sess.Context, "emg_dep_cups_json")
+		// El resumen al agente lista lo que de verdad se va a validar: lo escrito más los
+		// dependientes.
+		var merged []services.CUPSEntry
+		if err := json.Unmarshal([]byte(mergedJSON), &merged); err == nil {
+			cups = merged
+		}
 	} else {
 		cupsJSON, _ := json.Marshal(cups)
 		sess.SetContext("ocr_cups_json", string(cupsJSON))

@@ -482,6 +482,13 @@ func TestInputDescriptor_ListWithoutSessionWarns(t *testing.T) {
 	if !strings.Contains(logs.String(), "level=WARN") {
 		t.Fatalf("una lista sin sesión ni opciones se avisa: %s", logs.String())
 	}
+
+	// Con sesión pero sin los datos de la lista, también.
+	logs.Reset()
+	m.InputDescriptor(&session.Session{Context: map[string]string{}}, stepDescriptor)
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "with_session=true") {
+		t.Fatalf("una lista vacía con sesión se avisa: %s", logs.String())
+	}
 }
 
 // «Reiniciar» no lleva ningún dato: en un paso con campo su salida es reanudar_sin_dato, o la

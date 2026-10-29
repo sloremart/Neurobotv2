@@ -104,9 +104,10 @@ func (m *Machine) InputDescriptor(sess *session.Session, step string) InputDescr
 	}
 	if in.Options != nil {
 		field.Options = in.Options(sess)
-		// Sin sesión una lista no tiene de dónde sacar sus opciones: el `<select>` saldría vacío.
-		if sess == nil && len(field.Options) == 0 {
-			slog.Warn("descriptor de entrada: lista armada sin sesión y sin opciones", "step", step)
+		// Sin sesión, o con una sesión a la que le faltan los datos de la lista, el `<select>` sale
+		// vacío y el bot rechazará cualquier valor: se avisa.
+		if len(field.Options) == 0 {
+			slog.Warn("descriptor de entrada: lista sin opciones", "step", step, "with_session", sess != nil)
 		}
 	}
 	// Rótulo y ayuda salen de donde ya salían en el dialecto: el registro, o el ErrorMsg del
