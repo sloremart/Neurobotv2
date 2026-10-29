@@ -312,3 +312,39 @@ func TestSelectWaitingList_NectarResumeShowsTheListAgain(t *testing.T) {
 		t.Errorf("Bird cambió: next=%s %+v", result.NextState, result.Messages)
 	}
 }
+
+// El retorno de CONFIRM_OCR_RESULT repite también la nota de los procedimientos omitidos: el
+// conteo lo guarda VALIDATE_OCR junto con lo leído.
+func TestConfirmOCRResult_NectarResumeKeepsTheSkippedNote(t *testing.T) {
+	procRepo := &mockProcedureRepo{
+		findByCodeFn: func(_ context.Context, code string) (*domain.Procedure, error) {
+			if code == "890271" {
+				return &domain.Procedure{ID: 1, Code: "890271", Name: "ELECTROMIOGRAFIA", IsActive: true}, nil
+			}
+			return nil, nil
+		},
+	}
+	read, _ := json.Marshal([]services.CUPSEntry{{Code: "890271", Name: "EMG", Quantity: 1}, {Code: "999999", Name: "OTRO", Quantity: 1}})
+	m := sm.NewMachine()
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+	m.Register(sm.StateConfirmOCRResult, confirmOCRResultHandler(procRepo, nil))
+
+	validate := testSess(sm.StateValidateOCR)
+	validate.Context["ocr_cups_json"] = string(read)
+	shown, err := m.Process(context.Background(), validate, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shown.UpdateCtx["ocr_skipped_count"] != "1" {
+		t.Fatalf("ocr_skipped_count = %q, quería 1", shown.UpdateCtx["ocr_skipped_count"])
+	}
+
+	sess := resumeTurnSess(sm.StateConfirmOCRResult, true)
+	for k, v := range shown.UpdateCtx {
+		sess.Context[k] = v
+	}
+	bm := onlyButtons(t, resumeTurn(t, m, sess, sm.StateConfirmOCRResult))
+	if want := onlyButtons(t, shown).Text; bm.Text != want {
+		t.Errorf("el retorno no repite lo que se mostró:\n%q\nquería\n%q", bm.Text, want)
+	}
+}

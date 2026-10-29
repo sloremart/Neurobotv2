@@ -648,14 +648,19 @@ func coverageBookingQuestion(cupsName string, slot *services.AvailableSlot) *sm.
 // coverageNoConvenioQuestion rearma, con la sesión, la pregunta con la que se llegó a
 // COVERAGE_NO_CONVENIO (coverage_from_booking dice cuál de las dos fue).
 func coverageNoConvenioQuestion(sess *session.Session) *sm.ButtonMessage {
-	cupsName := sess.GetContext("cups_name")
-	if cupsName == "" {
-		cupsName = sess.GetContext("cups_code")
-	}
 	if sess.GetContext("coverage_from_booking") == "1" {
-		return coverageBookingQuestion(cupsName, findSelectedSlot(sess))
+		return coverageBookingQuestion(coverageCupsName(sess), findSelectedSlot(sess))
 	}
-	return coverageGateQuestion(cupsName)
+	return coverageGateQuestion(coverageCupsName(sess))
+}
+
+// coverageCupsName es el procedimiento que nombra la pregunta de COVERAGE_NO_CONVENIO: su nombre,
+// o el código si la sesión no lo trae.
+func coverageCupsName(sess *session.Session) string {
+	if name := sess.GetContext("cups_name"); name != "" {
+		return name
+	}
+	return sess.GetContext("cups_code")
 }
 
 // COVERAGE_NO_CONVENIO (interactivo) — el contrato del paciente no cubre el CUP; ofrece continuar
@@ -749,11 +754,7 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 		// Fail-OPEN: si el chequeo falla por un error técnico, se continúa normal (no bloquear).
 		if sess.GetContext("slots_after_date") == "" {
 			if covered, checkErr := anyCupCovered(ctx, priceRepo, entityRepo, sess, cupsCodesToTry); checkErr == nil && !covered {
-				cupsName := sess.GetContext("cups_name")
-				if cupsName == "" {
-					cupsName = cupsCode
-				}
-				q := coverageGateQuestion(cupsName)
+				q := coverageGateQuestion(coverageCupsName(sess))
 				return sm.NewResult(sm.StateCoverageNoConvenio).
 					WithButtons(q.Text, q.Buttons...).
 					WithEvent("coverage_no_convenio", map[string]interface{}{"cup": cupsCode}), nil
@@ -1786,13 +1787,9 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 				"entity", entity,
 				"contract", sess.GetContext("patient_contract"),
 			)
-			cupsName := sess.GetContext("cups_name")
-			if cupsName == "" {
-				cupsName = sess.GetContext("cups_code")
-			}
 			// Se detectó "sin convenio" AL AGENDAR (ya hay slot elegido). Se conserva ese horario: se
 			// ofrece particular PARA EL MISMO slot (no se re-busca). coverage_from_booking lo indica.
-			q := coverageBookingQuestion(cupsName, slot)
+			q := coverageBookingQuestion(coverageCupsName(sess), slot)
 			return sm.NewResult(sm.StateCoverageNoConvenio).
 				WithContext("coverage_from_booking", "1").
 				WithButtons(q.Text, q.Buttons...).

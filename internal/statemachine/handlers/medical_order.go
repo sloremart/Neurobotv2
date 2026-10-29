@@ -675,8 +675,11 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 		// Re-serializar con datos enriquecidos
 		cupsJSON, _ := json.Marshal(cups)
 
+		// ocr_skipped_count acompaña a ocr_cups_json (lo leído ya validado): es de la ORDEN, no de un
+		// grupo, y el retorno sin dato del agente lo necesita para repetir la misma nota.
 		return sm.NewResult(sm.StateConfirmOCRResult).
 			WithContext("ocr_cups_json", string(cupsJSON)).
+			WithContext("ocr_skipped_count", strconv.Itoa(len(skipped))).
 			WithButtons(
 				ocrSummaryText(cups, len(skipped)),
 				sm.Button{Text: "Sí, correcto", Payload: "ocr_correct"},
@@ -718,7 +721,8 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 			if sm.IsAgentResumeTurn(sess) {
 				var cups []services.CUPSEntry
 				if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err == nil && len(cups) > 0 {
-					question = ocrSummaryText(cups, 0)
+					skipped, _ := strconv.Atoi(sess.GetContext("ocr_skipped_count"))
+					question = ocrSummaryText(cups, skipped)
 				}
 			}
 			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
@@ -878,7 +882,7 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 					"Entendido. ¿Qué deseas hacer?",
 					ocrRetryButtons(birdClient, sess)..., //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 				).
-				WithClearCtx("ocr_cups_json").
+				WithClearCtx("ocr_cups_json", "ocr_skipped_count").
 				WithEvent("ocr_rejected", nil), nil
 		}
 
@@ -956,7 +960,7 @@ func askManualCupsHandler(procedureRepo repository.ProcedureRepository) sm.State
 				WithContext("total_procedures", "1").
 				WithContext("current_procedure_idx", "0").
 				WithContext("procedures_json", string(groupsJSON)).
-				WithClearCtx("ocr_cups_json").
+				WithClearCtx("ocr_cups_json", "ocr_skipped_count").
 				WithText(fmt.Sprintf("Procedimiento seleccionado: *%s*", proc.Name)).
 				WithEvent("manual_cups_selected", map[string]interface{}{
 					"code": proc.Code,
@@ -967,32 +971,32 @@ func askManualCupsHandler(procedureRepo repository.ProcedureRepository) sm.State
 		// Múltiples resultados → mostrar lista
 		procsJSON, _ := json.Marshal(procs)
 
-		rows := make([]sm.ListRow, len(procs))
+		shown := make([]searchedProcedure, len(procs))
 		for i, p := range procs {
-			rows[i] = procedureRow(p.ID, p.Name, p.ServiceName, p.Code)
+			shown[i] = searchedProcedure{ID: p.ID, Code: p.Code, Name: p.Name, ServiceName: p.ServiceName, RequiredSpaces: p.RequiredSpaces}
 		}
 
-		return withProcedureList(sm.NewResult(sm.StateSelectProcedure), rows).
+		return withProcedureList(sm.NewResult(sm.StateSelectProcedure), shown).
 			WithContext("search_procedures_json", string(procsJSON)).
 			WithEvent("procedure_search_results", map[string]interface{}{"count": len(procs)}), nil
 	}
 }
 
-// procedureRow es la fila de un procedimiento en la lista de SELECT_PROCEDURE.
-func procedureRow(id int, name, serviceName, code string) sm.ListRow {
-	desc := serviceName
-	if desc == "" {
-		desc = code
+// withProcedureList le pone a r la lista de SELECT_PROCEDURE con esos procedimientos. La arman la
+// búsqueda y el retorno sin dato del agente, que la vuelve a mostrar.
+func withProcedureList(r *sm.StateResult, procs []searchedProcedure) *sm.StateResult {
+	rows := make([]sm.ListRow, len(procs))
+	for i, p := range procs {
+		desc := p.ServiceName
+		if desc == "" {
+			desc = p.Code
+		}
+		rows[i] = sm.ListRow{
+			ID:          fmt.Sprintf("%d", p.ID),
+			Title:       truncate(p.Name, 24),
+			Description: truncate(desc, 72),
+		}
 	}
-	return sm.ListRow{
-		ID:          fmt.Sprintf("%d", id),
-		Title:       truncate(name, 24),
-		Description: truncate(desc, 72),
-	}
-}
-
-// withProcedureList le pone a r la lista de SELECT_PROCEDURE con esas filas.
-func withProcedureList(r *sm.StateResult, rows []sm.ListRow) *sm.StateResult {
 	return r.WithList(
 		fmt.Sprintf("Encontramos *%d procedimientos*.\nSelecciona el correcto:", len(rows)),
 		"Ver procedimientos",
@@ -1007,11 +1011,7 @@ func selectProcedureHandler() sm.StateHandler {
 			// Retorno sin dato del agente de Néctar: se vuelve a mostrar la lista que vio el paciente.
 			if sm.IsAgentResumeTurn(sess) {
 				if procs, err := searchedProcedures(sess); err == nil && len(procs) > 0 {
-					rows := make([]sm.ListRow, len(procs))
-					for i, p := range procs {
-						rows[i] = procedureRow(p.ID, p.Name, p.ServiceName, p.Code)
-					}
-					return withProcedureList(sm.NewResult(sess.CurrentState), rows).
+					return withProcedureList(sm.NewResult(sess.CurrentState), procs).
 						WithEvent("agent_resume_reprompt", map[string]interface{}{"state": sess.CurrentState}), nil
 				}
 			}
@@ -1071,7 +1071,7 @@ func selectProcedureHandler() sm.StateHandler {
 			WithContext("total_procedures", "1").
 			WithContext("current_procedure_idx", "0").
 			WithContext("procedures_json", string(groupsJSON)).
-			WithClearCtx("search_procedures_json", "ocr_cups_json").
+			WithClearCtx("search_procedures_json", "ocr_cups_json", "ocr_skipped_count").
 			WithText(fmt.Sprintf("Procedimiento seleccionado: *%s*", selected.Name)).
 			WithEvent("manual_cups_selected", map[string]interface{}{
 				"code": selected.Code,
