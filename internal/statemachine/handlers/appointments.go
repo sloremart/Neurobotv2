@@ -50,6 +50,7 @@ func notifyFreedSlots(ctx context.Context, onCancel CancellationCallback, block 
 func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
 	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo))
 	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo))
+	sm.RegisterReturnMenu(sm.StateListAppointments, appointmentReturnOptions)
 	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper))
 	sm.RegisterStaticReturnMenu(sm.StateAppointmentAction,
 		payloadOption("Confirmar la cita", "appt_confirm"),
@@ -1188,12 +1189,40 @@ type appointmentListData struct {
 	section sm.ListSection
 }
 
+// appointmentListMax es cuántas citas muestra la lista de LIST_APPOINTMENTS.
+const appointmentListMax = 10
+
+// appointmentReturnOptions son las citas que el paciente ve en LIST_APPOINTMENTS (las mismas
+// appointmentListMax primeras de appointments_json): el Data es el ID de la cita, el payload de
+// su fila, que el handler reconoce como postback. Un ID que ya no esté en la sesión no elige
+// ninguna cita: el handler vuelve a mostrar la lista.
+func appointmentReturnOptions(sess *session.Session) []sm.ReturnOption {
+	reload := sm.ReturnOption{Label: "Recargar citas desde el sistema", Value: "recargar_citas", Target: sm.StateFetchAppointments}
+	if sess == nil {
+		return []sm.ReturnOption{reload}
+	}
+	var appts []domain.Appointment
+	if err := json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appts); err != nil {
+		return []sm.ReturnOption{reload}
+	}
+	if len(appts) > appointmentListMax {
+		appts = appts[:appointmentListMax]
+	}
+	options := make([]sm.ReturnOption, 0, len(appts)+1)
+	for i, a := range appts {
+		label := fmt.Sprintf("%s %s — %s", utils.FormatFriendlyDateShort(a.Date),
+			services.FormatTimeSlot(a.TimeSlot), services.GetFirstCupName(a))
+		options = append(options, sm.ReturnOption{Label: label, Value: fmt.Sprintf("cita_%d", i+1), Data: a.ID})
+	}
+	return append(options, reload)
+}
+
 // buildAppointmentList constructs the list display for appointments.
 // Each appointment is shown as its own row (modelo 1 cita = N slots; sin agrupar citas
 // consecutivas estilo Antares). Las acciones de confirmar/cancelar actúan solo sobre la
 // cita seleccionada vía selectedAppointments.
 func buildAppointmentList(ctx context.Context, _ *services.AppointmentService, appointments []domain.Appointment, procRepo repository.ProcedureRepository) appointmentListData {
-	maxShow := 10
+	maxShow := appointmentListMax
 	// N-43: propagar el ctx del handler en lugar de context.Background() para el lookup de procRepo.
 
 	rows := make([]sm.ListRow, 0, maxShow)

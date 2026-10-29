@@ -38,7 +38,25 @@ func RegisterEntityManagementHandlers(
 	}
 	sm.RegisterStaticReturnMenu(sm.StateAskClientType, clientTypeOptions...)
 	m.Register(sm.StateShowEntityList, showEntityListHandler(entityRepo))
+	// Volver a otro tipo de entidad: ASK_CLIENT_TYPE re-muestra las categorías.
+	otherEntityType := sm.ReturnOption{
+		Label: "Elegir otro tipo de entidad", Value: "cambiar_tipo_entidad", Target: sm.StateAskClientType,
+	}
+	// SHOW_ENTITY_LIST escala cuando la categoría no tiene entidades: reanudar ahí repetiría la
+	// misma consulta y la misma escalación.
+	sm.HidePlainResume(sm.StateShowEntityList)
+	sm.RegisterStaticReturnMenu(sm.StateShowEntityList, otherEntityType)
 	m.Register(sm.StateAskEntityNumber, askEntityNumberHandler(entityRepo))
+	// El agente elige la entidad de la MISMA lista numerada que vio el paciente; el valor es el
+	// número que él escribiría.
+	sm.RegisterReturnInput(sm.StateAskEntityNumber, sm.ReturnInput{
+		Kind: sm.InputKindList, Label: "Entidad del paciente", Required: true,
+		Options: entityChoices, Validate: validEntityNumber,
+	})
+	sm.RegisterResumeLabel(sm.StateAskEntityNumber, "Usar la entidad elegida")
+	otherEntityTypeNoInput := otherEntityType
+	otherEntityTypeNoInput.NoInput = true
+	sm.RegisterStaticReturnMenu(sm.StateAskEntityNumber, otherEntityTypeNoInput)
 	// Legacy handlers kept for backwards compatibility
 	m.Register(sm.StateCheckEntity, checkEntityHandler(entityRepo))
 	m.Register(sm.StateConfirmEntity, confirmEntityHandler())
@@ -372,6 +390,41 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 
 		return r, nil
 	}
+}
+
+// entityChoices es la lista numerada que vio el paciente (entity_list_names, en el orden
+// mostrado): el valor es el número que él escribiría. Sin sesión o sin nombres, ninguna.
+func entityChoices(sess *session.Session) []sm.InputChoice {
+	if sess == nil {
+		return nil
+	}
+	namesCtx := sess.GetContext("entity_list_names")
+	if namesCtx == "" {
+		return nil
+	}
+	names := strings.Split(namesCtx, "|")
+	choices := make([]sm.InputChoice, len(names))
+	for i, n := range names {
+		choices[i] = sm.InputChoice{Label: n, Value: strconv.Itoa(i + 1)}
+	}
+	return choices
+}
+
+// validEntityNumber exige un número entre 1 y entity_list_count, el rango que el handler acepta
+// sin buscar por nombre.
+func validEntityNumber(sess *session.Session, value string) sm.InputRejection {
+	var maxCount int
+	if sess != nil {
+		maxCount, _ = strconv.Atoi(sess.GetContext("entity_list_count"))
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if maxCount < 1 {
+		return sm.Reject("La sesión no tiene la lista de entidades que vio el paciente.")
+	}
+	if err != nil || n < 1 || n > maxCount {
+		return sm.Reject(fmt.Sprintf("Elige una entidad de la lista (1 a %d).", maxCount))
+	}
+	return sm.InputRejection{}
 }
 
 // greetingIntentRe: saludos y palabras de intención tecleados A MITAD de flujo (§8.1 #10) — el

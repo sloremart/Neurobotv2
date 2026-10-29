@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
@@ -919,5 +920,63 @@ func TestHandleAgentReset_BirdUnchanged(t *testing.T) {
 	got := sentTexts(sender)
 	if len(got) == 0 || got[0] != "Hemos retomado tu atención. Vamos a comenzar de nuevo." {
 		t.Fatalf("Bird conserva el texto de hoy, got %v", got)
+	}
+}
+
+// C5: en UPLOAD_EMG_ORDER los CUPS escritos son los de la orden de EMG y se SUMAN a los
+// dependientes ya leídos de la 1ª orden, como hace el handler con la foto; la clave de los
+// dependientes se borra (en memoria y en la BD).
+func TestHandleAgentCups_EmgMergesDependents(t *testing.T) {
+	pool, sm, _, sess, resumedTo, _ := returnSession(t, statemachine.StateUploadEmgOrder)
+	asNectar(sess)
+	var cleared []string
+	sm.saveFn = func(_ context.Context, _ *session.Session, _ string, _ map[string]string, clr []string) error {
+		cleared = append(cleared, clr...)
+		return nil
+	}
+	sess.Context["emg_dep_cups_json"] = `[{"cups_code":"891514","quantity":1}]`
+	pool.machine.(*mockMessageProcessor).returnInput = statemachine.ReturnInputResult{
+		Written: true, Value: "930860:2", Command: statemachine.ReturnCommandCups,
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnInputPrefix + "930860:2",
+	})
+
+	if *resumedTo != statemachine.StateValidateOCR {
+		t.Fatalf("el comando cups reanuda en VALIDATE_OCR, got %q", *resumedTo)
+	}
+	var cups []services.CUPSEntry
+	if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil {
+		t.Fatalf("ocr_cups_json ilegible: %v", err)
+	}
+	if len(cups) != 2 || cups[0].Code != "930860" || cups[0].Quantity != 2 || cups[1].Code != "891514" {
+		t.Fatalf("ocr_cups_json = %+v, quiero la EMG escrita y el dependiente", cups)
+	}
+	if _, still := sess.Context["emg_dep_cups_json"]; still {
+		t.Error("emg_dep_cups_json debe borrarse de la sesión")
+	}
+	if !slices.Contains(cleared, "emg_dep_cups_json") {
+		t.Errorf("emg_dep_cups_json debe borrarse en la BD, borrado = %v", cleared)
+	}
+}
+
+// Fuera de UPLOAD_EMG_ORDER los CUPS escritos REEMPLAZAN lo leído, como siempre, aunque quede
+// una clave de dependientes de otro intento.
+func TestHandleAgentCups_OutsideEmgStepReplaces(t *testing.T) {
+	pool, _, _, sess, _, _ := returnSession(t, statemachine.StateUploadMedicalOrder)
+	asNectar(sess)
+	sess.Context["emg_dep_cups_json"] = `[{"cups_code":"891514","quantity":1}]`
+	pool.machine.(*mockMessageProcessor).returnInput = statemachine.ReturnInputResult{
+		Written: true, Value: "883141", Command: statemachine.ReturnCommandCups,
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnInputPrefix + "883141",
+	})
+
+	var cups []services.CUPSEntry
+	if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil || len(cups) != 1 || cups[0].Code != "883141" {
+		t.Fatalf("ocr_cups_json = %q, quiero solo lo escrito", sess.GetContext("ocr_cups_json"))
 	}
 }

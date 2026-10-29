@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/testutil"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 func slotsJSON(slots []services.AvailableSlot) string {
@@ -1069,5 +1071,93 @@ func TestCitaProceduresJSON_BakesOcrQuantity(t *testing.T) {
 	}
 	if groups[0].Espacios != 3 {
 		t.Errorf("espacios debe preservarse=3, got %d", groups[0].Espacios)
+	}
+}
+
+// nSlots arma n horarios distintos, del mismo médico y día.
+func nSlots(n int) []services.AvailableSlot {
+	slots := make([]services.AvailableSlot, n)
+	for i := range slots {
+		slots[i] = services.AvailableSlot{
+			TimeSlot: fmt.Sprintf("2026032010%02d", i), Date: "2026-03-20",
+			TimeDisplay: fmt.Sprintf("1%d:00 AM", i), DoctorName: "Garcia", AgendaID: 1, Duration: 30,
+		}
+	}
+	return slots
+}
+
+// Una opción por horario que vio el paciente, con el número que él escribiría; «ver más» solo
+// donde el paciente lo ve (5 o más), y siempre buscar de nuevo.
+func TestSlotReturnOptions_OnePerOfferedSlot(t *testing.T) {
+	sess := testSess(sm.StateShowSlots)
+	sess.Context["available_slots_json"] = slotsJSON(nSlots(3))
+
+	got := slotReturnOptions(sess)
+	want := []sm.ReturnOption{
+		{Value: "slot_1", Data: "1"},
+		{Value: "slot_2", Data: "2"},
+		{Value: "slot_3", Data: "3"},
+		{Label: "Buscar horarios de nuevo", Value: "buscar_horarios", Target: sm.StateSearchSlots},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("opciones = %+v, quiero %+v", got, want)
+	}
+	for i, w := range want {
+		o := got[i]
+		if o.Value != w.Value || o.Data != w.Data || o.Target != w.Target || o.Close || o.NoInput {
+			t.Errorf("opción %d = %+v, quiero %+v", i, o, w)
+		}
+		if i < 3 && !strings.HasSuffix(o.Label, fmt.Sprintf("1%d:00 AM con Dr. Garcia", i)) {
+			t.Errorf("opción %d: rótulo %q", i, o.Label)
+		}
+	}
+	if want := utils.FormatFriendlyDateShortStr("2026-03-20") + " 10:00 AM con Dr. Garcia"; got[0].Label != want {
+		t.Errorf("rótulo = %q, quiero %q", got[0].Label, want)
+	}
+
+	sess.Context["available_slots_json"] = slotsJSON(nSlots(5))
+	got = slotReturnOptions(sess)
+	if len(got) != 7 || got[5].Value != "slot_mas" || got[5].Data != "6" || got[5].Label != "Ver más horarios" ||
+		got[6].Value != "buscar_horarios" {
+		t.Fatalf("con 5 horarios: %+v", got)
+	}
+
+	// Sin sesión (o sin horarios) queda solo buscar de nuevo.
+	if got := slotReturnOptions(nil); len(got) != 1 || got[0].Value != "buscar_horarios" {
+		t.Fatalf("sin sesión: %+v", got)
+	}
+}
+
+// Review Focus 3: una opción de horario que ya no está en la sesión re-pregunta; nunca agenda
+// otro horario.
+func TestSlotReturnOptions_StaleSlotTokenRePrompts(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateShowSlots, showSlotsHandler(nil))
+	sess := testSess(sm.StateShowSlots)
+	sess.Context["available_slots_json"] = slotsJSON(nSlots(2))
+
+	res, err := m.Process(context.Background(), sess, virtualAgentMessage("3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateShowSlots {
+		t.Fatalf("un horario que ya no está debe re-preguntar, fue a %s", res.NextState)
+	}
+	if _, set := res.UpdateCtx["selected_slot_id"]; set {
+		t.Fatal("no se elige ningún horario")
+	}
+	var found bool
+	for _, msg := range res.Messages {
+		if txt, ok := msg.(*sm.TextMessage); ok && strings.HasPrefix(txt.Text, "Opción inválida") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("falta «Opción inválida…»: %+v", res.Messages)
+	}
+	// Y el token ya no resuelve contra la sesión actual.
+	returnMenuMachine()
+	if _, ok := sm.ResolveReturnValue(sess, sm.StateShowSlots, "slot_3"); ok {
+		t.Fatal("slot_3 no pertenece a una sesión con 2 horarios")
 	}
 }

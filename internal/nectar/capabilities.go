@@ -69,12 +69,12 @@ const groupInTheReturn = "opcional"
 // (si no, van como listas vacías, que es lo que el binario cumple).
 //
 // Las clases salen de los pasos REGISTRADOS, no del vocabulario completo de Néctar: hoy los pasos
-// de Neuro le piden al agente `texto`, `fecha` y `numero`. Declarar más haría que Néctar
+// de Neuro le piden al agente `texto`, `fecha`, `numero` y `lista`. Declarar más haría que Néctar
 // esperara algo que nunca llega. Se cruzan contra lo que EMITEN los pasos, y en los dos sentidos,
 // en TestElRegistroDelDescriptorNoMiente (internal/statemachine/handlers): declarar de más hace
 // que Néctar espere algo que no llega; declarar de menos deja al adaptador pintando de menos.
 var (
-	inputKinds = []string{"texto", "fecha", "numero"}
+	inputKinds = []string{"texto", "fecha", "numero", "lista"}
 	inputExits = []string{"reanudar", "reanudar_sin_dato", "cerrar"}
 )
 

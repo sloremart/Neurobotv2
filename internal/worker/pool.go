@@ -1296,13 +1296,30 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		return services.AgentCupsNoCodesProblem
 	}
 
-	cupsJSON, _ := json.Marshal(cups)
-	sess.SetContext("ocr_cups_json", string(cupsJSON))
+	// En UPLOAD_EMG_ORDER lo escrito es la orden de EMG: se SUMA a los dependientes de la 1ª
+	// orden, como hace el handler con la foto (C5); fuera de ese paso, lo escrito reemplaza.
+	depCupsJSON := sess.GetContext("emg_dep_cups_json")
+	mergeEmg := sess.GetContext("pre_escalation_state") == statemachine.StateUploadEmgOrder && depCupsJSON != ""
+	if mergeEmg {
+		mergedJSON, _, _ := services.MergeEmgAndDependentCups(cups, depCupsJSON)
+		sess.SetContext("ocr_cups_json", mergedJSON)
+		delete(sess.Context, "emg_dep_cups_json")
+	} else {
+		cupsJSON, _ := json.Marshal(cups)
+		sess.SetContext("ocr_cups_json", string(cupsJSON))
+	}
 
 	if err := p.sessionManager.ResumeFromEscalation(ctx, sess, statemachine.StateValidateOCR); err != nil {
 		slog.Error("cups inject resume failed", "error", err, "phone", utils.MaskPhone(cmd.Phone))
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "Error al retomar sesion: "+err.Error())
 		return agentCommandResumeProblem
+	}
+	// Los dependientes ya fusionados se borran también en la BD, como el handler de la foto.
+	if mergeEmg {
+		if err := p.sessionManager.SaveState(ctx, sess, statemachine.StateValidateOCR, nil, []string{"emg_dep_cups_json"}); err != nil {
+			slog.Error("no se pudieron borrar los dependientes de EMG ya fusionados", "error", err,
+				"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID)
+		}
 	}
 	p.clearNextDayQueueMark(ctx, sess)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)

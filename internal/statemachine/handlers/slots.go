@@ -423,10 +423,16 @@ func RegisterSlotHandlers(
 	m.Register(sm.StateSearchSlots, searchSlotsHandler(slotSvc, apptSvc, procRepo, priceRepo, entityRepo))
 	m.Register(sm.StateCoverageNoConvenio, coverageNoConvenioHandler())
 	// Salidas del agente cuando el contrato no cubre el procedimiento: seguir como particular
-	// (el payload del botón del paciente) o volver al menú principal.
+	// (el payload del botón del paciente), volver al menú principal o corregir la entidad por el
+	// flujo CHECK_ENTITY (el `/bot resume CHECK_ENTITY` de Bird, que actualiza la entidad en
+	// SIESA), olvidando el contrato ya elegido.
 	sm.RegisterStaticReturnMenu(sm.StateCoverageNoConvenio,
 		sm.ReturnOption{Label: "Continuar como particular", Value: "cov_particular", Data: "cov_particular"},
 		sm.ReturnOption{Label: "Volver al menú", Value: "cov_menu", Target: sm.StateMainMenu},
+		sm.ReturnOption{
+			Label: "Corregir la entidad con el paciente", Value: "cov_entidad", Target: sm.StateCheckEntity,
+			Clear: []string{"patient_contract", "coverage_from_booking"},
+		},
 	)
 	m.Register(sm.StateSlotSearchRetry, slotSearchRetryHandler())
 	sm.RegisterStaticReturnMenu(sm.StateSlotSearchRetry,
@@ -434,6 +440,7 @@ func RegisterSlotHandlers(
 		payloadOption("Volver al menú", "menu"),
 	)
 	m.Register(sm.StateShowSlots, showSlotsHandler(addrMapper))
+	sm.RegisterReturnMenu(sm.StateShowSlots, slotReturnOptions)
 	m.Register(sm.StateNoSlotsAvailable, noSlotsHandler(waitingListRepo))
 	m.Register(sm.StateOfferWaitingList, offerWaitingListHandler(waitingListRepo))
 	sm.RegisterStaticReturnMenu(sm.StateOfferWaitingList,
@@ -772,14 +779,10 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 		for i, slot := range slots {
 			optionNum := i + 1
 			dateStr := utils.FormatFriendlyDateShortStr(slot.Date)
-			doctorInfo := ""
-			if slot.DoctorName != "" {
-				doctorInfo = fmt.Sprintf(" con Dr. %s", slot.DoctorName)
-			}
-			msgText.WriteString(fmt.Sprintf("%d. %s a las %s%s\n", optionNum, dateStr, slot.TimeDisplay, doctorInfo))
+			fmt.Fprintf(&msgText, "%d. %s a las %s%s\n", optionNum, dateStr, slot.TimeDisplay, slotDoctorInfo(slot))
 		}
 
-		if len(slots) >= 5 {
+		if moreSlotsOffered(len(slots)) {
 			msgText.WriteString(fmt.Sprintf("\n%d. Ver más horarios\n", len(slots)+1))
 		}
 		msgText.WriteString("\n💬 Escribe el número de tu opción:")
@@ -812,6 +815,46 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 
 		return result, nil
 	}
+}
+
+// moreSlotsOffered dice si la lista de horarios ofrece «Ver más horarios» como opción N+1.
+func moreSlotsOffered(n int) bool { return n >= 5 }
+
+// slotDoctorInfo es el « con Dr. X» de una línea de horario; vacío si el horario no trae médico.
+func slotDoctorInfo(slot services.AvailableSlot) string {
+	if slot.DoctorName == "" {
+		return ""
+	}
+	return fmt.Sprintf(" con Dr. %s", slot.DoctorName)
+}
+
+// slotReturnOptions son los horarios que el paciente ve en SHOW_SLOTS, cada uno con el número que
+// él escribiría (el Data), más «ver más» donde él lo ve y buscar de nuevo. El token lleva el
+// número y no el horario: si al volver la sesión ya no tiene ese número, el handler re-pregunta
+// («Opción inválida…») y no agenda otro.
+func slotReturnOptions(sess *session.Session) []sm.ReturnOption {
+	searchAgain := sm.ReturnOption{Label: "Buscar horarios de nuevo", Value: "buscar_horarios", Target: sm.StateSearchSlots}
+	if sess == nil {
+		return []sm.ReturnOption{searchAgain}
+	}
+	var slots []services.AvailableSlot
+	if err := json.Unmarshal([]byte(sess.GetContext("available_slots_json")), &slots); err != nil {
+		return []sm.ReturnOption{searchAgain}
+	}
+	options := make([]sm.ReturnOption, 0, len(slots)+2)
+	for i, slot := range slots {
+		n := strconv.Itoa(i + 1)
+		options = append(options, sm.ReturnOption{
+			Label: utils.FormatFriendlyDateShortStr(slot.Date) + " " + slot.TimeDisplay + slotDoctorInfo(slot),
+			Value: "slot_" + n, Data: n,
+		})
+	}
+	if moreSlotsOffered(len(slots)) {
+		options = append(options, sm.ReturnOption{
+			Label: "Ver más horarios", Value: "slot_mas", Data: strconv.Itoa(len(slots) + 1),
+		})
+	}
+	return append(options, searchAgain)
 }
 
 // SLOT_SEARCH_RETRY (interactivo) — ofrece reintentar búsqueda o volver al menú.
@@ -875,8 +918,9 @@ func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 
 		// Check if user wants "Ver más"
 		// #17 (auditoría): "Ver más" (opción N+1) solo es válida si se ofreció — y solo se ofrece con
-		// len(slots) >= 5 (ver línea ~445). Con menos, N+1 es una opción inválida, no "ver más".
-		moreOffered := len(slots) >= 5
+		// moreSlotsOffered (el mismo umbral que la lista de SEARCH_SLOTS). Con menos, N+1 es una
+		// opción inválida, no "ver más".
+		moreOffered := moreSlotsOffered(len(slots))
 		if moreOffered && optionNum == len(slots)+1 {
 			lastSlot := slots[len(slots)-1]
 			return sm.NewResult(sm.StateSearchSlots).

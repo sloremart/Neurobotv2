@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // Los menús y entradas de retorno de los pasos escalables de Neuro (Task 9c). Reflejan lo que
@@ -50,9 +52,10 @@ var cupsSteps = []string{
 	sm.StateOCRFailed, sm.StateConfirmOCRResult, sm.StateAskManualCups,
 }
 
-// hasReturnEntry dice si un paso ofrece al agente algún botón propio (no universal) o un campo.
+// hasReturnEntry dice si un paso ofrece al agente algún botón propio (no universal) o un campo,
+// con la sesión con la que se escala desde él (las opciones de algunos pasos salen de ella).
 func hasReturnEntry(m *sm.Machine, step string) bool {
-	d := m.InputDescriptor(nil, step)
+	d := m.InputDescriptor(representativeSess(step), step)
 	if len(d.Fields) > 0 {
 		return true
 	}
@@ -75,7 +78,7 @@ func TestReturnMenuValuesExistInTheStateMachine(t *testing.T) {
 			t.Errorf("%s: no declara ni opciones propias ni campo", step)
 		}
 		seen := map[string]bool{}
-		for _, o := range sm.ReturnOptionsFor(nil, step) {
+		for _, o := range sm.ReturnOptionsFor(representativeSess(step), step) {
 			if o.Label == "" || o.Value == "" {
 				t.Errorf("%s: opción incompleta %+v", step, o)
 			}
@@ -165,8 +168,7 @@ func TestReturnMenus_CupsInputUsesTheAgentCommandGrammar(t *testing.T) {
 // (reanudar / cerrar). La lista está FIJADA aquí para que nadie quede fuera en silencio: un paso
 // nuevo en buildAgentCommands, o uno de estos que gane registro, hace fallar la prueba.
 var deferredAgentCommandSteps = []string{
-	"ASK_ENTITY_NUMBER", "SHOW_ENTITY_LIST", "SELECT_PROCEDURE", "CHECK_SPECIAL_CUPS",
-	"SHOW_SLOTS", "LIST_APPOINTMENTS",
+	"CHECK_SPECIAL_CUPS",
 }
 
 // unreachableAgentCommandSteps son pasos que buildAgentCommands nombra pero que NO son un estado
@@ -373,7 +375,7 @@ func TestReturnInputSteps_OwnOptionsNeverCarryTheValues(t *testing.T) {
 		if len(m.InputDescriptor(nil, step).Fields) == 0 {
 			continue
 		}
-		for _, o := range sm.ReturnOptionsFor(nil, step) {
+		for _, o := range sm.ReturnOptionsFor(representativeSess(step), step) {
 			if !sm.IsUniversalReturnValue(o.Value) && !o.Close && !o.NoInput {
 				t.Errorf("%s: la opción %q es «reanudar» en un paso con campo y recibiría lo escrito; debe ser NoInput o Close",
 					step, o.Value)
@@ -526,7 +528,7 @@ func TestOptionsFromRows_UsesTitleAndIDAsLabelAndPayload(t *testing.T) {
 // Las opciones solo-Target (buscar horarios) retoman en SEARCH_SLOTS sin inyectar ningún payload.
 func TestReturnMenus_SearchSlotsOptionsRetakeWithoutData(t *testing.T) {
 	returnMenuMachine()
-	for _, step := range []string{sm.StateOfferWaitingList, sm.StateConfirmBooking} {
+	for _, step := range []string{sm.StateOfferWaitingList, sm.StateConfirmBooking, sm.StateShowSlots} {
 		var found bool
 		for _, o := range sm.ReturnOptionsFor(nil, step) {
 			if o.Value == "buscar_horarios" && o.Target == sm.StateSearchSlots && o.Data == "" && !o.Close {
@@ -560,11 +562,11 @@ func TestReturnMenus_EveryOptionIsAcceptedByTheRealHandler(t *testing.T) {
 		if !m.IsRegistered(step) {
 			continue
 		}
-		for _, o := range sm.ReturnOptionsFor(nil, step) {
+		for _, o := range sm.ReturnOptionsFor(representativeSess(step), step) {
 			if sm.IsUniversalReturnValue(o.Value) || o.Data == "" {
 				continue
 			}
-			sess := testSess(step)
+			sess := representativeSess(step)
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -642,5 +644,221 @@ func TestReturnMenus_ConfirmMunicipalityOnlyAcceptsThePostback(t *testing.T) {
 	}
 	if !slices.Equal(repo.searched, []string{"muni_change"}) {
 		t.Fatalf("como texto solo se debe tomar por un nombre a buscar, búsquedas = %v", repo.searched)
+	}
+}
+
+// sampleAppointments son dos citas con el formato de appointments_json.
+func sampleAppointments() []domain.Appointment {
+	return []domain.Appointment{
+		{
+			ID: "90011", Date: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), TimeSlot: "202611030930",
+			DoctorName: "Ortega", Procedures: []domain.AppointmentProcedure{{CupCode: "890274", CupName: "CONSULTA NEUROLOGIA"}},
+		},
+		{
+			ID: "90012", Date: time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC), TimeSlot: "202611041400",
+			DoctorName: "Plazas", Procedures: []domain.AppointmentProcedure{{CupCode: "883141", CupName: "RM CEREBRO"}},
+		},
+	}
+}
+
+// sampleSearchedProcedures son dos resultados de la búsqueda manual (search_procedures_json).
+const sampleSearchedProcedures = `[{"ID":7,"Code":"883141","Name":"RM CEREBRO","ServiceName":"RESONANCIA","RequiredSpaces":1},` +
+	`{"ID":9,"Code":"883101","Name":"RM COLUMNA","ServiceName":"RESONANCIA","RequiredSpaces":2}]`
+
+// representativeSess es la sesión con la que se escala desde cada paso: los pasos cuyas opciones
+// salen de la sesión llevan los datos que el paciente vio.
+func representativeSess(step string) *session.Session {
+	sess := testSess(step)
+	switch step {
+	case sm.StateShowSlots:
+		sess.Context["available_slots_json"] = slotsJSON(nSlots(5))
+	case sm.StateListAppointments:
+		b, _ := json.Marshal(sampleAppointments())
+		sess.Context["appointments_json"] = string(b)
+	case sm.StateSelectProcedure:
+		sess.Context["search_procedures_json"] = sampleSearchedProcedures
+	case sm.StateAskEntityNumber:
+		sess.Context["entity_list_names"] = "SANITAS|NUEVA EPS|FAMISANAR"
+		sess.Context["entity_list_codes"] = "EPS005,EPS037,EPS017"
+		sess.Context["entity_list_count"] = "3"
+	}
+	return sess
+}
+
+func TestAppointmentReturnOptions_DataIsTheAppointmentID(t *testing.T) {
+	sess := representativeSess(sm.StateListAppointments)
+	got := appointmentReturnOptions(sess)
+	appts := sampleAppointments()
+	if len(got) != 3 {
+		t.Fatalf("opciones = %+v, quiero una por cita y recargar", got)
+	}
+	for i, a := range appts {
+		wantLabel := utils.FormatFriendlyDateShort(a.Date) + " " + services.FormatTimeSlot(a.TimeSlot) + " — " + a.Procedures[0].CupName
+		o := got[i]
+		if o.Label != wantLabel || o.Value != fmt.Sprintf("cita_%d", i+1) || o.Data != a.ID || o.Target != "" {
+			t.Errorf("opción %d = %+v, quiero rótulo %q y Data %q", i, o, wantLabel, a.ID)
+		}
+	}
+	if r := got[2]; r.Value != "recargar_citas" || r.Target != sm.StateFetchAppointments || r.Data != "" ||
+		r.Label != "Recargar citas desde el sistema" {
+		t.Errorf("recargar = %+v", r)
+	}
+
+	m := sm.NewMachine()
+	m.Register(sm.StateListAppointments, listAppointmentsHandler(nil, nil))
+	res, err := m.Process(context.Background(), sess, virtualAgentMessage(got[1].Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateAppointmentAction || res.UpdateCtx["selected_appointment_id"] != "90012" {
+		t.Fatalf("el postback del ID elige esa cita, fue %s %+v", res.NextState, res.UpdateCtx)
+	}
+}
+
+func TestEntityNumberInput_ListFromTheShownNames(t *testing.T) {
+	m := returnMenuMachine()
+	sess := representativeSess(sm.StateAskEntityNumber)
+	d := m.InputDescriptor(sess, sm.StateAskEntityNumber)
+	if len(d.Fields) != 1 {
+		t.Fatalf("campos = %+v", d.Fields)
+	}
+	f := d.Fields[0]
+	want := []sm.InputChoice{{Label: "SANITAS", Value: "1"}, {Label: "NUEVA EPS", Value: "2"}, {Label: "FAMISANAR", Value: "3"}}
+	if f.Kind != sm.InputKindList || !f.Required || f.Label != "Entidad del paciente" || !slices.Equal(f.Options, want) {
+		t.Fatalf("campo = %+v, quiero lista requerida con %+v", f, want)
+	}
+	if r := m.ResolveReturnV1(sess, sm.StateAskEntityNumber, json.RawMessage(`{"dato":"2"}`)); !r.OK() || r.Value != "2" {
+		t.Errorf("«2» está en la lista: %+v", r)
+	}
+	if r := m.ResolveReturnV1(sess, sm.StateAskEntityNumber, json.RawMessage(`{"dato":"9"}`)); !r.Rejected() {
+		t.Errorf("«9» no está en la lista: %+v", r)
+	}
+	// Rótulo de la salida que lleva el dato y la salida sin dato a otro tipo de entidad.
+	var resume, change bool
+	for _, o := range sm.ReturnOptionsFor(sess, sm.StateAskEntityNumber) {
+		if o.Value == sm.ReturnResume {
+			resume = o.Label == "Usar la entidad elegida"
+		}
+		if o.Value == "cambiar_tipo_entidad" {
+			change = o.Target == sm.StateAskClientType && o.NoInput && o.Data == "" &&
+				o.Label == "Elegir otro tipo de entidad"
+		}
+	}
+	if !resume || !change {
+		t.Errorf("menú de ASK_ENTITY_NUMBER: reanudar=%v cambiar=%v", resume, change)
+	}
+
+	// El handler real acepta el número elegido como lo escribiría el paciente.
+	hm := sm.NewMachine()
+	hm.Register(sm.StateAskEntityNumber, askEntityNumberHandler(nil))
+	res, err := hm.Process(context.Background(), sess, textM("2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateAskDocumentType || res.UpdateCtx["selected_entity_code"] != "EPS037" {
+		t.Fatalf("«2» elige NUEVA EPS, fue %s %+v", res.NextState, res.UpdateCtx)
+	}
+}
+
+func TestEntityNumberInput_EmptyListDegradesAndValidates(t *testing.T) {
+	m := returnMenuMachine()
+	sess := testSess(sm.StateAskEntityNumber)
+	d := m.InputDescriptor(sess, sm.StateAskEntityNumber)
+	if len(d.Fields) != 1 || len(d.Fields[0].Options) != 0 {
+		t.Fatalf("sin nombres en la sesión la lista sale vacía: %+v", d.Fields)
+	}
+	for _, v := range []string{"abc", "1"} {
+		if r := m.ResolveReturnV1(sess, sm.StateAskEntityNumber, json.RawMessage(`{"dato":"`+v+`"}`)); !r.Rejected() {
+			t.Errorf("%q sin lista debe rechazarse: %+v", v, r)
+		}
+	}
+	// El Validate propio también exige el rango aunque el valor estuviera en la lista.
+	sess.Context["entity_list_names"] = "SANITAS|NUEVA EPS"
+	if r := m.ResolveReturnV1(sess, sm.StateAskEntityNumber, json.RawMessage(`{"dato":"2"}`)); !r.Rejected() {
+		t.Errorf("sin entity_list_count no hay rango válido: %+v", r)
+	}
+}
+
+func TestShowEntityListReturn_HidesResumeAndOffersOtherType(t *testing.T) {
+	returnMenuMachine()
+	var change bool
+	for _, o := range sm.ReturnOptionsFor(nil, sm.StateShowEntityList) {
+		if o.Value == sm.ReturnResume {
+			t.Error("SHOW_ENTITY_LIST no ofrece reanudar en el mismo paso: volvería a escalar")
+		}
+		if o.Value == "cambiar_tipo_entidad" {
+			change = o.Target == sm.StateAskClientType && o.Data == ""
+		}
+	}
+	if !change {
+		t.Error("falta cambiar_tipo_entidad hacia ASK_CLIENT_TYPE")
+	}
+}
+
+func TestSelectProcedureReturnOptions_PostbackIDs(t *testing.T) {
+	sess := representativeSess(sm.StateSelectProcedure)
+	got := procedureReturnOptions(sess)
+	want := []sm.ReturnOption{
+		{Label: "883141 — RM CEREBRO", Value: "proc_7", Data: "7"},
+		{Label: "883101 — RM COLUMNA", Value: "proc_9", Data: "9"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("opciones = %+v", got)
+	}
+	for i, w := range want {
+		if o := got[i]; o.Label != w.Label || o.Value != w.Value || o.Data != w.Data || o.Target != "" {
+			t.Errorf("opción %d = %+v, quiero %+v", i, o, w)
+		}
+	}
+	if got := procedureReturnOptions(nil); len(got) != 0 {
+		t.Errorf("sin sesión no hay procedimientos: %+v", got)
+	}
+
+	m := sm.NewMachine()
+	m.Register(sm.StateSelectProcedure, selectProcedureHandler())
+	res, err := m.Process(context.Background(), sess, virtualAgentMessage("9"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateCheckSpecialCups || res.UpdateCtx["cups_code"] != "883101" {
+		t.Fatalf("el postback del ID elige ese procedimiento, fue %s %+v", res.NextState, res.UpdateCtx)
+	}
+}
+
+// S14/C11: corregir la entidad es el flujo legado CHECK_ENTITY, olvidando el contrato elegido.
+func TestCoverageReturn_CorrectEntityClearsContract(t *testing.T) {
+	returnMenuMachine()
+	o, ok := sm.ResolveReturnValue(nil, sm.StateCoverageNoConvenio, "cov_entidad")
+	if !ok {
+		t.Fatal("cov_entidad no está en el menú de COVERAGE_NO_CONVENIO")
+	}
+	if o.Target != sm.StateCheckEntity || o.Data != "" || o.Label != "Corregir la entidad con el paciente" ||
+		!slices.Equal(o.Clear, []string{"patient_contract", "coverage_from_booking"}) {
+		t.Fatalf("cov_entidad = %+v", o)
+	}
+}
+
+// UPLOAD_EMG_ORDER: el agente escribe los CUPS de la orden de EMG y puede volver a pedir la foto.
+func TestUploadEmgOrderReturn_CupsFieldAndAskAgain(t *testing.T) {
+	m := returnMenuMachine()
+	d := m.InputDescriptor(nil, sm.StateUploadEmgOrder)
+	if len(d.Fields) != 1 || d.Fields[0].Label != "CUPS de la orden de electromiografía (se suman a los dependientes ya leídos)" {
+		t.Fatalf("campo = %+v", d.Fields)
+	}
+	r := m.ResolveReturnInput(testSess(sm.StateUploadEmgOrder), sm.StateUploadEmgOrder, sm.ReturnInputPrefix+"930860:2")
+	if !r.OK() || r.Command != sm.ReturnCommandCups {
+		t.Fatalf("los CUPS van al comando cups: %+v", r)
+	}
+	var resume, again bool
+	for _, o := range sm.ReturnOptionsFor(nil, sm.StateUploadEmgOrder) {
+		if o.Value == sm.ReturnResume {
+			resume = o.Label == "Enviar los CUPS escritos al bot"
+		}
+		if o.Value == "pedir_orden_emg" {
+			again = o.Target == sm.StateUploadEmgOrder && o.NoInput && o.Data == ""
+		}
+	}
+	if !resume || !again {
+		t.Errorf("menú de UPLOAD_EMG_ORDER: reanudar=%v pedir=%v", resume, again)
 	}
 }

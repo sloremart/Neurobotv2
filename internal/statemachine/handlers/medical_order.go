@@ -34,6 +34,7 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	m.Register(sm.StateOCRFailed, ocrFailedHandler(birdClient))
 	m.Register(sm.StateAskManualCups, askManualCupsHandler(procedureRepo))
 	m.Register(sm.StateSelectProcedure, selectProcedureHandler())
+	sm.RegisterReturnMenu(sm.StateSelectProcedure, procedureReturnOptions)
 
 	// Retorno del agente de Néctar en los pasos de la orden médica: escribe los CUPS que leyó de
 	// la orden y el comando de CUPS del asesor (el de `/bot cups`) los inyecta en VALIDATE_OCR.
@@ -75,6 +76,16 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 		payloadOption("No tiene la orden", "emg_order_no"),
 	)
 	m.Register(sm.StateUploadEmgOrder, uploadEmgOrderHandler(ocrSvc, birdClient))
+	// Los CUPS escritos aquí son los de la orden de EMG: el comando de CUPS los suma a los
+	// dependientes de la 1ª orden (emg_dep_cups_json), como hace el handler con la foto (C5).
+	emgCups := agentCupsReturnInput()
+	emgCups.Label = "CUPS de la orden de electromiografía (se suman a los dependientes ya leídos)"
+	sm.RegisterReturnInput(sm.StateUploadEmgOrder, emgCups)
+	sm.RegisterResumeLabel(sm.StateUploadEmgOrder, agentCupsResumeLabel)
+	sm.RegisterStaticReturnMenu(sm.StateUploadEmgOrder, sm.ReturnOption{
+		Label: "Pedir de nuevo la foto de la orden de EMG", Value: "pedir_orden_emg",
+		Target: sm.StateUploadEmgOrder, NoInput: true,
+	})
 }
 
 // agentCupsReturnInput es el campo de CUPS que el agente de Néctar llena en los pasos de la orden.
@@ -940,26 +951,14 @@ func selectProcedureHandler() sm.StateHandler {
 		selectedID := msg.PostbackPayload
 
 		// Buscar el procedimiento seleccionado
-		var procs []struct {
-			ID             int    `json:"ID"`
-			Code           string `json:"Code"`
-			Name           string `json:"Name"`
-			ServiceName    string `json:"ServiceName"`
-			RequiredSpaces int    `json:"RequiredSpaces"`
-		}
-		if err := json.Unmarshal([]byte(sess.GetContext("search_procedures_json")), &procs); err != nil {
+		procs, err := searchedProcedures(sess)
+		if err != nil {
 			return sm.NewResult(sm.StateAskManualCups).
 				WithText("No pudimos cargar los procedimientos. Por favor escribe el nombre de nuevo.").
 				WithClearCtx("search_procedures_json"), nil
 		}
 
-		var selected *struct {
-			ID             int    `json:"ID"`
-			Code           string `json:"Code"`
-			Name           string `json:"Name"`
-			ServiceName    string `json:"ServiceName"`
-			RequiredSpaces int    `json:"RequiredSpaces"`
-		}
+		var selected *searchedProcedure
 		for i, p := range procs {
 			if fmt.Sprintf("%d", p.ID) == selectedID {
 				selected = &procs[i]
@@ -1004,6 +1003,41 @@ func selectProcedureHandler() sm.StateHandler {
 				"name": selected.Name,
 			}), nil
 	}
+}
+
+// searchedProcedure es un resultado de la búsqueda manual tal como se guarda en
+// search_procedures_json.
+type searchedProcedure struct {
+	ID             int    `json:"ID"`
+	Code           string `json:"Code"`
+	Name           string `json:"Name"`
+	ServiceName    string `json:"ServiceName"`
+	RequiredSpaces int    `json:"RequiredSpaces"`
+}
+
+// searchedProcedures lee los resultados de la búsqueda que se le mostraron al paciente.
+func searchedProcedures(sess *session.Session) ([]searchedProcedure, error) {
+	var procs []searchedProcedure
+	err := json.Unmarshal([]byte(sess.GetContext("search_procedures_json")), &procs)
+	return procs, err
+}
+
+// procedureReturnOptions son los procedimientos de la lista que vio el paciente: el Data es el ID
+// de la fila, que selectProcedureHandler solo acepta como postback (llega así, Tarea 5).
+func procedureReturnOptions(sess *session.Session) []sm.ReturnOption {
+	if sess == nil {
+		return nil
+	}
+	procs, err := searchedProcedures(sess)
+	if err != nil {
+		return nil
+	}
+	options := make([]sm.ReturnOption, 0, len(procs))
+	for _, p := range procs {
+		id := strconv.Itoa(p.ID)
+		options = append(options, sm.ReturnOption{Label: p.Code + " — " + p.Name, Value: "proc_" + id, Data: id})
+	}
+	return options
 }
 
 // ocrSpecialtyMismatch detecta cuando el nombre leído por el OCR indica una especialidad médica

@@ -119,8 +119,8 @@ func TestCapabilities_V1(t *testing.T) {
 			Reasons:          []string{"bot_cannot_answer", "patient_asked_for_human"},
 		},
 		Input: InputCapabilities{
-			// Los tipos que los pasos de Neuro declaran: no hay texto largo, hora, enlace ni lista.
-			Kinds:      []string{"texto", "fecha", "numero"},
+			// Los tipos que los pasos de Neuro declaran: no hay texto largo, hora ni enlace.
+			Kinds:      []string{"texto", "fecha", "numero", "lista"},
 			Exits:      []string{"reanudar", "reanudar_sin_dato", "cerrar"},
 			Repeatable: false,
 			ResumesAt:  true,
