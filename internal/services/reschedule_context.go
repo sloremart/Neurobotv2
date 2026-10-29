@@ -86,5 +86,11 @@ func (s *AppointmentService) RescheduleContext(ctx context.Context, appt *domain
 		"reschedule_skip_cancel": "0",
 		// N14: la cédula (sis_medi.cedula), no cod_medi: slot_service compara contra DoctorDocument.
 		"preferred_doctor_doc": appt.DoctorDocument,
+
+		// La cita que se reprograma como la ve el paciente. Ningún paso del flujo las lee: son para
+		// los datos del caso cuando la reprogramación se escala a un agente (summary_case.go).
+		"reschedule_appt_date":      utils.FormatFriendlyDate(appt.Date),
+		"reschedule_appt_time":      FormatTimeSlot(appt.TimeSlot),
+		"reschedule_appt_cups_name": GetFirstCupName(*appt),
 	}
 }

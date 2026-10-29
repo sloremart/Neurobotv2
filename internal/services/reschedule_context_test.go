@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // RescheduleContext es el armado ÚNICO del contexto para reprogramar una cita notificada: lo
@@ -41,6 +42,9 @@ func TestRescheduleContext_BuildsTheNotificationRescheduleContext(t *testing.T) 
 		"total_procedures": "1", "current_procedure_idx": "0", "menu_option": "agendar",
 		"reschedule_appt_id": "A1", "reschedule_skip_cancel": "0",
 		"preferred_doctor_doc": "1234",
+		// Solo para el agente (datos del caso): la cita que se reprograma, como la ve el paciente.
+		"reschedule_appt_date": utils.FormatFriendlyDate(appt.Date), "reschedule_appt_time": "7:30 AM",
+		"reschedule_appt_cups_name": "RESONANCIA",
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("contexto =\n%v\nquería\n%v", got, want)

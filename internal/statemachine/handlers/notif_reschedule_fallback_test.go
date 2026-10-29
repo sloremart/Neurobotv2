@@ -113,6 +113,12 @@ func TestNotifRescheduleFallback_CaseFactsShowTheOriginalAppointment(t *testing.
 		},
 		// «Mis citas»: la cita está en la lista que vio el paciente; la seleccionada puede ser otra.
 		"mis citas": {"appointments_json": string(apptsJSON), "selected_appointment_id": "APT-ORIGINAL"},
+		// startSelfReschedule (cancelación de la clínica): ni lista ni claves de la notificación; la
+		// cita viene en las claves de visualización de RescheduleContext.
+		"reprogramación propia": {
+			"reschedule_appt_date": utils.FormatFriendlyDate(day), "reschedule_appt_time": "7:30 AM",
+			"reschedule_appt_cups_name": "Electromiografia",
+		},
 		// Varias citas de una notificación: la notificada es otra; manda la que se reprogramaba.
 		"notificación con varias citas": {
 			"appointments_json": string(apptsJSON), "notif_appointment_id": "APT-OTRA",

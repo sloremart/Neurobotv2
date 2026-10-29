@@ -174,12 +174,13 @@ func escalationDiverted(preState string, r *sm.StateResult) *sm.StateResult {
 
 // rescheduleTramiteKeys son las claves del trámite de reprogramación que la búsqueda y el
 // agendamiento leen: la cita que se reprograma (createAppointmentHandler la CANCELA al agendar si
-// reschedule_skip_cancel no es "1"), los datos de su canal y el médico de la cita original, que la
+// reschedule_skip_cancel no es "1"), los datos de su canal, el médico de la cita original, que la
 // búsqueda de una orden nueva tomaría como preferido (CHECK_PRIOR_CONSULT no lo borra si no halla
-// otro).
+// otro), y los datos de visualización de la cita que dejó RescheduleContext.
 var rescheduleTramiteKeys = []string{
 	"reschedule_appt_id", "reschedule_skip_cancel", "reschedule_conversation_id", "reschedule_bird_msg_id",
 	"preferred_doctor_doc",
+	"reschedule_appt_date", "reschedule_appt_time", "reschedule_appt_cups_name",
 }
 
 // reasonNotifiesPatient dice si el motivo interno obliga a avisarle al paciente de Néctar aunque
