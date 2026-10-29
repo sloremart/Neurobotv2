@@ -224,10 +224,10 @@ func registerRegistrationAgentFields() {
 		agentTextInput("Celular secundario (o NA si no tiene)", sm.InputKindText, optionalPhone,
 			"Debe ser un celular colombiano de 10 dígitos o NA si no tiene."))
 	registerAgentField(sm.StateRegEmail,
-		agentTextInput("Correo electrónico (o NA si no tiene)", sm.InputKindText, emailOrNA,
+		agentTextInput("Correo electrónico (o NA si no tiene)", sm.InputKindText, emailOr(noResponses),
 			"Debe ser un correo válido (ejemplo@correo.com) o NA si no tiene."), askAgainOption())
-	// Texto libre (C12): el handler no guarda una palabra reservada y no se ofrece «volver a
-	// preguntar».
+	// Texto libre (C12): ante una palabra reservada el handler re-pregunta sin guardarla; el plan
+	// no ofrece «volver a preguntar» en estos pasos.
 	registerAgentField(sm.StateRegAddress,
 		agentTextInput("Dirección de residencia", sm.InputKindText, freeTextAnswer,
 			"Escribe la dirección de residencia."))
@@ -688,12 +688,9 @@ func regOptionalPhoneHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 
-		// Campo opcional: NA o un texto que no es teléfono (optionalPhone lo rechaza) se guardan
-		// vacíos y se sigue igual.
-		phone2 := ""
-		if optionalPhone(input) && !isNoAnswer(input) {
-			phone2 = utils.ParseColombianPhone(input)
-		}
+		// Campo opcional: NA o un texto que no es teléfono se guardan vacíos y se sigue igual
+		// (ParseColombianPhone devuelve "" para ambos).
+		phone2 := utils.ParseColombianPhone(input)
 		return sm.NewResult(sm.StateRegEmail).
 			WithContext("reg_phone2", phone2).
 			WithText("Indica tu correo electrónico o responde *NA*:"), nil
@@ -702,6 +699,7 @@ func regOptionalPhoneHandler() sm.StateHandler {
 
 // REG_EMAIL (interactivo) — email o "no tengo"
 func regEmailHandler() sm.StateHandler {
+	validEmail := emailOr(noResponses)
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 		lower := strings.ToLower(input)
@@ -713,7 +711,7 @@ func regEmailHandler() sm.StateHandler {
 					sm.ListSection{Title: "Tipo de usuario", Rows: userTypeListRows()}), nil
 		}
 
-		if !emailOrNA(lower) {
+		if !validEmail(lower) {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
 				"Email no válido. Indica tu correo electrónico o responde *NA*:")
 			return retryResult, nil

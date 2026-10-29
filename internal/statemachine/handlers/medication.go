@@ -22,8 +22,8 @@ func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingR
 	m.Register(sm.StateMedicationAskLastDate, medicationAskLastDateHandler())
 	m.Register(sm.StateMedicationAskDose, medicationAskDoseHandler())
 	m.Register(sm.StateMedicationAskFrequency, medicationAskFrequencyHandler())
-	// Texto libre (C12): el handler no guarda una palabra reservada y no se ofrece «volver a
-	// preguntar».
+	// Texto libre (C12): ante una palabra reservada el handler re-pregunta sin guardarla; el plan
+	// no ofrece «volver a preguntar» en estos pasos.
 	registerAgentField(sm.StateMedicationAskLastDate,
 		agentTextInput("Fecha o tiempo de la última aplicación", sm.InputKindText, freeTextAnswer,
 			"Escribe cuándo fue la última aplicación."))

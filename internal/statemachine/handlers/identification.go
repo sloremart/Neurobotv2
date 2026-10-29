@@ -106,12 +106,12 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	})
 	m.Register(sm.StateAskUpdateEmail, askUpdateEmailHandler())
 	// Campos del agente: el celular lo juzga el TextValidate del paso (sin Validate propio); el
-	// correo, el mismo contactEmailOrNA del handler.
+	// correo, el mismo emailOr(contactEmailNoAnswers) del handler.
 	registerAgentField(sm.StateAskUpdatePhone,
 		agentTextInput("Celular nuevo del paciente (10 dígitos)", sm.InputKindNumber, nil, ""),
 		askAgainOption())
 	registerAgentField(sm.StateAskUpdateEmail,
-		agentTextInput("Correo nuevo del paciente (o NA si no tiene)", sm.InputKindText, contactEmailOrNA,
+		agentTextInput("Correo nuevo del paciente (o NA si no tiene)", sm.InputKindText, emailOr(contactEmailNoAnswers),
 			"Debe ser un correo válido (ejemplo@correo.com) o NA si el paciente no tiene."),
 		askAgainOption())
 	m.Register(sm.StateUpdateContactInfo, updateContactInfoHandler(patientSvc))
@@ -492,6 +492,7 @@ func askUpdatePhoneHandler() sm.StateHandler {
 
 // ASK_UPDATE_EMAIL (interactivo) — capturar nuevo email
 func askUpdateEmailHandler() sm.StateHandler {
+	validEmail := emailOr(contactEmailNoAnswers)
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 		lower := strings.ToLower(input)
@@ -504,7 +505,7 @@ func askUpdateEmailHandler() sm.StateHandler {
 		}
 
 		// Validar formato de email
-		retryResult := sm.ValidateWithRetry(sess, lower, contactEmailOrNA, "Email no válido. Ingresa un correo como ejemplo@correo.com o responde *NA* si no tienes.")
+		retryResult := sm.ValidateWithRetry(sess, lower, validEmail, "Email no válido. Ingresa un correo como ejemplo@correo.com o responde *NA* si no tienes.")
 		if retryResult != nil {
 			return retryResult, nil
 		}

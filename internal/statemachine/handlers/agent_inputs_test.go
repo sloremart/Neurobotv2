@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
@@ -51,9 +52,37 @@ func agentFieldCases() []agentFieldCase {
 	}
 }
 
-// handlerAccepts pasa el valor por el handler REAL del paso: lo acepta si sale del paso. Con
-// dependencias nil, uno que llega a su lógica de negocio puede paniquear o devolver error
-// DESPUÉS de validar: eso cuenta como aceptado (un re-pregunta nunca llega ahí).
+// oneMatchMunicipalityRepo encuentra exactamente un municipio y un barrio para cualquier nombre:
+// así el handler del paso termina sin paniquear con un repositorio nil.
+type oneMatchMunicipalityRepo struct{}
+
+func (oneMatchMunicipalityRepo) Search(context.Context, string) ([]domain.Municipality, error) {
+	return []domain.Municipality{{DepartmentCode: "50", DepartmentName: "META", MunicipalityCode: "001", MunicipalityName: "VILLAVICENCIO"}}, nil
+}
+
+func (oneMatchMunicipalityRepo) SearchBarrios(context.Context, string, string, string) ([]domain.Barrio, error) {
+	return []domain.Barrio{{Code: "1", Name: "LA ESPERANZA"}}, nil
+}
+
+func (oneMatchMunicipalityRepo) CreateNeighborhood(context.Context, string, string, string, string) (string, error) {
+	return "", nil
+}
+
+// agentFieldMachine es returnMenuMachine con un repositorio de municipios que encuentra uno, para
+// que REG_MUNICIPALITY y REG_BARRIO lleguen al final de su handler.
+func agentFieldMachine() *sm.Machine {
+	m := returnMenuMachine()
+	RegisterRegistrationHandlers(m, nil, oneMatchMunicipalityRepo{})
+	return m
+}
+
+// handlerAccepts pasa el valor por el handler REAL del paso: lo acepta si sale del paso.
+//
+// Un panic o un error SOLO cuentan como aceptación si ocurren después de que el handler del paso
+// devolvió un resultado que sale de él: Process pone sess.CurrentState en el estado siguiente
+// antes de encadenar el automático (p. ej. UPDATE_CONTACT_INFO con su servicio nil). Si el fallo
+// ocurre dentro del handler del paso, CurrentState sigue siendo el paso y NO cuenta como aceptado,
+// ni antes ni después de validar: la prueba tiene que darle al handler lo que necesita.
 func handlerAccepts(t *testing.T, m *sm.Machine, c agentFieldCase, value string) (accepted bool) {
 	t.Helper()
 	sess := testSess(c.step)
@@ -62,18 +91,25 @@ func handlerAccepts(t *testing.T, m *sm.Machine, c agentFieldCase, value string)
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			accepted = true
+			accepted = sess.CurrentState != c.step
+			if !accepted {
+				t.Errorf("%s: el handler del paso paniqueó con %q: %v", c.step, value, r)
+			}
 		}
 	}()
 	res, err := m.Process(context.Background(), sess, textM(value))
 	if err != nil {
+		if sess.CurrentState == c.step {
+			t.Errorf("%s: el handler del paso falló con %q: %v", c.step, value, err)
+			return false
+		}
 		return true
 	}
 	return res.NextState != c.step
 }
 
 func TestAgentTextInputs_AcceptWhatTheHandlerAccepts(t *testing.T) {
-	m := returnMenuMachine()
+	m := agentFieldMachine()
 	for _, c := range agentFieldCases() {
 		d := m.InputDescriptor(nil, c.step)
 		if len(d.Fields) != 1 || d.Fields[0].Kind != c.kind || !d.Fields[0].Required {
@@ -116,8 +152,8 @@ func TestAgentTextInputs_DateFieldsAreIso(t *testing.T) {
 	}
 }
 
-// freeTextSteps son los pasos de texto libre de C12: el handler no puede guardar una palabra
-// reservada, y por eso tampoco ofrecen «volver a preguntar».
+// freeTextSteps son los pasos de texto libre de C12: el handler re-pregunta ante una palabra
+// reservada sin guardarla. El plan no les da «volver a preguntar».
 var freeTextSteps = map[string]string{
 	sm.StateRegAddress:             "reg_address",
 	sm.StateRegOccupation:          "reg_occupation",

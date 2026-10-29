@@ -459,7 +459,9 @@ func handlerButtonPayloads() map[string][]string {
 		sm.StateConfirmConsolidate:      {"consolidate_yes", "consolidate_no"},
 		sm.StateAskEmgOrder:             {"emg_order_yes", "emg_order_no"},
 		sm.StateConfirmOCRResult:        {"ocr_correct", "ocr_incorrect"},
-		sm.StateAskGestationalWeeks:     {"weeks_yes", "weeks_no"},
+		// Solo del agente: el paciente escribe el número; weeks_yes/weeks_no son los comandos que el
+		// handler reconoce en el mensaje virtual del agente (ID «agent-…»).
+		sm.StateAskGestationalWeeks: {"weeks_yes", "weeks_no"},
 	}
 }
 

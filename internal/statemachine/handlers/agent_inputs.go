@@ -120,22 +120,19 @@ func optionalPhone(s string) bool {
 	return isNoAnswer(s) || utils.ParseColombianPhone(strings.TrimSpace(s)) != ""
 }
 
-// emailOrNA es un correo (en minúsculas) o NA, la regla de REG_EMAIL.
-func emailOrNA(s string) bool {
-	lower := strings.ToLower(strings.TrimSpace(s))
-	return noResponses[lower] || validators.Email(lower)
+// emailOr acepta un correo (en minúsculas) o una de las respuestas «no tengo» del paso. Cada
+// paso pasa SU conjunto: REG_EMAIL usa noResponses y ASK_UPDATE_EMAIL contactEmailNoAnswers.
+func emailOr(noAnswers map[string]bool) func(string) bool {
+	return func(s string) bool {
+		lower := strings.ToLower(strings.TrimSpace(s))
+		return noAnswers[lower] || validators.Email(lower)
+	}
 }
 
 // contactEmailNoAnswers son las respuestas «no tengo» de ASK_UPDATE_EMAIL. No es noResponses:
 // ese paso nunca aceptó «ninguna», y el paciente de Bird no ve ningún cambio.
 var contactEmailNoAnswers = map[string]bool{
 	"no tengo": true, "no": true, "na": true, "n/a": true, "-": true, "ninguno": true,
-}
-
-// contactEmailOrNA es emailOrNA con las respuestas «no tengo» de ASK_UPDATE_EMAIL.
-func contactEmailOrNA(s string) bool {
-	lower := strings.ToLower(strings.TrimSpace(s))
-	return contactEmailNoAnswers[lower] || validators.Email(lower)
 }
 
 // parseDecimal lee un número con coma o punto decimal.
