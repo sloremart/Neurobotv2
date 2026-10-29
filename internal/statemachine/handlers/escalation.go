@@ -33,8 +33,11 @@ const escalateMaxRetries = 3
 const escalationDisabledText = "En este momento no podemos comunicarte con un asesor por este medio. " +
 	"¿Deseas volver al inicio o terminar el chat?"
 
-// resumeSuppressedNectarText es lo que oye el paciente de Néctar cuando el corte anti-bucle del
-// `__resume__` lo devuelve al menú: allá no hay un aviso de no-show previo que lo explique.
+// resumeSuppressedNectarText es la red de seguridad residual del corte anti-bucle del `__resume__`
+// en Néctar: si aun así un retorno llega a escalar y el corte devuelve al paciente al menú, esta
+// línea lo explica (allá no hay un aviso de no-show previo). Es residual: los menús de retorno no
+// ofrecen reanudar tal cual en los pasos automáticos que re-escalarían, y los pasos con pregunta
+// re-preguntan sin escalar.
 const resumeSuppressedNectarText = "Sigamos por aquí 👍 Elige una opción del menú para continuar."
 
 // EscalationCreator registra una fila por escalación (tabla escalations). Opcional (nil = no registra).

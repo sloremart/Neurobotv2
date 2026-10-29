@@ -30,10 +30,11 @@ func oneLine(s string) string {
 
 // writeCaseGroups añade los grupos con los datos del caso (entidad, orden, grupo, agenda, cita,
 // búsqueda e intento). cupsCode es el CUPS ya elegido: antes de elegirlo la orden aún no está
-// agrupada y el agente necesita lo que se leyó de ella.
+// agrupada y el agente necesita lo que se leyó de ella. En la consolidación EMG
+// (consolidate_appt_id) lo leído son los CUPS que se agregarían a la cita: también va.
 func writeCaseGroups(doc *summaryDoc, sess *session.Session, cupsCode string) {
 	writeEntityGroup(doc, sess)
-	if cupsCode == "" {
+	if cupsCode == "" || sess.GetContext("consolidate_appt_id") != "" {
 		writeOrderGroup(doc, sess)
 	}
 	writeProcedureGroupsGroup(doc, sess)

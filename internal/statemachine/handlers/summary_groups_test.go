@@ -184,6 +184,17 @@ func TestSummaryForAgent_OrderGroupOnlyBeforeGrouping(t *testing.T) {
 	}
 }
 
+// En la consolidación EMG (consolidate_appt_id) ya hay cups_code, pero lo leído de la orden son los
+// CUPS que se agregarían a la cita: el agente los necesita igual.
+func TestSummaryForAgent_OrderGroupDuringConsolidation(t *testing.T) {
+	sess := summaryCases()[3].sess()
+	sess.Context["consolidate_appt_id"] = "90011"
+	_, groups := summaryForAgent(sess, "883141", "Call Center")
+	if value, ok := groupField(groups, "orden", "cups_leidos"); !ok || value != "883141:1 930810:2" {
+		t.Fatalf("cups_leidos = %q (%v), grupos %v", value, ok, groupKeys(groups))
+	}
+}
+
 // Lo que el agente lee en «CUPS leídos» es lo mismo que el campo de CUPS de la consola acepta.
 func TestSummaryForAgent_CupsReadInAgentGrammar(t *testing.T) {
 	_, groups := summaryForAgent(summaryCases()[3].sess(), "", "Call Center")
