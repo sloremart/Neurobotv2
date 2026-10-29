@@ -18,6 +18,10 @@ type Bridge struct {
 	// Vive en el bot, no en Néctar (§8.5: «Néctar no aprende un identificador de proyecto de
 	// Bird»). Vacía → las plantillas fallan con un error que dice qué falta.
 	TemplateNames map[string]string
+	// ChannelID es el canal de Néctar por el que el bot ABRE conversaciones con plantilla
+	// (NECTAR_CHANNEL_ID). 0 = la apertura no está configurada: OpenWithTemplate falla con
+	// ErrOpenNotConfigured sin llamar a Néctar.
+	ChannelID int64
 }
 
 // NewBridge arma el puente sobre un Client. templateNames traduce el ProjectID de Bird al nombre de
@@ -63,9 +67,20 @@ func (b *Bridge) SendList(ctx context.Context, conversationID int64, body, butto
 // SendTemplate envía una plantilla por NOMBRE e IDIOMA de Meta y parámetros POR NOMBRE DE
 // MARCADOR (objeto, no arreglo). TemplateParam.Key ya es el nombre del marcador.
 func (b *Bridge) SendTemplate(ctx context.Context, conversationID int64, tmpl bird.TemplateConfig) (string, error) {
+	body, err := b.templateBody(tmpl)
+	if err != nil {
+		return "", err
+	}
+	id, err := b.c.SendTemplate(ctx, conversationID, body)
+	return id64(id), err
+}
+
+// templateBody traduce la plantilla de Bird al cable de Néctar. La comparten el envío sobre una
+// conversación viva y la apertura: un solo traductor, un solo idioma por defecto.
+func (b *Bridge) templateBody(tmpl bird.TemplateConfig) (TemplateBody, error) {
 	name, ok := b.TemplateNames[tmpl.ProjectID]
 	if !ok || name == "" {
-		return "", fmt.Errorf("nectar: plantilla sin nombre de Meta configurado para project_id %q (NECTAR_TEMPLATE_NAMES)", tmpl.ProjectID)
+		return TemplateBody{}, fmt.Errorf("nectar: plantilla sin nombre de Meta configurado para project_id %q (NECTAR_TEMPLATE_NAMES)", tmpl.ProjectID)
 	}
 	params := make(map[string]string, len(tmpl.Params))
 	for _, p := range tmpl.Params {
@@ -75,8 +90,41 @@ func (b *Bridge) SendTemplate(ctx context.Context, conversationID int64, tmpl bi
 	if lang == "" {
 		lang = "es"
 	}
-	id, err := b.c.SendTemplate(ctx, conversationID, TemplateBody{Name: name, Language: lang, Parameters: params})
-	return id64(id), err
+	return TemplateBody{Name: name, Language: lang, Parameters: params}, nil
+}
+
+// OpenWithTemplate abre una conversación nueva con una plantilla al teléfono dado, por el canal
+// de apertura (ChannelID). Devuelve el id de la conversación y el del mensaje. El 409
+// already_open sale como *AlreadyOpenError tal cual: decidir qué hacer con él es de quien llama.
+func (b *Bridge) OpenWithTemplate(ctx context.Context, phone string, tmpl bird.TemplateConfig) (int64, string, error) {
+	if b.ChannelID == 0 {
+		return 0, "", ErrOpenNotConfigured
+	}
+	body, err := b.templateBody(tmpl)
+	if err != nil {
+		return 0, "", err
+	}
+	opened, err := b.c.OpenConversation(ctx, b.ChannelID, OpenRecipient{Phone: phone}, body, "")
+	if err != nil {
+		return 0, "", err
+	}
+	return opened.ConversationID, id64(opened.MessageID), nil
+}
+
+// Contact devuelve a quién le habla el bot en la conversación (bloque `contact` de GET …/state).
+// Sin bloque, el contacto va vacío. No se persiste en crudo (Plan 44 §1.2).
+func (b *Bridge) Contact(ctx context.Context, conversationID int64) (bird.NectarContact, error) {
+	st, err := b.c.GetState(ctx, conversationID)
+	if err != nil || st.Contact == nil {
+		return bird.NectarContact{}, err
+	}
+	return bird.NectarContact{Identifier: st.Contact.Identifier, BSUID: st.Contact.BSUID}, nil
+}
+
+// WindowOpen dice si la ventana de 24 h de la conversación está abierta (GET …/state).
+func (b *Bridge) WindowOpen(ctx context.Context, conversationID int64) (bool, error) {
+	st, err := b.c.GetState(ctx, conversationID)
+	return st.WindowOpen, err
 }
 
 // Available dice si la conversación se puede escalar; «no» es una respuesta normal, no un error.

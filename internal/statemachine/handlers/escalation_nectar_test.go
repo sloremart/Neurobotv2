@@ -79,6 +79,16 @@ func (b *fakeNectarBridge) ConversationState(context.Context, int64) (string, er
 
 func (b *fakeNectarBridge) IsNotMine(error) bool { return false }
 
+func (b *fakeNectarBridge) OpenWithTemplate(context.Context, string, bird.TemplateConfig) (int64, string, error) {
+	return 0, "", nil
+}
+
+func (b *fakeNectarBridge) Contact(context.Context, int64) (bird.NectarContact, error) {
+	return bird.NectarContact{}, nil
+}
+
+func (b *fakeNectarBridge) WindowOpen(context.Context, int64) (bool, error) { return false, nil }
+
 // texts devuelve los textos que el puente sacó al paciente, en orden.
 func (b *fakeNectarBridge) texts() []string {
 	b.mu.Lock()

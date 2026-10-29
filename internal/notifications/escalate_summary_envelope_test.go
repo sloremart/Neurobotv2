@@ -56,6 +56,16 @@ func (b *escalationBridge) ConversationState(context.Context, int64) (string, er
 }
 func (b *escalationBridge) IsNotMine(error) bool { return false }
 
+func (b *escalationBridge) OpenWithTemplate(context.Context, string, bird.TemplateConfig) (int64, string, error) {
+	return 0, "", nil
+}
+
+func (b *escalationBridge) Contact(context.Context, int64) (bird.NectarContact, error) {
+	return bird.NectarContact{}, nil
+}
+
+func (b *escalationBridge) WindowOpen(context.Context, int64) (bool, error) { return false, nil }
+
 func (b *escalationBridge) only(t *testing.T) bird.Escalation {
 	t.Helper()
 	b.mu.Lock()

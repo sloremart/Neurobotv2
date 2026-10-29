@@ -54,6 +54,9 @@ type Client struct {
 	requestSecret string
 	http          *http.Client
 	now           func() time.Time
+	// sleep es la espera entre reintentos de la apertura (503 con Retry-After). Inyectable para
+	// que las pruebas no duerman; respeta el contexto.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // NewClient arma el cliente de las rutas /api/bot/* de Néctar. baseURL es la raíz pública (se le
@@ -65,6 +68,19 @@ func NewClient(baseURL, serviceKey, requestSecret string) *Client {
 		requestSecret: requestSecret,
 		http:          &http.Client{Timeout: 15 * time.Second},
 		now:           time.Now,
+		sleep:         sleepCtx,
+	}
+}
+
+// sleepCtx espera d o hasta que el contexto se cancele, lo que ocurra primero.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
@@ -83,6 +99,18 @@ type State struct {
 	State           string     `json:"state"`
 	WindowOpen      bool       `json:"window_open"`
 	WindowExpiresAt *time.Time `json:"window_expires_at"`
+	// Contact es el bloque OPCIONAL del Plan 44 §1.2: nil cuando Néctar no lo manda (el
+	// contacto no tiene ni teléfono ni BSUID). Ausente y vacío son datos distintos. No se
+	// persiste en crudo: es PII del paciente.
+	Contact *Contact `json:"contact,omitempty"`
+}
+
+// Contact es a quién le habla el bot en esa conversación. Identifier es el E.164 sin «+» (""
+// si el número es oculto); BSUID y ProfileName pueden venir vacíos.
+type Contact struct {
+	Identifier  string `json:"identifier"`
+	BSUID       string `json:"bsuid"`
+	ProfileName string `json:"profile_name"`
 }
 
 // Availability es la respuesta de GET …/availability: si se puede escalar y, si no, por qué.
@@ -401,23 +429,31 @@ func (c *Client) convPath(id int64, leaf string) string {
 	return "/api/bot/conversations/" + strconv.FormatInt(id, 10) + "/" + leaf
 }
 
-// do arma, firma y ejecuta una petición, y traduce los códigos del contrato a errores.
-// No reintenta NADA: el 404 significa «suelta el caso»; los 409 son instrucciones; y los
-// fallos de transporte los decide quien llama.
-func (c *Client) do(ctx context.Context, method, path string, in any, out any) error {
+// reply es la respuesta cruda de una llamada: el código, las cabeceras y hasta 1 MiB de cuerpo.
+type reply struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
+// exchange arma, firma y ejecuta UNA petición y devuelve la respuesta sin interpretarla. Es el
+// armado común de todas las rutas: la traducción de códigos a errores es de quien llama (do para
+// las rutas de siempre, doOpen para la apertura, cuyo 404 y 503 significan otra cosa). Se firma
+// en cada llamada, también en un reintento: la firma lleva sello de tiempo.
+func (c *Client) exchange(ctx context.Context, method, path string, in any) (reply, error) {
 	if !c.Configured() {
-		return ErrNotConfiguredAPI
+		return reply{}, ErrNotConfiguredAPI
 	}
 	var body []byte
 	if in != nil {
 		var err error
 		if body, err = json.Marshal(in); err != nil {
-			return fmt.Errorf("nectar: serializar %s: %w", path, err)
+			return reply{}, fmt.Errorf("nectar: serializar %s: %w", path, err)
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return reply{}, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -429,42 +465,45 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("nectar: %s %s: %w", method, path, err)
+		return reply{}, fmt.Errorf("nectar: %s %s: %w", method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	slog.Debug("nectar: llamada", "method", method, "path", path, "status", resp.StatusCode,
 		"ms", time.Since(started).Milliseconds())
+	return reply{status: resp.StatusCode, header: resp.Header, body: raw}, nil
+}
+
+// do ejecuta una petición de las rutas de siempre y traduce los códigos del contrato a errores.
+// No reintenta NADA: el 404 significa «suelta el caso»; los 409 son instrucciones; y los
+// fallos de transporte los decide quien llama.
+func (c *Client) do(ctx context.Context, method, path string, in any, out any) error {
+	resp, err := c.exchange(ctx, method, path, in)
+	if err != nil {
+		return err
+	}
+	raw := resp.body
 
 	switch {
-	case resp.StatusCode == http.StatusNotFound:
+	case resp.status == http.StatusNotFound:
 		return ErrNotMine
-	case resp.StatusCode == http.StatusUnauthorized:
+	case resp.status == http.StatusUnauthorized:
 		return ErrUnauthorized
-	case resp.StatusCode == http.StatusForbidden:
-		var e struct {
-			Reason string `json:"reason"`
-		}
-		_ = json.Unmarshal(raw, &e)
-		if e.Reason == "escalation_disabled" {
+	case resp.status == http.StatusForbidden:
+		if replyReason(raw) == "escalation_disabled" {
 			return ErrEscalationDisabled
 		}
 		return fmt.Errorf("nectar: %s %s: status 403 %s", method, path, strings.TrimSpace(string(raw)))
-	case resp.StatusCode == http.StatusConflict:
-		var e struct {
-			Error  string `json:"error"`
-			Reason string `json:"reason"`
-		}
-		_ = json.Unmarshal(raw, &e)
-		switch e.Reason {
+	case resp.status == http.StatusConflict:
+		switch replyReason(raw) {
 		case "window_closed":
 			return ErrWindowClosed
 		case "idempotency_key_reused":
 			return ErrIdempotencyReused
 		}
 		return fmt.Errorf("nectar: %s %s: 409 %s", method, path, strings.TrimSpace(string(raw)))
-	case resp.StatusCode < 200 || resp.StatusCode > 299:
-		return fmt.Errorf("nectar: %s %s: status %d %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
+	case resp.status < 200 || resp.status > 299:
+		return fmt.Errorf("nectar: %s %s: status %d %s", method, path, resp.status, strings.TrimSpace(string(raw)))
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -472,6 +511,15 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		}
 	}
 	return nil
+}
+
+// replyReason saca el `reason` de un cuerpo de rechazo de Néctar ("" si no lo hay).
+func replyReason(raw []byte) string {
+	var e struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(raw, &e)
+	return e.Reason
 }
 
 // ConversationIDFromSessionKey recupera el id de conversación de una clave de sesión

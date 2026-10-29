@@ -490,3 +490,34 @@ func TestClientEscalate_403DisabledIsTyped(t *testing.T) {
 		})
 	}
 }
+
+// --- El contacto en GET …/state (Plan 44 §1.2) ---
+
+func TestGetState_Contact(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL, svcKey, reqSecret)
+
+	body = `{"state":"bot","window_open":true,"window_expires_at":"2026-10-29T15:00:00Z",` +
+		`"contact":{"identifier":"573118349733","bsuid":"","profile_name":"Ana Pérez"}}`
+	st, err := c.GetState(context.Background(), 1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Contact == nil || *st.Contact != (Contact{Identifier: "573118349733", ProfileName: "Ana Pérez"}) {
+		t.Fatalf("contact = %+v", st.Contact)
+	}
+	if st.State != "bot" || !st.WindowOpen || st.WindowExpiresAt == nil {
+		t.Fatalf("los tres campos de siempre no cambian: %+v", st)
+	}
+
+	// Ausente ≠ vacío: sin el bloque, Contact es nil.
+	body = `{"state":"bot","window_open":false,"window_expires_at":null}`
+	st, err = c.GetState(context.Background(), 1234)
+	if err != nil || st.Contact != nil {
+		t.Fatalf("sin bloque contact: %+v err=%v", st.Contact, err)
+	}
+}

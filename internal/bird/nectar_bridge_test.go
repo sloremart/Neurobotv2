@@ -104,6 +104,16 @@ func (f *fakeBridge) ConversationState(_ context.Context, id int64) (string, err
 
 func (f *fakeBridge) IsNotMine(err error) bool { return errors.Is(err, errNotMine) }
 
+func (f *fakeBridge) OpenWithTemplate(context.Context, string, TemplateConfig) (int64, string, error) {
+	return 0, "", errors.New("fakeBridge: OpenWithTemplate sin guion")
+}
+
+func (f *fakeBridge) Contact(context.Context, int64) (NectarContact, error) {
+	return NectarContact{}, nil
+}
+
+func (f *fakeBridge) WindowOpen(context.Context, int64) (bool, error) { return false, nil }
+
 // untouched dice si el puente no vio NINGUNA llamada.
 func (f *fakeBridge) untouched() bool {
 	return f.texts+f.buttons+f.lists+f.templates+f.availableAsks+len(f.escalations)+

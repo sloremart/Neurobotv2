@@ -44,6 +44,23 @@ type NectarBridge interface {
 	ConversationState(ctx context.Context, conversationID int64) (string, error)
 	// IsNotMine reconoce el 404 «ya no es mía»: se suelta el caso, sin reintentar.
 	IsNotMine(err error) bool
+	// OpenWithTemplate ABRE una conversación nueva con una plantilla al teléfono dado (el bot
+	// inicia: recordatorios, lista de espera). Devuelve el id de la conversación en Néctar y el
+	// del mensaje.
+	OpenWithTemplate(ctx context.Context, phone string, tmpl TemplateConfig) (conversationID int64, messageID string, err error)
+	// Contact dice a quién le habla el bot en la conversación; vacío si Néctar no lo publica.
+	Contact(ctx context.Context, conversationID int64) (NectarContact, error)
+	// WindowOpen dice si la ventana de 24 h de la conversación está abierta.
+	WindowOpen(ctx context.Context, conversationID int64) (bool, error)
+}
+
+// NectarContact es el contacto de una conversación de Néctar (GET …/state, bloque `contact`).
+// Se declara aquí y no en internal/nectar por la misma razón que Escalation: la interfaz que lo
+// transporta vive en este paquete. Identifier es el E.164 sin «+» ("" si el número es oculto).
+// Es PII: no se traza ni se persiste en crudo.
+type NectarContact struct {
+	Identifier string
+	BSUID      string
 }
 
 // Escalation es TODO lo que viaja en el sobre del escalado, en un solo valor
