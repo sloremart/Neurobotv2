@@ -943,6 +943,55 @@ func TestAdvanceToNextProcedure_ClearsGroupScopedKeys(t *testing.T) {
 	}
 }
 
+// Comportamiento: tras avanzar, el siguiente procedimiento busca cupos SIN la ventana de embarazo
+// de la ecografía anterior. Con la ventana pegada, el único cupo (fuera de ella) se descartaba y el
+// paciente recibía «No hay horarios disponibles».
+func TestAdvanceToNextProcedure_NextGroupSearchesWithoutTheGestationalWindow(t *testing.T) {
+	slotAt := time.Now().AddDate(0, 0, 60).Truncate(24 * time.Hour).Add(10 * time.Hour)
+	slotSvc := services.NewSlotService(
+		&testutil.MockProcedureRepo{
+			FindSubjectTypeForCupsFn: func(context.Context, string) (int, error) { return 3, nil },
+		},
+		&testutil.MockScheduleRepo{
+			FindAvailableSlotsFn: func(context.Context, int, string, []int) ([]domain.AvailableSlotRow, error) {
+				return []domain.AvailableSlotRow{{
+					SlotTime: slotAt, DoctorDocument: "DOC001", DoctorName: "Garcia",
+					DoctorSiesaCode: "S1", AgendaID: 1, DurationMin: 30, AgendaSede: 3,
+				}}, nil
+			},
+		},
+	)
+	m := sm.NewMachine()
+	RegisterSlotHandlers(m, slotSvc, nil, nil, nil, nil, nil, nil, nil)
+
+	sess := twoProcSession(sm.StateShowSlots)
+	// Ventana de la ecografía obstétrica del grupo anterior: el cupo de dentro de 60 días queda fuera.
+	sess.Context["gestational_min_date"] = time.Now().AddDate(0, 0, 100).Format("2006-01-02")
+	sess.Context["gestational_max_date"] = time.Now().AddDate(0, 0, 10).Format("2006-01-02")
+
+	res := advanceToNextProcedure(sess)
+	if res == nil {
+		t.Fatal("expected advance to next procedure, got nil")
+		return
+	}
+	// Lo que el worker persiste al seguir: el contexto nuevo y el borrado del grupo anterior.
+	for k, v := range res.UpdateCtx {
+		sess.Context[k] = v
+	}
+	for _, k := range res.ClearCtx {
+		delete(sess.Context, k)
+	}
+	sess.CurrentState = sm.StateSearchSlots
+
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateShowSlots {
+		t.Errorf("el siguiente procedimiento debe ver el cupo; next=%s", result.NextState)
+	}
+}
+
 // El auto-join a lista de espera de un procedimiento sin slots NO debe propagar su waiting_list_entry_id
 // al siguiente procedimiento (ni en UpdateCtx), y debe limpiarlo. Así el booking posterior del siguiente
 // procedimiento no marca por error la entrada anterior como 'scheduled'.
