@@ -201,20 +201,20 @@ func reasonNotifiesPatient(reason string) bool {
 //
 // La exención caduca: una marca que no expira dejaría el cortacircuito anti-bucle apagado para
 // el resto de la sesión. Sin sello de escalación se comporta como exenta (el lado seguro).
-func queuedWaitStillOpen(sess *session.Session) bool {
+func queuedWaitStillOpen(cfg *config.Config, sess *session.Session) bool {
 	if sess.GetContext(sm.CtxEscalationNextDay) != "1" {
 		return false
 	}
 	if sess.EscalatedAt == nil {
 		return true
 	}
-	return nowFunc().Before(QueuedWaitEnd(sess.EscalatedAt.In(nowFunc().Location())))
+	return nowFunc().Before(QueuedWaitEnd(cfg, sess.EscalatedAt.In(nowFunc().Location())))
 }
 
 // queuedExpiryUntil es hasta cuándo tiene que vivir la sesión de una escalación encolada en
 // `now`: la apertura que termina la espera más queuedExpiryExtra.
-func queuedExpiryUntil(now time.Time) time.Time {
-	return QueuedWaitEnd(now).Add(queuedExpiryExtra)
+func queuedExpiryUntil(cfg *config.Config, now time.Time) time.Time {
+	return QueuedWaitEnd(cfg, now).Add(queuedExpiryExtra)
 }
 
 // escalationNoticeText es lo que el paciente de Néctar lee cuando su caso SÍ se escala. Hay dos:
@@ -222,13 +222,13 @@ func queuedExpiryUntil(now time.Time) time.Time {
 // caso entra en la ventana de cierre o con el horario cerrado — prometer «un momento por favor»
 // a las 18:30 sería mentirle a quien va a esperar hasta mañana. «y te escribirá por aquí» dice
 // que no tiene que volver a escribir para que lo atiendan.
-func escalationNoticeText(nextDay bool) string {
+func escalationNoticeText(cfg *config.Config, nextDay bool) string {
 	if !nextDay {
 		return sm.EscalationNoticeText
 	}
 	return fmt.Sprintf("Tu solicitud quedó registrada ✅. "+
 		"Un asesor te atenderá el próximo día hábil y te escribirá por aquí. "+
-		"Te atendemos %s", BusinessHoursDescription())
+		"Te atendemos %s", BusinessHoursDescription(cfg))
 }
 
 // NextDayQueueApplies devuelve el predicado que el pre-envío del pool consulta antes del escalate:

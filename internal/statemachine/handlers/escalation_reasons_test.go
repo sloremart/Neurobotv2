@@ -260,7 +260,7 @@ func TestEscalate_NectarParticularLigaQueuedSendsOnlyTheQueueNotice(t *testing.T
 	sess.SetContext(sm.CtxEscalationReason, sm.EscalationReasonParticularLiga)
 	withTime(at(2026, 10, 23, 17, 50), func() { escalateOnce(t, m, sess) })
 	txt := nb.texts()
-	if len(txt) != 1 || txt[0] != escalationNoticeText(true) {
+	if len(txt) != 1 || txt[0] != escalationNoticeText(nil, true) {
 		t.Fatalf("un solo aviso, el de la cola: %v", txt)
 	}
 }

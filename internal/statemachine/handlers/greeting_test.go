@@ -394,7 +394,7 @@ func TestNextBusinessOpen(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := nextBusinessOpen(c.now); !got.Equal(c.want) {
+			if got := nextBusinessOpen(config.DefaultBusinessHours(), c.now); !got.Equal(c.want) {
 				t.Errorf("nextBusinessOpen(%s) = %s, want %s", c.now, got, c.want)
 			}
 		})
@@ -418,7 +418,7 @@ func TestQueuedWaitEnd(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := QueuedWaitEnd(c.now); !got.Equal(c.want) {
+			if got := QueuedWaitEnd(nil, c.now); !got.Equal(c.want) {
 				t.Errorf("QueuedWaitEnd(%s) = %s, want %s", c.now, got, c.want)
 			}
 		})
@@ -427,7 +427,7 @@ func TestQueuedWaitEnd(t *testing.T) {
 
 func TestBusinessHoursDescription(t *testing.T) {
 	want := "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
-	if got := BusinessHoursDescription(); got != want {
+	if got := BusinessHoursDescription(nil); got != want {
 		t.Errorf("BusinessHoursDescription() = %q, want %q", got, want)
 	}
 }
@@ -489,6 +489,232 @@ func TestNextBusinessDayQueue_Disabled(t *testing.T) {
 	withTime(at(2026, 10, 27, 17, 50), func() {
 		if q := nextBusinessDayQueue(noMargin); q.window {
 			t.Errorf("con margen 0 las 17:50 todavía son de hoy: %+v", q)
+		}
+	})
+}
+
+// ==================== Horario: el respaldo es el de siempre, minuto a minuto ====================
+
+// legacyHours es una COPIA LITERAL de la implementación del horario anterior a la lectura de
+// Néctar (greeting.go hasta 69f2087). Es el oráculo: con NECTAR_SCHEDULE_ENABLED apagada el bot
+// tiene que decidir exactamente lo mismo que decidía con el horario quemado.
+type legacyHours struct{}
+
+func (legacyHours) open(now time.Time) bool {
+	switch now.Weekday() {
+	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
+		return now.Hour() >= 7 && now.Hour() < 18
+	case time.Saturday:
+		return now.Hour() >= 7 && now.Hour() < 12
+	default:
+		return false
+	}
+}
+
+func (legacyHours) description() string {
+	return "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
+}
+
+func (legacyHours) window(d time.Weekday) (openMin, closeMin int, ok bool) {
+	switch d {
+	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
+		return 7 * 60, 18 * 60, true
+	case time.Saturday:
+		return 7 * 60, 12 * 60, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func (l legacyHours) minutesToClose(t time.Time) int {
+	openMin, closeMin, ok := l.window(t.Weekday())
+	minute := t.Hour()*60 + t.Minute()
+	if !ok || minute < openMin || minute >= closeMin {
+		return 0
+	}
+	return closeMin - minute
+}
+
+func (l legacyHours) nextOpen(now time.Time) time.Time {
+	if l.minutesToClose(now) > 0 {
+		return now
+	}
+	minute := now.Hour()*60 + now.Minute()
+	for d := 0; d < 8; d++ {
+		day := now.AddDate(0, 0, d)
+		openMin, _, ok := l.window(day.Weekday())
+		if !ok || (d == 0 && minute >= openMin) {
+			continue
+		}
+		return time.Date(day.Year(), day.Month(), day.Day(), openMin/60, openMin%60, 0, 0, now.Location())
+	}
+	return now
+}
+
+func (l legacyHours) queuedWaitEnd(t time.Time) time.Time {
+	if left := l.minutesToClose(t); left > 0 {
+		closing := t.Truncate(time.Minute).Add(time.Duration(left) * time.Minute)
+		return l.nextOpen(closing)
+	}
+	return l.nextOpen(t)
+}
+
+func (l legacyHours) queue(cfg *config.Config, now time.Time) escalationQueue {
+	if cfg == nil || cfg.TestingAlwaysOpen {
+		return escalationQueue{}
+	}
+	left := l.minutesToClose(now)
+	if left > cfg.BusinessHoursCloseMarginMin {
+		return escalationQueue{}
+	}
+	q := escalationQueue{window: true, reason: queueReasonClosed}
+	if left > 0 {
+		q.reason = queueReasonMargin
+	}
+	maxWait := time.Duration(cfg.BusinessHoursQueueMaxWaitMin) * time.Minute
+	q.queue = cfg.BusinessHoursQueueMaxWaitMin > 0 && l.queuedWaitEnd(now).Sub(now) <= maxWait
+	return q
+}
+
+// TestBusinessHours_FallbackEqualsLegacy: con NECTAR_SCHEDULE_ENABLED apagada (sin proveedor, o
+// con la caché que nunca recibió una lectura), cada 15 minutos de una semana entera —más el
+// minuto 14 de cada cuarto, para pisar los bordes 11:59 / 17:59—, el horario decide lo mismo que
+// la implementación de hoy: abierto, próxima apertura, minutos al cierre, fin de la espera
+// encolada, la cola del próximo día y el texto.
+func TestBusinessHours_FallbackEqualsLegacy(t *testing.T) {
+	var legacy legacyHours
+	bogota := time.FixedZone("COT", -5*3600)
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, bogota) // lunes
+
+	sources := map[string]func() *config.Config{
+		"sin proveedor": queueConfig,
+		"caché sin lectura": func() *config.Config {
+			cfg := queueConfig()
+			cfg.Schedule = config.NewCachedSchedule(config.DefaultBusinessHours())
+			return cfg
+		},
+	}
+	for name, mk := range sources {
+		t.Run(name, func(t *testing.T) {
+			cfg := mk()
+			if got, want := BusinessHoursDescription(cfg), legacy.description(); got != want {
+				t.Errorf("BusinessHoursDescription = %q, want %q", got, want)
+			}
+			legacyNoAgents := "En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.* Por favor escríbenos en ese horario y con gusto te ayudamos. 😊"
+			if got := noAgentsText(cfg); got != legacyNoAgents {
+				t.Errorf("noAgentsText = %q, want %q", got, legacyNoAgents)
+			}
+			for step := 0; step < 7*24*4; step++ {
+				for _, extra := range []time.Duration{0, 14 * time.Minute} {
+					now := start.Add(time.Duration(step)*15*time.Minute + extra)
+					h := cfg.Hours()
+					var open bool
+					var q escalationQueue
+					withTime(now, func() {
+						open = businessHoursOpen(cfg)
+						q = nextBusinessDayQueue(cfg)
+					})
+					if open != legacy.open(now) {
+						t.Fatalf("%s: businessHoursOpen = %v, want %v", now, open, legacy.open(now))
+					}
+					if got, want := minutesToClose(h, now), legacy.minutesToClose(now); got != want {
+						t.Fatalf("%s: minutesToClose = %d, want %d", now, got, want)
+					}
+					if got, want := nextBusinessOpen(h, now), legacy.nextOpen(now); !got.Equal(want) {
+						t.Fatalf("%s: nextBusinessOpen = %s, want %s", now, got, want)
+					}
+					if got, want := QueuedWaitEnd(cfg, now), legacy.queuedWaitEnd(now); !got.Equal(want) {
+						t.Fatalf("%s: QueuedWaitEnd = %s, want %s", now, got, want)
+					}
+					if want := legacy.queue(cfg, now); q != want {
+						t.Fatalf("%s: nextBusinessDayQueue = %+v, want %+v", now, q, want)
+					}
+				}
+			}
+		})
+	}
+
+	// TESTING_ALWAYS_OPEN sigue mandando sobre el horario (de madrugada, abierto).
+	cfg := queueConfig()
+	cfg.TestingAlwaysOpen = true
+	withTime(start.Add(3*time.Hour), func() {
+		if !businessHoursOpen(cfg) {
+			t.Error("TESTING_ALWAYS_OPEN tiene que abrir a las 03:00")
+		}
+	})
+}
+
+// TestBusinessHours_FromNectar: una publicación de Néctar con L-V 08:00-17:00 y un festivo el
+// lunes cierra ese lunes entero, y el texto que lee el paciente pasa a ser el publicado.
+func TestBusinessHours_FromNectar(t *testing.T) {
+	bogota := time.FixedZone("COT", -5*3600)
+	spec := config.ScheduleSpec{Timezone: config.ScheduleTimezone, Holidays: []string{"2026-11-02"}}
+	for d := 1; d <= 5; d++ {
+		spec.Windows = append(spec.Windows, config.ScheduleWindowSpec{Weekday: d, From: "08:00", To: "17:00"})
+	}
+	hours, err := config.BusinessHoursFromSchedule(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := config.NewCachedSchedule(config.DefaultBusinessHours())
+	cache.Set(hours, "v1")
+	cfg := queueConfig()
+	cfg.Schedule = cache
+
+	holiday := time.Date(2026, 11, 2, 10, 0, 0, 0, bogota) // lunes festivo
+	withTime(holiday, func() {
+		if businessHoursOpen(cfg) {
+			t.Error("el lunes festivo está cerrado")
+		}
+		if q := nextBusinessDayQueue(cfg); !q.window || q.reason != queueReasonClosed {
+			t.Errorf("la escalación del festivo queda para el próximo día hábil: %+v", q)
+		}
+	})
+	if got, want := nextBusinessOpen(cfg.Hours(), holiday), time.Date(2026, 11, 3, 8, 0, 0, 0, bogota); !got.Equal(want) {
+		t.Errorf("después del festivo abre el martes a las 8: %s", got)
+	}
+	tuesday := time.Date(2026, 11, 3, 7, 30, 0, 0, bogota)
+	withTime(tuesday, func() {
+		if businessHoursOpen(cfg) {
+			t.Error("con el horario publicado el martes abre a las 8, no a las 7")
+		}
+	})
+	withTime(tuesday.Add(time.Hour), func() {
+		if !businessHoursOpen(cfg) {
+			t.Error("el martes a las 8:30 está abierto")
+		}
+	})
+	// Sábado: el respaldo abría, la publicación no.
+	withTime(time.Date(2026, 11, 7, 9, 0, 0, 0, bogota), func() {
+		if businessHoursOpen(cfg) {
+			t.Error("la publicación no trae sábado")
+		}
+	})
+	if got, want := BusinessHoursDescription(cfg), "Lunes a Viernes de 8:00 a.m. a 5:00 p.m."; got != want {
+		t.Errorf("BusinessHoursDescription = %q, want %q", got, want)
+	}
+	if got := noAgentsText(cfg); !strings.Contains(got, "*Lunes a Viernes de 8:00 a.m. a 5:00 p.m.* Por favor") {
+		t.Errorf("el desvío sin asesores nombra el horario publicado: %q", got)
+	}
+}
+
+// Un horario publicado que no abre nunca (Néctar sin ventanas) no puede encolar: la espera
+// «hasta la apertura» saldría en cero y el caso quedaría encolado sin fin. Se desvía.
+func TestBusinessHours_ClosedAllWeekNeverQueues(t *testing.T) {
+	hours, err := config.BusinessHoursFromSchedule(config.ScheduleSpec{Timezone: config.ScheduleTimezone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := config.NewCachedSchedule(config.DefaultBusinessHours())
+	cache.Set(hours, "v0")
+	cfg := queueConfig()
+	cfg.Schedule = cache
+	withTime(at(2026, 10, 27, 10, 0), func() {
+		if businessHoursOpen(cfg) {
+			t.Error("sin ventanas está cerrado")
+		}
+		if q := nextBusinessDayQueue(cfg); !q.window || q.queue {
+			t.Errorf("sin ninguna apertura la ventana está activa pero no se encola: %+v", q)
 		}
 	})
 }

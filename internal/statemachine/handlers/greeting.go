@@ -54,71 +54,50 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 	m.Register(sm.StateShowHelp, showHelpHandler())
 }
 
-// businessHoursOpen reporta si el centro está abierto AHORA (L-V 7:00-17:59, Sáb 7:00-11:59,
-// reloj America/Bogota vía nowFunc). TESTING_ALWAYS_OPEN lo fuerza a true. Compartido por
-// CHECK_BUSINESS_HOURS y el gate de escalación (una escalación nocturna nace condenada al
-// no-show — nadie la va a atender — y fue una de las condiciones del incidente 11/12-ago-2026).
+// EL HORARIO SALE DEL PROVEEDOR (cfg.Hours()): el de siempre (L-V 7:00-17:59, Sáb 7:00-11:59,
+// config.DefaultBusinessHours) o, con NECTAR_SCHEDULE_ENABLED, el último que Néctar publicó, con
+// sus festivos. Todas las decisiones de abajo —atender, el gate de la escalación, la cola del
+// próximo día hábil, su vencimiento y el texto al paciente— leen esa misma fuente, y cada
+// decisión toma UNA lectura (un refresco a mitad no puede mezclar dos horarios).
+
+// businessHoursOpen reporta si el centro está abierto AHORA (reloj America/Bogota vía nowFunc).
+// TESTING_ALWAYS_OPEN lo fuerza a true. Compartido por CHECK_BUSINESS_HOURS y el gate de
+// escalación (una escalación nocturna nace condenada al no-show — nadie la va a atender — y fue
+// una de las condiciones del incidente 11/12-ago-2026).
 func businessHoursOpen(cfg *config.Config) bool {
 	if cfg != nil && cfg.TestingAlwaysOpen {
 		return true
 	}
-	now := nowFunc()
-	switch now.Weekday() {
-	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
-		return now.Hour() >= 7 && now.Hour() < 18
-	case time.Saturday:
-		return now.Hour() >= 7 && now.Hour() < 12
-	default:
-		return false
-	}
+	return cfg.Hours().Open(nowFunc())
 }
 
 // BusinessHoursDescription es el horario de atención EN PALABRAS: el mismo de businessHoursOpen.
 // Lo nombran el aviso de la cola del próximo día hábil y el de la cola vencida (worker).
-func BusinessHoursDescription() string {
-	return "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
+func BusinessHoursDescription(cfg *config.Config) string {
+	return cfg.Hours().Describe()
 }
 
-// businessWindow devuelve la jornada de ese día en minutos desde medianoche [open, close), u
-// ok=false si ese día no se atiende. Es el MISMO horario de businessHoursOpen (L-V 7:00-17:59,
-// Sáb 7:00-11:59).
-func businessWindow(d time.Weekday) (openMin, closeMin int, ok bool) {
-	switch d {
-	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
-		return 7 * 60, 18 * 60, true
-	case time.Saturday:
-		return 7 * 60, 12 * 60, true
-	default:
-		return 0, 0, false
-	}
+// noAgentsText es el desvío de la escalación cuando no hay asesores o el horario está cerrado,
+// con el horario vigente en negrilla. Con el horario de siempre es, letra por letra, el texto que
+// el bot ha mandado siempre.
+func noAgentsText(cfg *config.Config) string {
+	return "En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de " +
+		cfg.Hours().DescribeEmphasized() +
+		" Por favor escríbenos en ese horario y con gusto te ayudamos. 😊"
 }
 
 // minutesToClose son los minutos que le quedan a la jornada vigente en t, o 0 si está cerrado.
-func minutesToClose(t time.Time) int {
-	openMin, closeMin, ok := businessWindow(t.Weekday())
-	minute := t.Hour()*60 + t.Minute()
-	if !ok || minute < openMin || minute >= closeMin {
-		return 0
-	}
-	return closeMin - minute
+func minutesToClose(h config.BusinessHours, t time.Time) int {
+	return h.MinutesToClose(t)
 }
 
 // nextBusinessOpen es la apertura en la que una persona puede atender lo que llega en `now`:
 // con el centro abierto es `now` mismo; cerrado, la próxima apertura (en la zona de `now`).
-func nextBusinessOpen(now time.Time) time.Time {
-	if minutesToClose(now) > 0 {
+func nextBusinessOpen(h config.BusinessHours, now time.Time) time.Time {
+	if minutesToClose(h, now) > 0 {
 		return now
 	}
-	minute := now.Hour()*60 + now.Minute()
-	for d := 0; d < 8; d++ {
-		day := now.AddDate(0, 0, d)
-		openMin, _, ok := businessWindow(day.Weekday())
-		if !ok || (d == 0 && minute >= openMin) {
-			continue
-		}
-		return time.Date(day.Year(), day.Month(), day.Day(), openMin/60, openMin%60, 0, 0, now.Location())
-	}
-	return now // inalcanzable: todas las semanas tienen días hábiles
+	return h.NextOpen(now)
 }
 
 // QueuedWaitEnd es hasta cuándo espera lo que se encola en `t`: la primera apertura DESPUÉS de
@@ -128,12 +107,16 @@ func nextBusinessOpen(now time.Time) time.Time {
 //
 // Lo usan la cola (cuánto falta para que alguien lo tome), el vencimiento extendido de la sesión
 // y la caducidad de la exención de la escalación encolada (session.InactivityDeps.NextOpen).
-func QueuedWaitEnd(t time.Time) time.Time {
-	if left := minutesToClose(t); left > 0 {
+func QueuedWaitEnd(cfg *config.Config, t time.Time) time.Time {
+	return queuedWaitEnd(cfg.Hours(), t)
+}
+
+func queuedWaitEnd(h config.BusinessHours, t time.Time) time.Time {
+	if left := minutesToClose(h, t); left > 0 {
 		closing := t.Truncate(time.Minute).Add(time.Duration(left) * time.Minute)
-		return nextBusinessOpen(closing)
+		return nextBusinessOpen(h, closing)
 	}
-	return nextBusinessOpen(t)
+	return nextBusinessOpen(h, t)
 }
 
 // Motivos por los que una escalación queda para el próximo día hábil. Viajan como attr `motivo`
@@ -178,7 +161,8 @@ func nextBusinessDayQueue(cfg *config.Config) escalationQueue {
 		return escalationQueue{}
 	}
 	now := nowFunc()
-	left := minutesToClose(now)
+	h := cfg.Hours()
+	left := minutesToClose(h, now)
 	if left > cfg.BusinessHoursCloseMarginMin {
 		return escalationQueue{}
 	}
@@ -187,7 +171,11 @@ func nextBusinessDayQueue(cfg *config.Config) escalationQueue {
 		q.reason = queueReasonMargin
 	}
 	maxWait := time.Duration(cfg.BusinessHoursQueueMaxWaitMin) * time.Minute
-	q.queue = cfg.BusinessHoursQueueMaxWaitMin > 0 && QueuedWaitEnd(now).Sub(now) <= maxWait
+	// Un horario que no abre nunca (Néctar publicó cero ventanas) da una espera que no termina
+	// después de `now`: no se encola —quedaría encolado sin fin—, se desvía como la apertura
+	// lejana. Con el horario de siempre la espera termina siempre después de `now`.
+	end := queuedWaitEnd(h, now)
+	q.queue = cfg.BusinessHoursQueueMaxWaitMin > 0 && end.After(now) && end.Sub(now) <= maxWait
 	return q
 }
 

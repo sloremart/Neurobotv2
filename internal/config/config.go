@@ -1,3 +1,5 @@
+// Package config lee la configuración del bot del entorno y guarda los valores que se
+// consultan al decidir (entre ellos el horario de atención vigente: Hours, schedule.go).
 package config
 
 import (
@@ -111,6 +113,18 @@ type Config struct {
 	// con plantilla (recordatorios, lista de espera, avisos). 0 = la apertura no está configurada:
 	// con el puente puesto, esas plantillas fallan con un error permanente y nada sale.
 	NectarChannelID int64
+	// EL HORARIO LEÍDO DE NÉCTAR (GET /api/bot/schedule). NectarScheduleEnabled
+	// (NECTAR_SCHEDULE_ENABLED) viene APAGADA: apagada no se hace ninguna llamada y rige el horario
+	// de siempre (DefaultBusinessHours). El .env la enciende cuando los equipos tengan horario en
+	// Néctar. NectarScheduleChannelID (NECTAR_SCHEDULE_CHANNEL_ID) acota la lectura a un canal
+	// (0 = todos los de la entidad); NectarScheduleRefreshMin (NECTAR_SCHEDULE_REFRESH_MIN) es cada
+	// cuántos minutos se relee (5).
+	NectarScheduleEnabled    bool
+	NectarScheduleChannelID  int64
+	NectarScheduleRefreshMin int
+	// Schedule es el PROVEEDOR del horario vigente (cmd/server lo cablea con un CachedSchedule).
+	// Nadie lo lee directo: se pregunta por Hours() — schedule.go.
+	Schedule ScheduleSource
 	// ProtocolEscaladoVersion (PROTOCOL_ESCALADO_VERSION) es la versión del protocolo de
 	// escalado que el bot EMITE: 0 = el dialecto de hoy, 1 = v1. NO gobierna la recepción (dual
 	// siempre). Se lee con ProtocolVersion()/EmitsProtocolV1() — protocol.go.
@@ -432,6 +446,14 @@ func Load() *Config {
 		log.Fatalf("NECTAR_CHANNEL_ID inválida: %v", err)
 	}
 	cfg.NectarChannelID = channelID
+
+	cfg.NectarScheduleEnabled = getEnvBool("NECTAR_SCHEDULE_ENABLED", false)
+	cfg.NectarScheduleRefreshMin = getEnvInt("NECTAR_SCHEDULE_REFRESH_MIN", DefaultScheduleRefreshMin)
+	scheduleChannelID, err := parseNectarChannelID(os.Getenv("NECTAR_SCHEDULE_CHANNEL_ID"))
+	if err != nil {
+		log.Fatalf("NECTAR_SCHEDULE_CHANNEL_ID inválida: %v", err)
+	}
+	cfg.NectarScheduleChannelID = scheduleChannelID
 
 	// El margen de cierre y la espera máxima de la cola, por el mismo camino: un valor
 	// imposible tiene que verse al arrancar y no el día que alguien pregunte por qué todos los

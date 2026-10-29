@@ -441,6 +441,14 @@ type reply struct {
 // las rutas de siempre, doOpen para la apertura, cuyo 404 y 503 significan otra cosa). Se firma
 // en cada llamada, también en un reintento: la firma lleva sello de tiempo.
 func (c *Client) exchange(ctx context.Context, method, path string, in any) (reply, error) {
+	return c.exchangeWithHeaders(ctx, method, path, in, nil)
+}
+
+// exchangeWithHeaders es exchange con cabeceras extra (hoy solo el If-None-Match de la lectura
+// condicional del horario). Van fuera de la firma, como todas las cabeceras.
+func (c *Client) exchangeWithHeaders(ctx context.Context, method, path string, in any,
+	headers map[string]string,
+) (reply, error) {
 	if !c.Configured() {
 		return reply{}, ErrNotConfiguredAPI
 	}
@@ -457,6 +465,9 @@ func (c *Client) exchange(ctx context.Context, method, path string, in any) (rep
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	req.Header.Set(ServiceKeyHeader, c.serviceKey)
 	// La firma NO cubre cabeceras (sello + URL completa + cuerpo).

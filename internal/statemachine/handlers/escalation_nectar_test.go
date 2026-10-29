@@ -416,8 +416,8 @@ func TestEscalate_OutOfHoursQueuesWhenOpenIsNear(t *testing.T) {
 	if len(txt) != 1 {
 		t.Fatalf("el paciente paga UN mensaje: %v", nb.events)
 	}
-	if txt[0] != escalationNoticeText(true) || !strings.Contains(txt[0], "próximo día hábil") ||
-		!strings.Contains(txt[0], BusinessHoursDescription()) {
+	if txt[0] != escalationNoticeText(nil, true) || !strings.Contains(txt[0], "próximo día hábil") ||
+		!strings.Contains(txt[0], BusinessHoursDescription(nil)) {
 		t.Fatalf("el aviso es el del próximo día hábil, con el horario: %q", txt[0])
 	}
 	if nb.events[0] != "text:"+txt[0] || nb.events[1] != "escalate" {

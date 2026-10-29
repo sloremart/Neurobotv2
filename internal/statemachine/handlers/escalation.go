@@ -140,7 +140,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		//     (CtxAgentInputRejection): la causó una persona, no un lazo del bot, y cada vuelta
 		//     necesita otra acción humana; cortarla dejaría al paciente sin asesor.
 		if n, _ := strconv.Atoi(sess.GetContext("escalation_count")); n >= escalationSessionCap &&
-			!queuedWaitStillOpen(sess) && sess.GetContext(sm.CtxAgentInputRejection) == "" {
+			!queuedWaitStillOpen(cfg, sess) && sess.GetContext(sm.CtxAgentInputRejection) == "" {
 			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_reached",
 				observability.EmitOpts{
 					Phone: sess.PhoneNumber, Reason: preState,
@@ -214,7 +214,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 					Attrs: attrs,
 				})
 			r := sm.NewResult(sm.StateMainMenu).
-				WithText("En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.* Por favor escríbenos en ese horario y con gusto te ayudamos. 😊").
+				WithText(noAgentsText(cfg)).
 				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState, "gate": gate})
 			r.Messages = append(r.Messages, buildMainMenuList())
 			return escalationDiverted(preState, r), nil
@@ -343,7 +343,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// describe mal lo que va a pasar y cuesta un mensaje. En la cola NO se calla nunca: lo único
 		// que el paciente necesita saber a las 18:30 es que la espera es hasta el próximo día hábil.
 		if nectarSession {
-			notice := escalationNoticeText(queuedNextDay)
+			notice := escalationNoticeText(cfg, queuedNextDay)
 			if sess.GetContext(sm.CtxEscalationNoticeFlushed) == "1" && !queuedNextDay {
 				notice = ""
 			}
@@ -530,7 +530,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			// La sesión tiene que vivir hasta que vuelva una persona: con el TTL normal vence de
 			// madrugada y deja de existir para todo lo que filtra expires_at.
 			r = r.WithContext(sm.CtxEscalationNextDay, "1").
-				WithExpiryUntil(queuedExpiryUntil(nowFunc()))
+				WithExpiryUntil(queuedExpiryUntil(cfg, nowFunc()))
 		} else {
 			r = r.WithClearCtx(sm.CtxEscalationNextDay)
 		}

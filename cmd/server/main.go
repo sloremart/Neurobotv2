@@ -164,6 +164,16 @@ func main() {
 		slog.Info("Néctar activo", "host", nectar.HostOf(nectarClient.BaseURL()), "notice_secret", cfg.NectarNoticeSecret != "")
 	}
 
+	// El horario de atención y los festivos: todo el bot los pregunta por cfg.Hours(). Rige el de
+	// siempre hasta que Néctar publique una lectura buena; con NECTAR_SCHEDULE_ENABLED apagada (el
+	// default) no se llama a Néctar. Solo con el puente activo hay de dónde leer.
+	schedule := wireSchedule(cfg)
+	var scheduleClient *nectar.Client
+	if nectarBridge != nil {
+		scheduleClient = nectarClient
+	}
+	startNectarSchedule(ctx, cfg, scheduleClient, schedule)
+
 	// Services (dependen de repos)
 	var patientSvc *services.PatientService
 	var appointmentSvc *services.AppointmentService
@@ -338,7 +348,7 @@ func main() {
 	workerPool.SetBotEnabled(cfg.BotEnabled)
 	// El horario EN PALABRAS: lo nombra el aviso de cola vencida (Néctar devuelve el caso que
 	// nadie tomó y el bot le dice al paciente cuándo volver). Sale del mismo horario que el gate.
-	workerPool.SetBusinessHoursText(handlers.BusinessHoursDescription)
+	workerPool.SetBusinessHoursText(func() string { return handlers.BusinessHoursDescription(cfg) })
 	// Con la cola del próximo día, el pre-envío quita el aviso genérico de conexión (y solo él): el
 	// paciente lee lo demás del turno y el aviso del próximo día hábil, que manda el handler.
 	workerPool.SetEscalationQueuedNextDay(handlers.NextDayQueueApplies(cfg))
@@ -363,7 +373,7 @@ func main() {
 			Resumer:                  workerPool,
 			// Hasta cuándo espera una escalación encolada para el próximo día hábil: acota su
 			// exención del cierre por silencio y del no-show (sin esto no caducaría nunca).
-			NextOpen: handlers.QueuedWaitEnd,
+			NextOpen: func(t time.Time) time.Time { return handlers.QueuedWaitEnd(cfg, t) },
 		})
 	})
 

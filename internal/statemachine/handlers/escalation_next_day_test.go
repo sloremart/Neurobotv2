@@ -30,7 +30,7 @@ func TestEscalate_QueuedAlwaysNotifiesEvenIfFlushedOrNotAsked(t *testing.T) {
 	withTime(at(2026, 10, 27, 18, 30), func() { // martes de noche
 		escalateOnce(t, m, sess)
 	})
-	if txt := nb.texts(); len(txt) != 1 || txt[0] != escalationNoticeText(true) {
+	if txt := nb.texts(); len(txt) != 1 || txt[0] != escalationNoticeText(nil, true) {
 		t.Fatalf("el aviso del próximo día sale igual: %v", nb.events)
 	}
 }
@@ -176,7 +176,7 @@ func TestEscalate_QueuedCallerNoticeYieldsSingleNextDayNotice(t *testing.T) {
 	withTime(at(2026, 10, 23, 17, 50), func() {
 		escalateOnce(t, m, sess)
 	})
-	if txt := nb.texts(); len(txt) != 1 || txt[0] != escalationNoticeText(true) {
+	if txt := nb.texts(); len(txt) != 1 || txt[0] != escalationNoticeText(nil, true) {
 		t.Fatalf("un solo aviso, el del próximo día: %q", txt)
 	}
 }
@@ -227,7 +227,7 @@ func TestEscalate_QueuedAfterBookingKeepsConfirmation(t *testing.T) {
 	if strings.Contains(all, sm.EscalationNoticeText) || strings.Contains(all, "Un momento por favor") {
 		t.Errorf("con la cola no sale «un momento por favor»: %q", txt)
 	}
-	if n := strings.Count(all, escalationNoticeText(true)); n != 1 || txt[len(txt)-1] != escalationNoticeText(true) {
+	if n := strings.Count(all, escalationNoticeText(nil, true)); n != 1 || txt[len(txt)-1] != escalationNoticeText(nil, true) {
 		t.Errorf("el aviso del próximo día sale una vez y al final: %d veces en %q", n, txt)
 	}
 }
