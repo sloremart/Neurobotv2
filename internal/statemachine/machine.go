@@ -53,6 +53,12 @@ type Machine struct {
 // se borra al terminar Process porque describe el turno, no la sesión.
 const CtxEscalationNoticeFlushed = "_escalation_notice_flushed"
 
+// CtxAgentResumeTurn marca, SOLO durante este turno, que el mensaje es el retorno sin dato de un
+// agente de Néctar (`__resume__`): el paciente no escribió nada, así que el paso re-muestra su
+// pregunta sin gastar un reintento ni escalar. Vive en memoria y Process la borra al terminar.
+// Bird nunca la pone.
+const CtxAgentResumeTurn = "_agent_resume_turn"
+
 // PreEscalationFlush envía los mensajes pendientes antes de escalar. true = enviados.
 type PreEscalationFlush func(ctx context.Context, sess *session.Session, messages []OutboundMessage) bool
 
@@ -122,6 +128,10 @@ func (m *Machine) AddInterceptor(interceptor Interceptor) {
 // Process ejecuta la máquina de estados para un mensaje entrante
 func (m *Machine) Process(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, error) {
 	var result *StateResult
+
+	// La marca del retorno del agente es del turno: no debe sobrevivir en la sesión en memoria
+	// (tampoco si un handler falla).
+	defer delete(sess.Context, CtxAgentResumeTurn)
 
 	// 1. Ejecutar interceptores globales
 	intercepted := false

@@ -1091,3 +1091,43 @@ func TestHandleAgentCups_WrittenInputClearsDeclaredKeys(t *testing.T) {
 		}
 	}
 }
+
+// resumeMarkerSeen corre un retorno sin dato y dice si el handler vio la marca del turno.
+func resumeMarkerSeen(t *testing.T, nectar bool, cmd AgentCommand) bool {
+	t.Helper()
+	pool, _, _, sess, _, _ := returnSession(t, statemachine.StateMainMenu)
+	if nectar {
+		asNectar(sess)
+	}
+	seen := false
+	pool.machine = &mockMessageProcessor{
+		processFn: func(_ context.Context, s *session.Session, _ bird.InboundMessage) (*statemachine.StateResult, error) {
+			seen = s.GetContext(statemachine.CtxAgentResumeTurn) != ""
+			return &statemachine.StateResult{NextState: statemachine.StateMainMenu}, nil
+		},
+	}
+	cmd.Phone = sess.PhoneNumber
+	pool.processAgentCommand(context.Background(), cmd)
+	return seen
+}
+
+func TestHandleAgentResume_NectarSetsResumeMarker(t *testing.T) {
+	if !resumeMarkerSeen(t, true, AgentCommand{Action: "resume"}) {
+		t.Fatal("un retorno sin dato en Néctar debe llevar la marca")
+	}
+	if !resumeMarkerSeen(t, true, AgentCommand{Action: "resume", FreshTurn: true}) {
+		t.Fatal("una opción solo-destino (FreshTurn) también la lleva")
+	}
+}
+
+func TestHandleAgentResume_NectarWithDataNoMarker(t *testing.T) {
+	if resumeMarkerSeen(t, true, AgentCommand{Action: "resume", Data: "agendar"}) {
+		t.Fatal("con dato el paso responde de verdad: sin marca")
+	}
+}
+
+func TestHandleAgentResume_BirdNoMarker(t *testing.T) {
+	if resumeMarkerSeen(t, false, AgentCommand{Action: "resume"}) {
+		t.Fatal("Bird nunca lleva la marca")
+	}
+}

@@ -1085,3 +1085,40 @@ func TestStateMachine_AutoChainDoesNotResurrectKeyClearedByAutoStep(t *testing.T
 		t.Fatalf("lo demás se fusiona como siempre: %v", result.UpdateCtx)
 	}
 }
+
+func TestProcess_AgentResumeMarkerIsTurnScoped(t *testing.T) {
+	m := NewMachine()
+	seen := ""
+	m.Register(StateMainMenu, func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*StateResult, error) {
+		seen = sess.GetContext(CtxAgentResumeTurn)
+		return NewResult(StateMainMenu), nil
+	})
+	sess := newTestSession(StateMainMenu)
+	sess.SetContext(CtxAgentResumeTurn, "1")
+
+	if _, err := m.Process(context.Background(), sess, newTestMessage("x")); err != nil {
+		t.Fatal(err)
+	}
+	if seen != "1" {
+		t.Errorf("el handler debe ver la marca durante el turno, vio %q", seen)
+	}
+	if _, ok := sess.Context[CtxAgentResumeTurn]; ok {
+		t.Error("la marca sobrevivió al turno")
+	}
+}
+
+func TestProcess_AgentResumeMarkerClearedWhenHandlerFails(t *testing.T) {
+	m := NewMachine()
+	m.Register(StateMainMenu, func(context.Context, *session.Session, bird.InboundMessage) (*StateResult, error) {
+		return nil, context.Canceled
+	})
+	sess := newTestSession(StateMainMenu)
+	sess.SetContext(CtxAgentResumeTurn, "1")
+
+	if _, err := m.Process(context.Background(), sess, newTestMessage("x")); err == nil {
+		t.Fatal("quería el error del handler")
+	}
+	if _, ok := sess.Context[CtxAgentResumeTurn]; ok {
+		t.Error("la marca sobrevivió a un turno fallido")
+	}
+}

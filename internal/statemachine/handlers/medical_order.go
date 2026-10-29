@@ -878,6 +878,12 @@ func askManualCupsHandler(procedureRepo repository.ProcedureRepository) sm.State
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 
+		// El retorno sin dato del agente de Néctar (`__resume__`, p. ej. «Buscar de nuevo») no es un
+		// nombre de procedimiento: se trata como entrada vacía y el paso re-pregunta sin buscarlo.
+		if sm.IsAgentResumeTurn(sess) && sm.IsReservedKeyword(input) {
+			input = ""
+		}
+
 		if len(input) < 3 {
 			retryResult := sm.ValidateWithRetry(sess, input, func(s string) bool { return len(s) >= 3 },
 				"Por favor escribe al menos 3 caracteres del nombre del procedimiento.")

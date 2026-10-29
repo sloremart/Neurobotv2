@@ -1055,6 +1055,11 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		if cmd.FreshTurn {
 			virtualMsg.Text = ""
 		}
+		// En Néctar el paciente no escribió nada: el paso re-pregunta sin gastarle un reintento
+		// (Process borra la marca al terminar). Bird sigue contando el `__resume__` como respuesta.
+		if session.IsNectarSession(sess.PhoneNumber) {
+			sess.SetContext(statemachine.CtxAgentResumeTurn, "1")
+		}
 		result, err := p.machine.Process(ctx, sess, virtualMsg)
 		if err != nil {
 			slog.Error("process virtual resume message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)

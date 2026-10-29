@@ -562,8 +562,12 @@ func regBirthDateHandler() sm.StateHandler {
 		parsedDate, verdict := judgeBirthDate(msg.Text)
 		switch verdict {
 		case birthDateUnreadable:
-			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
-				"No entendí la fecha. "+dateHelp)
+			complaint := "No entendí la fecha. " + dateHelp
+			if sm.IsAgentResumeTurn(sess) {
+				// El paciente no escribió nada: se le vuelve a pedir la fecha, sin decirle que no la entendió.
+				complaint = dateHelp
+			}
+			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false }, complaint)
 			return retryResult, nil
 		case birthDateInFuture:
 			return sm.NewResult(sess.CurrentState).

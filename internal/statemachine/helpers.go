@@ -54,6 +54,20 @@ func SetMaxRetries(n int) {
 // envío directo redundante que duplicaba el aviso en las rutas que sí tienen texto.
 const EscalationNoticeText = "Te voy a conectar con un agente. Un momento por favor..."
 
+// IsAgentResumeTurn dice si este turno es el retorno sin dato de un agente de Néctar.
+func IsAgentResumeTurn(sess *session.Session) bool {
+	return sess.GetContext(CtxAgentResumeTurn) != ""
+}
+
+// agentResumeReprompt es la respuesta de un paso que recibe el retorno sin dato del agente: se
+// queda donde está con su texto de siempre, sin gastar reintento ni escalar (el paciente no
+// escribió nada que pudiera estar mal).
+func agentResumeReprompt(sess *session.Session, text string) *StateResult {
+	return NewResult(sess.CurrentState).
+		WithText(text).
+		WithEvent("agent_resume_reprompt", map[string]interface{}{"state": sess.CurrentState})
+}
+
 // ValidateWithRetry valida input del usuario con reintentos automáticos.
 // Retorna nil si el input es válido (caller debe procesarlo).
 // Retorna StateResult si hay error de validación o escalación por reintentos.
@@ -61,6 +75,10 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 	if validate(input) {
 		sess.RetryCount = 0
 		return nil
+	}
+
+	if IsAgentResumeTurn(sess) {
+		return agentResumeReprompt(sess, errorMsg)
 	}
 
 	sess.RetryCount++
@@ -120,6 +138,10 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 		}
 	}
 
+	if IsAgentResumeTurn(sess) {
+		return agentResumeReprompt(sess, "Por favor selecciona una de las opciones disponibles."), ""
+	}
+
 	// Input no válido → retry. Registrar SIEMPRE el texto (enmascarado por estado): es la materia
 	// prima del análisis de fricción (§8.2 — el 70% de invalid_input llegaba sin texto porque los
 	// estados de botones no lo guardaban). Si fue postback, se registra el payload.
@@ -156,6 +178,10 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 // Reemplaza el patrón manual de sess.RetryCount++ / if >= 3 { escalate }.
 // Siempre retorna un *StateResult (nunca nil).
 func RetryOrEscalate(sess *session.Session, errorMsg string) *StateResult {
+	if IsAgentResumeTurn(sess) {
+		return agentResumeReprompt(sess, errorMsg)
+	}
+
 	sess.RetryCount++
 
 	if sess.RetryCount >= maxRetries {

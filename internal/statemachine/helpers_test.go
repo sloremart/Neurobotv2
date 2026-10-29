@@ -393,3 +393,58 @@ func TestValidateButtonResponse_LogsInput(t *testing.T) {
 		t.Errorf("invalid_input sin payload: %v", res2.Events[0].Data)
 	}
 }
+
+// ==================== Turno de retorno del agente (Néctar) ====================
+
+func TestValidateButtonResponse_AgentResumeTurnDoesNotCountRetry(t *testing.T) {
+	sess := helperSess(StateAskDocument)
+	sess.RetryCount = 1
+	sess.SetContext(CtxAgentResumeTurn, "1")
+
+	result, payload := ValidateButtonResponse(sess, bird.InboundMessage{Text: "__resume__"}, "a", "b")
+	if result == nil || payload != "" {
+		t.Fatalf("quería re-pregunta, obtuve result=%v payload=%q", result, payload)
+	}
+	if result.NextState != StateAskDocument {
+		t.Errorf("NextState = %s, quería el paso actual", result.NextState)
+	}
+	if sess.RetryCount != 1 {
+		t.Errorf("RetryCount = %d, no debe gastarse el reintento", sess.RetryCount)
+	}
+	if len(result.Events) == 0 || result.Events[0].Type != "agent_resume_reprompt" {
+		t.Errorf("faltó el evento agent_resume_reprompt: %+v", result.Events)
+	}
+}
+
+func TestValidateButtonResponse_NoMarkerStillCountsRetry(t *testing.T) {
+	sess := helperSess(StateAskDocument)
+	result, _ := ValidateButtonResponse(sess, bird.InboundMessage{Text: "__resume__"}, "a", "b")
+	if result == nil || sess.RetryCount != 1 {
+		t.Fatalf("sin marca (Bird) el comportamiento no cambia: retry=%d", sess.RetryCount)
+	}
+}
+
+func TestValidateWithRetry_AgentResumeTurnDoesNotEscalate(t *testing.T) {
+	sess := helperSess(StateAskDocument)
+	sess.RetryCount = 2
+	sess.SetContext(CtxAgentResumeTurn, "1")
+
+	result := ValidateWithRetry(sess, "", func(string) bool { return false }, "Invalid input")
+	if result == nil || result.NextState != StateAskDocument {
+		t.Fatalf("no debe escalar: %+v", result)
+	}
+	if sess.RetryCount != 2 {
+		t.Errorf("RetryCount = %d, quería 2", sess.RetryCount)
+	}
+}
+
+func TestRetryOrEscalate_AgentResumeTurnDoesNotCountRetry(t *testing.T) {
+	sess := helperSess(StateAskDocument)
+	sess.RetryCount = 2
+	sess.SetContext(CtxAgentResumeTurn, "1")
+
+	result := RetryOrEscalate(sess, "otra vez")
+	if result.NextState != StateAskDocument || sess.RetryCount != 2 {
+		t.Fatalf("next=%s retry=%d", result.NextState, sess.RetryCount)
+	}
+}
