@@ -155,3 +155,32 @@ func TestPostActionMenu_AgenteMarksPatientAskedForAgent(t *testing.T) {
 		t.Fatalf("falta la marca del paciente: %q (%v)", got, result.UpdateCtx)
 	}
 }
+
+// En Néctar, «agente» en el menú post-acción mira la disponibilidad de la conversación.
+func TestPostActionAgente_NectarUsesConversationAvailability(t *testing.T) {
+	client := bird.NewClientForTest("http://127.0.0.1:1") // la presencia de Bird diría «no hay»
+	client.SetNectar(&fakeNectarBridge{})
+	m := sm.NewMachine()
+	RegisterPostActionHandlers(m, client)
+
+	sess := nectarSession(false)
+	sess.CurrentState = sm.StatePostActionMenu
+	res, err := m.Process(context.Background(), sess, nectarMsg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("con Néctar disponible escala; NextState = %s", res.NextState)
+	}
+
+	client.SetNectar(&fakeNectarBridge{unavailable: true})
+	sess = nectarSession(false)
+	sess.CurrentState = sm.StatePostActionMenu
+	res, err = m.Process(context.Background(), sess, nectarMsg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StatePostActionMenu {
+		t.Fatalf("con Néctar no disponible se queda en el menú; NextState = %s", res.NextState)
+	}
+}

@@ -64,7 +64,7 @@ func postActionMenuHandler(birdClient *bird.Client) sm.StateHandler {
 
 		// Accept "agente" as free-text input (case insensitive)
 		if strings.EqualFold(strings.TrimSpace(payload), "agente") {
-			if birdClient != nil && !birdClient.HasAvailableAgents() {
+			if birdClient != nil && !birdClient.HasAvailableAgentsFor(sess.PhoneNumber, sess.ConversationID) { //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 				r := sm.NewResult(sess.CurrentState).
 					WithEvent("agent_unavailable", nil)
 				r.Messages = append(r.Messages, buildPostActionList("En este momento no hay agentes disponibles. Por favor selecciona una opción."))
@@ -77,7 +77,7 @@ func postActionMenuHandler(birdClient *bird.Client) sm.StateHandler {
 				WithEvent("post_action_selected", map[string]interface{}{"action": "escalate"}), nil
 		}
 
-		agentsAvailable := birdClient != nil && birdClient.HasAvailableAgents()
+		agentsAvailable := birdClient != nil && birdClient.HasAvailableAgentsFor(sess.PhoneNumber, sess.ConversationID) //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 
 		result, selected := sm.ValidateButtonResponse(sess, msg,
 			"ver_citas", "menu_principal", "terminar_chat")

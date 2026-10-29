@@ -980,3 +980,68 @@ func TestAskMedicalOrder_NoOrderWritesWaitingListID(t *testing.T) {
 		t.Error("si la entrada no se creó no se escribe el id")
 	}
 }
+
+// buttonPayloads devuelve los payloads de los botones del primer mensaje con botones.
+func buttonPayloads(buttons []sm.Button) []string {
+	out := make([]string, 0, len(buttons))
+	for _, b := range buttons {
+		out = append(out, b.Payload)
+	}
+	return out
+}
+
+// En Néctar la presencia de Bird no decide: el botón sale si la conversación tiene asesores.
+func TestOCRRetryButtons_NectarUsesConversationAvailability(t *testing.T) {
+	client := bird.NewClientForTest("http://127.0.0.1:1") // Bird inalcanzable: su presencia diría «no hay»
+	client.SetNectar(&fakeNectarBridge{})
+
+	got := buttonPayloads(ocrRetryButtons(client, nectarSession(false)))
+	if len(got) != 2 || got[1] != "escalate_agent" {
+		t.Fatalf("con Néctar disponible el botón de agente tiene que salir: %v", got)
+	}
+
+	client.SetNectar(&fakeNectarBridge{unavailable: true})
+	got = buttonPayloads(ocrRetryButtons(client, nectarSession(false)))
+	if len(got) != 1 || got[0] != "retry_photo" {
+		t.Fatalf("con Néctar no disponible solo queda reintentar: %v", got)
+	}
+}
+
+func TestUploadNonMedia_NectarUsesConversationAvailability(t *testing.T) {
+	client := bird.NewClientForTest("http://127.0.0.1:1")
+	client.SetNectar(&fakeNectarBridge{})
+	sess := nectarSession(false)
+	sess.CurrentState = sm.StateUploadMedicalOrder
+	res, err := uploadNonMedia(sess, client, postbackM("escalate_agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("con Néctar disponible escala; NextState = %s", res.NextState)
+	}
+}
+
+// Para un teléfono E.164 la disponibilidad sigue siendo la presencia de Bird, igual que antes.
+func TestOCRRetryButtons_BirdUnchanged(t *testing.T) {
+	agents := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if agents {
+			_, _ = w.Write([]byte(`{"results":[{"id":"agent-1"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer srv.Close()
+	client := bird.NewClientForTest(srv.URL)
+	client.SetNectar(&fakeNectarBridge{unavailable: true}) // Néctar no debe consultarse
+
+	got := buttonPayloads(ocrRetryButtons(client, testSess(sm.StateUploadMedicalOrder)))
+	if len(got) != 2 || got[1] != "escalate_agent" {
+		t.Fatalf("Bird con asesores: botón de agente; got %v", got)
+	}
+	agents = false
+	got = buttonPayloads(ocrRetryButtons(client, testSess(sm.StateUploadMedicalOrder)))
+	if len(got) != 1 {
+		t.Fatalf("Bird sin asesores: solo reintentar; got %v", got)
+	}
+}

@@ -163,7 +163,7 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 			if err != nil || !ocrResult.Success || len(ocrResult.Cups) == 0 {
 				//nolint:nilerr // el fallo de OCR se maneja re-pidiendo la foto, no se propaga a la FSM.
 				return sm.NewResult(sess.CurrentState).
-					WithButtons("No pudimos leer la orden de la EMG. ¿Qué deseas hacer?", ocrRetryButtons(birdClient)...).
+					WithButtons("No pudimos leer la orden de la EMG. ¿Qué deseas hacer?", ocrRetryButtons(birdClient, sess)...). //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 					WithEvent("emg_ocr_failed", nil), nil
 			}
 

@@ -124,11 +124,11 @@ func agentCupsReplaceOrderInput() sm.ReturnInput {
 
 // ocrRetryButtons builds the retry/escalation buttons for OCR errors.
 // Only includes "Hablar con agente" if agents are available.
-func ocrRetryButtons(birdClient *bird.Client) []sm.Button {
+func ocrRetryButtons(birdClient *bird.Client, sess *session.Session) []sm.Button {
 	buttons := []sm.Button{
 		{Text: "Enviar de nuevo", Payload: "retry_photo"},
 	}
-	if birdClient != nil && birdClient.HasAvailableAgents() {
+	if birdClient != nil && birdClient.HasAvailableAgentsFor(sess.PhoneNumber, sess.ConversationID) {
 		buttons = append(buttons, sm.Button{Text: "Hablar con agente", Payload: "escalate_agent"})
 	}
 	return buttons
@@ -468,7 +468,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_failed",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: eventType})
 		return sm.NewResult(sess.CurrentState).
-			WithButtons(msg, ocrRetryButtons(birdClient)...).
+			WithButtons(msg, ocrRetryButtons(birdClient, sess)...). //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 			WithContext(sm.CtxOCRFailureCause, eventType).
 			WithEvent(eventType, map[string]interface{}{"error": err.Error()}), nil
 	}
@@ -481,7 +481,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 		return sm.NewResult(sess.CurrentState).
 			WithButtons(
 				ocrFailureMessage(ocrResult.Error),
-				ocrRetryButtons(birdClient)...,
+				ocrRetryButtons(birdClient, sess)..., //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 			).
 			WithContext(sm.CtxOCRFailureCause, cause).
 			WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil
@@ -549,7 +549,7 @@ func uploadNonMedia(sess *session.Session, birdClient *bird.Client, msg bird.Inb
 				WithText("Envía otra foto o PDF de tu orden médica."), nil
 		case "escalate_agent":
 			// Re-check agent availability (button may have been shown before agents went offline)
-			if birdClient != nil && !birdClient.HasAvailableAgents() {
+			if birdClient != nil && !birdClient.HasAvailableAgentsFor(sess.PhoneNumber, sess.ConversationID) {
 				return sm.NewResult(sess.CurrentState).
 					WithButtons(
 						"En este momento no hay agentes disponibles. ¿Qué deseas hacer?",
@@ -847,7 +847,7 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 			return sm.NewResult(sm.StateUploadMedicalOrder).
 				WithButtons(
 					"Entendido. ¿Qué deseas hacer?",
-					ocrRetryButtons(birdClient)...,
+					ocrRetryButtons(birdClient, sess)..., //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 				).
 				WithClearCtx("ocr_cups_json").
 				WithEvent("ocr_rejected", nil), nil
@@ -863,7 +863,7 @@ func ocrFailedHandler(birdClient *bird.Client) sm.StateHandler {
 		return sm.NewResult(sm.StateUploadMedicalOrder).
 			WithButtons(
 				"No pudimos procesar tu orden médica. ¿Qué deseas hacer?",
-				ocrRetryButtons(birdClient)...,
+				ocrRetryButtons(birdClient, sess)..., //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
 			).
 			WithEvent("ocr_failed_redirect", nil), nil
 	}
