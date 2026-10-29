@@ -173,8 +173,9 @@ func Capabilities(protocolVersion int) CapabilityRegistry {
 				Facts:        emitsFacts && v1,
 				ReasonDetail: emitsReasonDetail && v1,
 				// El candado NO lo gobierna la bandera: escalateRequest lo emite en los dos
-				// dialectos, bajo `resolve_lock` y bajo su alias.
-				ResolveLock:      true,
+				// dialectos, bajo `resolve_lock` y bajo su alias. Se anuncia solo si algún paso
+				// lo declara (Néctar lo guarda y aún no actúa sobre él).
+				ResolveLock:      HasResolveGuards(),
 				ResolveLockAlias: ResolveLockAliasKey,
 				Reasons:          []string{ReasonBotCannotAnswer, ReasonPatientAskedForHuman},
 			},
@@ -226,3 +227,9 @@ func (r CapabilityRegistry) Encode() ([]byte, string, error) {
 	}
 	return body, r.Version, nil
 }
+
+// HasResolveGuards dice si algún paso del bot declara un candado de «Resolver». Este paquete no
+// puede importar la máquina de estados (ella depende del cliente de Bird, que depende de este),
+// así que quien monta los pasos lo enchufa. Sin enchufar no hay candados declarados y el
+// registro dice la verdad: `resolve_lock` en false.
+var HasResolveGuards = func() bool { return false }

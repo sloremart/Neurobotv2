@@ -483,6 +483,8 @@ func RegisterSlotHandlers(
 	sm.RegisterReturnInput(sm.StateSearchSlots, agentCupsReplaceOrderInput())
 	sm.RegisterResumeLabel(sm.StateSearchSlots, agentCupsResumeLabel)
 	sm.RegisterReturnMenu(sm.StateSearchSlots, nextProcedureOption)
+	// Queda una cita por agendar: el candado de Resolver espera la cita.
+	sm.RegisterResolveGuard(sm.StateSearchSlots, sm.ResolveGuardPendingAppointment)
 	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
 	m.Register(sm.StateCoverageNoConvenio, coverageNoConvenioHandler())
 	// Salidas del agente cuando el contrato no cubre el procedimiento: seguir como particular
@@ -550,6 +552,7 @@ func RegisterSlotHandlers(
 	// la misma escalación, así que esa salida se oculta (P1-5).
 	sm.HidePlainResume(sm.StateCreateAppointment)
 	sm.RegisterReturnMenu(sm.StateCreateAppointment, nextProcedureOption)
+	sm.RegisterResolveGuard(sm.StateCreateAppointment, sm.ResolveGuardPendingAppointment)
 	m.Register(sm.StateBookingSuccess, bookingSuccessHandler(addrMapper))
 	m.Register(sm.StateBookingFailed, bookingFailedHandler())
 }

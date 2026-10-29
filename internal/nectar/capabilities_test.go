@@ -15,6 +15,26 @@ import (
 // es peor que no declararla, así que lo que estas pruebas persiguen es UNA SOLA cosa: que el
 // registro NO PUEDA MENTIR.
 
+// withResolveGuards fija si algún paso declara candado (en producción lo enchufa el montaje de
+// handlers) y lo restaura al terminar.
+func withResolveGuards(t *testing.T, declared bool) {
+	t.Helper()
+	prev := HasResolveGuards
+	HasResolveGuards = func() bool { return declared }
+	t.Cleanup(func() { HasResolveGuards = prev })
+}
+
+// Sin ningún candado declarado el registro NO anuncia `resolve_lock` (C8): no promete lo que
+// ningún paso emite.
+func TestCapabilities_ResolveLockFalseWithoutDeclaredGuards(t *testing.T) {
+	withResolveGuards(t, false)
+	for _, ver := range []int{config.ProtocolEscaladoV0, config.ProtocolEscaladoV1} {
+		if Capabilities(ver).Capabilities.Escalation.ResolveLock {
+			t.Errorf("versión %d: resolve_lock en true sin candados declarados", ver)
+		}
+	}
+}
+
 func TestCapabilities_SchemaShape(t *testing.T) {
 	// La forma es contrato con Néctar (capabilities.schema.json, additionalProperties:false):
 	// las claves obligatorias tienen que estar TODAS y con su tipo, y no puede sobrar ninguna.
@@ -67,6 +87,7 @@ func TestCapabilities_SchemaShape(t *testing.T) {
 }
 
 func TestCapabilities_V0HidesEmissionOnlyFields(t *testing.T) {
+	withResolveGuards(t, true)
 	// §1.3: «Con PROTOCOL_ESCALADO_VERSION=0, escalate.facts y escalate.reason_detail salen
 	// false, porque el emisor está apagado. Así el registro y el cable dicen lo mismo en los dos
 	// estados de la bandera, y Néctar no pide lo que no va a recibir.»
@@ -104,6 +125,7 @@ func TestCapabilities_V0HidesEmissionOnlyFields(t *testing.T) {
 }
 
 func TestCapabilities_V1(t *testing.T) {
+	withResolveGuards(t, true)
 	// Con la bandera en 1 TODO está encendido salvo `repetible`: Neuro no tiene formulario
 	// repetible (el descriptor nunca lleva piezas), así que declararlo sería prometerle a Néctar
 	// una pantalla que el bot no sabe interpretar. Se compara el conjunto ENTERO y con los
@@ -154,6 +176,7 @@ func TestCapabilities_V1(t *testing.T) {
 // `input.repetible` no está en la tabla: en Neuro es false con las dos banderas (se comprueba
 // aparte), así que no tiene un estado «cumplido con la bandera en 1» que contrastar.
 func TestCapabilities_EmissionFollowsFlagReceptionDoesNot(t *testing.T) {
+	withResolveGuards(t, true)
 	c0 := Capabilities(config.ProtocolEscaladoV0).Capabilities
 	c1 := Capabilities(config.ProtocolEscaladoV1).Capabilities
 

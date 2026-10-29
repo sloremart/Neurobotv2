@@ -154,6 +154,8 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 	// con la vista de la sesión. El worker reconoce State == NOTIF_PENDING con Data = acción y la
 	// ejecuta sin reanudar el flujo.
 	sm.RegisterReturnMenu(sm.StateNotifPending, notifPendingReturnOptions)
+	// La notificación deja una cita (o una acción de cita) por resolver.
+	sm.RegisterResolveGuard(sm.StateNotifPending, sm.ResolveGuardPendingAppointment)
 	m.RegisterWithConfig(sm.StateNotifPending, sm.HandlerConfig{
 		InputType:   sm.InputButton,
 		Options:     []string{"confirm", "reschedule", "cancel"},

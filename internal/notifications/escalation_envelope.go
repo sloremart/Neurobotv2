@@ -24,6 +24,9 @@ func notifEscalation(cfg *config.Config, phone string, view *session.Session, de
 	if !session.IsNectarSession(phone) {
 		return esc
 	}
+	// Candado del botón «Resolver»: queda una cita o una acción de cita por hacer. Solo viaja en
+	// el sobre de Néctar; en Bird no existe.
+	esc.ResolveLock, _ = sm.ResolveGuardFor(sm.StateNotifPending)
 	if cfg != nil && cfg.EmitsProtocolV1() {
 		esc.Protocol = config.ProtocolEscaladoV1
 		esc.ReasonDetail = detail

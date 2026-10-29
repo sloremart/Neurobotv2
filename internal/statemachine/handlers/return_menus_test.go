@@ -935,3 +935,50 @@ func TestReturnMenus_CupsFieldAfterGroupingResetsTheGroupContext(t *testing.T) {
 		}
 	}
 }
+
+// El candado de «Resolver» se declara exactamente en los pasos donde el bot deja trabajo
+// pendiente; cualquier paso nuevo con candado exige tocar esta tabla a propósito.
+func TestResolveGuards_DeclaredWherePendingWork(t *testing.T) {
+	returnMenuMachine()
+	want := map[string]string{}
+	for _, s := range []string{
+		sm.StateAskDocument, sm.StateAskMedicalOrder, sm.StateUploadMedicalOrder, sm.StateValidateOCR,
+		sm.StateOCRFailed, sm.StateConfirmOCRResult, sm.StateAskManualCups, sm.StateSelectProcedure,
+		sm.StateUploadEmgOrder,
+	} {
+		want[s] = "retorno_pendiente"
+	}
+	for _, s := range []string{
+		sm.StateNotifPending, sm.StateSearchSlots, sm.StateCreateAppointment, sm.StateCheckSpecialCups,
+	} {
+		want[s] = "cita_pendiente"
+	}
+	got := sm.DeclaredResolveGuards()
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: candado %q, quiero %q", k, got[k], v)
+		}
+	}
+	for k, v := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("%s declara el candado %q y no está en la tabla", k, v)
+		}
+	}
+	// Es una copia: tocarla no cambia lo declarado.
+	got[sm.StateAskDocument] = "otro"
+	if sm.DeclaredResolveGuards()[sm.StateAskDocument] != "retorno_pendiente" {
+		t.Error("DeclaredResolveGuards debe devolver una copia")
+	}
+}
+
+// El registro de capacidades no promete un candado que nadie declara (C8).
+func TestCapabilities_ResolveLockIsTruthful(t *testing.T) {
+	returnMenuMachine()
+	want := len(sm.DeclaredResolveGuards()) > 0
+	if !want {
+		t.Fatal("el montaje de handlers no declaró ningún candado")
+	}
+	if got := nectar.Capabilities(1).Capabilities.Escalation.ResolveLock; got != want {
+		t.Errorf("resolve_lock = %v, y hay candados declarados = %v", got, want)
+	}
+}

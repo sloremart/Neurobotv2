@@ -273,8 +273,12 @@ func ResolveReturnValue(sess *session.Session, step, value string) (ReturnOption
 
 // RegisterResolveGuard declara que las escalaciones DESDE ese paso viajan con candado en el
 // botón «Resolver» de Néctar, y con qué motivo. El motivo es vocabulario acordado con Néctar, no
-// texto libre. Un motivo vacío equivale a no tener candado.
+// texto libre. Un motivo vacío equivale a no tener candado; uno que no case con la forma que
+// Néctar acepta (resolveGuardShape) es un error de programación y hace panic al arrancar.
 func RegisterResolveGuard(state, motivo string) {
+	if motivo != "" && !resolveGuardShape.MatchString(motivo) {
+		panic(fmt.Sprintf("candado de Resolver inválido para %s: %q no casa con %s", state, motivo, resolveGuardShape))
+	}
 	returnMenusMu.Lock()
 	defer returnMenusMu.Unlock()
 	resolveGuards[state] = motivo

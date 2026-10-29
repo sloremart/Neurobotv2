@@ -951,3 +951,24 @@ func TestRegisterReturnInput_KindAndFormatMustMatch(t *testing.T) {
 	registerTestInput(t, "T5_OK_DATE", ReturnInput{Kind: InputKindDate, Format: InputFormatISO})
 	registerTestInput(t, "T5_OK_TIME", ReturnInput{Kind: InputKindTime, Format: InputFormatISO})
 }
+
+// La forma del motivo del candado se exige al registrarlo: viaja en el cable de Néctar, que lo
+// guarda como cadena opaca de hasta 64 runas.
+func TestResolveGuard_ShapeIsEnforced(t *testing.T) {
+	mustPanic := func(name, motivo string) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s: un motivo %q fuera de ^[a-z_]{1,64}$ debe hacer panic", name, motivo)
+			}
+		}()
+		RegisterResolveGuard("RETURN_TEST_SHAPE", motivo)
+	}
+	mustPanic("mayúscula", "Retorno")
+	mustPanic("65 runas", strings.Repeat("a", 65))
+	mustPanic("espacio", "cita pendiente")
+
+	t.Cleanup(func() { RegisterResolveGuard("RETURN_TEST_SHAPE", "") })
+	RegisterResolveGuard("RETURN_TEST_SHAPE", "")                      // limpiar no es un motivo
+	RegisterResolveGuard("RETURN_TEST_SHAPE", strings.Repeat("a", 64)) // el límite exacto vale
+}

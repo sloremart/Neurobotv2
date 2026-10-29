@@ -26,6 +26,8 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	sm.RegisterReturnInput(sm.StateCheckSpecialCups, agentCupsReplaceOrderInput())
 	sm.RegisterResumeLabel(sm.StateCheckSpecialCups, agentCupsResumeLabel)
 	sm.RegisterReturnMenu(sm.StateCheckSpecialCups, nextProcedureOption)
+	// Queda una cita por agendar con estos CUPS.
+	sm.RegisterResolveGuard(sm.StateCheckSpecialCups, sm.ResolveGuardPendingAppointment)
 	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
 	m.Register(sm.StateAskContrasted, askContrastedHandler())
 	sm.RegisterStaticReturnMenu(sm.StateAskContrasted,

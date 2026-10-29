@@ -36,6 +36,7 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	m.Register(sm.StateAskManualCups, askManualCupsHandler(procedureRepo))
 	m.Register(sm.StateSelectProcedure, selectProcedureHandler())
 	sm.RegisterReturnMenu(sm.StateSelectProcedure, procedureReturnOptions)
+	sm.RegisterResolveGuard(sm.StateSelectProcedure, sm.ResolveGuardPendingReturn)
 
 	// Retorno del agente de Néctar en los pasos de la orden médica: escribe los CUPS que leyó de
 	// la orden y el comando de CUPS del asesor (el de `/bot cups`) los inyecta en VALIDATE_OCR.
@@ -46,6 +47,8 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	} {
 		sm.RegisterReturnInput(step, agentCupsReturnInput())
 		sm.RegisterResumeLabel(step, agentCupsResumeLabel)
+		// Sin los CUPS leídos de la orden el flujo no sigue: queda esperando el retorno del agente.
+		sm.RegisterResolveGuard(step, sm.ResolveGuardPendingReturn)
 	}
 	// Reintentar la subida de la foto (`/bot resume UPLOAD_MEDICAL_ORDER`): no lleva dato.
 	askOrderAgain := sm.ReturnOption{
@@ -83,6 +86,7 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	emgCups.Label = "CUPS de la orden de electromiografía (si ya se leyeron dependientes de la 1ª orden, se suman)"
 	sm.RegisterReturnInput(sm.StateUploadEmgOrder, emgCups)
 	sm.RegisterResumeLabel(sm.StateUploadEmgOrder, agentCupsResumeLabel)
+	sm.RegisterResolveGuard(sm.StateUploadEmgOrder, sm.ResolveGuardPendingReturn)
 	sm.RegisterStaticReturnMenu(sm.StateUploadEmgOrder, sm.ReturnOption{
 		Label: "Pedir de nuevo la foto de la orden de EMG", Value: "pedir_orden_emg",
 		Target: sm.StateUploadEmgOrder, NoInput: true,

@@ -366,3 +366,22 @@ func TestHandleNotifPendingCommand_WaitingListSchedules(t *testing.T) {
 		t.Fatalf("FindByID(%q), quiero wl-1", foundID)
 	}
 }
+
+// El escalado de una notificación lleva el candado de NOTIF_PENDING en Néctar (cita por
+// resolver) y en Bird no viaja nada.
+func TestNotifEscalation_CarriesResolveLock(t *testing.T) {
+	sm.RegisterResolveGuard(sm.StateNotifPending, sm.ResolveGuardPendingAppointment)
+	t.Cleanup(func() { sm.RegisterResolveGuard(sm.StateNotifPending, "") })
+
+	for _, cfg := range []*config.Config{
+		{ProtocolEscaladoVersion: config.ProtocolEscaladoV1}, {},
+	} {
+		esc := notifEscalation(cfg, nectarPhone, &session.Session{}, "detalle", "resumen")
+		if esc.ResolveLock != "cita_pendiente" {
+			t.Errorf("Néctar (protocolo %d): ResolveLock = %q, quiero cita_pendiente", cfg.ProtocolEscaladoVersion, esc.ResolveLock)
+		}
+	}
+	if esc := notifEscalation(&config.Config{}, "+573001234567", &session.Session{}, "detalle", "resumen"); esc.ResolveLock != "" {
+		t.Errorf("Bird no lleva candado: %q", esc.ResolveLock)
+	}
+}

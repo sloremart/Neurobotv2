@@ -59,6 +59,8 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 		Label:    "Número de documento",
 		Required: true,
 	}, askAgainOption())
+	// Sin el documento el flujo no sigue: el candado de Resolver espera el retorno del agente.
+	sm.RegisterResolveGuard(sm.StateAskDocument, sm.ResolveGuardPendingReturn)
 	m.RegisterWithConfig(sm.StateAskDocument, sm.HandlerConfig{
 		InputType:    sm.InputText,
 		TextValidate: validators.Document,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -189,4 +190,11 @@ func NextDayQueueApplies(cfg *config.Config) func(*session.Session) bool {
 	return func(sess *session.Session) bool {
 		return sess != nil && session.IsNectarSession(sess.PhoneNumber) && nextBusinessDayQueue(cfg).queue
 	}
+}
+
+// El registro de capacidades de Néctar anuncia `resolve_lock` solo si algún paso declara
+// candado. El paquete nectar no puede leer la máquina de estados (dependencia circular), así
+// que se enchufa aquí, donde se registran los pasos.
+func init() {
+	nectar.HasResolveGuards = func() bool { return len(sm.DeclaredResolveGuards()) > 0 }
 }

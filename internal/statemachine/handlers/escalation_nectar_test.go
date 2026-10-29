@@ -809,3 +809,21 @@ func TestEscalate_BirdResumeSuppressionUnchanged(t *testing.T) {
 		t.Errorf("Bird: el mensaje es el menú principal de hoy, fue %+v", res.Messages[0])
 	}
 }
+
+// El sobre de la escalación lleva el candado que declara el paso donde se atascó el paciente.
+func TestEscalate_EnvelopeCarriesResolveLock(t *testing.T) {
+	returnMenuMachine()
+	cfg := withProtocolV1(testEscalationConfig())
+	m, nb := nectarMachine(t, cfg, nil)
+	sess := nectarSession(true)
+	sess.SetContext(sm.CtxPreAutoState, sm.StateUploadMedicalOrder)
+
+	escalateOnce(t, m, sess)
+
+	if len(nb.escalations) != 1 {
+		t.Fatalf("se esperaba UNA escalación, hubo %d", len(nb.escalations))
+	}
+	if got := nb.escalations[0].ResolveLock; got != "retorno_pendiente" {
+		t.Errorf("ResolveLock = %q, quiero retorno_pendiente", got)
+	}
+}
