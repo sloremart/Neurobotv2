@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -90,56 +92,167 @@ const nectarContactTTL = 24 * time.Hour
 // sin contacto el mensaje sigue igual, así que no vale la pena esperar más.
 const nectarContactTimeout = 5 * time.Second
 
+// nectarContactFailTTL es cuánto se recuerda un FALLO al leer el contacto (caché negativa): en
+// ese tiempo no se vuelve a preguntar por esa conversación, y si el fallo fue de transporte
+// (Néctar inalcanzable), por ninguna. Corto, porque el contacto es un dato de apoyo que conviene
+// recuperar pronto; suficiente para que un Néctar colgado no cueste el timeout en cada mensaje ni
+// en cada fila del replay de arranque, que corre antes de abrir el puerto.
+const nectarContactFailTTL = time.Minute
+
+// nectarConvOrder pone en fila, por conversación, el despacho de los avisos: cada uno espera a
+// que termine el anterior de SU conversación, en el orden en que llegaron. Hace falta desde que el
+// despacho de un mensaje puede esperar al GET …/state: sin la fila, dos avisos seguidos se
+// encolaban en el orden en que volvía su GET (un «hola» y la foto de la orden se cruzaban), y los
+// dos preguntaban el contacto. Conversaciones distintas no se esperan entre sí.
+type nectarConvOrder struct {
+	mu    sync.Mutex
+	convs map[int64]*nectarConvTurns
+}
+
+// nectarConvTurns es la fila de una conversación: el turno del último que llegó (se cierra cuando
+// termina) y cuántos avisos hay en ella, contando el que se despacha.
+type nectarConvTurns struct {
+	last chan struct{}
+	n    int
+}
+
+// enter pide turno para la conversación y espera a que terminen los que llegaron antes. done
+// cierra el turno: hay que llamarlo siempre, una vez.
+func (o *nectarConvOrder) enter(conversationID int64) (done func()) {
+	o.mu.Lock()
+	if o.convs == nil {
+		o.convs = map[int64]*nectarConvTurns{}
+	}
+	q := o.convs[conversationID]
+	if q == nil {
+		q = &nectarConvTurns{}
+		o.convs[conversationID] = q
+	}
+	prev, mine := q.last, make(chan struct{})
+	q.last = mine
+	q.n++
+	o.mu.Unlock()
+
+	if prev != nil {
+		<-prev
+	}
+	return func() {
+		close(mine)
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if q.n--; q.n == 0 {
+			delete(o.convs, conversationID)
+		}
+	}
+}
+
+// waiting dice cuántos avisos de la conversación están en fila (el que se despacha incluido).
+func (o *nectarConvOrder) waiting(conversationID int64) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if q := o.convs[conversationID]; q != nil {
+		return q.n
+	}
+	return 0
+}
+
 // nectarContactCache recuerda a quién le habla el bot en cada conversación de Néctar
 // (conversación → contacto), para preguntarlo UNA vez y no en cada mensaje. Solo en memoria: no
-// va al WAL, y el replay tras una caída lo vuelve a pedir. Un fallo no se guarda: el siguiente
-// mensaje vuelve a preguntar.
+// va al WAL, y el replay tras una caída lo vuelve a pedir. Un fallo se recuerda poco
+// (nectarContactFailTTL); un fallo de transporte, además, corta las preguntas de todas las
+// conversaciones durante esa ventana.
 type nectarContactCache struct {
-	entries   sync.Map // int64 → nectarContactEntry
-	mu        sync.Mutex
-	lastSweep time.Time
+	now              func() time.Time // reloj; nil = time.Now (las pruebas lo fijan)
+	entries          sync.Map         // int64 → nectarContactEntry
+	mu               sync.Mutex
+	lastSweep        time.Time
+	unreachableUntil time.Time // protegido por mu
 }
 
 type nectarContactEntry struct {
 	contact bird.NectarContact
 	at      time.Time
+	failed  bool // caché negativa: el contacto no se pudo leer
 }
 
+func (c *nectarContactCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (e nectarContactEntry) expired(now time.Time) bool {
+	ttl := nectarContactTTL
+	if e.failed {
+		ttl = nectarContactFailTTL
+	}
+	return now.Sub(e.at) > ttl
+}
+
+// get devuelve lo que se sabe de la conversación. ok=true también para un fallo reciente (con el
+// contacto vacío): en ese caso no se vuelve a preguntar.
 func (c *nectarContactCache) get(conversationID int64, now time.Time) (bird.NectarContact, bool) {
 	v, ok := c.entries.Load(conversationID)
 	if !ok {
 		return bird.NectarContact{}, false
 	}
 	e := v.(nectarContactEntry)
-	if now.Sub(e.at) > nectarContactTTL {
+	if e.expired(now) {
 		c.entries.Delete(conversationID)
 		return bird.NectarContact{}, false
 	}
 	return e.contact, true
 }
 
-func (c *nectarContactCache) put(conversationID int64, contact bird.NectarContact, now time.Time) {
-	c.entries.Store(conversationID, nectarContactEntry{contact: contact, at: now})
+func (c *nectarContactCache) put(conversationID int64, e nectarContactEntry) {
+	c.entries.Store(conversationID, e)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if now.Sub(c.lastSweep) <= time.Hour {
+	if e.at.Sub(c.lastSweep) <= time.Hour {
 		return
 	}
-	c.lastSweep = now
+	c.lastSweep = e.at
 	c.entries.Range(func(k, v any) bool {
-		if now.Sub(v.(nectarContactEntry).at) > nectarContactTTL {
+		if v.(nectarContactEntry).expired(e.at) {
 			c.entries.Delete(k)
 		}
 		return true
 	})
 }
 
+// unreachable dice si un fallo de transporte reciente manda no preguntar a Néctar por nadie.
+func (c *nectarContactCache) unreachable(now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return now.Before(c.unreachableUntil)
+}
+
+func (c *nectarContactCache) markUnreachable(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unreachableUntil = now.Add(nectarContactFailTTL)
+}
+
+// isNectarUnreachable reconoce un fallo de TRANSPORTE (conexión rechazada, DNS, timeout): Néctar
+// no contestó, así que preguntar por otra conversación fallaría igual. Un error con respuesta
+// (404, 5xx) es de esa conversación y no corta a las demás.
+func isNectarUnreachable(err error) bool {
+	var netErr net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr)
+}
+
 // nectarContact devuelve el contacto de la conversación: de la caché, o preguntándole a Néctar
-// (GET …/state). Un fallo deja el contacto vacío —el mensaje sigue igual— y queda en la traza.
+// (GET …/state). Un fallo deja el contacto vacío —el mensaje sigue igual—, queda en la traza y se
+// recuerda nectarContactFailTTL.
 func (h *WebhookHandler) nectarContact(ctx context.Context, conversationID int64) bird.NectarContact {
-	now := time.Now()
-	if c, ok := h.nectarContacts.get(conversationID, now); ok {
+	cache := &h.nectarContacts
+	now := cache.clock()
+	if c, ok := cache.get(conversationID, now); ok {
 		return c
+	}
+	if cache.unreachable(now) {
+		return bird.NectarContact{} // Néctar no contesta: ni se pregunta (ya quedó en la traza)
 	}
 	key := nectar.SessionKey(conversationID)
 	ctx, cancel := context.WithTimeout(ctx, nectarContactTimeout)
@@ -152,9 +265,13 @@ func (h *WebhookHandler) nectarContact(ctx context.Context, conversationID int64
 		slog.Warn("nectar: contacto no disponible; el mensaje sigue sin él",
 			"conversation_id", conversationID, "error", err)
 		observability.Emit(observability.TraceSession(key), "nectar", "contacto_no_disponible", observability.EmitOpts{})
+		cache.put(conversationID, nectarContactEntry{at: now, failed: true})
+		if isNectarUnreachable(err) {
+			cache.markUnreachable(now)
+		}
 		return bird.NectarContact{}
 	}
-	h.nectarContacts.put(conversationID, c, now)
+	cache.put(conversationID, nectarContactEntry{contact: c, at: now})
 	return c
 }
 
@@ -372,6 +489,13 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 	}
 	key := nectar.SessionKey(n.ConversationID)
 	slog.Info("nectar: aviso", "kind", n.Kind, "event_id", n.EventID, "conversation_id", n.ConversationID)
+
+	// En fila por conversación, en orden de llegada: contacto → whitelist → enrutado → cola de un
+	// aviso terminan antes de que empiece el siguiente de la misma conversación (nectarConvOrder).
+	// Todos los kinds, no solo los mensajes: una resolución tampoco debe adelantar a un mensaje
+	// que llegó antes y espera su GET …/state.
+	done := h.nectarOrder.enter(n.ConversationID)
+	defer done()
 
 	switch n.Kind {
 	case nectar.KindInboundMessage:

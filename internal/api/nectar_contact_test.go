@@ -2,12 +2,18 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
@@ -87,15 +93,114 @@ func TestNectarInbound_ContactFailureStillReachesWorker(t *testing.T) {
 	}
 	mustFindEvent(t, events, "nectar", "contacto_no_disponible")
 
-	// El fallo no se guarda en la caché: el siguiente mensaje vuelve a preguntar.
+	// El fallo se recuerda poco (caché negativa): dentro de la ventana no se vuelve a preguntar
+	// —un Néctar colgado no frena cada mensaje ni el replay de arranque— y el mensaje sigue igual.
+	now := time.Now()
+	h.nectarContacts.now = func() time.Time { return now }
 	fb.ContactErr = nil
 	fb.ContactValue = bird.NectarContact{Identifier: "573001112233"}
 	postNotice(h, signedNotice(nectarTestSecret, inboundBody("e-f2")))
-	if asks := fb.ContactQuestions(); len(asks) != 2 {
-		t.Fatalf("tras un fallo se vuelve a preguntar, got %v", asks)
+	if asks := fb.ContactQuestions(); len(asks) != 1 {
+		t.Fatalf("dentro de la ventana del fallo no se pregunta otra vez, got %v", asks)
 	}
-	if got := sink.messages[1].ContactIdentifier; got != "573001112233" {
+	if m, _ := sink.counts(); m != 2 || sink.messages[1].ContactIdentifier != "" {
+		t.Fatalf("el mensaje sigue sin contacto: %+v", sink.messages)
+	}
+
+	// Pasada la ventana, se vuelve a preguntar.
+	now = now.Add(nectarContactFailTTL + time.Second)
+	postNotice(h, signedNotice(nectarTestSecret, inboundBody("e-f3")))
+	if asks := fb.ContactQuestions(); len(asks) != 2 {
+		t.Fatalf("pasada la ventana se vuelve a preguntar, got %v", asks)
+	}
+	if got := sink.messages[2].ContactIdentifier; got != "573001112233" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// Néctar inalcanzable (fallo de transporte): durante la ventana no se pregunta por NINGUNA
+// conversación. Sin esto, el replay de arranque —síncrono, antes de abrir el puerto— gastaría el
+// timeout entero en cada fila de una conversación distinta.
+func TestNectarInbound_UnreachableShortCircuitsOtherConversations(t *testing.T) {
+	sink := &sinkRecorder{}
+	fb := &fakenectar.Bridge{ContactErr: fmt.Errorf("nectar: GET state: %w",
+		&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})}
+	h := newNectarContactHandler(newMemInbox(), sink, fb)
+	now := time.Now()
+	h.nectarContacts.now = func() time.Time { return now }
+
+	postNotice(h, signedNotice(nectarTestSecret, inboundBodyConv("e-u1", 1234)))
+	postNotice(h, signedNotice(nectarTestSecret, inboundBodyConv("e-u2", 99)))
+	if asks := fb.ContactQuestions(); len(asks) != 1 {
+		t.Fatalf("Néctar inalcanzable: la segunda conversación no pregunta, got %v", asks)
+	}
+	if m, _ := sink.counts(); m != 2 {
+		t.Fatalf("los mensajes siguen igual, got %d", m)
+	}
+
+	now = now.Add(nectarContactFailTTL + time.Second)
+	postNotice(h, signedNotice(nectarTestSecret, inboundBodyConv("e-u3", 99)))
+	if asks := fb.ContactQuestions(); len(asks) != 2 {
+		t.Fatalf("pasada la ventana se vuelve a preguntar, got %v", asks)
+	}
+}
+
+// blockingContactBridge retiene la PRIMERA pregunta por el contacto hasta que la prueba la suelta.
+type blockingContactBridge struct {
+	*fakenectar.Bridge
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingContactBridge) Contact(_ context.Context, _ int64) (bird.NectarContact, error) {
+	if b.calls.Add(1) == 1 {
+		close(b.started)
+		<-b.release
+	}
+	return bird.NectarContact{Identifier: "573001112233"}, nil
+}
+
+// Dos avisos seguidos de una conversación sin contacto en caché llegan al worker EN EL ORDEN EN
+// QUE LLEGARON, aunque el primero espere su GET …/state: un «hola» y la foto de la orden no se
+// pueden cruzar. Y el segundo aprovecha la respuesta del primero (una sola pregunta).
+func TestNectarInbound_ConcurrentNoticesKeepArrivalOrder(t *testing.T) {
+	sink := &sinkRecorder{}
+	bb := &blockingContactBridge{Bridge: &fakenectar.Bridge{}, started: make(chan struct{}), release: make(chan struct{})}
+	h := newNectarHandler(newMemInbox(), sink)
+	h.birdClient.SetNectar(bb)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); postNotice(h, signedNotice(nectarTestSecret, inboundBody("e-A"))) }()
+	<-bb.started // el primero está esperando a Néctar
+	go func() { defer wg.Done(); postNotice(h, signedNotice(nectarTestSecret, inboundBody("e-B"))) }()
+	// El segundo ya hace fila detrás del primero.
+	deadline := time.Now().Add(5 * time.Second)
+	for h.nectarOrder.waiting(1234) < 2 {
+		if time.Now().After(deadline) {
+			close(bb.release)
+			wg.Wait()
+			t.Fatalf("el segundo aviso no hizo fila detrás del primero; llegaron: %+v", sink.messages)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(bb.release)
+	wg.Wait()
+
+	if m, _ := sink.counts(); m != 2 || sink.messages[0].ID != "e-A" || sink.messages[1].ID != "e-B" {
+		t.Fatalf("orden de llegada: %+v", sink.messages)
+	}
+	if n := bb.calls.Load(); n != 1 {
+		t.Fatalf("una sola pregunta por el contacto, got %d", n)
+	}
+	for _, msg := range sink.messages {
+		if msg.ContactIdentifier != "573001112233" {
+			t.Fatalf("los dos llevan el contacto: %+v", msg)
+		}
+	}
+	if n := h.nectarOrder.waiting(1234); n != 0 {
+		t.Fatalf("la fila se limpia al terminar, quedan %d", n)
 	}
 }
 

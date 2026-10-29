@@ -93,6 +93,7 @@ type WebhookHandler struct {
 	nectarSeenIDs nectarSeen
 	// nectarContacts: conversación → contacto (D2), para preguntarlo una vez por conversación.
 	nectarContacts nectarContactCache
+	nectarOrder    nectarConvOrder
 	// nectarNotify sustituye a notifyManager en el camino de Néctar (pruebas); nil → notifyManager.
 	nectarNotify nectarNotifier
 }
