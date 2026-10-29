@@ -1132,9 +1132,60 @@ func TestSlotReturnOptions_OnePerOfferedSlot(t *testing.T) {
 	}
 }
 
-// Review Focus 3: una opción de horario que ya no está en la sesión re-pregunta; nunca agenda
-// otro horario.
+// Review Focus 3: una opción de horario que ya no está en la sesión no resuelve; el worker reanuda
+// sin dato (`__resume__` con la marca de Néctar) y el paso le vuelve a mostrar la lista ACTUAL al
+// paciente, sin gastar reintento; nunca agenda otro horario.
 func TestSlotReturnOptions_StaleSlotTokenRePrompts(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateShowSlots, showSlotsHandler(nil))
+	sess := resumeTurnSess(sm.StateShowSlots, true)
+	sess.Context["cups_name"] = "RESONANCIA"
+	slots := nSlots(2)
+	sess.Context["available_slots_json"] = slotsJSON(slots)
+
+	returnMenuMachine()
+	if _, ok := sm.ResolveReturnValue(sess, sm.StateShowSlots, "slot_3"); ok {
+		t.Fatal("slot_3 no pertenece a una sesión con 2 horarios")
+	}
+
+	res, err := m.Process(context.Background(), sess, resumeMsg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateShowSlots || sess.RetryCount != 0 {
+		t.Fatalf("debe re-preguntar en SHOW_SLOTS sin reintento: next=%s retry=%d", res.NextState, sess.RetryCount)
+	}
+	if _, set := res.UpdateCtx["selected_slot_id"]; set {
+		t.Fatal("no se elige ningún horario")
+	}
+	want := slotListText("RESONANCIA", slots)
+	if len(res.Messages) != 1 {
+		t.Fatalf("quería solo la lista, hay %d mensajes: %+v", len(res.Messages), res.Messages)
+	}
+	if txt, ok := res.Messages[0].(*sm.TextMessage); !ok || txt.Text != want {
+		t.Fatalf("quería la lista de horarios %q, obtuve %+v", want, res.Messages[0])
+	}
+}
+
+// En Bird el `__resume__` sigue recibiendo el aviso de siempre (sin la lista).
+func TestShowSlots_BirdResumeUnchanged(t *testing.T) {
+	m := sm.NewMachine()
+	m.Register(sm.StateShowSlots, showSlotsHandler(nil))
+	sess := resumeTurnSess(sm.StateShowSlots, false)
+	sess.Context["available_slots_json"] = slotsJSON(nSlots(2))
+
+	res, err := m.Process(context.Background(), sess, resumeMsg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if txt, ok := res.Messages[0].(*sm.TextMessage); !ok ||
+		txt.Text != "Por favor escribe solo el número de tu opción (ejemplo: 1, 2, 3...)" {
+		t.Fatalf("Bird no cambia: %+v", res.Messages)
+	}
+}
+
+// Un número fuera de la lista (escrito por el paciente) sigue con «Opción inválida…».
+func TestShowSlots_OutOfRangeNumberStillInvalid(t *testing.T) {
 	m := sm.NewMachine()
 	m.Register(sm.StateShowSlots, showSlotsHandler(nil))
 	sess := testSess(sm.StateShowSlots)
@@ -1144,25 +1195,9 @@ func TestSlotReturnOptions_StaleSlotTokenRePrompts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.NextState != sm.StateShowSlots {
-		t.Fatalf("un horario que ya no está debe re-preguntar, fue a %s", res.NextState)
-	}
-	if _, set := res.UpdateCtx["selected_slot_id"]; set {
-		t.Fatal("no se elige ningún horario")
-	}
-	var found bool
-	for _, msg := range res.Messages {
-		if txt, ok := msg.(*sm.TextMessage); ok && strings.HasPrefix(txt.Text, "Opción inválida") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("falta «Opción inválida…»: %+v", res.Messages)
-	}
-	// Y el token ya no resuelve contra la sesión actual.
-	returnMenuMachine()
-	if _, ok := sm.ResolveReturnValue(sess, sm.StateShowSlots, "slot_3"); ok {
-		t.Fatal("slot_3 no pertenece a una sesión con 2 horarios")
+	if txt, ok := res.Messages[0].(*sm.TextMessage); res.NextState != sm.StateShowSlots || !ok ||
+		!strings.HasPrefix(txt.Text, "Opción inválida") {
+		t.Fatalf("quería «Opción inválida…»: next=%s %+v", res.NextState, res.Messages)
 	}
 }
 

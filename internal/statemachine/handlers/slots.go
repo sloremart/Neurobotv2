@@ -842,24 +842,9 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 
 		slog.Debug("search_slots_saving_json", "slots_count", len(slots), "json_length", len(slotsJSON))
 
-		// Build numbered text list for SHOW_SLOTS
-		var msgText strings.Builder
-		msgText.WriteString(fmt.Sprintf("Horarios disponibles para *%s*:\n\n", cupsName))
-
-		for i, slot := range slots {
-			optionNum := i + 1
-			dateStr := utils.FormatFriendlyDateShortStr(slot.Date)
-			fmt.Fprintf(&msgText, "%d. %s a las %s%s\n", optionNum, dateStr, slot.TimeDisplay, slotDoctorInfo(slot))
-		}
-
-		if moreSlotsOffered(len(slots)) {
-			msgText.WriteString(fmt.Sprintf("\n%d. Ver más horarios\n", len(slots)+1))
-		}
-		msgText.WriteString("\n💬 Escribe el número de tu opción:")
-
 		result := sm.NewResult(sm.StateShowSlots).
 			WithContext("available_slots_json", string(slotsJSON)).
-			WithText(msgText.String()).
+			WithText(slotListText(cupsName, slots)).
 			WithEvent("slots_found", map[string]interface{}{"count": len(slots)})
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "slots_found",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"count": len(slots)}})
@@ -885,6 +870,24 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 
 		return result, nil
 	}
+}
+
+// slotListText es la lista numerada de horarios que el paciente ve en SHOW_SLOTS.
+func slotListText(cupsName string, slots []services.AvailableSlot) string {
+	var msgText strings.Builder
+	fmt.Fprintf(&msgText, "Horarios disponibles para *%s*:\n\n", cupsName)
+
+	for i, slot := range slots {
+		optionNum := i + 1
+		dateStr := utils.FormatFriendlyDateShortStr(slot.Date)
+		fmt.Fprintf(&msgText, "%d. %s a las %s%s\n", optionNum, dateStr, slot.TimeDisplay, slotDoctorInfo(slot))
+	}
+
+	if moreSlotsOffered(len(slots)) {
+		fmt.Fprintf(&msgText, "\n%d. Ver más horarios\n", len(slots)+1)
+	}
+	msgText.WriteString("\n💬 Escribe el número de tu opción:")
+	return msgText.String()
 }
 
 // moreSlotsOffered dice si la lista de horarios ofrece «Ver más horarios» como opción N+1.
@@ -980,6 +983,17 @@ func slotSearchRetryHandler() sm.StateHandler {
 func showSlotsHandler(addrMapper *services.AddressMapper) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
+
+		// Retorno sin dato del agente de Néctar (también el de un horario que ya no está en la
+		// sesión): el paciente no escribió nada, se le vuelve a mostrar la lista actual.
+		if sm.IsAgentResumeTurn(sess) && sm.IsReservedKeyword(input) {
+			var slots []services.AvailableSlot
+			if err := json.Unmarshal([]byte(sess.GetContext("available_slots_json")), &slots); err == nil && len(slots) > 0 {
+				return sm.NewResult(sess.CurrentState).
+					WithText(slotListText(sess.GetContext("cups_name"), slots)).
+					WithEvent("agent_resume_reprompt", map[string]interface{}{"state": sess.CurrentState}), nil
+			}
+		}
 
 		// Parse number from input
 		optionNum, err := strconv.Atoi(input)
