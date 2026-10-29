@@ -1081,7 +1081,11 @@ func (p *MessageWorkerPool) handleAgentReset(ctx context.Context, sess *session.
 	// Unassign agent from Bird Inbox (bot restarts, keep item open)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
-	p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Hemos retomado tu atención. Vamos a comenzar de nuevo.")
+	// En Néctar el saludo sale en este mismo turno: un acuse pegado a él es un mensaje cobrado que
+	// no le dice nada a nadie.
+	if !session.IsNectarSession(sess.PhoneNumber) {
+		_, _ = p.birdClient.SendText(sess.PhoneNumber, sess.ConversationID, "Hemos retomado tu atención. Vamos a comenzar de nuevo.")
+	}
 
 	// Trigger GREETING handler
 	virtualMsg := bird.InboundMessage{

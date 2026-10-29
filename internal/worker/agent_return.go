@@ -117,6 +117,12 @@ func (p *MessageWorkerPool) applyAgentReturn(ctx context.Context, sess *session.
 		written = statemachine.ReturnInputResult{}
 	}
 	switch {
+	case ok && opt.Reset:
+		// Reiniciar es el /bot: desde el saludo y sin contexto, sin importar el paso ni lo escrito.
+		slog.Info("agent return: el agente reinició la conversación desde el saludo",
+			"phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "step", step)
+		p.handleAgentReset(ctx, sess, cmd)
+		return cmd, true
 	case written.OK():
 		cmd.Data = written.Value
 		if written.Command != "" {

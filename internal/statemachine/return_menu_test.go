@@ -94,21 +94,22 @@ func TestBuildReturnMenu_UniversalOptionsLast(t *testing.T) {
 	for _, o := range menu.Menu {
 		got = append(got, o.Valor)
 	}
-	want := []string{"uno", "dos", ReturnResume, ReturnClose}
+	want := []string{"uno", "dos", ReturnResume, ReturnReset, ReturnClose}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("lo específico primero y las dos universales al final: got %v, want %v", got, want)
+		t.Fatalf("lo específico primero y las tres universales al final: got %v, want %v", got, want)
 	}
 	// Y tipo: reanudar para lo que vuelve al flujo (aunque sea a OTRO paso), cerrar para el cierre.
-	wantTipo := []string{"reanudar", "reanudar", "reanudar", "cerrar"}
+	wantTipo := []string{"reanudar", "reanudar", "reanudar", "reanudar_sin_dato", "cerrar"}
 	for i, o := range menu.Menu {
 		if o.Tipo != wantTipo[i] {
 			t.Errorf("%s: tipo = %q, quiero %q", o.Valor, o.Tipo, wantTipo[i])
 		}
 	}
 
-	// Un paso sin menú propio ofrece, igual, las dos universales: nunca se queda sin salida.
+	// Un paso sin menú propio ofrece, igual, las tres universales: nunca se queda sin salida.
 	opts := ReturnOptionsFor(sess, stepNoMenu)
-	if len(opts) != 2 || opts[0].Value != ReturnResume || opts[1].Value != ReturnClose || !opts[1].Close {
+	if len(opts) != 3 || opts[0].Value != ReturnResume || opts[1].Value != ReturnReset || !opts[1].Reset ||
+		opts[2].Value != ReturnClose || !opts[2].Close {
 		t.Fatalf("universales de un paso sin menú: %+v", opts)
 	}
 }
@@ -122,7 +123,7 @@ func TestBuildReturnMenu_DropsOptionsWithoutLabelOrValue(t *testing.T) {
 		ReturnOption{Label: "Buena", Value: "buena"})
 
 	menu := BuildReturnMenu(&session.Session{}, "RETURN_TEST_INCOMPLETE")
-	if len(menu.Menu) != 3 { // la buena + las dos universales
+	if len(menu.Menu) != 4 { // la buena + las tres universales
 		t.Fatalf("%+v", menu.Menu)
 	}
 	for _, o := range menu.Menu {
@@ -212,10 +213,10 @@ func TestReturnOptionsFor_SessionOptionalForStaticMenus(t *testing.T) {
 	})
 
 	opts := ReturnOptionsFor(nil, "RETURN_TEST_STATIC")
-	if len(opts) != 3 || opts[0].Value != "confirm" || opts[1].Value != ReturnResume || opts[2].Value != ReturnClose {
+	if len(opts) != 4 || opts[0].Value != "confirm" || opts[1].Value != ReturnResume || opts[3].Value != ReturnClose {
 		t.Fatalf("un menú estático no necesita sesión: %+v", opts)
 	}
-	if menu := BuildReturnMenu(nil, "RETURN_TEST_STATIC"); len(menu.Menu) != 3 {
+	if menu := BuildReturnMenu(nil, "RETURN_TEST_STATIC"); len(menu.Menu) != 4 {
 		t.Fatalf("BuildReturnMenu tampoco: %+v", menu.Menu)
 	}
 

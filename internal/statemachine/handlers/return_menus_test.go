@@ -91,7 +91,7 @@ func TestReturnMenus_NotifPendingIsStaticAndMatchesTheWorkerShortcut(t *testing.
 	returnMenuMachine()
 	var got []string
 	for _, o := range sm.ReturnOptionsFor(nil, sm.StateNotifPending) {
-		if o.Value == sm.ReturnResume || o.Value == sm.ReturnClose {
+		if sm.IsUniversalReturnValue(o.Value) {
 			continue
 		}
 		if o.Target != sm.StateNotifPending || o.Data != o.Value {

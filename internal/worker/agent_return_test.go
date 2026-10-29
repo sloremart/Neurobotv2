@@ -869,3 +869,55 @@ func TestHandleAgentResume_BirdCommandStaysText(t *testing.T) {
 		t.Fatalf("un comando de Bird llega como texto: %+v", *processed)
 	}
 }
+
+// «Reiniciar» (bot_reiniciar) es el equivalente de /bot: retoma desde el saludo y olvida todo el
+// contexto, sin mensaje virtual con dato ni __resume__ del paso.
+func TestApplyAgentReturn_ResetRestartsFromGreeting(t *testing.T) {
+	statemachine.RegisterStaticReturnMenu(testReturnStep,
+		statemachine.ReturnOption{Label: "Propia", Value: "propia", NoInput: true})
+	t.Cleanup(func() { statemachine.UnregisterReturnStepForTest(testReturnStep) })
+
+	pool, sm, _, sess, resumedTo, processed := returnSession(t, testReturnStep)
+	asNectar(sess)
+	cleared := false
+	sm.clearAllFn = func(_ context.Context, _ *session.Session) error {
+		cleared = true
+		return nil
+	}
+	pool.machine.(*mockMessageProcessor).returnInput = statemachine.ReturnInputResult{Written: true, Value: "x"}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber,
+		ReturnV1: &nectar.V1Return{Option: statemachine.ReturnReset, Values: json.RawMessage(`{"dato":"x"}`)},
+	})
+
+	if *resumedTo != statemachine.StateGreeting {
+		t.Fatalf("se retoma en el saludo, got %q", *resumedTo)
+	}
+	if !cleared {
+		t.Error("el reinicio borra todo el contexto")
+	}
+	if processed.Text == "x" || processed.Text == "__resume__" {
+		t.Errorf("el turno del saludo no lleva lo escrito ni __resume__: %q", processed.Text)
+	}
+}
+
+func TestHandleAgentReset_NectarNoInterstitialText(t *testing.T) {
+	pool, _, sender, sess, _, _ := returnSession(t, testReturnStep)
+	asNectar(sess)
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "reset", Phone: sess.PhoneNumber})
+	for _, txt := range sentTexts(sender) {
+		if strings.Contains(txt, "Hemos retomado") {
+			t.Fatalf("en Néctar el saludo sale en el mismo turno, sin acuse: %q", txt)
+		}
+	}
+}
+
+func TestHandleAgentReset_BirdUnchanged(t *testing.T) {
+	pool, _, sender, sess, _, _ := returnSession(t, testReturnStep)
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "reset", Phone: sess.PhoneNumber})
+	got := sentTexts(sender)
+	if len(got) == 0 || got[0] != "Hemos retomado tu atención. Vamos a comenzar de nuevo." {
+		t.Fatalf("Bird conserva el texto de hoy, got %v", got)
+	}
+}

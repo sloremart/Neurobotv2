@@ -132,8 +132,8 @@ func TestInputDescriptor_ZeroFieldsOnlyOptions(t *testing.T) {
 	if d.Fields != nil || d.MinFields != 0 || d.ResumesAt != "" {
 		t.Fatalf("un paso de botones solo lleva paso y opciones: %+v", d)
 	}
-	if len(d.Options) != 3 || d.Options[1].Value != ReturnResume || d.Options[2].Value != ReturnClose {
-		t.Fatalf("la propia y las dos universales: %+v", d.Options)
+	if len(d.Options) != 4 || d.Options[1].Value != ReturnResume || d.Options[2].Value != ReturnReset || d.Options[3].Value != ReturnClose {
+		t.Fatalf("la propia y las tres universales: %+v", d.Options)
 	}
 	raw, err := json.Marshal(d)
 	if err != nil {
@@ -147,12 +147,12 @@ func TestInputDescriptor_ZeroFieldsOnlyOptions(t *testing.T) {
 	// Aunque el paso sea de texto, sin entrada registrada no se pinta campo: la entrada es un
 	// registro explícito.
 	d = buildDescriptor(t, &HandlerConfig{InputType: InputText, TextValidate: func(string) bool { return true }, Handler: noopHandler}, nil)
-	if d.Fields != nil || len(d.Options) != 2 {
-		t.Fatalf("sin entrada registrada no hay campos y quedan las dos universales: %+v", d)
+	if d.Fields != nil || len(d.Options) != 3 {
+		t.Fatalf("sin entrada registrada no hay campos y quedan las tres universales: %+v", d)
 	}
 	// Ni un paso que no existe en la máquina.
 	m := NewMachine()
-	if d := m.InputDescriptor(&session.Session{}, "RETURN_TEST_UNKNOWN"); d.Fields != nil || len(d.Options) != 2 {
+	if d := m.InputDescriptor(&session.Session{}, "RETURN_TEST_UNKNOWN"); d.Fields != nil || len(d.Options) != 3 {
 		t.Fatalf("paso desconocido: %+v", d)
 	}
 }
@@ -166,7 +166,7 @@ func TestInputDescriptor_ExitDerivedFromCloseAndNoInput(t *testing.T) {
 		ReturnOption{Label: "cierra", Value: "b", Close: true, NoInput: true},
 		ReturnOption{Label: "normal", Value: "c"},
 	)
-	want := []string{"reanudar_sin_dato", "cerrar", "reanudar", "reanudar", "cerrar"} // + las dos universales
+	want := []string{"reanudar_sin_dato", "cerrar", "reanudar", "reanudar", "reanudar_sin_dato", "cerrar"} // + las tres universales
 	if len(d.Options) != len(want) {
 		t.Fatalf("opciones: %+v", d.Options)
 	}
@@ -199,7 +199,7 @@ func TestInputDescriptor_IncompleteOptionDropsOnlyThat(t *testing.T) {
 		ReturnOption{Label: "sin valor", Value: ""},
 		ReturnOption{Label: "buena", Value: "ok"},
 	)
-	if len(d.Options) != 3 || d.Options[0].Value != "ok" { // la buena + las dos universales
+	if len(d.Options) != 4 || d.Options[0].Value != "ok" { // la buena + las tres universales
 		t.Fatalf("sobrevive la completa: %+v", d.Options)
 	}
 }
@@ -451,7 +451,7 @@ func TestInputDescriptor_OwnResumeOptionInAFieldStepPutsResumeFirst(t *testing.T
 	for _, o := range d.Options {
 		got = append(got, o.Value)
 	}
-	if strings.Join(got, ",") != "bot_reanudar,sin_dato,mala,bot_cerrar" {
+	if strings.Join(got, ",") != "bot_reanudar,sin_dato,mala,bot_reiniciar,bot_cerrar" {
 		t.Fatalf("bot_reanudar va primero, el resto en su orden: %v", got)
 	}
 	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "mala") {
@@ -481,5 +481,26 @@ func TestInputDescriptor_ListWithoutSessionWarns(t *testing.T) {
 	m.InputDescriptor(nil, stepDescriptor)
 	if !strings.Contains(logs.String(), "level=WARN") {
 		t.Fatalf("una lista sin sesión ni opciones se avisa: %s", logs.String())
+	}
+}
+
+// «Reiniciar» no lleva ningún dato: en un paso con campo su salida es reanudar_sin_dato, o la
+// consola de Néctar la dejaría deshabilitada exigiendo el campo.
+func TestInputDescriptor_ResetExitIsResumeWithoutData(t *testing.T) {
+	d := buildDescriptor(t, nil, nil, ReturnOption{Label: "propia", Value: "a", NoInput: true})
+	var found bool
+	for _, o := range d.Options {
+		if o.Value == ReturnReset {
+			found = true
+			if o.Exit != "reanudar_sin_dato" {
+				t.Errorf("salida de %s = %q, quiero reanudar_sin_dato", ReturnReset, o.Exit)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("el descriptor no ofrece %s: %+v", ReturnReset, d.Options)
+	}
+	if !IsUniversalReturnValue(ReturnReset) {
+		t.Error("ReturnReset es una salida universal")
 	}
 }

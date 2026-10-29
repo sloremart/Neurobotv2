@@ -44,12 +44,16 @@ type ReturnOption struct {
 	// Clear son las claves de contexto que se borran al retomar por ESTA opción (p. ej. corregir
 	// la entidad exige olvidar el contrato ya elegido). nil = no se borra nada.
 	Clear []string
+	// Reset reinicia la conversación desde el saludo y olvida todo el contexto (el /bot de Bird).
+	// Quien la ejecuta es el worker, no el paso: no depende de dónde se escaló.
+	Reset bool
 }
 
-// Tokens de control, válidos desde CUALQUIER paso. Van en todos los menús porque son las dos
-// salidas que siempre existen: devolver tal cual, o dar el caso por terminado.
+// Tokens de control, válidos desde CUALQUIER paso. Van en todos los menús porque son las salidas
+// que siempre existen: devolver tal cual, reiniciar desde el saludo, o dar el caso por terminado.
 const (
 	ReturnResume = "bot_reanudar"
+	ReturnReset  = "bot_reiniciar"
 	ReturnClose  = "bot_cerrar"
 )
 
@@ -59,7 +63,7 @@ const defaultResumeLabel = "Devolver al bot en el mismo paso"
 // IsUniversalReturnValue dice si un token es de las salidas que ReturnOptionsFor añade a TODOS
 // los menús, es decir, que no declara ningún paso.
 func IsUniversalReturnValue(v string) bool {
-	return v == ReturnResume || v == ReturnClose
+	return v == ReturnResume || v == ReturnReset || v == ReturnClose
 }
 
 // ReturnValueQueueExpired es el token con que Néctar DEVUELVE al bot una conversación que pasó 8
@@ -203,6 +207,10 @@ func ReturnOptionsFor(sess *session.Session, step string) []ReturnOption {
 	if !hidePlain {
 		opts = append(opts, ReturnOption{Label: resumeLabel, Value: ReturnResume})
 	}
+	opts = append(opts, ReturnOption{
+		Label: "Reiniciar la conversación desde el saludo (se pierde lo avanzado)",
+		Value: ReturnReset, Reset: true, NoInput: true,
+	})
 	return append(opts, ReturnOption{Label: "Caso cerrado, no reanudar", Value: ReturnClose, Close: true})
 }
 
