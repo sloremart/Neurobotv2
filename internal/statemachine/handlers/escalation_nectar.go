@@ -160,6 +160,28 @@ func escalationExit(r *sm.StateResult) *sm.StateResult {
 		sm.CtxEscalationLastInput, sm.CtxEscalationWaitingListID, sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames)
 }
 
+// escalationDiverted es escalationExit para las salidas en que la escalación NO llegó a un agente
+// (anti-bucle, tope, gate de horario o de asesores, escalado apagado, fallo del canal): el paciente
+// vuelve a un menú. Si se escalaba «Reprogramar» sin horarios (NOTIF_RESCHEDULE_FALLBACK), el
+// trámite de reprogramación se suelta: si después agenda otra cosa, la cita original no se toca.
+func escalationDiverted(preState string, r *sm.StateResult) *sm.StateResult {
+	r = escalationExit(r)
+	if r != nil && preState == sm.StateNotifRescheduleFallback {
+		r.WithClearCtx(rescheduleTramiteKeys...)
+	}
+	return r
+}
+
+// rescheduleTramiteKeys son las claves del trámite de reprogramación que la búsqueda y el
+// agendamiento leen: la cita que se reprograma (createAppointmentHandler la CANCELA al agendar si
+// reschedule_skip_cancel no es "1"), los datos de su canal y el médico de la cita original, que la
+// búsqueda de una orden nueva tomaría como preferido (CHECK_PRIOR_CONSULT no lo borra si no halla
+// otro).
+var rescheduleTramiteKeys = []string{
+	"reschedule_appt_id", "reschedule_skip_cancel", "reschedule_conversation_id", "reschedule_bird_msg_id",
+	"preferred_doctor_doc",
+}
+
 // reasonNotifiesPatient dice si el motivo interno obliga a avisarle al paciente de Néctar aunque
 // no lo haya pedido: son las escalaciones cuyo caller no trae texto para él (la entidad «particular
 // liga» y el kill switch), y sin aviso el paciente se quedaría en silencio esperando.

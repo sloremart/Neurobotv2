@@ -125,7 +125,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				r.Messages = append(r.Messages, &sm.TextMessage{Text: resumeSuppressedNectarText})
 			}
 			r.Messages = append(r.Messages, buildMainMenuList())
-			return escalationExit(r), nil
+			return escalationDiverted(preState, r), nil
 		}
 		//
 		// (2) Tope duro por sesión: a la (escalationSessionCap+1)-ésima escalación de una MISMA
@@ -148,7 +148,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				})
 			slog.Warn("escalation suppressed (session cap reached)",
 				"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "count", n, "pre_state", preState)
-			return escalationExit(sm.NewResult(sm.StateFallbackMenu).
+			return escalationDiverted(preState, sm.NewResult(sm.StateFallbackMenu).
 				WithButtons(
 					"Ya intentamos conectarte con un asesor varias veces en esta conversación. "+
 						"Un miembro de nuestro equipo revisará tu caso. ¿Deseas volver al inicio o terminar el chat?",
@@ -217,7 +217,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				WithText("En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.* Por favor escríbenos en ese horario y con gusto te ayudamos. 😊").
 				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState, "gate": gate})
 			r.Messages = append(r.Messages, buildMainMenuList())
-			return escalationExit(r), nil
+			return escalationDiverted(preState, r), nil
 		}
 
 		slog.Debug(
@@ -402,7 +402,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 				observability.EmitOpts{Phone: sess.PhoneNumber, Reason: preState})
 			slog.Warn("escalation: escalado apagado para la entidad en Néctar",
 				"session_id", sess.ID, "phone", utils.MaskPhone(msg.Phone), "pre_state", preState)
-			return escalationExit(sm.NewResult(sm.StateFallbackMenu).
+			return escalationDiverted(preState, sm.NewResult(sm.StateFallbackMenu).
 				WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
 				WithButtons(escalationDisabledText,
 					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
@@ -450,7 +450,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			// B — No abandonar al paciente: el aviso "te voy a conectar…" viaja en los mensajes del caller, así
 			// que en vez de un menú frío de reinicio se le confirma que un asesor lo contactará (el
 			// pickup manual queda disparado por la alerta ERROR de arriba) y se le deja una salida.
-			return escalationExit(sm.NewResult(sm.StateFallbackMenu).
+			return escalationDiverted(preState, sm.NewResult(sm.StateFallbackMenu).
 				WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts).
 				WithButtons(
 					"Estamos teniendo un inconveniente para conectarte con un asesor en este momento. "+
