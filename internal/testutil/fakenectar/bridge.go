@@ -24,6 +24,10 @@ type Bridge struct {
 	Window    bool
 	WindowErr error
 
+	// ContactValue / ContactErr son lo que contesta Contact.
+	ContactValue bird.NectarContact
+	ContactErr   error
+
 	// CloseErr es lo que contesta Close; NotMineErr es el error que IsNotMine reconoce como
 	// «ya no es mía» (nil = no reconoce ninguno).
 	CloseErr   error
@@ -34,6 +38,7 @@ type Bridge struct {
 	TextIDs     []int64  // a qué conversaciones se mandó un texto
 	WindowAsks  []int64  // por qué conversaciones se preguntó la ventana
 	CloseIDs    []int64  // qué conversaciones se cerraron
+	ContactAsks []int64  // por qué conversaciones se preguntó el contacto
 }
 
 var _ bird.NectarBridge = (*Bridge)(nil)
@@ -140,7 +145,17 @@ func (f *Bridge) IsNotMine(err error) bool {
 	return f.NotMineErr != nil && errors.Is(err, f.NotMineErr)
 }
 
-// Contact contesta un contacto vacío.
-func (f *Bridge) Contact(context.Context, int64) (bird.NectarContact, error) {
-	return bird.NectarContact{}, nil
+// Contact anota la conversación y contesta ContactValue / ContactErr.
+func (f *Bridge) Contact(_ context.Context, id int64) (bird.NectarContact, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ContactAsks = append(f.ContactAsks, id)
+	return f.ContactValue, f.ContactErr
+}
+
+// ContactQuestions devuelve una copia de las conversaciones por las que se preguntó el contacto.
+func (f *Bridge) ContactQuestions() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.ContactAsks...)
 }

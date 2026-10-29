@@ -19,12 +19,15 @@ func NewEscalationRepo(db *sql.DB) *EscalationRepo {
 	return &EscalationRepo{db: db}
 }
 
-// Create inserta una nueva escalación (al momento de escalar).
+// Create inserta una nueva escalación (al momento de escalar). El contacto de Néctar se copia de
+// la sesión (sessions.contact_identifier, migración 044); en Bird queda NULL.
 func (r *EscalationRepo) Create(ctx context.Context, sessionID, phone, fromState, teamID, agentID, agentName string) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO escalations (session_id, phone_number, from_state, team_id, agent_id, agent_name, escalated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-		sessionID, phone, nullString(fromState), nullString(teamID), nullString(agentID), nullString(agentName))
+		`INSERT INTO escalations (session_id, phone_number, from_state, team_id, agent_id, agent_name, escalated_at,
+		 contact_identifier)
+		 VALUES (?, ?, ?, ?, ?, ?, NOW(), (SELECT s.contact_identifier FROM sessions s WHERE s.id = ?))`,
+		sessionID, phone, nullString(fromState), nullString(teamID), nullString(agentID), nullString(agentName),
+		sessionID)
 	if err != nil {
 		return fmt.Errorf("create escalation: %w", err)
 	}

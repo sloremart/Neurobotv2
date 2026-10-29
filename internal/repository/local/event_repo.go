@@ -75,6 +75,14 @@ func (r *EventRepo) WasAppointmentNotified(ctx context.Context, appointmentID st
 	return n > 0, nil
 }
 
+// chatEventInsertSQL inserta un chat_event copiando el contacto de Néctar de su sesión
+// (sessions.contact_identifier, migración 044): sin sesión o en Bird queda NULL. Se copia en el
+// INSERT, y no desde cada llamador, porque los eventos salen de decenas de sitios que solo
+// conocen el id de la sesión. El último parámetro es otra vez el session_id.
+const chatEventInsertSQL = `INSERT INTO chat_events
+	(session_id, phone_number, event_type, event_data, state_from, state_to, created_at, contact_identifier)
+	VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT s.contact_identifier FROM sessions s WHERE s.id = ?))`
+
 // Insert persists a single chat event.
 func (r *EventRepo) Insert(ctx context.Context, event *ChatEvent) error {
 	dataJSON, err := json.Marshal(event.EventData)
@@ -83,10 +91,9 @@ func (r *EventRepo) Insert(ctx context.Context, event *ChatEvent) error {
 	}
 
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO chat_events (session_id, phone_number, event_type, event_data, state_from, state_to, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		chatEventInsertSQL,
 		event.SessionID, event.PhoneNumber, event.EventType, string(dataJSON),
-		nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt)
+		nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt, event.SessionID)
 	if err != nil {
 		return fmt.Errorf("insert chat event: %w", err)
 	}
@@ -102,8 +109,7 @@ func (r *EventRepo) InsertBatch(ctx context.Context, events []ChatEvent) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO chat_events (session_id, phone_number, event_type, event_data, state_from, state_to, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`)
+		chatEventInsertSQL)
 	if err != nil {
 		return fmt.Errorf("prepare stmt: %w", err)
 	}
@@ -114,7 +120,7 @@ func (r *EventRepo) InsertBatch(ctx context.Context, events []ChatEvent) error {
 		if _, err := stmt.ExecContext(
 			ctx,
 			event.SessionID, event.PhoneNumber, event.EventType, string(dataJSON),
-			nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt,
+			nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt, event.SessionID,
 		); err != nil {
 			return fmt.Errorf("insert event %s: %w", event.EventType, err)
 		}
@@ -125,30 +131,45 @@ func (r *EventRepo) InsertBatch(ctx context.Context, events []ChatEvent) error {
 
 // FindByPhone returns chat events filtered by phone number and optional date range / event type.
 // Results are ordered chronologically (oldest first), limited to maxRows.
+//
+// Casa también los eventos de las sesiones de Néctar cuyo contacto es ese teléfono (con o sin «+»).
+// Va por la sesión y en UNION, no con un OR sobre chat_events.contact_identifier: esa columna no
+// tiene índice y el OR recorrería la tabla entera; así cada rama usa su índice (idx_phone en
+// chat_events; idx_sessions_contact e idx_session_created por la sesión). Es el mismo dato: el
+// INSERT copia el contacto de la sesión.
 func (r *EventRepo) FindByPhone(ctx context.Context, phone string, from, to time.Time, eventType string, maxRows int) ([]ChatEvent, error) {
 	if maxRows <= 0 || maxRows > 500 {
 		maxRows = 200
 	}
 
-	where := "phone_number = ?"
-	args := []interface{}{phone}
-
+	filters := ""
+	var filterArgs []interface{}
 	if !from.IsZero() {
-		where += " AND created_at >= ?"
-		args = append(args, from)
+		filters += " AND created_at >= ?"
+		filterArgs = append(filterArgs, from)
 	}
 	if !to.IsZero() {
-		where += " AND created_at <= ?"
-		args = append(args, to)
+		filters += " AND created_at <= ?"
+		filterArgs = append(filterArgs, to)
 	}
 	if eventType != "" {
-		where += " AND event_type = ?"
-		args = append(args, eventType)
+		filters += " AND event_type = ?"
+		filterArgs = append(filterArgs, eventType)
 	}
 
-	query := fmt.Sprintf(`SELECT id, session_id, phone_number, event_type, event_data,
-		COALESCE(state_from,''), COALESCE(state_to,''), created_at
-		FROM chat_events WHERE %s ORDER BY created_at ASC LIMIT ?`, where)
+	const cols = `id, session_id, phone_number, event_type, event_data,
+		COALESCE(state_from,'') AS state_from, COALESCE(state_to,'') AS state_to, created_at`
+	// La segunda rama excluye lo que ya trajo la primera (UNION ALL no deduplica).
+	query := fmt.Sprintf(`SELECT %[1]s FROM chat_events WHERE phone_number = ?%[2]s
+		UNION ALL
+		SELECT %[1]s FROM chat_events
+		WHERE session_id IN (SELECT s.id FROM sessions s WHERE s.contact_identifier IN (?, ?))
+		  AND phone_number <> ?%[2]s
+		ORDER BY created_at ASC LIMIT ?`, cols, filters)
+	args := append([]interface{}{phone}, filterArgs...)
+	args = append(args, contactForms(phone)...)
+	args = append(args, phone)
+	args = append(args, filterArgs...)
 	args = append(args, maxRows)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)

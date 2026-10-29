@@ -1,5 +1,7 @@
 package statemachine
 
+import "github.com/neuro-bot/neuro-bot/internal/session"
+
 // === Saludo e Identificación ===
 const (
 	StateCheckBusinessHours = "CHECK_BUSINESS_HOURS"
@@ -387,4 +389,10 @@ const (
 	// decir que no tenía la orden. Lo escribe has_order_no, lo lee el resumen del agente (grupo
 	// `orden`) y escalationExit lo borra.
 	CtxEscalationWaitingListID = "escalation_waiting_list_id"
+
+	// CtxContactIdentifier es el contacto de la conversación de Néctar tal como lo da Néctar (E.164
+	// sin «+», o el BSUID). Lo escribe el worker al llegar el mensaje (SessionManager.AttachContact,
+	// junto con sessions.contact_identifier) y lo lee session.ContactPhoneOf. Es el mismo literal de
+	// session.CtxContactIdentifier: aquí se reexporta para que el flujo no lo escriba a mano.
+	CtxContactIdentifier = session.CtxContactIdentifier
 )

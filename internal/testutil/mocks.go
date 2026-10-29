@@ -605,6 +605,11 @@ func (m *MockSessionRepo) CompleteActiveByPhone(ctx context.Context, phone strin
 	return nil
 }
 
+// SetContactIdentifier is a no-op mock.
+func (m *MockSessionRepo) SetContactIdentifier(_ context.Context, _, _ string) error {
+	return nil
+}
+
 // === WaitingList Mock ===
 
 // MockWaitingListCreator implements handlers.WaitingListCreator.

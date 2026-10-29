@@ -267,6 +267,10 @@ var catalog = map[string]stepSpec{
 	"apertura/solo_traza":     {LvMilestone, "info", ""},
 	"apertura/aviso_invalido": {LvMilestone, "info", ""},
 	"apertura/replay_perdida": {LvMilestone, "info", ""},
+	// nectar/contacto_no_disponible: no se pudo leer el contacto de la conversación (GET …/state)
+	// al llegar un mensaje. El mensaje sigue igual sin él (la sesión no aprende el teléfono en ese
+	// turno; el siguiente vuelve a preguntar), así que no es un paciente colgado: info, no error.
+	"nectar/contacto_no_disponible": {LvMilestone, "info", ""},
 
 	// Reconciliación de invariantes (§4) — anomalía de "mal comportamiento silencioso".
 	"invariante/anomaly": {LvError, "error", ""},

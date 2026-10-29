@@ -91,6 +91,8 @@ type WebhookHandler struct {
 	// memoria local de event_id vistos.
 	nectarSink    nectarDispatcher
 	nectarSeenIDs nectarSeen
+	// nectarContacts: conversación → contacto (D2), para preguntarlo una vez por conversación.
+	nectarContacts nectarContactCache
 	// nectarNotify sustituye a notifyManager en el camino de Néctar (pruebas); nil → notifyManager.
 	nectarNotify nectarNotifier
 }

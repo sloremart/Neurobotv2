@@ -225,6 +225,17 @@ func (c *Client) NectarWindowOpen(ctx context.Context, phone string) (open, ok b
 	return open, true
 }
 
+// NectarContact pregunta a Néctar a quién le habla el bot en la conversación (GET …/state, bloque
+// `contact`). ok=false: la clave no es de Néctar (o el puente está apagado) y no se pregunta nada.
+func (c *Client) NectarContact(ctx context.Context, phone string) (contact NectarContact, ok bool, err error) {
+	id, ok := c.nectarConversation(phone, "")
+	if !ok {
+		return NectarContact{}, false, nil
+	}
+	contact, err = c.nectar.Contact(ctx, id)
+	return contact, true, err
+}
+
 // EscalateToAgentWithSummary escala y entrega el resumen del caso al agente. En Bird son
 // dos pasos (EscalateToAgent + nota interna, en ese orden, como siempre); en Néctar es UNO:
 // el resumen viaja en el cuerpo del escalate porque después de escalar el bot ya no alcanza

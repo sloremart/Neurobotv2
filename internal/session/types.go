@@ -3,6 +3,8 @@ package session
 import (
 	"strings"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 const (
@@ -26,14 +28,17 @@ type Session struct {
 	PatientEntity  string
 	RetryCount     int
 	ConversationID string
-	EscalatedAt    *time.Time // When escalated to agent
-	EscalatedTeam  string     // Bird team ID assigned
-	AgentID        string     // Bird agent asignado al escalar (SLA por agente)
-	AgentName      string     // Nombre del agente asignado (displayName de Bird)
-	ResumedAt      *time.Time // When agent returned to bot
-	LastActivity   time.Time
-	ExpiresAt      time.Time
-	CreatedAt      time.Time
+	// ContactIdentifier es el contacto de la conversación de Néctar tal como lo da Néctar (E.164
+	// sin «+», o el BSUID si el número es oculto). Vacío en Bird. Ver ContactPhoneOf.
+	ContactIdentifier string
+	EscalatedAt       *time.Time // When escalated to agent
+	EscalatedTeam     string     // Bird team ID assigned
+	AgentID           string     // Bird agent asignado al escalar (SLA por agente)
+	AgentName         string     // Nombre del agente asignado (displayName de Bird)
+	ResumedAt         *time.Time // When agent returned to bot
+	LastActivity      time.Time
+	ExpiresAt         time.Time
+	CreatedAt         time.Time
 
 	// Context se carga lazy desde session_context
 	Context map[string]string
@@ -104,6 +109,30 @@ const EscalationQueuedForNextDayKey = "escalacion_proximo_dia"
 // (cerrarle el chat a quien espera a una persona es peor que dejarlo esperando).
 func escalationExempt(s EscalatedSession, now time.Time, nextOpen func(time.Time) time.Time) bool {
 	return s.QueuedForNextDay && (nextOpen == nil || s.EscalatedAt.IsZero() || now.Before(nextOpen(s.EscalatedAt)))
+}
+
+// CtxContactIdentifier es la clave de contexto donde viaja ContactIdentifier (statemachine la
+// reexporta como CtxContactIdentifier). Se repite aquí porque este paquete no importa statemachine.
+const CtxContactIdentifier = "contact_identifier"
+
+// ContactPhoneOf devuelve el teléfono del paciente de una sesión de Néctar en la forma de
+// utils.ParseColombianPhone («+57…»), o "" si el contacto es un BSUID, está oculto o no se conoce.
+//
+// Solo un identificador de puros dígitos es un teléfono: un BSUID puede llevar dígitos dentro
+// («CO.3001112233») y ParseColombianPhone, que limpia todo lo que no es dígito, lo tomaría por uno.
+func ContactPhoneOf(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	id := s.ContactIdentifier
+	if id == "" {
+		id = s.GetContext(CtxContactIdentifier)
+	}
+	digits := strings.TrimPrefix(id, "+")
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return ""
+	}
+	return utils.ParseColombianPhone(digits)
 }
 
 // IsNectarSession dice si la sesión viene de Néctar: su clave ocupa el sitio del teléfono y

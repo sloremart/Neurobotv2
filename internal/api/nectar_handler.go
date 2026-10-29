@@ -81,6 +81,105 @@ func (s *nectarSeen) claim(id string, now time.Time) bool {
 	return true
 }
 
+// nectarContactTTL es cuánto se recuerda el contacto de una conversación: la ventana de servicio.
+// Pasado ese tiempo se vuelve a preguntar (el contacto de una conversación no cambia, pero la
+// caché no debe crecer sin fin).
+const nectarContactTTL = 24 * time.Hour
+
+// nectarContactTimeout acota la pregunta por el contacto: corre antes de encolar el mensaje, y
+// sin contacto el mensaje sigue igual, así que no vale la pena esperar más.
+const nectarContactTimeout = 5 * time.Second
+
+// nectarContactCache recuerda a quién le habla el bot en cada conversación de Néctar
+// (conversación → contacto), para preguntarlo UNA vez y no en cada mensaje. Solo en memoria: no
+// va al WAL, y el replay tras una caída lo vuelve a pedir. Un fallo no se guarda: el siguiente
+// mensaje vuelve a preguntar.
+type nectarContactCache struct {
+	entries   sync.Map // int64 → nectarContactEntry
+	mu        sync.Mutex
+	lastSweep time.Time
+}
+
+type nectarContactEntry struct {
+	contact bird.NectarContact
+	at      time.Time
+}
+
+func (c *nectarContactCache) get(conversationID int64, now time.Time) (bird.NectarContact, bool) {
+	v, ok := c.entries.Load(conversationID)
+	if !ok {
+		return bird.NectarContact{}, false
+	}
+	e := v.(nectarContactEntry)
+	if now.Sub(e.at) > nectarContactTTL {
+		c.entries.Delete(conversationID)
+		return bird.NectarContact{}, false
+	}
+	return e.contact, true
+}
+
+func (c *nectarContactCache) put(conversationID int64, contact bird.NectarContact, now time.Time) {
+	c.entries.Store(conversationID, nectarContactEntry{contact: contact, at: now})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if now.Sub(c.lastSweep) <= time.Hour {
+		return
+	}
+	c.lastSweep = now
+	c.entries.Range(func(k, v any) bool {
+		if now.Sub(v.(nectarContactEntry).at) > nectarContactTTL {
+			c.entries.Delete(k)
+		}
+		return true
+	})
+}
+
+// nectarContact devuelve el contacto de la conversación: de la caché, o preguntándole a Néctar
+// (GET …/state). Un fallo deja el contacto vacío —el mensaje sigue igual— y queda en la traza.
+func (h *WebhookHandler) nectarContact(ctx context.Context, conversationID int64) bird.NectarContact {
+	now := time.Now()
+	if c, ok := h.nectarContacts.get(conversationID, now); ok {
+		return c
+	}
+	key := nectar.SessionKey(conversationID)
+	ctx, cancel := context.WithTimeout(ctx, nectarContactTimeout)
+	defer cancel()
+	c, ok, err := h.birdClient.NectarContact(ctx, key)
+	if !ok {
+		return bird.NectarContact{} // puente apagado: no hay a quién preguntar
+	}
+	if err != nil {
+		slog.Warn("nectar: contacto no disponible; el mensaje sigue sin él",
+			"conversation_id", conversationID, "error", err)
+		observability.Emit(observability.TraceSession(key), "nectar", "contacto_no_disponible", observability.EmitOpts{})
+		return bird.NectarContact{}
+	}
+	h.nectarContacts.put(conversationID, c, now)
+	return c
+}
+
+// nectarContactWhitelisted aplica TESTING_WHITELIST_PHONES al contacto de Néctar. La lista se
+// escribe como se quiera («+57…» o «57…»): el contacto (E.164 sin «+») se compara tal cual, con «+»
+// y en la forma de utils.ParseColombianPhone. Un contacto sin número (oculto, solo BSUID, o que no
+// se pudo leer) PASA: lo que aísla al bot de pruebas es su propio workspace de Néctar (spec §7.2.6).
+func (h *WebhookHandler) nectarContactWhitelisted(c bird.NectarContact) bool {
+	if c.Identifier == "" {
+		return true
+	}
+	return h.cfg.IsPhoneWhitelisted(c.Identifier) ||
+		h.cfg.IsPhoneWhitelisted("+"+c.Identifier) ||
+		h.cfg.IsPhoneWhitelisted(utils.ParseColombianPhone(c.Identifier))
+}
+
+// nectarContactIdentifier es lo que viaja en InboundMessage.ContactIdentifier: el número si
+// Néctar lo publica, si no el BSUID.
+func nectarContactIdentifier(c bird.NectarContact) string {
+	if c.Identifier != "" {
+		return c.Identifier
+	}
+	return c.BSUID
+}
+
 // SetNectarSink sustituye el destino de los avisos (por defecto, el pool de workers). Existe
 // para que las pruebas cuenten lo que llegó a la cola sin arrancar workers.
 func (h *WebhookHandler) SetNectarSink(sink nectarDispatcher) {
@@ -191,8 +290,13 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusOK)
-	// Sin whitelist de teléfonos aquí: el aviso no trae el número (ámbito mínimo de Néctar) y
-	// quien filtra qué pacientes llegan al bot de pruebas es la propia Néctar de pruebas.
+	// El acuse sale YA: el despacho de un mensaje puede preguntar el contacto a Néctar (GET …/state)
+	// y Néctar no tiene por qué esperar esa vuelta para dar el aviso por entregado.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	// La whitelist de teléfonos no va aquí sino en dispatchNectar: el aviso no trae el número
+	// (ámbito mínimo de Néctar), hay que preguntarlo, y así el replay del WAL la aplica también.
 	if n.Kind == nectar.KindInboundMessage && h.birdClient != nil {
 		h.birdClient.RecordInbound(key) // actividad real del paciente: resetea su cuota de salida
 	}
@@ -275,6 +379,14 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 		// su `id` (§5.3): sin ella, ese mensaje llegaba al paso de la orden como una imagen
 		// sin imagen.
 		msg := n.ToInboundMessage(h.cfg.NectarBaseURL)
+		// El contacto (D2) y la whitelist van ANTES de enrutar: lo descartado no llega ni al
+		// NotificationManager ni al worker, como en Bird (webhook_handler.go, HandleWhatsApp).
+		contact := h.nectarContact(ctx, n.ConversationID)
+		if !h.nectarContactWhitelisted(contact) {
+			slog.Debug("phone not whitelisted, ignoring", "phone", utils.MaskPhone(contact.Identifier))
+			break // la fila del WAL se cierra abajo: el replay no debe volver a despacharlo
+		}
+		msg.ContactIdentifier = nectarContactIdentifier(contact)
 		if h.routeNectarInbound(msg) {
 			// Lo consumió el NotificationManager: el worker no va a cerrar la fila, se cierra
 			// aquí (como el replay de Bird) o el replay de arranque la volvería a despachar.

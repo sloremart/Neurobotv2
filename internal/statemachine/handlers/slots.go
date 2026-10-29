@@ -1174,6 +1174,24 @@ func noSlotsHandler(wlRepo WaitingListCreator) sm.StateHandler {
 	}
 }
 
+// waitingListPhone es el teléfono que guarda una entrada nueva de lista de espera. En Bird, el de la
+// sesión, como siempre. En Néctar la sesión se llama "nectar:<id>", que no sirve para avisar al
+// paciente semanas después: se guarda el teléfono del contacto de la conversación (D2); sin él, el
+// teléfono de SIESA ya cargado en la sesión; sin ninguno, la clave como hasta ahora, y el envío
+// resuelve el teléfono de SIESA al avisar. Es solo el DATO guardado: el flujo no cambia.
+func waitingListPhone(sess *session.Session) string {
+	if !session.IsNectarSession(sess.PhoneNumber) {
+		return sess.PhoneNumber
+	}
+	if p := session.ContactPhoneOf(sess); p != "" {
+		return p
+	}
+	if p := utils.ParseColombianPhone(sess.GetContext("patient_phone")); p != "" {
+		return p
+	}
+	return sess.PhoneNumber
+}
+
 // autoAddToWaitingList adds the patient to the waiting list without asking (cancellation flow).
 func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo WaitingListCreator, cupsName string) (*sm.StateResult, error) {
 	patientID := sess.GetContext("patient_id")
@@ -1216,7 +1234,7 @@ func autoAddToWaitingList(ctx context.Context, sess *session.Session, wlRepo Wai
 
 	entry := &domain.WaitingListEntry{
 		ID:             uuid.New().String(),
-		PhoneNumber:    sess.PhoneNumber,
+		PhoneNumber:    waitingListPhone(sess),
 		PatientID:      patientID,
 		PatientDoc:     sess.GetContext("patient_doc"),
 		PatientName:    sess.GetContext("patient_name"),
@@ -1342,7 +1360,7 @@ func offerWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
 
 			entry := &domain.WaitingListEntry{
 				ID:             uuid.New().String(),
-				PhoneNumber:    sess.PhoneNumber,
+				PhoneNumber:    waitingListPhone(sess),
 				PatientID:      patientID,
 				PatientDoc:     sess.GetContext("patient_doc"),
 				PatientName:    sess.GetContext("patient_name"),

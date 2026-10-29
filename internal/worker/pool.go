@@ -58,6 +58,8 @@ type StalePendingSource interface {
 type SessionManagement interface {
 	PhoneMutex() *session.PhoneMutex
 	FindOrCreate(ctx context.Context, phone string) (*session.Session, bool, error)
+	// AttachContact guarda el contacto de la conversación de Néctar (columna + contexto).
+	AttachContact(ctx context.Context, sess *session.Session, contact string) error
 	// FindForAgentCommand devuelve la sesión activa/escalada del teléfono AUNQUE esté vencida
 	// (los comandos de agente nunca crean sesión). nil sin error = no hay sesión aplicable.
 	FindForAgentCommand(ctx context.Context, phone string) (*session.Session, error)
@@ -538,6 +540,15 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		p.birdClient.SendText(msg.Phone, "",
 			"Lo sentimos, estamos experimentando dificultades técnicas. Por favor intenta nuevamente en unos minutos.")
 		return
+	}
+
+	// 3a. Contacto de la conversación de Néctar (D2): se guarda ANTES del primer evento de la sesión,
+	// porque chat_events y escalations lo copian de la sesión al insertar. Solo Néctar lo trae. Un
+	// fallo no detiene el mensaje: el contacto es un dato de apoyo, no parte del flujo.
+	if msg.ContactIdentifier != "" {
+		if err := p.sessionManager.AttachContact(parentCtx, sess, msg.ContactIdentifier); err != nil {
+			slog.Warn("attach nectar contact failed", "session_id", sess.ID, "error", err)
+		}
 	}
 
 	if isNew {

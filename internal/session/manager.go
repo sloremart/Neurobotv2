@@ -45,6 +45,7 @@ type SessionRepo interface {
 	IncrementAgentReminders(ctx context.Context, sessionID string) error
 	MarkAbandoned(ctx context.Context, sessionID string) error
 	CompleteActiveByPhone(ctx context.Context, phone string) error
+	SetContactIdentifier(ctx context.Context, sessionID, contact string) error
 }
 
 // InactivityBirdClient defines the Bird client methods needed by the inactivity checker.
@@ -189,6 +190,27 @@ func (m *SessionManager) FindOrCreate(ctx context.Context, phone string) (*Sessi
 	}
 
 	return newSession, true, nil
+}
+
+// AttachContact guarda en la sesión el contacto de su conversación de Néctar (D2): la columna
+// sessions.contact_identifier —de donde chat_events y escalations lo copian al insertar— y la
+// clave de contexto CtxContactIdentifier. Vacío no borra nada (un fallo al leerlo no es «sin
+// contacto»); el mismo valor no se reescribe. Si el contexto se vació (ClearAllContext) pero la
+// columna sigue, solo se repone el contexto.
+func (m *SessionManager) AttachContact(ctx context.Context, s *Session, contact string) error {
+	if contact == "" {
+		return nil
+	}
+	if s.ContactIdentifier != contact {
+		if err := m.repo.SetContactIdentifier(ctx, s.ID, contact); err != nil {
+			return err
+		}
+		s.ContactIdentifier = contact
+	}
+	if s.GetContext(CtxContactIdentifier) != contact {
+		return m.SetContext(ctx, s, CtxContactIdentifier, contact)
+	}
+	return nil
 }
 
 // RenewTimeout renueva el expires_at con cada mensaje (TTL de liveness de la sesión).

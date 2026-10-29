@@ -252,7 +252,7 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRServi
 					}
 					entry := &domain.WaitingListEntry{
 						ID:             uuid.New().String(),
-						PhoneNumber:    sess.PhoneNumber,
+						PhoneNumber:    waitingListPhone(sess),
 						PatientID:      sess.GetContext("patient_id"),
 						PatientDoc:     sess.GetContext("patient_doc"),
 						PatientName:    sess.GetContext("patient_name"),

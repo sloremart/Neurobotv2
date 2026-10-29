@@ -180,4 +180,8 @@ type InboundMessage struct {
 	ReceivedAt      time.Time
 	IsPostback      bool
 	PostbackPayload string
+	// ContactIdentifier es a quién le habla el bot en una conversación de Néctar (GET …/state,
+	// bloque `contact`): el E.164 sin «+» o, si el número es oculto, el BSUID. Vacío en Bird (ahí
+	// Phone ya es el teléfono) y cuando Néctar no lo publica. Es PII: no se traza sin máscara.
+	ContactIdentifier string
 }

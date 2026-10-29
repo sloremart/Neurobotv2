@@ -41,7 +41,7 @@ func (r *SessionRepo) FindActiveByPhone(ctx context.Context, phone string) (*ses
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-	          last_activity_at, expires_at, created_at
+	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
 	          FROM sessions
 	          WHERE phone_number = ? AND status IN ('active','escalated') AND expires_at > NOW()
 	          ORDER BY last_activity_at DESC LIMIT 1`
@@ -58,7 +58,7 @@ func (r *SessionRepo) FindCurrentByPhone(ctx context.Context, phone string) (*se
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-	          last_activity_at, expires_at, created_at
+	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
 	          FROM sessions
 	          WHERE phone_number = ? AND status IN ('active','escalated')
 	          ORDER BY last_activity_at DESC LIMIT 1`
@@ -78,7 +78,7 @@ func (r *SessionRepo) scanSession(ctx context.Context, query string, args ...int
 		&s.ID, &s.PhoneNumber, &s.CurrentState, &s.Status, &menuOption,
 		&patientID, &patientDoc, &patientName, &patientAge, &patientGender, &patientEntity,
 		&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &agentID, &agentName, &resumedAt,
-		&s.LastActivity, &s.ExpiresAt, &s.CreatedAt,
+		&s.LastActivity, &s.ExpiresAt, &s.CreatedAt, &s.ContactIdentifier,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -138,12 +138,12 @@ func (r *SessionRepo) ResumeSession(ctx context.Context, sessionID, newState str
 // Create inserta una nueva sesión
 func (r *SessionRepo) Create(ctx context.Context, s *session.Session) error {
 	query := `INSERT INTO sessions (id, phone_number, current_state, status, menu_option,
-	          retry_count, last_activity_at, expires_at)
-	          VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)`
+	          retry_count, last_activity_at, expires_at, contact_identifier)
+	          VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?)`
 
 	_, err := r.db.ExecContext(ctx, query,
 		s.ID, s.PhoneNumber, s.CurrentState, s.Status, nullString(s.MenuOption),
-		s.RetryCount, s.ExpiresAt,
+		s.RetryCount, s.ExpiresAt, nullString(s.ContactIdentifier),
 	)
 	if err != nil {
 		// M3: el índice único uq_active_phone (migración 032) rechazó una segunda sesión activa para el
@@ -177,6 +177,18 @@ func (r *SessionRepo) Save(ctx context.Context, s *session.Session) error {
 	)
 	if err != nil {
 		return fmt.Errorf("save session: %w", err)
+	}
+	return nil
+}
+
+// SetContactIdentifier guarda el contacto de la conversación de Néctar de la sesión (E.164 sin «+»
+// o BSUID, tal como lo da Néctar). chat_events y escalations lo copian de aquí al insertar.
+func (r *SessionRepo) SetContactIdentifier(ctx context.Context, sessionID, contact string) error {
+	_, err := r.db.ExecContext(ctx,
+		"UPDATE sessions SET contact_identifier = ?, updated_at = NOW() WHERE id = ?",
+		nullString(contact), sessionID)
+	if err != nil {
+		return fmt.Errorf("set contact identifier: %w", err)
 	}
 	return nil
 }
@@ -543,22 +555,33 @@ func (r *SessionRepo) FindByID(ctx context.Context, sessionID string) (*session.
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-	          last_activity_at, expires_at, created_at
+	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
 	          FROM sessions WHERE id = ?`
 	return r.scanSession(ctx, query, sessionID)
 }
 
-// FindRecentByPhone returns the last N sessions for a phone, any status.
+// contactForms devuelve las dos formas en que un teléfono puede estar en contact_identifier: Néctar
+// lo da sin «+» («573…») y quien busca suele traerlo con él («+573…»). Se casan las dos.
+func contactForms(phone string) []interface{} {
+	bare := strings.TrimPrefix(phone, "+")
+	return []interface{}{bare, "+" + bare}
+}
+
+// FindRecentByPhone returns the last N sessions for a phone, any status. Casa también las sesiones
+// de Néctar cuyo contacto es ese teléfono (contact_identifier, con o sin «+»).
 func (r *SessionRepo) FindRecentByPhone(ctx context.Context, phone string, limit int) ([]session.Session, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
+	args := append([]interface{}{phone}, contactForms(phone)...)
+	args = append(args, limit)
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, phone_number, current_state, status, menu_option,
 		 patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 		 retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-		 last_activity_at, expires_at, created_at
-		 FROM sessions WHERE phone_number = ? ORDER BY created_at DESC LIMIT ?`, phone, limit)
+		 last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
+		 FROM sessions WHERE phone_number = ? OR contact_identifier IN (?, ?)
+		 ORDER BY created_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("find recent by phone: %w", err)
 	}
@@ -576,7 +599,7 @@ func (r *SessionRepo) FindRecentByPhone(ctx context.Context, phone string, limit
 			&s.ID, &s.PhoneNumber, &s.CurrentState, &s.Status, &menuOption,
 			&patientID, &patientDoc, &patientName, &patientAge, &patientGender, &patientEntity,
 			&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &agentID, &agentName, &resumedAt,
-			&s.LastActivity, &s.ExpiresAt, &s.CreatedAt,
+			&s.LastActivity, &s.ExpiresAt, &s.CreatedAt, &s.ContactIdentifier,
 		); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}

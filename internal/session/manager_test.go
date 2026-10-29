@@ -32,6 +32,14 @@ type mockRepo struct {
 	incrementRemFn       func(ctx context.Context, sessionID string) error
 	markAbandonedFn      func(ctx context.Context, sessionID string) error
 	updateConvIDFn       func(ctx context.Context, phone, conversationID string) error
+	setContactFn         func(ctx context.Context, sessionID, contact string) error
+}
+
+func (r *mockRepo) SetContactIdentifier(ctx context.Context, sessionID, contact string) error {
+	if r.setContactFn != nil {
+		return r.setContactFn(ctx, sessionID, contact)
+	}
+	return nil
 }
 
 func (r *mockRepo) FindActiveByPhone(ctx context.Context, phone string) (*Session, error) {
@@ -1602,5 +1610,75 @@ func TestCheckEscalated_NectarUsesOwnThreshold(t *testing.T) {
 
 	if abandoned != "" {
 		t.Fatalf("una atención de Néctar de 3 h no debe cerrarse con el umbral de Bird, abandoned=%q", abandoned)
+	}
+}
+
+// TestSessionCreate_StoresContactIdentifier: el contacto de Néctar queda en la columna
+// (sessions.contact_identifier) y en el contexto; repetirlo no vuelve a escribir.
+func TestSessionCreate_StoresContactIdentifier(t *testing.T) {
+	var colWrites, ctxWrites []string
+	repo := &mockRepo{
+		setContactFn: func(_ context.Context, id, contact string) error {
+			colWrites = append(colWrites, id+"="+contact)
+			return nil
+		},
+		setContextFn: func(_ context.Context, id, key, value string) error {
+			ctxWrites = append(ctxWrites, id+":"+key+"="+value)
+			return nil
+		},
+	}
+	mgr := NewSessionManager(repo, 30)
+	s, isNew, err := mgr.FindOrCreate(context.Background(), "nectar:77")
+	if err != nil || !isNew {
+		t.Fatalf("isNew=%v err=%v", isNew, err)
+	}
+
+	if err := mgr.AttachContact(context.Background(), s, "573001112233"); err != nil {
+		t.Fatal(err)
+	}
+	if s.ContactIdentifier != "573001112233" || s.GetContext(CtxContactIdentifier) != "573001112233" {
+		t.Fatalf("en memoria: col=%q ctx=%q", s.ContactIdentifier, s.GetContext(CtxContactIdentifier))
+	}
+	if len(colWrites) != 1 || colWrites[0] != s.ID+"=573001112233" {
+		t.Fatalf("columna: %v", colWrites)
+	}
+	if len(ctxWrites) != 1 || ctxWrites[0] != s.ID+":contact_identifier=573001112233" {
+		t.Fatalf("contexto: %v", ctxWrites)
+	}
+
+	// Mismo contacto: no se reescribe. Vacío: no borra nada.
+	_ = mgr.AttachContact(context.Background(), s, "573001112233")
+	_ = mgr.AttachContact(context.Background(), s, "")
+	if len(colWrites) != 1 || len(ctxWrites) != 1 || s.ContactIdentifier != "573001112233" {
+		t.Fatalf("repetido o vacío no escribe: col=%v ctx=%v", colWrites, ctxWrites)
+	}
+
+	// El contexto se borró (ClearAllContext al reiniciar) pero la columna sigue: se repone el contexto.
+	s.Context = map[string]string{}
+	_ = mgr.AttachContact(context.Background(), s, "573001112233")
+	if len(ctxWrites) != 2 || s.GetContext(CtxContactIdentifier) != "573001112233" {
+		t.Fatalf("contexto repuesto: %v", ctxWrites)
+	}
+	if len(colWrites) != 1 {
+		t.Fatalf("la columna ya estaba: %v", colWrites)
+	}
+}
+
+func TestContactPhoneOf(t *testing.T) {
+	cases := []struct {
+		name string
+		sess *Session
+		want string
+	}{
+		{"columna E.164 sin «+»", &Session{ContactIdentifier: "573001112233"}, "+573001112233"},
+		{"solo contexto", &Session{Context: map[string]string{CtxContactIdentifier: "573001112233"}}, "+573001112233"},
+		{"BSUID", &Session{ContactIdentifier: "CO.3001112233"}, ""},
+		{"vacío", &Session{}, ""},
+		{"nil", nil, ""},
+	}
+	for _, tc := range cases {
+		if got := ContactPhoneOf(tc.sess); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

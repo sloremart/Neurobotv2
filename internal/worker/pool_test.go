@@ -34,6 +34,14 @@ type mockSessionMgmt struct {
 	resumeNoShowFn    func(ctx context.Context, sess *session.Session, targetState string) error
 	completeFn        func(ctx context.Context, sess *session.Session) error
 	extendExpiryFn    func(ctx context.Context, sess *session.Session, until time.Time) error
+	attachContactFn   func(ctx context.Context, sess *session.Session, contact string) error
+}
+
+func (m *mockSessionMgmt) AttachContact(ctx context.Context, sess *session.Session, contact string) error {
+	if m.attachContactFn != nil {
+		return m.attachContactFn(ctx, sess, contact)
+	}
+	return nil
 }
 
 func newMockSessionMgmt() *mockSessionMgmt {
@@ -1725,5 +1733,48 @@ func TestProcessMessage_BotDisabledWritesReason(t *testing.T) {
 
 	if seen != statemachine.EscalationReasonBotDisabled {
 		t.Fatalf("motivo = %q, quería bot_desactivado", seen)
+	}
+}
+
+// El contacto de Néctar que trae el mensaje se guarda en la sesión ANTES de procesar (y antes del
+// session_started), para que chat_events y escalations lo copien. Bird no lo trae: no se toca.
+func TestProcessMessage_AttachesNectarContact(t *testing.T) {
+	for _, tc := range []struct {
+		name, phone, contact string
+		wantCalls            int
+	}{
+		{"néctar con contacto", "nectar:77", "573001112233", 1},
+		{"bird sin contacto", "+573001234567", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := newMockSessionMgmt()
+			var calls []string
+			mgr.attachContactFn = func(_ context.Context, sess *session.Session, contact string) error {
+				calls = append(calls, contact)
+				sess.ContactIdentifier = contact
+				return nil
+			}
+			var seen string
+			processor := &mockMessageProcessor{
+				processFn: func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*statemachine.StateResult, error) {
+					seen = sess.ContactIdentifier
+					return &statemachine.StateResult{NextState: "MAIN_MENU"}, nil
+				},
+			}
+			pool := NewMessageWorkerPool(1, 10)
+			pool.SetDependencies(mgr, &mockMessageSender{}, processor)
+
+			pool.processMessage(context.Background(), bird.InboundMessage{
+				ID: "msg-contact-" + tc.name, Phone: tc.phone, ContactIdentifier: tc.contact,
+				MessageType: "text", Text: "hola", ReceivedAt: time.Now(),
+			})
+
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("AttachContact llamado %d veces (%v), quería %d", len(calls), calls, tc.wantCalls)
+			}
+			if seen != tc.contact {
+				t.Fatalf("la máquina ve el contacto %q, quería %q", seen, tc.contact)
+			}
+		})
 	}
 }
