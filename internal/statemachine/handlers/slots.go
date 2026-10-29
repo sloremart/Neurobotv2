@@ -1156,9 +1156,7 @@ func noSlotsHandler(wlRepo WaitingListCreator) sm.StateHandler {
 			return sm.NewResult(sm.StateNotifRescheduleFallback).
 				WithButtons(
 					rescheduleFallbackQuestion(cupsName),
-					sm.Button{Text: "Confirmar cita", Payload: "confirm"},
-					sm.Button{Text: "Reprogramar", Payload: "reschedule"},
-					sm.Button{Text: "Cancelar cita", Payload: "cancel"},
+					rescheduleFallbackButtons()...,
 				).
 				WithEvent("no_slots_reschedule_active", map[string]interface{}{
 					"cups_code":          sess.GetContext("cups_code"),

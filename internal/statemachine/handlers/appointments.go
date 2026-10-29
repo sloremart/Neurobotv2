@@ -167,22 +167,21 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 		Handler:     notifPendingHandler(apptSvc, procRepo, addrMapper),
 	})
 
-	// Fallback: reschedule sin slots → ofrece Confirmar/Cancelar
+	// Fallback: reschedule sin slots → ofrece Confirmar/Reprogramar/Cancelar. «Reprogramar» escala
+	// a un agente; al agente no se le ofrece (lo devolvería a la cola): confirma, cancela, reanuda
+	// o cierra.
 	sm.RegisterStaticReturnMenu(sm.StateNotifRescheduleFallback,
 		payloadOption("Confirmar la cita", "confirm"),
 		payloadOption("Cancelar la cita", "cancel"),
 	)
 	m.RegisterWithConfig(sm.StateNotifRescheduleFallback, sm.HandlerConfig{
 		InputType: sm.InputButton,
-		Options:   []string{"confirm", "cancel"},
+		Options:   []string{"confirm", "reschedule", "cancel"},
 		ErrorMsg:  "Por favor selecciona una opción.",
 		RetryPrompt: resumeOnlyRetryPrompt(func(sess *session.Session) sm.OutboundMessage {
 			return &sm.ButtonMessage{
-				Text: rescheduleFallbackQuestion(sess.GetContext("cups_name")),
-				Buttons: []sm.Button{
-					{Text: "Confirmar cita", Payload: "confirm"},
-					{Text: "Cancelar cita", Payload: "cancel"},
-				},
+				Text:    rescheduleFallbackQuestion(sess.GetContext("cups_name")),
+				Buttons: rescheduleFallbackButtons(),
 			}
 		}),
 		Handler: notifRescheduleFallbackHandler(apptSvc, procRepo, addrMapper, onCancel),
@@ -815,6 +814,16 @@ func staleRescheduleKeys(rc map[string]string) []string {
 	return keys
 }
 
+// rescheduleFallbackButtons son los botones de NOTIF_RESCHEDULE_FALLBACK (noSlotsHandler y el
+// retorno sin dato del agente).
+func rescheduleFallbackButtons() []sm.Button {
+	return []sm.Button{
+		{Text: "Confirmar cita", Payload: "confirm"},
+		{Text: "Reprogramar", Payload: "reschedule"},
+		{Text: "Cancelar cita", Payload: "cancel"},
+	}
+}
+
 // notifRescheduleFallbackHandler handles NOTIF_RESCHEDULE_FALLBACK state.
 // When notification reschedule found no available slots, the patient can still
 // confirm or cancel the original appointment.
@@ -824,6 +833,13 @@ func notifRescheduleFallbackHandler(apptSvc *services.AppointmentService, procRe
 		apptID := sess.GetContext("reschedule_appt_id")
 
 		switch selected {
+		case "reschedule":
+			// Sin horarios para reprogramar: lo hace un agente a mano. La cita original no se toca.
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText("Te comunico con un agente para reprogramar tu cita. Mientras tanto, tu cita actual sigue vigente.").
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonRescheduleNoSlots).
+				WithEvent("notif_reschedule_fallback_escalated", map[string]interface{}{"appointment_id": apptID}), nil
+
 		case "confirm":
 			appt, _, err := apptSvc.FindBlockByAppointmentID(ctx, apptID)
 			if err != nil || appt == nil {

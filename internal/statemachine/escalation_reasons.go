@@ -63,6 +63,9 @@ const (
 	EscalationReasonBotDisabled = "bot_desactivado"
 	// EscalationReasonAgentInputRejected: el dato que devolvió el agente no sirvió.
 	EscalationReasonAgentInputRejected = "dato_agente_rechazado"
+	// EscalationReasonRescheduleNoSlots: no hubo horarios para reprogramar y el paciente pidió
+	// reprogramar igual; lo hace un agente a mano (la cita original sigue vigente).
+	EscalationReasonRescheduleNoSlots = "reprogramar_sin_horarios"
 )
 
 // EscalationReasons lista TODOS los motivos de cable: las notificaciones y los del flujo.
@@ -76,6 +79,7 @@ func EscalationReasons() []string {
 		EscalationReasonNoEntities, EscalationReasonEntityUnresolved, EscalationReasonParticularLiga,
 		EscalationReasonMedicationError, EscalationReasonEmgConsolidationFailed,
 		EscalationReasonEmgAskedForAgent, EscalationReasonBotDisabled, EscalationReasonAgentInputRejected,
+		EscalationReasonRescheduleNoSlots,
 	}
 }
 

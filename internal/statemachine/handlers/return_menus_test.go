@@ -503,16 +503,27 @@ func TestReturnMenus_ButtonStepsOfferTheHandlerPayloads(t *testing.T) {
 			t.Errorf("%s: Data de las opciones = %v, el handler acepta %v", step, got, sortedCopy(want))
 		}
 	}
-	// Los pasos con config de botones: sus opciones propias con Data son cfg.Options, en dos sentidos.
+	// Los pasos con config de botones: sus opciones propias con Data son cfg.Options, en dos sentidos,
+	// salvo los botones que solo son del paciente (patientOnlyPayloads).
 	for _, step := range sm.RegisteredReturnSteps() {
 		cfg, ok := m.Config(step)
 		if !ok || cfg.InputType != sm.InputButton {
 			continue
 		}
-		if got := ownData(step); !slices.Equal(got, sortedCopy(cfg.Options)) {
-			t.Errorf("%s: Data de las opciones = %v, cfg.Options = %v", step, got, sortedCopy(cfg.Options))
+		options := slices.DeleteFunc(slices.Clone(cfg.Options), func(o string) bool {
+			return slices.Contains(patientOnlyPayloads[step], o)
+		})
+		if got := ownData(step); !slices.Equal(got, sortedCopy(options)) {
+			t.Errorf("%s: Data de las opciones = %v, cfg.Options = %v", step, got, sortedCopy(options))
 		}
 	}
+}
+
+// patientOnlyPayloads son botones que el paso acepta del paciente y NO se le ofrecen al agente:
+// «Reprogramar» de NOTIF_RESCHEDULE_FALLBACK escala a un agente, y ofrecérselo al propio agente lo
+// devolvería a la cola en vez de resolver.
+var patientOnlyPayloads = map[string][]string{
+	sm.StateNotifRescheduleFallback: {"reschedule"},
 }
 
 // CANCEL_REASON lo nombra buildAgentCommands pero no tiene handler: no se escala desde ahí.

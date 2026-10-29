@@ -90,7 +90,8 @@ func TestNotifRescheduleFallback_NectarResumeShowsTheQuestionAndButtons(t *testi
 	if !strings.Contains(bm.Text, "Electromiografia") || !strings.Contains(bm.Text, "¿Qué deseas hacer?") {
 		t.Errorf("pregunta = %q", bm.Text)
 	}
-	if got := payloadsOf(bm); !slices.Equal(got, []string{"confirm", "cancel"}) {
+	// Los mismos 3 botones con los que noSlotsHandler ofrece el paso.
+	if got := payloadsOf(bm); !slices.Equal(got, []string{"confirm", "reschedule", "cancel"}) {
 		t.Errorf("botones = %v", got)
 	}
 
