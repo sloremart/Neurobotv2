@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -244,6 +246,34 @@ func TestOpenConversation_503RetryAfter(t *testing.T) {
 		}
 	})
 
+	t.Run("Retry-After por encima del tope no se reintenta", func(t *testing.T) {
+		// Un proxy que pide 3600 s dormiría horas a los programadores en serie: pasado el tope
+		// (10 s) el 503 se devuelve tal cual, sin esperar.
+		f := newFakeOpen(t, scriptedReply{status: http.StatusServiceUnavailable, retryAfter: "3600"})
+		c, waits := newOpenClient(f)
+		_, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+		if err == nil || !strings.Contains(err.Error(), "503") {
+			t.Fatalf("quiero el error del 503, tengo %v", err)
+		}
+		if f.calls() != 1 || len(*waits) != 0 {
+			t.Fatalf("llamadas=%d esperas=%v", f.calls(), *waits)
+		}
+	})
+
+	t.Run("Retry-After 1 se reintenta", func(t *testing.T) {
+		f := newFakeOpen(t,
+			scriptedReply{status: http.StatusServiceUnavailable, retryAfter: "1"},
+			scriptedReply{status: http.StatusCreated, body: opened201},
+		)
+		c, waits := newOpenClient(f)
+		if _, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, ""); err != nil {
+			t.Fatal(err)
+		}
+		if f.calls() != 2 || !reflect.DeepEqual(*waits, []time.Duration{time.Second}) {
+			t.Fatalf("llamadas=%d esperas=%v", f.calls(), *waits)
+		}
+	})
+
 	t.Run("503 sin Retry-After no se reintenta", func(t *testing.T) {
 		// Es el 503 «arrancó sin cliente de Meta»: reintentar en 2 s falla igual.
 		f := newFakeOpen(t, scriptedReply{status: http.StatusServiceUnavailable})
@@ -299,6 +329,58 @@ func TestOpenConversation_TemplateRejected(t *testing.T) {
 		}
 		if f.calls() != 1 {
 			t.Fatalf("%s: %d llamadas", reply.body, f.calls())
+		}
+	}
+}
+
+// channel_inactive / channel_unsendable: el canal de apertura está de baja o no puede enviar. Es
+// configuración de la cuenta, no del paciente: error tipado.
+func TestOpenConversation_ChannelUnusable(t *testing.T) {
+	for _, reason := range []string{"channel_inactive", "channel_unsendable"} {
+		f := newFakeOpen(t, scriptedReply{status: http.StatusConflict, body: `{"error":"x","reason":"` + reason + `"}`})
+		c, _ := newOpenClient(f)
+		_, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+		if !errors.Is(err, ErrChannelUnusable) || !bird.IsPermanentSendError(err) {
+			t.Fatalf("%s: quiero ErrChannelUnusable permanente, tengo %v", reason, err)
+		}
+		if f.calls() != 1 {
+			t.Fatalf("%s: %d llamadas", reason, f.calls())
+		}
+	}
+}
+
+// Los errores de CONFIGURACIÓN de la apertura (la cuenta, no el paciente) se reconocen con un solo
+// clasificador: quien recorre una lista de pacientes se detiene en el primero en vez de marcar a
+// todos como no contactables. Los del paciente o en duda NO entran.
+func TestProactiveConfigErrors(t *testing.T) {
+	config := map[string]error{
+		"401":                    ErrUnauthorized,
+		"plantilla rechazada":    fmt.Errorf("%w (409 template_other_account)", ErrTemplateRejected),
+		"404 de la apertura":     ErrOpenNotFound,
+		"sin canal":              ErrOpenNotConfigured,
+		"canal inutilizable":     fmt.Errorf("%w (409 channel_inactive)", ErrChannelUnusable),
+		"clave reutilizada":      ErrIdempotencyReused,
+		"cliente sin configurar": ErrNotConfiguredAPI,
+	}
+	for name, err := range config {
+		if !bird.IsProactiveConfigError(err) {
+			t.Errorf("%s: es de configuración: %v", name, err)
+		}
+		if !bird.IsPermanentSendError(err) {
+			t.Errorf("%s: sigue siendo permanente para el reintento: %v", name, err)
+		}
+	}
+	notConfig := map[string]error{
+		"en duda":          ErrOpenInDoubt,
+		"ya no es mía":     ErrNotMine,
+		"con un agente":    bird.ErrConversationWithAgent,
+		"no contactable":   bird.ErrNonContactable,
+		"4xx del paciente": fmt.Errorf("nectar: status 400 reason \"phone_invalid\": %w", bird.ErrPermanentSend),
+		"nil":              nil,
+	}
+	for name, err := range notConfig {
+		if bird.IsProactiveConfigError(err) {
+			t.Errorf("%s: no es de configuración: %v", name, err)
 		}
 	}
 }

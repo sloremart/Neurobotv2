@@ -34,23 +34,32 @@ const (
 // notificado. Devuelve cuántos pacientes notificó. Usada en tiempo real (al liberarse un cupo) y por
 // la tarea diaria.
 func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsCode string) int {
+	n, _ := m.CheckWaitingListForCupsInRun(ctx, cupsCode)
+	return n
+}
+
+// CheckWaitingListForCupsInRun es CheckWaitingListForCups para quien recorre varios CUPS en una
+// corrida: además devuelve el error de CONFIGURACIÓN de Néctar (bird.IsProactiveConfigError) en el
+// que se detuvo, para que la corrida no siga con el próximo CUP (otra apertura que no puede entregar).
+// nil en cualquier otro caso.
+func (m *NotificationManager) CheckWaitingListForCupsInRun(ctx context.Context, cupsCode string) (int, error) {
 	if m.wlChecker == nil || m.slotSearcher == nil || m.apptChecker == nil {
-		return 0
+		return 0, nil
 	}
 	if m.cfg == nil || m.cfg.BirdTemplateWaitingListProjectID == "" {
-		return 0
+		return 0, nil
 	}
 
 	// Capacidad = total de slots-unidad libres para este CUP (cota para no sobre-notificar).
 	capSlots, err := m.slotSearcher.GetAvailableSlots(ctx, services.SlotQuery{CupsCode: cupsCode, Espacios: 1, MaxSlots: 500})
 	if err != nil {
 		slog.Error("wl_check: capacity query", "cups_code", cupsCode, "error", err)
-		return 0
+		return 0, nil
 	}
 	remaining := len(capSlots)
 	if remaining == 0 {
 		slog.Info("wl_check: no slots available", "cups_code", cupsCode)
-		return 0
+		return 0, nil
 	}
 
 	// Se traen MÁS entradas que la capacidad: con FIFO-con-skip, algunas no caben (requieren más
@@ -59,14 +68,14 @@ func (m *NotificationManager) CheckWaitingListForCups(ctx context.Context, cupsC
 	entries, err := m.wlChecker.GetWaitingByCups(ctx, cupsCode, 200)
 	if err != nil {
 		slog.Error("wl_check: get waiting entries", "cups_code", cupsCode, "error", err)
-		return 0
+		return 0, nil
 	}
 
-	notified := m.notifyWaitingEntries(ctx, entries, remaining, WLTriggerDailyCheck)
+	notified, configErr := m.notifyWaitingEntries(ctx, entries, remaining, WLTriggerDailyCheck)
 	if notified > 0 {
 		slog.Info("wl_check: notifications sent", "cups_code", cupsCode, "notified", notified)
 	}
-	return notified
+	return notified, configErr
 }
 
 // CheckWaitingListForSlot empareja un SLOT liberado (médico + agenda) contra la lista de espera. Un
@@ -126,7 +135,8 @@ func (m *NotificationManager) CheckWaitingListForSlot(ctx context.Context, codMe
 		return 0
 	}
 
-	notified := m.notifyWaitingEntries(ctx, entries, remaining, WLTriggerSlotRelease)
+	// Un error de configuración de Néctar ya detuvo esta corrida y dejó su único error.
+	notified, _ := m.notifyWaitingEntries(ctx, entries, remaining, WLTriggerSlotRelease)
 	if notified > 0 {
 		slog.Info("wl_slot: notifications sent",
 			"cod_medi", codMedi, "agenda_id", agendaID, "eligible_cups", len(eligible), "notified", notified)
@@ -176,16 +186,18 @@ func entryQueryKey(e domain.WaitingListEntry) string {
 // notifyWaitingEntries recorre entradas en FIFO y notifica a las que caben en la capacidad y tienen un
 // bloque contiguo válido (con sus restricciones), en claim-then-send. Descuenta capacidad por notificado
 // (FIFO con skip). Cada entrada se auto-describe por su CupsCode, así que sirve tanto al matching por
-// CUP como al matching por SLOT. Devuelve cuántas notificó.
+// CUP como al matching por SLOT. Devuelve cuántas notificó y, si se detuvo por un error de
+// CONFIGURACIÓN de Néctar (bird.IsProactiveConfigError), ese error: la entrada vuelve a 'waiting',
+// queda UN solo error en el log y no se intenta ninguna otra (fallarían igual, sin entregar).
 //
 // Auditoría queries P2: hasta 200 entradas por corrida y muchas comparten CUP y restricciones →
 // las consultas idénticas (slots y cita-futura) se MEMOIZAN dentro de la corrida. Es seguro:
 // notificar no reserva cupos, así que el resultado de la misma consulta no cambia entre entradas.
-func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries []domain.WaitingListEntry, remaining int, trigger string) int {
+func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries []domain.WaitingListEntry, remaining int, trigger string) (int, error) {
 	notified := 0
 	slotMemo := make(map[string][]services.AvailableSlot)
 	futureMemo := make(map[string]bool)
-	for _, entry := range entries {
+	for i, entry := range entries {
 		if remaining < 1 {
 			break
 		}
@@ -273,9 +285,11 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 		// Enviar; si falla TRANSITORIO se revierte a 'waiting' (el siguiente ciclo reintenta).
 		// Un fallo PERMANENTE (4xx de Bird / identificador no contactable) queda 'unreachable':
 		// devolverlo a 'waiting' sería pagar un envío condenado en cada ciclo, para siempre.
-		// En Néctar, tres errores envuelven ErrPermanentSend sin ser «no contactable»:
-		//   - el paciente conversando con un agente y el puente sin canal de apertura son pasajeros:
-		//     vuelve a 'waiting' y el próximo ciclo la ofrece de nuevo;
+		// En Néctar, tres clases de error envuelven ErrPermanentSend sin ser «no contactable»:
+		//   - el paciente conversando con un agente es pasajero: vuelve a 'waiting' y el próximo
+		//     ciclo la ofrece de nuevo;
+		//   - un error de CONFIGURACIÓN de la cuenta (clave, plantilla, canal; sin canal de apertura
+		//     incluido) falla igual con todos: la entrada vuelve a 'waiting' y la corrida se DETIENE;
 		//   - la apertura EN DUDA (la oferta pudo salir) deja la entrada 'notified', sin tocarla:
 		//     la resuelve ExpireStaleNotified como a cualquier oferta sin respuesta. Su capacidad se
 		//     descuenta igual, por si el paciente la recibió.
@@ -285,8 +299,9 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 				continue
 			}
 			status := "waiting"
+			configErr := bird.IsProactiveConfigError(err)
 			switch {
-			case errors.Is(err, bird.ErrConversationWithAgent), errors.Is(err, nectar.ErrOpenNotConfigured):
+			case errors.Is(err, bird.ErrConversationWithAgent), configErr:
 			case bird.IsPermanentSendError(err) || errors.Is(err, ErrSuppressedNoWhatsApp):
 				status = "unreachable"
 				slog.Warn("wl_check: entrada no contactable (fallo permanente, sin reintentos)",
@@ -295,12 +310,16 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 			if uerr := m.wlChecker.UpdateStatus(ctx, entry.ID, status); uerr != nil {
 				slog.Warn("wl_check: update status tras fallo de envio", "entry_id", entry.ID, "status", status, "error", uerr)
 			}
+			if configErr {
+				bird.LogProactiveConfigStop("waiting_list", err, len(entries)-i)
+				return notified, err
+			}
 			continue
 		}
 		remaining -= entry.Espacios
 		notified++
 	}
-	return notified
+	return notified, nil
 }
 
 // waitingListPhone devuelve el teléfono al que se ofrece la entrada. Las entradas creadas desde una
@@ -468,7 +487,8 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		if errors.Is(err, bird.ErrNonContactable) {
 			slog.Warn("wl_check: contacto no alcanzable, oferta suprimida (sin costo)",
 				"phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
-		} else {
+		} else if !bird.IsProactiveConfigError(err) {
+			// El de configuración lo deja notifyWaitingEntries, uno solo por corrida.
 			slog.Error("wl_check: send template", "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
 		}
 		reason := ""

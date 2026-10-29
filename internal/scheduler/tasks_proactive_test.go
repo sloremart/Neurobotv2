@@ -1,9 +1,13 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,6 +66,12 @@ const reminderPhone = "+573001234567"
 
 func newNectarReminderRig(t *testing.T, bridge *fakenectar.Bridge, sameDay bool) *nectarReminderRig {
 	t.Helper()
+	return newNectarReminderRigN(t, bridge, sameDay, 1)
+}
+
+// newNectarReminderRigN es el mismo armado con n pacientes (P001…, apt-n1…, 300123456<i>).
+func newNectarReminderRigN(t *testing.T, bridge *fakenectar.Bridge, sameDay bool, n int) *nectarReminderRig {
+	t.Helper()
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -83,17 +93,24 @@ func newNectarReminderRig(t *testing.T, bridge *fakenectar.Bridge, sameDay bool)
 		day = time.Now()
 		slot = day.Add(90 * time.Minute)
 	}
-	appt := domain.Appointment{
-		ID: "apt-n1", PatientID: "P001", PatientName: "Ana",
-		PatientPhone: "3001234567", Date: day, TimeSlot: slot.Format("200601021504"),
-		Procedures: []domain.AppointmentProcedure{{CupCode: "890271", CupName: "EMG", Quantity: 1}},
+	appts := make([]domain.Appointment, 0, n)
+	for i := 1; i <= n; i++ {
+		phone := "3001234567"
+		if i > 1 {
+			phone = fmt.Sprintf("300123450%d", i)
+		}
+		appts = append(appts, domain.Appointment{
+			ID: fmt.Sprintf("apt-n%d", i), PatientID: fmt.Sprintf("P%03d", i), PatientName: "Ana",
+			PatientPhone: phone, Date: day, TimeSlot: slot.Format("200601021504"),
+			Procedures: []domain.AppointmentProcedure{{CupCode: "890271", CupName: "EMG", Quantity: 1}},
+		})
 	}
 	tracker := &eventRecorder{}
 	return &nectarReminderRig{
 		tasks: &Tasks{
 			AppointmentRepo: &testutil.MockAppointmentRepo{
 				FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
-					return []domain.Appointment{appt}, nil
+					return appts, nil
 				},
 			},
 			BirdClient:    birdClient,
@@ -318,5 +335,108 @@ func TestReminder_InDoubtNoPendingNoRetry(t *testing.T) {
 		if got := rig.bridge.Opens(); len(got) != 1 {
 			t.Errorf("sameDay=%v: una sola apertura, sin reintento: %v", sameDay, got)
 		}
+	}
+}
+
+// captureErrors desvía slog a un buffer durante la prueba y devuelve cuántas líneas ERROR dejó.
+func captureErrors(t *testing.T) func() []string {
+	t.Helper()
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&lockedWriter{w: &buf, mu: &mu}, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		var out []string
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(line, "level=ERROR") {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+}
+
+type lockedWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// Un error de CONFIGURACIÓN de Néctar (aquí la plantilla rechazada) falla igual con cualquier
+// paciente: la corrida se detiene en el primero —una sola apertura—, deja UN solo error con cuántos
+// quedaron sin enviar y ningún pending.
+func TestReminder_ConfigErrorStopsRun(t *testing.T) {
+	for _, sameDay := range []bool{false, true} {
+		name := map[bool]string{false: "día antes", true: "mismo día"}[sameDay]
+		t.Run(name, func(t *testing.T) {
+			errorsLogged := captureErrors(t)
+			rig := newNectarReminderRigN(t, &fakenectar.Bridge{
+				OpenErr: fmt.Errorf("%w (409 template_other_account)", nectar.ErrTemplateRejected),
+			}, sameDay, 3)
+			rig.run(t, sameDay)
+
+			if got := rig.bridge.Opens(); len(got) != 1 {
+				t.Fatalf("la corrida se detiene en la primera apertura: %v", got)
+			}
+			logged := errorsLogged()
+			if len(logged) != 1 {
+				t.Fatalf("un solo error por corrida, hubo %d: %v", len(logged), logged)
+			}
+			if !strings.Contains(logged[0], "unsent=3") || !strings.Contains(logged[0], "template_other_account") {
+				t.Fatalf("el error nombra la clase y cuántos quedaron sin enviar: %s", logged[0])
+			}
+			if strings.Contains(logged[0], "300123") {
+				t.Fatalf("sin teléfonos en el log: %s", logged[0])
+			}
+			if rig.nm.PendingCount() != 0 {
+				t.Error("sin pending")
+			}
+		})
+	}
+}
+
+// Las aperturas EN DUDA de una corrida (la plantilla pudo o no salir; sin pending tampoco habrá
+// IVR) se resumen en UN error al final, con cuántas y qué citas, sin teléfonos.
+func TestReminder_InDoubtSummary(t *testing.T) {
+	for _, sameDay := range []bool{false, true} {
+		name := map[bool]string{false: "día antes", true: "mismo día"}[sameDay]
+		t.Run(name, func(t *testing.T) {
+			errorsLogged := captureErrors(t)
+			rig := newNectarReminderRigN(t, &fakenectar.Bridge{OpenErr: nectar.ErrOpenInDoubt}, sameDay, 2)
+			rig.run(t, sameDay)
+
+			if got := rig.bridge.Opens(); len(got) != 2 {
+				t.Fatalf("en duda no detiene la corrida: %v", got)
+			}
+			logged := errorsLogged()
+			if len(logged) != 1 {
+				t.Fatalf("un solo resumen por corrida, hubo %d: %v", len(logged), logged)
+			}
+			line := logged[0]
+			if !strings.Contains(line, "count=2") || !strings.Contains(line, "apt-n1") || !strings.Contains(line, "apt-n2") {
+				t.Fatalf("el resumen trae cuántas y qué citas: %s", line)
+			}
+			if strings.Contains(line, "300123") || strings.Contains(line, "+57") {
+				t.Fatalf("sin teléfonos en el resumen: %s", line)
+			}
+		})
+	}
+}
+
+// Sin dudas no hay resumen: una corrida limpia no deja ningún error.
+func TestReminder_NoInDoubtNoSummary(t *testing.T) {
+	errorsLogged := captureErrors(t)
+	rig := newNectarReminderRigN(t, &fakenectar.Bridge{OpenID: 77}, false, 1)
+	rig.run(t, false)
+	if logged := errorsLogged(); len(logged) != 0 {
+		t.Fatalf("sin errores: %v", logged)
 	}
 }

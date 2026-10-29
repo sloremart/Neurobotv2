@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,28 @@ func (s ProactiveSend) ContactPhone(phone string) string {
 // ErrConversationWithAgent es el 409 already_open con mine:false: el contacto ya conversa con un
 // agente (o está en la cola) en Néctar. El bot no le escribe encima; quien llama lo salta sin pending.
 var ErrConversationWithAgent = fmt.Errorf("el contacto ya conversa con un agente en Néctar: %w", ErrPermanentSend)
+
+// ErrProactiveConfig marca los errores de CONFIGURACIÓN de la apertura en Néctar: la clave de
+// servicio, la plantilla, el canal o la clave de idempotencia no sirven, y fallarían igual con
+// cualquier paciente. Los errores tipados de internal/nectar lo envuelven (este paquete no importa
+// al de Néctar: la marca vive aquí, como AlreadyOpenError). Envuelve ErrPermanentSend: nada de esto
+// se arregla reintentando.
+var ErrProactiveConfig = fmt.Errorf("configuración de Néctar para plantillas proactivas: %w", ErrPermanentSend)
+
+// IsProactiveConfigError dice si err es de configuración de la cuenta y no del paciente. Quien
+// recorre una lista de pacientes se DETIENE en el primero: seguir sería una petición que no puede
+// entregar por cada paciente, y marcarlos no contactables vaciaría la lista por un error de la cuenta.
+func IsProactiveConfigError(err error) bool {
+	return errors.Is(err, ErrProactiveConfig)
+}
+
+// LogProactiveConfigStop deja el ÚNICO error de una corrida de plantillas proactivas que se detuvo
+// por configuración (no uno por paciente): qué corrida, el error y cuántos quedaron sin enviar
+// (unsent cuenta al paciente en el que se detuvo).
+func LogProactiveConfigStop(run string, err error, unsent int) {
+	slog.Error("plantillas proactivas detenidas: error de configuración de Néctar, nada más sale en esta corrida",
+		"run", run, "error", err, "unsent", unsent)
+}
 
 // AlreadyOpenError es el 409 already_open de la apertura: el contacto ya tiene una conversación viva
 // en ese canal. Mine dice de quién es: true = del bot (sigue en ella, ConversationID), false = de un

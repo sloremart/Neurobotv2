@@ -188,12 +188,16 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 	sent := 0
 	skipped := 0
+	visited := 0
+	var inDoubt []string
+	defer func() { logInDoubtSummary("confirmation", inDoubt) }()
 
 	for _, group := range patientGroups {
 		// Detener envíos si el contexto fue cancelado (apagado)
 		if ctx.Err() != nil {
 			break
 		}
+		visited++
 		firstAppt := group[0]
 
 		phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
@@ -270,7 +274,14 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			}
 			if errors.Is(err, nectar.ErrOpenInDoubt) {
 				t.logInDoubt(ctx, phone, "confirmation", firstAppt.ID, err)
+				inDoubt = append(inDoubt, firstAppt.ID)
 				continue
+			}
+			// Configuración de Néctar (clave, plantilla, canal): falla igual con todos. Se detiene
+			// la corrida con UN solo error en vez de una apertura condenada por paciente.
+			if bird.IsProactiveConfigError(err) {
+				bird.LogProactiveConfigStop("confirmation", err, len(patientGroups)-visited+1)
+				break
 			}
 			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
 			// En WARN para no disparar una alerta Telegram por cada paciente username en la
@@ -391,11 +402,15 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 
 	sent := 0
 	skipped := 0
+	visited := 0
+	var inDoubt []string
+	defer func() { logInDoubtSummary("confirmation_same_day", inDoubt) }()
 
 	for _, group := range patientGroups {
 		if ctx.Err() != nil {
 			break
 		}
+		visited++
 		firstAppt := group[0]
 
 		phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
@@ -462,7 +477,12 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 			}
 			if errors.Is(err, nectar.ErrOpenInDoubt) {
 				t.logInDoubt(ctx, phone, "confirmation_same_day", firstAppt.ID, err)
+				inDoubt = append(inDoubt, firstAppt.ID)
 				continue
+			}
+			if bird.IsProactiveConfigError(err) {
+				bird.LogProactiveConfigStop("confirmation_same_day", err, len(patientGroups)-visited+1)
+				break
 			}
 			slog.Error("same-day reminder send failed", "phone", utils.MaskPhone(phone), "error", err)
 			continue
@@ -563,6 +583,17 @@ func (t *Tasks) logInDoubt(ctx context.Context, phone, notifType, apptID string,
 		t.Tracker.LogEvent(ctx, "", phone, "notification_in_doubt",
 			map[string]interface{}{"type": notifType, "appointment_id": apptID})
 	}
+}
+
+// logInDoubtSummary deja UN error por corrida de recordatorios con las aperturas en duda: esas citas
+// no tienen pending, así que tampoco tendrán la llamada IVR de las 13:00; el call center debe saber
+// cuáles son. Solo cuántas y qué citas: ningún teléfono.
+func logInDoubtSummary(notifType string, apptIDs []string) {
+	if len(apptIDs) == 0 {
+		return
+	}
+	slog.Error("recordatorios en duda: sin pending ni IVR para estas citas, revisar en el call center",
+		"type", notifType, "count", len(apptIDs), "appointment_ids", strings.Join(apptIDs, ","))
 }
 
 // sendReminderPrep envia la preparacion como texto aparte tras la plantilla (la plantilla es fija).
@@ -845,11 +876,18 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 		slog.Warn("waiting list check: NotifyManager no disponible")
 		return nil
 	}
-	for _, cupsCode := range cupsCodes {
+	for i, cupsCode := range cupsCodes {
 		if ctx.Err() != nil {
 			break
 		}
-		totalNotified += t.NotifyManager.CheckWaitingListForCups(ctx, cupsCode)
+		notified, configErr := t.NotifyManager.CheckWaitingListForCupsInRun(ctx, cupsCode)
+		totalNotified += notified
+		if configErr != nil {
+			// Configuración de Néctar: el próximo CUP fallaría igual. El error ya quedó registrado.
+			slog.Warn("waiting list check detenido por configuración de Néctar",
+				"cups_checked", i+1, "cups_total", len(cupsCodes))
+			break
+		}
 		// Rate limit entre CUPS (respeta cancelación).
 		if err := sleepWithContext(ctx, 2*time.Second); err != nil {
 			return err

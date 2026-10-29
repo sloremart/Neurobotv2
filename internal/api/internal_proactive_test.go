@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -297,5 +299,98 @@ func TestNotifyConfirmation_InDoubtIs409NoRetry(t *testing.T) {
 	}
 	if got := bridge.Opens(); len(got) != 1 {
 		t.Fatalf("una sola apertura: %v", got)
+	}
+}
+
+// adminErrorLog desvía slog a un buffer seguro para goroutines (los lotes envían en segundo plano).
+type adminErrorLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *adminErrorLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *adminErrorLog) errors() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, line := range strings.Split(l.buf.String(), "\n") {
+		if strings.Contains(line, "level=ERROR") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func captureAdminErrors(t *testing.T) *adminErrorLog {
+	t.Helper()
+	l := &adminErrorLog{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(l, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return l
+}
+
+func threePatients() []domain.Appointment {
+	out := make([]domain.Appointment, 0, 3)
+	for i := 1; i <= 3; i++ {
+		a := adminAppt(fmt.Sprintf("A%d", i))
+		a.PatientID = fmt.Sprintf("P%d", i)
+		a.PatientPhone = fmt.Sprintf("300111220%d", i)
+		out = append(out, a)
+	}
+	return out
+}
+
+// Un error de CONFIGURACIÓN de Néctar (la clave rechazada) en un lote administrativo falla igual
+// con todos: el lote se detiene en la primera apertura y deja UN solo error con cuántos quedaron.
+func TestAdminBatches_ConfigErrorStopsBatch(t *testing.T) {
+	agendaRepo := func() *mockApptRepoAPI {
+		return &mockApptRepoAPI{
+			findByAgendaAndDateFn: func(context.Context, int, string) ([]domain.Appointment, error) {
+				return threePatients(), nil
+			},
+			cancelBatchFn: func(context.Context, []string, string, string, string) error { return nil },
+		}
+	}
+	batches := map[string]func(rig *adminRig){
+		"confirmaciones de agenda": func(rig *adminRig) {
+			rig.h.HandleSendAgendaConfirmations(httptest.NewRecorder(), httptest.NewRequest("POST",
+				"/api/internal/agenda-confirmations", bytes.NewBufferString(`{"agenda_id":704,"date":"2026-11-02"}`)))
+		},
+		"cancelación de agenda": func(rig *adminRig) {
+			rig.h.HandleCancelAgenda(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/internal/cancel-agenda",
+				bytes.NewBufferString(`{"agenda_id":704,"date":"2026-11-02","reason":"x","notify_patients":true}`)))
+		},
+		"reprogramación": func(rig *adminRig) {
+			rig.h.sendRescheduleNotifications(threePatients(), RescheduleAgendaRequest{
+				AgendaID: 704, OldDate: "2026-11-02", NewDate: "2026-11-09", NotifyPatients: true,
+			})
+		},
+	}
+	for name, start := range batches {
+		t.Run(name, func(t *testing.T) {
+			logs := captureAdminErrors(t)
+			bridge := &fakenectar.Bridge{OpenErr: nectar.ErrUnauthorized}
+			rig := newAdminRig(t, bridge, agendaRepo())
+			start(rig)
+
+			waitFor(t, "el error de la corrida", func() bool { return len(logs.errors()) > 0 })
+			time.Sleep(50 * time.Millisecond) // por si el lote siguiera: le da tiempo a equivocarse
+			if got := bridge.Opens(); len(got) != 1 {
+				t.Fatalf("el lote se detiene en la primera apertura: %v", got)
+			}
+			logged := logs.errors()
+			if len(logged) != 1 || !strings.Contains(logged[0], "unsent=3") || !strings.Contains(logged[0], "401") {
+				t.Fatalf("un solo error con la clase y cuántos quedaron: %v", logged)
+			}
+			if rig.nm.PendingCount() != 0 {
+				t.Fatal("sin pending")
+			}
+		})
 	}
 }

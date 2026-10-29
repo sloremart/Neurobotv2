@@ -1331,13 +1331,14 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 		defer cancel()
 
 		patients := groupAppointmentsByPatientID(appointments)
-		sent, skipped := 0, 0
+		sent, skipped, visited := 0, 0, 0
 
 		for _, group := range patients {
 			// Detener envíos si el contexto fue cancelado (apagado/timeout)
 			if ctx.Err() != nil {
 				break
 			}
+			visited++
 			firstAppt := group[0]
 			phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
 			if phone == "" {
@@ -1371,6 +1372,9 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 			}
 
 			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", firstAppt.ID)
+			if stopOnProactiveConfig("agenda_confirmations", err, len(patients)-visited+1) {
+				break
+			}
 			if err != nil {
 				if !proactiveHandled(err) {
 					slog.Error("agenda confirmation: send failed", "phone", utils.MaskPhone(phone), "error", err)
@@ -1500,12 +1504,13 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
-			notified := 0
+			notified, visited := 0, 0
 			for _, group := range patients {
 				// Detener envíos si el contexto fue cancelado (apagado/timeout)
 				if ctx.Err() != nil {
 					break
 				}
+				visited++
 				firstAppt := group[0]
 				phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
 				if phone == "" {
@@ -1525,6 +1530,9 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 				}
 
 				notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", firstAppt.ID)
+				if stopOnProactiveConfig("agenda_cancellation", err, len(patients)-visited+1) {
+					break
+				}
 				if err != nil {
 					if !proactiveHandled(err) {
 						slog.Error("send cancellation notification", "phone", utils.MaskPhone(phone), "error", err)
@@ -1660,6 +1668,17 @@ func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone str
 		AppointmentID: apptID, BirdMessageID: sent.MessageID, ConversationID: convID,
 	})
 	return proactiveNotice{MessageID: sent.MessageID, Key: sent.Key, ConversationID: convID}, nil
+}
+
+// stopOnProactiveConfig dice si un lote de avisos tiene que DETENERSE: el error es de configuración
+// de Néctar (clave, plantilla, canal) y fallaría igual con cada paciente que queda. Deja el único
+// error del lote, con cuántos quedaron sin enviar (unsent cuenta al paciente en el que se detuvo).
+func stopOnProactiveConfig(run string, err error, unsent int) bool {
+	if !bird.IsProactiveConfigError(err) {
+		return false
+	}
+	bird.LogProactiveConfigStop(run, err, unsent)
+	return true
 }
 
 // proactiveHandled dice si sendTemplateAndRegister ya dejó constancia del error (agente dueño de la
@@ -2012,12 +2031,13 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		notified := 0
+		notified, visited := 0, 0
 		for _, group := range patients {
 			// Detener envíos si el contexto fue cancelado (apagado/timeout)
 			if ctx.Err() != nil {
 				break
 			}
+			visited++
 			firstAppt := group[0]
 			phone := utils.ParseColombianPhone(firstAppt.PatientPhone)
 			if phone == "" {
@@ -2038,6 +2058,9 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 			}
 
 			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "reschedule", firstAppt.ID)
+			if stopOnProactiveConfig("agenda_reschedule", err, len(patients)-visited+1) {
+				break
+			}
 			if err != nil {
 				if !proactiveHandled(err) {
 					slog.Error("send reschedule notification", "phone", utils.MaskPhone(phone), "error", err)
@@ -2112,8 +2135,14 @@ func (h *InternalHandler) HandleWaitingListCheck(w http.ResponseWriter, r *http.
 		}
 		info := cupsInfo{CupsCode: code, Waiting: len(entries)}
 		if !req.DryRun && len(entries) > 0 && h.notifyManager != nil {
-			info.Notified = h.notifyManager.CheckWaitingListForCups(ctx, code)
+			var configErr error
+			info.Notified, configErr = h.notifyManager.CheckWaitingListForCupsInRun(ctx, code)
 			totalNotified += info.Notified
+			if configErr != nil {
+				// Configuración de Néctar: el próximo CUP fallaría igual (el error ya quedó registrado).
+				results = append(results, info)
+				break
+			}
 		}
 		results = append(results, info)
 	}

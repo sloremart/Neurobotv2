@@ -34,11 +34,13 @@ var (
 	ErrWindowClosed = fmt.Errorf("nectar: ventana de 24 h cerrada; use una plantilla (409): %w", bird.ErrPermanentSend)
 	// ErrIdempotencyReused es el 409 reason=idempotency_key_reused: defecto de acuñado en el
 	// cliente, no se reintenta ni con otra clave hasta mirar qué pasó.
-	ErrIdempotencyReused = fmt.Errorf("nectar: idempotency_key reutilizada para otra clase de mensaje (409): %w", bird.ErrPermanentSend)
-	// ErrUnauthorized (401) y ErrNotConfiguredAPI son de CONFIGURACIÓN: reintentar con las mismas
-	// credenciales falla igual, así que también son permanentes para el reintento del envío.
-	ErrUnauthorized     = fmt.Errorf("nectar: credenciales rechazadas (401): %w", bird.ErrPermanentSend)
-	ErrNotConfiguredAPI = fmt.Errorf("nectar: cliente sin URL base o sin credenciales: %w", bird.ErrPermanentSend)
+	// Es de configuración (bird.ErrProactiveConfig): con otro paciente fallaría igual.
+	ErrIdempotencyReused = fmt.Errorf("nectar: idempotency_key reutilizada para otra clase de mensaje (409): %w", bird.ErrProactiveConfig)
+	// ErrUnauthorized (401) y ErrNotConfiguredAPI son de CONFIGURACIÓN (bird.ErrProactiveConfig):
+	// reintentar con las mismas credenciales falla igual, así que también son permanentes para el
+	// reintento del envío.
+	ErrUnauthorized     = fmt.Errorf("nectar: credenciales rechazadas (401): %w", bird.ErrProactiveConfig)
+	ErrNotConfiguredAPI = fmt.Errorf("nectar: cliente sin URL base o sin credenciales: %w", bird.ErrProactiveConfig)
 	// ErrEscalationDisabled es el 403 reason=escalation_disabled del escalado: la entidad tiene
 	// apagada la escalación a humanos. Es una decisión de configuración de Néctar: reintentar
 	// falla igual, y al paciente no se le puede prometer un asesor que no va a venir.

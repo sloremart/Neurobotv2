@@ -32,13 +32,21 @@ var (
 	// ErrTemplateRejected dice que la plantilla no sirve tal como se pidió (400 template_parameters,
 	// 409 template_not_offerable / template_other_account, 502 meta_rejected). Es configuración:
 	// reintentar falla igual.
-	ErrTemplateRejected = fmt.Errorf("nectar: plantilla rechazada en la apertura: %w", bird.ErrPermanentSend)
+	ErrTemplateRejected = fmt.Errorf("nectar: plantilla rechazada en la apertura: %w", bird.ErrProactiveConfig)
 	// ErrOpenNotFound es el 404 ciego de la apertura: el canal no es de la entidad de la clave o
 	// el BSUID no tiene ficha. NO es ErrNotMine: aquí no hay ningún caso que soltar.
-	ErrOpenNotFound = fmt.Errorf("nectar: canal o destinatario ajeno en la apertura (404): %w", bird.ErrPermanentSend)
+	ErrOpenNotFound = fmt.Errorf("nectar: canal o destinatario ajeno en la apertura (404): %w", bird.ErrProactiveConfig)
 	// ErrOpenNotConfigured dice que el puente no tiene canal de apertura (NECTAR_CHANNEL_ID = 0). Nada sale.
-	ErrOpenNotConfigured = fmt.Errorf("nectar: apertura sin canal configurado (NECTAR_CHANNEL_ID): %w", bird.ErrPermanentSend)
+	ErrOpenNotConfigured = fmt.Errorf("nectar: apertura sin canal configurado (NECTAR_CHANNEL_ID): %w", bird.ErrProactiveConfig)
+	// ErrChannelUnusable es el 409 channel_inactive / channel_unsendable: el canal de apertura está
+	// de baja o no puede enviar. Es de la cuenta, no del paciente: falla igual con cualquiera.
+	ErrChannelUnusable = fmt.Errorf("nectar: canal de apertura inutilizable: %w", bird.ErrProactiveConfig)
 )
+
+// Los errores de CONFIGURACIÓN de la apertura (ErrUnauthorized, ErrIdempotencyReused,
+// ErrNotConfiguredAPI, ErrTemplateRejected, ErrOpenNotFound, ErrOpenNotConfigured y
+// ErrChannelUnusable) envuelven bird.ErrProactiveConfig —que a su vez envuelve ErrPermanentSend—:
+// quien recorre una lista de pacientes los reconoce con bird.IsProactiveConfigError y se detiene.
 
 // AlreadyOpenError es el 409 already_open (ConversationID, Mine). El tipo vive en el paquete bird
 // —bird.Client.SendProactiveTemplate tiene que reconocerlo y ese paquete no importa a este—; aquí
@@ -73,6 +81,9 @@ const (
 	openMaxRetries = 2
 	// openDefaultRetryAfter es la espera si la cabecera viene pero no se entiende.
 	openDefaultRetryAfter = 2 * time.Second
+	// openMaxRetryAfter es el tope de la espera: un Retry-After mayor (un proxy que pide 3600 s)
+	// dormiría horas a los programadores, que envían en serie. Pasado el tope no se reintenta.
+	openMaxRetryAfter = 10 * time.Second
 )
 
 // OpenConversation abre una conversación con una plantilla. La idempotency_key se acuña UNA vez
@@ -125,7 +136,8 @@ func notSent(err error) bool {
 }
 
 // openRetryAfter dice si la respuesta es el 503 reintentable y cuánto esperar. El 503 SIN
-// Retry-After es «Néctar arrancó sin cliente de Meta»: reintentar falla igual.
+// Retry-After es «Néctar arrancó sin cliente de Meta»: reintentar falla igual. Uno que pide más de
+// openMaxRetryAfter tampoco se reintenta: se devuelve el 503.
 func openRetryAfter(resp reply) (time.Duration, bool) {
 	if resp.status != http.StatusServiceUnavailable {
 		return 0, false
@@ -137,6 +149,9 @@ func openRetryAfter(resp reply) (time.Duration, bool) {
 	secs, err := strconv.Atoi(h)
 	if err != nil || secs < 0 {
 		return openDefaultRetryAfter, true
+	}
+	if secs > int(openMaxRetryAfter/time.Second) {
+		return 0, false
 	}
 	return time.Duration(secs) * time.Second, true
 }
@@ -171,6 +186,8 @@ func decodeOpen(resp reply) (Opened, error) {
 			return Opened{}, ErrIdempotencyReused
 		case "template_not_offerable", "template_other_account":
 			return Opened{}, fmt.Errorf("%w (409 %s)", ErrTemplateRejected, reason)
+		case "channel_inactive", "channel_unsendable":
+			return Opened{}, fmt.Errorf("%w (409 %s)", ErrChannelUnusable, reason)
 		}
 	case http.StatusBadRequest:
 		if reason == "template_parameters" {
@@ -188,8 +205,7 @@ func decodeOpen(resp reply) (Opened, error) {
 		// El 504 de un proxy delante de Néctar: la petición pudo llegar y la plantilla salir.
 		return Opened{}, fmt.Errorf("%w (504)", ErrOpenInDoubt)
 	}
-	// 4xx con otro motivo (channel_inactive, phone_invalid…) es un defecto de configuración o del
-	// cuerpo: permanente. 5xx sin motivo conocido (503 agotado incluido) se deja transitorio.
+	// 4xx con otro motivo (phone_invalid…) es un defecto del cuerpo o del destinatario: permanente. 5xx sin motivo conocido (503 agotado incluido) se deja transitorio.
 	if resp.status >= 400 && resp.status < 500 {
 		return Opened{}, fmt.Errorf("nectar: POST %s: status %d reason %q: %w", openPath, resp.status, reason, bird.ErrPermanentSend)
 	}

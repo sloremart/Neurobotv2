@@ -264,3 +264,30 @@ func TestWaitingList_TransientOpenErrorRevertsToWaiting(t *testing.T) {
 		t.Fatalf("esperaba 'waiting', got %q", wl.updatedStatus)
 	}
 }
+
+// Un error de CONFIGURACIÓN de Néctar (aquí la clave de servicio rechazada) no es del paciente: la
+// entrada vuelve a 'waiting' —no 'unreachable', que la sacaría de la lista— y la corrida se detiene
+// en ella: las demás entradas ni se reclaman ni se intentan (una sola apertura).
+func TestWaitingList_ConfigErrorRevertsAndStopsRun(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenErr: nectar.ErrUnauthorized}
+	first, second := wlEntry("+573005551234"), wlEntry("+573005559999")
+	second.ID = "wl-perm-2"
+	mgr, wl, _, _ := nectarWLRig(t, bridge, first)
+	wl.getWaitingFn = func(context.Context, string, int) ([]domain.WaitingListEntry, error) {
+		return []domain.WaitingListEntry{first, second}, nil
+	}
+
+	n, err := mgr.CheckWaitingListForCupsInRun(context.Background(), "890271")
+	if n != 0 || !bird.IsProactiveConfigError(err) {
+		t.Fatalf("notificados=%d err=%v: la corrida devuelve el error de configuración", n, err)
+	}
+	if got := bridge.Opens(); len(got) != 1 {
+		t.Fatalf("una sola apertura: %v", got)
+	}
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+	if wl.notifiedID != "wl-perm-1" || wl.updatedID != "wl-perm-1" || wl.updatedStatus != "waiting" {
+		t.Fatalf("solo la primera se reclama y vuelve a 'waiting': notified=%q updated=%q status=%q",
+			wl.notifiedID, wl.updatedID, wl.updatedStatus)
+	}
+}
