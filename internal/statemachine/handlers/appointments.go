@@ -735,19 +735,36 @@ func notifPendingHandler(apptSvc *services.AppointmentService, procRepo reposito
 				WithEvent("notif_pending_confirmed", map[string]interface{}{"appointment_id": apptID}), nil
 
 		case "reschedule":
+			a, dayAppts, ferr := apptSvc.FindBlockByAppointmentID(ctx, apptID)
+			if ferr != nil || a == nil {
+				return buildAutoCloseResult("No pudimos encontrar tu cita. Por favor contacta a la clínica."), nil //nolint:nilerr // se cierra con aviso al paciente, no se propaga
+			}
+			// La búsqueda se arma con la cita notificada, no con lo que traiga la sesión: la escalada
+			// no trae paciente ni procedimiento, y una sesión reusada trae los de otro trámite.
+			rc := apptSvc.RescheduleContext(ctx, a, len(dayAppts))
 			// Si el paciente tiene varias citas ese día (notificadas juntas en un mismo mensaje),
 			// no se puede reagendar "todas" a un mismo horario: se le deja elegir CUÁL reprogramar
-			// (reutiliza la lista de "Mis citas"). Con una sola cita, se reagenda directo.
-			if a, dayAppts, ferr := apptSvc.FindBlockByAppointmentID(ctx, apptID); ferr == nil && a != nil && len(dayAppts) > 1 {
+			// (reutiliza la lista de "Mis citas", que arma el procedimiento de la elegida).
+			if len(dayAppts) > 1 {
 				apptJSON, _ := json.Marshal(dayAppts)
 				listMsg := buildAppointmentList(ctx, apptSvc, dayAppts, procRepo)
-				return sm.NewResult(sm.StateListAppointments).
-					WithContext("appointments_json", string(apptJSON)).
+				r := sm.NewResult(sm.StateListAppointments).
+					WithContext("appointments_json", string(apptJSON))
+				for _, k := range notifReschedulePatientKeys {
+					r.WithContext(k, rc[k])
+				}
+				return r.WithClearCtx(staleRescheduleKeys(rc)...).
 					WithList("Tienes varias citas ese día. ¿Cuál deseas reprogramar?\n\n"+listMsg.body, listMsg.button, listMsg.section).
 					WithEvent("notif_reschedule_select", map[string]interface{}{"count": len(dayAppts)}), nil
 			}
-			return sm.NewResult(sm.StateSearchSlots).
-				WithContext("reschedule_appt_id", apptID).
+			if rc["cups_code"] == "" {
+				return buildAutoCloseResult("No se puede reprogramar: no se encontró el procedimiento."), nil
+			}
+			r := sm.NewResult(sm.StateSearchSlots)
+			for k, v := range rc {
+				r.WithContext(k, v)
+			}
+			return r.WithClearCtx(staleRescheduleKeys(rc)...).
 				WithEvent("notif_pending_reschedule", nil), nil
 
 		default: // cancel
@@ -771,6 +788,25 @@ func notifPendingHandler(apptSvc *services.AppointmentService, procRepo reposito
 // reprogramar y la cita original sigue vigente.
 func rescheduleFallbackQuestion(cupsName string) string {
 	return fmt.Sprintf("No hay horarios disponibles para *%s* en otra fecha.\n\nTu cita original sigue vigente. ¿Qué deseas hacer?", cupsName)
+}
+
+// notifReschedulePatientKeys son las claves del paciente de la cita notificada que fija la
+// reprogramación también cuando el paciente elige la cita de una lista (las del procedimiento las
+// arma «Mis citas» con la cita elegida).
+var notifReschedulePatientKeys = []string{"patient_id", "patient_name", "patient_entity", "patient_contract", "patient_age"}
+
+// staleRescheduleKeys son las claves que la búsqueda de la reprogramación leería y que la sesión
+// pudo traer de otro trámite (las del grupo de procedimientos, más las de la preselección de lista
+// de espera), sin las que rc vuelve a fijar: borrar y escribir la misma clave en un turno la
+// dejaría borrada.
+func staleRescheduleKeys(rc map[string]string) []string {
+	keys := make([]string, 0, len(procedureGroupContextKeys)+2)
+	for _, k := range append(slices.Clone(procedureGroupContextKeys), "from_waiting_list", "procedure_type") {
+		if _, set := rc[k]; !set {
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }
 
 // notifRescheduleFallbackHandler handles NOTIF_RESCHEDULE_FALLBACK state.

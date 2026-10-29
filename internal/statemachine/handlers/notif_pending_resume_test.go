@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -273,5 +274,101 @@ func TestNotifPendingReturnMenu_PlainResumeOnlyWhereTheButtonsApply(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+// «Reprogramar» con una sola cita ese día arma la búsqueda con los datos de LA CITA notificada:
+// la sesión escalada no trae CUPS, procedimientos ni paciente, y si la escalación reusó una
+// sesión viva, lo que esta traía es de otro trámite (otro procedimiento, incluso otro paciente
+// del mismo teléfono).
+func TestNotifPending_RescheduleBuildsTheSearchFromTheNotifiedAppointment(t *testing.T) {
+	stale := map[string]string{
+		"patient_id": "OTRO-PACIENTE", "patient_entity": "EPS999", "patient_contract": "8",
+		"cups_code": "883101", "cups_name": "RESONANCIA", "espacios": "3",
+		"procedures_json":      `[{"service_type":"general","cups":[{"code":"883101"}]}]`,
+		"preferred_doctor_doc": "999", "selected_slot_id": "1|3|202611030730",
+		"available_slots_json": "[{}]", "gestational_max_date": "2026-12-01", "from_waiting_list": "1",
+	}
+	cases := map[string]map[string]string{"sesión escalada nueva": nil, "sesión reusada con contexto viejo": stale}
+	for name, extra := range cases {
+		for ctxName, ctx := range escalatedNotifContexts() {
+			t.Run(name+"/"+ctxName, func(t *testing.T) {
+				repo := newNotifApptRepo()
+				repo.FindUpcomingByPatientFn = nil // una sola cita ese día
+				base := repo.FindByIDFn
+				repo.FindByIDFn = func(c context.Context, id string) (*domain.Appointment, error) {
+					a, err := base(c, id)
+					if a != nil {
+						a.Entity = "EPS005"
+						a.DoctorDocument = "1234"
+					}
+					return a, err
+				}
+				m := sm.NewMachine()
+				RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+				sess := notifResumeSess(ctx)
+				delete(sess.Context, sm.CtxAgentResumeTurn)
+				for k, v := range extra {
+					sess.Context[k] = v
+				}
+
+				result, err := m.Process(context.Background(), sess, postbackM("reschedule"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.NextState != sm.StateSearchSlots {
+					t.Fatalf("next = %s", result.NextState)
+				}
+				want := map[string]string{
+					"reschedule_appt_id": "APT-NOTIF", "cups_code": "890271", "cups_name": "Electromiografia",
+					"patient_id": "PAT001", "patient_entity": "EPS005", "patient_contract": "EPS005",
+					"preferred_doctor_doc": "1234", "total_procedures": "1", "current_procedure_idx": "0",
+				}
+				for k, v := range want {
+					if got := result.UpdateCtx[k]; got != v {
+						t.Errorf("%s = %q, quería %q", k, got, v)
+					}
+				}
+				var groups []services.CUPSGroup
+				if err := json.Unmarshal([]byte(result.UpdateCtx["procedures_json"]), &groups); err != nil ||
+					len(groups) != 1 || len(groups[0].Cups) != 1 || groups[0].Cups[0].Code != "890271" {
+					t.Errorf("procedures_json = %q", result.UpdateCtx["procedures_json"])
+				}
+				// Lo que el trámite viejo dejó y la búsqueda leería se borra; lo recién armado no.
+				for _, k := range []string{"selected_slot_id", "available_slots_json", "gestational_max_date", "from_waiting_list"} {
+					if !slices.Contains(result.ClearCtx, k) {
+						t.Errorf("no se borra %s; ClearCtx=%v", k, result.ClearCtx)
+					}
+				}
+				for k := range result.UpdateCtx {
+					if slices.Contains(result.ClearCtx, k) {
+						t.Errorf("%s se escribe y se borra a la vez", k)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Con varias citas ese día el paciente elige cuál en la lista de «Mis citas»: la sesión ya queda
+// con el paciente de la cita notificada y sin el trámite viejo.
+func TestNotifPending_RescheduleWithSeveralAppointmentsFixesThePatient(t *testing.T) {
+	repo := newNotifApptRepo()
+	m := sm.NewMachine()
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+	sess := notifResumeSess(escalatedNotifContexts()["escalateNotifToAgent"])
+	delete(sess.Context, sm.CtxAgentResumeTurn)
+	sess.Context["patient_id"] = "OTRO-PACIENTE"
+	sess.Context["selected_slot_id"] = "1|3|202611030730"
+
+	result, err := m.Process(context.Background(), sess, postbackM("reschedule"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateListAppointments || result.UpdateCtx["patient_id"] != "PAT001" {
+		t.Fatalf("next=%s patient_id=%q", result.NextState, result.UpdateCtx["patient_id"])
+	}
+	if !slices.Contains(result.ClearCtx, "selected_slot_id") {
+		t.Errorf("no se borra el horario del trámite viejo; ClearCtx=%v", result.ClearCtx)
 	}
 }

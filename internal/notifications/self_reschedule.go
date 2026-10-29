@@ -2,14 +2,11 @@ package notifications
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
@@ -41,17 +38,6 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		return
 	}
 
-	// Modelo multi-slot: una cita ocupa N slots (programacion_medico_detalle.IdCita).
-	// El número de espacios a re-reservar es el conteo real de slots de la cita, NO
-	// len(block) — que con este modelo siempre vale 1 sin importar el tamaño real.
-	espacios := len(block)
-	if n, err := m.apptSvc.SlotCountForAppointment(ctx, pending.AppointmentID); err == nil && n > espacios {
-		espacios = n
-	}
-	if espacios < 1 {
-		espacios = 1
-	}
-
 	// 3. Extract procedure info
 	cupsCode := ""
 	cupsName := ""
@@ -70,50 +56,7 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		return
 	}
 
-	// 4. Derive flags from Observations + nombres de CUPS (una cita creada por un agente puede no
-	// traer "Contrastada" en la observación pero sí "CON CONTRASTE" en el nombre → sin esto se
-	// reprogramaría como simple y podría ofrecer un slot fuera de la ventana de contraste).
-	procNames := []string{cupsName}
-	for _, p := range appt.Procedures {
-		procNames = append(procNames, p.CupName)
-	}
-	isContrasted := "0"
-	if utils.AppointmentIsContrasted(appt.Observations, procNames...) {
-		isContrasted = "1"
-	}
-	// Sedación: observación + asunto de la cita (17 = agenda de sedación, señal fiable cuando el
-	// agente no escribió la observación).
-	asunto, _ := m.apptSvc.AppointmentAsunto(ctx, pending.AppointmentID)
-	isSedated := "0"
-	if utils.AppointmentIsSedated(appt.Observations, asunto) {
-		isSedated = "1"
-	}
-
-	skipCancelStr := "0"
-	if skipCancel {
-		skipCancelStr = "1"
-	}
-
-	// 5. Build procedures_json required by createAppointmentHandler
-	cups := make([]services.CUPSEntry, 0, len(appt.Procedures))
-	for _, p := range appt.Procedures {
-		cups = append(cups, services.CUPSEntry{
-			Code:     p.CupCode,
-			Name:     p.CupName,
-			Quantity: 1,
-		})
-	}
-	if len(cups) == 0 {
-		cups = []services.CUPSEntry{{Code: cupsCode, Name: cupsName, Quantity: 1}}
-	}
-	groups := []services.CUPSGroup{{
-		ServiceType: "general",
-		Cups:        cups,
-		Espacios:    espacios,
-	}}
-	proceduresJSON, _ := json.Marshal(groups)
-
-	// 6. Create session at SEARCH_SLOTS with pre-populated context
+	// 4. Create session at SEARCH_SLOTS with pre-populated context
 	sess := &session.Session{
 		ID:           uuid.New().String(),
 		PhoneNumber:  phone,
@@ -122,41 +65,14 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		ExpiresAt:    time.Now().Add(120 * time.Minute),
 	}
 
-	sessionCtx := map[string]string{
-		// Patient data
-		"patient_id":     appt.PatientID,
-		"patient_name":   appt.PatientName,
-		"patient_entity": appt.Entity,
-		// Contrato de la cita original (appt.Entity = citas.contrato). Sin esto, patient_contract
-		// quedaba vacío y effectiveContract NO re-validaba la regla MRC: una cita que quedó con
-		// contrato MRC (5/6) pero cuyos CUPS no son de grupo MRC se reprogramaba manteniendo MRC en
-		// vez de degradar a Evento (7/4). Con esto, effectiveContract(sess) re-deriva por CUPS igual
-		// que al crear. Para citas ya correctas es idéntico; solo corrige las mal quedadas.
-		"patient_contract": appt.Entity,
-		"patient_age":      "0", // Skip age restrictions (already validated)
-
-		// Procedure data
-		"cups_code":       cupsCode,
-		"cups_name":       cupsName,
-		"is_contrasted":   isContrasted,
-		"is_sedated":      isSedated,
-		"espacios":        fmt.Sprintf("%d", espacios),
-		"procedures_json": string(proceduresJSON),
-
-		// Flow control
-		"total_procedures":      "1",
-		"current_procedure_idx": "0",
-		"menu_option":           "agendar",
-
-		// Reschedule-specific keys
-		"reschedule_appt_id":         pending.AppointmentID,
-		"reschedule_skip_cancel":     skipCancelStr,
-		"reschedule_conversation_id": pending.ConversationID,
-		"reschedule_bird_msg_id":     pending.BirdMessageID,
-
-		// Prefer same doctor (must be cedula, not cod_medi, for slot_service match)
-		"preferred_doctor_doc": appt.DoctorDocument,
+	// Datos de la cita y claves de reprogramación: el armado compartido con
+	// startConfirmRescheduleSession y con «Reprogramar» de NOTIF_PENDING.
+	sessionCtx := m.apptSvc.RescheduleContext(ctx, appt, len(block))
+	if skipCancel {
+		sessionCtx["reschedule_skip_cancel"] = "1"
 	}
+	sessionCtx["reschedule_conversation_id"] = pending.ConversationID
+	sessionCtx["reschedule_bird_msg_id"] = pending.BirdMessageID
 
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {
 		slog.Error("self_reschedule: create session", "error", err)
@@ -176,11 +92,11 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		return
 	}
 
-	// 6. Send "searching..." message and enqueue virtual message
+	// 5. Send "searching..." message and enqueue virtual message
 	m.birdClient.SendText(phone, pending.ConversationID, "Vamos a buscar horarios disponibles para *"+cupsName+"*...")
 	m.workerPool.EnqueueVirtual(phone)
 
-	// 7. Log KPI event
+	// 6. Log KPI event
 	if m.tracker != nil {
 		m.tracker.LogEvent(ctx, sess.ID, phone, "notification_reschedule_self_service",
 			map[string]interface{}{
@@ -197,6 +113,6 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		"appointment_id", pending.AppointmentID,
 		"cups_code", cupsCode,
 		"skip_cancel", skipCancel,
-		"espacios", espacios,
+		"espacios", sessionCtx["espacios"],
 		"block_size", len(block))
 }

@@ -488,61 +488,6 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		return
 	}
 
-	// Modelo multi-slot: una cita ocupa N slots (programacion_medico_detalle.IdCita).
-	// El número de espacios a re-reservar al reagendar es el conteo real de slots de la
-	// cita, NO len(block) — que con este modelo siempre vale 1 sin importar el tamaño.
-	espacios := len(block)
-	if n, err := m.apptSvc.SlotCountForAppointment(ctx, pending.AppointmentID); err == nil && n > espacios {
-		espacios = n
-	}
-	if espacios < 1 {
-		espacios = 1
-	}
-
-	cupsCode := ""
-	cupsName := ""
-	if len(appt.Procedures) > 0 {
-		cupsCode = appt.Procedures[0].CupCode
-		cupsName = appt.Procedures[0].CupName
-	}
-
-	// Contraste: observación de SIESA + nombre del/los CUPS (cita de agente sin "Contrastada" en la
-	// observación pero con "CON CONTRASTE" en el nombre → evita reprogramar como simple fuera de ventana).
-	procNames := []string{cupsName}
-	for _, p := range appt.Procedures {
-		procNames = append(procNames, p.CupName)
-	}
-	isContrasted := "0"
-	if utils.AppointmentIsContrasted(appt.Observations, procNames...) {
-		isContrasted = "1"
-	}
-	// Sedación: observación + asunto de la cita (17 = agenda de sedación, señal fiable cuando el
-	// agente no escribió la observación).
-	asunto, _ := m.apptSvc.AppointmentAsunto(ctx, pending.AppointmentID)
-	isSedated := "0"
-	if utils.AppointmentIsSedated(appt.Observations, asunto) {
-		isSedated = "1"
-	}
-
-	// Build procedures_json required by createAppointmentHandler
-	cups := make([]services.CUPSEntry, 0, len(appt.Procedures))
-	for _, p := range appt.Procedures {
-		cups = append(cups, services.CUPSEntry{
-			Code:     p.CupCode,
-			Name:     p.CupName,
-			Quantity: 1,
-		})
-	}
-	if len(cups) == 0 && cupsCode != "" {
-		cups = []services.CUPSEntry{{Code: cupsCode, Name: cupsName, Quantity: 1}}
-	}
-	groups := []services.CUPSGroup{{
-		ServiceType: "general",
-		Cups:        cups,
-		Espacios:    espacios,
-	}}
-	proceduresJSON, _ := json.Marshal(groups)
-
 	// Close any pre-existing session to avoid orphan inactivity timers
 	if err := m.sessionRepo.CompleteActiveByPhone(ctx, phone); err != nil {
 		slog.Error("startConfirmRescheduleSession: close old session", "phone", utils.MaskPhone(phone), "error", err)
@@ -557,44 +502,15 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 		ExpiresAt:      time.Now().Add(30 * time.Minute),
 	}
 
-	sessCtx := map[string]string{
-		// Patient data
-		"patient_id":     appt.PatientID,
-		"patient_name":   appt.PatientName,
-		"patient_entity": appt.Entity,
-		// Contrato de la cita original → effectiveContract re-valida MRC/Evento por CUPS al
-		// reprogramar (misma regla que al crear); sin esto quedaba vacío y solo se preservaba el
-		// contrato original sin re-validar. Ver nota en self_reschedule.go.
-		"patient_contract": appt.Entity,
-		"patient_age":      "0",
-
-		// Procedure data
-		"cups_code":       cupsCode,
-		"cups_name":       cupsName,
-		"is_contrasted":   isContrasted,
-		"is_sedated":      isSedated,
-		"espacios":        fmt.Sprintf("%d", espacios),
-		"procedures_json": string(proceduresJSON),
-
-		// Flow control
-		"total_procedures":      "1",
-		"current_procedure_idx": "0",
-		"menu_option":           "agendar",
-
-		// Reschedule keys (used by SEARCH_SLOTS if confirmed)
-		"reschedule_appt_id":         pending.AppointmentID,
-		"reschedule_skip_cancel":     "0",
-		"reschedule_conversation_id": pending.ConversationID,
-		"reschedule_bird_msg_id":     pending.BirdMessageID,
-		// N14: preferred_doctor_doc debe ser la cédula (sis_medi.cedula), no cod_medi —
-		// slot_service hace match contra DoctorDocument. DoctorID nunca casaba.
-		"preferred_doctor_doc": appt.DoctorDocument,
-
-		// Display keys for confirmation prompt
-		"notif_appt_date": utils.FormatFriendlyDate(appt.Date),
-		"notif_appt_time": services.FormatTimeSlot(appt.TimeSlot),
-		"notif_cups_name": services.GetFirstCupName(*appt),
-	}
+	// Datos de la cita y claves de reprogramación (usadas por SEARCH_SLOTS si confirma): el
+	// armado compartido con startSelfReschedule y con «Reprogramar» de NOTIF_PENDING.
+	sessCtx := m.apptSvc.RescheduleContext(ctx, appt, len(block))
+	sessCtx["reschedule_conversation_id"] = pending.ConversationID
+	sessCtx["reschedule_bird_msg_id"] = pending.BirdMessageID
+	// Display keys for confirmation prompt
+	sessCtx["notif_appt_date"] = utils.FormatFriendlyDate(appt.Date)
+	sessCtx["notif_appt_time"] = services.FormatTimeSlot(appt.TimeSlot)
+	sessCtx["notif_cups_name"] = services.GetFirstCupName(*appt)
 
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {
 		slog.Error("startConfirmRescheduleSession: create session", "error", err)
