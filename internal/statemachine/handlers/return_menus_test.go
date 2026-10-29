@@ -303,6 +303,50 @@ func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 	}
 }
 
+// NOTIF_PENDING no ofrece «Devolver al bot en el mismo paso»: reanudar tal cual re-pide la
+// confirmación con botones y la sesión escalada no trae la clave de cita que el handler lee, así
+// que el paciente quedaba con «No pudimos encontrar tu cita». Las acciones por tipo, reiniciar y
+// cerrar siguen.
+func TestNotifPendingReturnMenu_HidesPlainResume(t *testing.T) {
+	returnMenuMachine()
+	cases := map[string]*session.Session{"sin sesión": nil}
+	for _, typ := range []string{"confirmation", "waiting_list", "cancellation"} {
+		s := testSess(sm.StateNotifPending)
+		s.Context["notif_type"] = typ
+		cases[typ] = s
+	}
+	for name, sess := range cases {
+		t.Run(name, func(t *testing.T) {
+			var values []string
+			for _, o := range sm.ReturnOptionsFor(sess, sm.StateNotifPending) {
+				values = append(values, o.Value)
+			}
+			if slices.Contains(values, sm.ReturnResume) {
+				t.Errorf("NOTIF_PENDING ofrece %s: %v", sm.ReturnResume, values)
+			}
+			for _, v := range []string{sm.ReturnReset, sm.ReturnClose} {
+				if !slices.Contains(values, v) {
+					t.Errorf("falta la universal %s: %v", v, values)
+				}
+			}
+			own := notifPendingReturnOptions(sess)
+			if len(values) < len(own) || !slices.Equal(values[:len(own)], func() []string {
+				var v []string
+				for _, o := range own {
+					v = append(v, o.Value)
+				}
+				return v
+			}()) {
+				t.Errorf("las acciones del tipo no van primero: %v", values)
+			}
+		})
+	}
+	desc := string(sm.StaticInputDescriptor(nil, sm.StateNotifPending))
+	if strings.Contains(desc, sm.ReturnResume) {
+		t.Errorf("el descriptor de NOTIF_PENDING lleva %s: %s", sm.ReturnResume, desc)
+	}
+}
+
 // BOT_DISABLED no es un estado con handler: «devolver tal cual» lo rompería. El menú ofrece
 // empezar desde el saludo y esconde la reanudación simple.
 func TestBotDisabledReturnMenu_OffersGreetingAndHidesResume(t *testing.T) {

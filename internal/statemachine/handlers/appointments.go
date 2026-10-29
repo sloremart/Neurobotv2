@@ -154,6 +154,10 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 	// con la vista de la sesión. El worker reconoce State == NOTIF_PENDING con Data = acción y la
 	// ejecuta sin reanudar el flujo.
 	sm.RegisterReturnMenu(sm.StateNotifPending, notifPendingReturnOptions)
+	// Sin «Devolver al bot en el mismo paso»: reanudar tal cual re-pide la confirmación con
+	// botones, y la sesión escalada guarda la cita como notif_appointment_id mientras el handler
+	// lee notif_appt_id → «No pudimos encontrar tu cita» y cierre. El agente elige la acción.
+	sm.HidePlainResume(sm.StateNotifPending)
 	// La notificación deja una cita (o una acción de cita) por resolver.
 	sm.RegisterResolveGuard(sm.StateNotifPending, sm.ResolveGuardPendingAppointment)
 	m.RegisterWithConfig(sm.StateNotifPending, sm.HandlerConfig{
