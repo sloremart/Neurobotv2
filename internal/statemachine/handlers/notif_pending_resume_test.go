@@ -273,6 +273,20 @@ func TestNotifPendingReturnMenu_PlainResumeOnlyWhereTheButtonsApply(t *testing.T
 					t.Errorf("falta la universal %s: %v", v, values)
 				}
 			}
+			// Las acciones del tipo de notificación van primero: es lo que el agente busca.
+			var own []string
+			for _, o := range notifPendingReturnOptions(c.sess) {
+				own = append(own, o.Value)
+			}
+			if len(values) < len(own) || !slices.Equal(values[:len(own)], own) {
+				t.Errorf("las acciones del tipo no van primero: %v", values)
+			}
+			// El descriptor que viaja en el sobre (lo arma el NotificationManager sin máquina, con la
+			// vista de la sesión) lleva la reanudación exactamente donde el menú la ofrece.
+			desc := string(sm.StaticInputDescriptor(c.sess, sm.StateNotifPending))
+			if got := strings.Contains(desc, `"`+sm.ReturnResume+`"`); got != c.want {
+				t.Errorf("descriptor con %s = %v, quería %v: %s", sm.ReturnResume, got, c.want, desc)
+			}
 		})
 	}
 }
