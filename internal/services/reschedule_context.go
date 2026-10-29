@@ -34,8 +34,9 @@ func (s *AppointmentService) RescheduleContext(ctx context.Context, appt *domain
 		espacios = 1
 	}
 
-	cupsName := ""
+	cupsCode, cupsName := "", ""
 	if len(appt.Procedures) > 0 {
+		cupsCode = appt.Procedures[0].CupCode
 		cupsName = appt.Procedures[0].CupName
 	}
 
@@ -58,25 +59,20 @@ func (s *AppointmentService) RescheduleContext(ctx context.Context, appt *domain
 		isSedated = "1"
 	}
 
-	return rescheduleContextMap(appt, espacios, isContrasted, isSedated)
+	return rescheduleContextMap(appt, cupsCode, cupsName, espacios, isContrasted, isSedated)
 }
 
 // RescheduleContextKeys son las claves que fija RescheduleContext, sacadas del mismo armado: quien
 // tenga que soltar un trámite de reprogramación las borra sin mantener otra lista.
 func RescheduleContextKeys() []string {
-	keys := slices.Collect(maps.Keys(rescheduleContextMap(&domain.Appointment{}, 1, "0", "0")))
+	keys := slices.Collect(maps.Keys(rescheduleContextMap(&domain.Appointment{}, "", "", 1, "0", "0")))
 	slices.Sort(keys)
 	return keys
 }
 
-// rescheduleContextMap arma el contexto de RescheduleContext con los valores ya resueltos.
-func rescheduleContextMap(appt *domain.Appointment, espacios int, isContrasted, isSedated string) map[string]string {
-	cupsCode, cupsName := "", ""
-	if len(appt.Procedures) > 0 {
-		cupsCode = appt.Procedures[0].CupCode
-		cupsName = appt.Procedures[0].CupName
-	}
-
+// rescheduleContextMap arma el contexto de RescheduleContext con los valores ya resueltos (cupsCode
+// y cupsName son los del primer procedimiento de la cita).
+func rescheduleContextMap(appt *domain.Appointment, cupsCode, cupsName string, espacios int, isContrasted, isSedated string) map[string]string {
 	// procedures_json, que necesita createAppointmentHandler.
 	cups := make([]CUPSEntry, 0, len(appt.Procedures))
 	for _, p := range appt.Procedures {
