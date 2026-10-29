@@ -40,6 +40,20 @@ func payloadOption(label, payload string) sm.ReturnOption {
 	return sm.ReturnOption{Label: label, Value: payload, Data: payload}
 }
 
+// resumeOnlyRetryPrompt es el RetryPrompt de un paso de botones cuyo reintento solo dice
+// «selecciona una opción» (sm.SelectOptionText): en el retorno sin dato del agente de Néctar el
+// paciente no escribió nada, así que recibe la pregunta del paso con sus botones (prompt); en
+// cualquier otro turno, el texto de siempre.
+func resumeOnlyRetryPrompt(prompt func(*session.Session) sm.OutboundMessage) func(*session.Session, *sm.StateResult) {
+	return func(sess *session.Session, result *sm.StateResult) {
+		if sm.IsAgentResumeTurn(sess) {
+			result.Messages = append(result.Messages, prompt(sess))
+			return
+		}
+		result.Messages = append(result.Messages, &sm.TextMessage{Text: sm.SelectOptionText})
+	}
+}
+
 // --- Campos escritos del agente de Néctar ---
 //
 // Cada campo usa EL MISMO validador que el handler de su paso: un dato que el campo acepta nunca

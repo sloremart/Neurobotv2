@@ -38,7 +38,11 @@ func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingR
 	m.RegisterWithConfig(sm.StateMedicationAskSymptoms, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"sin_sintomas", "con_sintomas"},
-		RetryPrompt: func(_ *session.Session, result *sm.StateResult) {
+		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
+			// En el retorno sin dato del agente los botones solos no dicen qué se pregunta.
+			if sm.IsAgentResumeTurn(sess) {
+				result.Messages = append(result.Messages, &sm.TextMessage{Text: medicationSymptomsQuestion})
+			}
 			result.Messages = append(result.Messages, medicationSymptomsButtons())
 		},
 		Handler: medicationAskSymptomsHandler(),
@@ -53,6 +57,12 @@ func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingR
 		InputType: sm.InputButton,
 		Options:   []string{"med_confirm_ok", "med_confirm_retry"},
 		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
+			// En el retorno sin dato del agente se repite qué no coincide: «¿Deseas continuar?» solo
+			// no lo dice.
+			if sm.IsAgentResumeTurn(sess) {
+				result.Messages = append(result.Messages, &sm.TextMessage{Text: medicationOrderMismatchText(
+					sess.GetContext("med_order_found_name"), sess.GetContext("med_medicamento"))})
+			}
 			result.Messages = append(result.Messages, medicationConfirmOrdenButtons())
 		},
 		Handler: medicationConfirmOrdenHandler(),
@@ -216,13 +226,16 @@ func medicationAskFrequencyHandler() sm.StateHandler {
 		sess.SetContext("med_frequency", text)
 
 		r := sm.NewResult(sm.StateMedicationAskSymptoms).
-			WithText("🌡️ *Revisión de síntomas*\n\n" +
-				"En la *última semana*, ¿has presentado alguno de estos síntomas?\n\n" +
-				"• Fiebre\n• Vómito\n• Diarrea\n• Congestión nasal")
+			WithText(medicationSymptomsQuestion)
 		r.Messages = append(r.Messages, medicationSymptomsButtons())
 		return r, nil
 	}
 }
+
+// medicationSymptomsQuestion es la pregunta de MEDICATION_ASK_SYMPTOMS; sus botones van aparte.
+const medicationSymptomsQuestion = "🌡️ *Revisión de síntomas*\n\n" +
+	"En la *última semana*, ¿has presentado alguno de estos síntomas?\n\n" +
+	"• Fiebre\n• Vómito\n• Diarrea\n• Congestión nasal"
 
 func medicationSymptomsButtons() *sm.ButtonMessage {
 	return &sm.ButtonMessage{
@@ -341,14 +354,8 @@ func medicationReceiveOrdenHandler(ocrSvc *services.OCRService) sm.StateHandler 
 
 		// No coincide: pedir confirmación antes de continuar.
 		sess.SetContext("med_order_found_name", foundName)
-		confirmText := fmt.Sprintf(
-			"⚠️ El medicamento encontrado en la orden es:\n*%s*\n\n"+
-				"El medicamento registrado en tu autorización es:\n*%s*\n\n"+
-				"¿Deseas continuar de todas formas?",
-			foundName, pendingName,
-		)
 		r := sm.NewResult(sm.StateMedicationConfirmOrden).
-			WithText(confirmText).
+			WithText(medicationOrderMismatchText(foundName, pendingName)).
 			WithEvent("medication_order_mismatch", map[string]interface{}{"found": foundName, "pending": pendingName})
 		r.Messages = append(r.Messages, medicationConfirmOrdenButtons())
 		return r, nil
@@ -378,6 +385,17 @@ func medicationConfirmOrdenHandler() sm.StateHandler {
 			return r, nil
 		}
 	}
+}
+
+// medicationOrderMismatchText es la pregunta de MEDICATION_CONFIRM_ORDEN: el medicamento de la
+// orden no coincide con el autorizado.
+func medicationOrderMismatchText(foundName, pendingName string) string {
+	return fmt.Sprintf(
+		"⚠️ El medicamento encontrado en la orden es:\n*%s*\n\n"+
+			"El medicamento registrado en tu autorización es:\n*%s*\n\n"+
+			"¿Deseas continuar de todas formas?",
+		foundName, pendingName,
+	)
 }
 
 func medicationConfirmOrdenButtons() *sm.ButtonMessage {

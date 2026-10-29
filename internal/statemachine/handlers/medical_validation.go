@@ -90,8 +90,8 @@ func registerMedicalAgentFields() {
 	registerAgentField(sm.StateGfrHeight, asking(heightQuestion,
 		agentTextInput("Estatura en centímetros (ej: 170)", sm.InputKindNumber, validHeightCm,
 			"Debe ser la estatura en centímetros, entre 30 y 250.")), askAgainOption())
-	registerAgentField(sm.StateGfrWeight,
-		agentTextInput("Peso en kilogramos (ej: 70)", sm.InputKindNumber, nil, ""), askAgainOption())
+	registerAgentField(sm.StateGfrWeight, asking(weightQuestion,
+		agentTextInput("Peso en kilogramos (ej: 70)", sm.InputKindNumber, nil, "")), askAgainOption())
 	// weeks_yes / weeks_no son los comandos del agente que el handler ya reconoce (sin número).
 	registerAgentField(sm.StateAskGestationalWeeks,
 		agentTextInput("Semanas de gestación (ej: 12 o 12.5)", sm.InputKindNumber, validGestationalWeeks,
@@ -473,7 +473,7 @@ func gfrDiseaseHandler() sm.StateHandler {
 		} else {
 			// Cockcroft-Gault necesita peso
 			r.NextState = sm.StateGfrWeight
-			r.WithText("Ingresa tu *peso* en kilogramos.\n\nEjemplo: 70")
+			r.WithText(weightQuestion)
 		}
 
 		return r.WithEvent("disease_selected", map[string]interface{}{"type": selected}), nil
@@ -501,7 +501,7 @@ func gfrHeightHandler() sm.StateHandler {
 		} else {
 			// Necesita peso también
 			r.NextState = sm.StateGfrWeight
-			r.WithText("Ingresa tu *peso* en kilogramos.\n\nEjemplo: 70")
+			r.WithText(weightQuestion)
 		}
 
 		return r, nil
@@ -927,9 +927,11 @@ func askGestationalWeeksHandler() sm.StateHandler {
 }
 
 // Preguntas de los pasos de la función renal: las hace el paso anterior y las repite el retorno
-// sin dato del agente de Néctar (ReturnInput.Prompt).
+// sin dato del agente de Néctar (ReturnInput.Prompt). weightQuestion la hacen GFR_DISEASE y
+// GFR_HEIGHT.
 const (
 	creatinineQuestion = "Para el examen con contraste necesitamos verificar tu *función renal*.\n\nNecesitas un examen de laboratorio reciente (máximo 30 días) llamado *\"Creatinina sérica\"* o *\"Creatinina en sangre\"*.\n\nEn tu resultado de laboratorio busca el valor que aparece junto a *Creatinina* en *mg/dL*.\n\n_Ejemplo de resultado:_\n_Creatinina .......... *0.96* mg/dL_\n\nEscribe solo el número, ej: *0.96*"
 	examDateQuestion   = "¿Qué día te tomaste el examen de creatinina?\n\nEscríbelo como *DD/MM/AAAA* (por ejemplo *05/07/2026*).\n\nEl examen debe tener *máximo 30 días* al momento de tu cita."
 	heightQuestion     = "Escribe la altura del paciente en centímetros. (Ejemplo: si mide 1.70 m, escribir 170)"
+	weightQuestion     = "Ingresa tu *peso* en kilogramos.\n\nEjemplo: 70"
 )

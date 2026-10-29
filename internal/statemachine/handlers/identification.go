@@ -110,8 +110,8 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	m.Register(sm.StateAskUpdateEmail, askUpdateEmailHandler())
 	// Campos del agente: el celular lo juzga el TextValidate del paso (sin Validate propio); el
 	// correo, el mismo emailOr(contactEmailNoAnswers) del handler.
-	registerAgentField(sm.StateAskUpdatePhone,
-		agentTextInput("Celular nuevo del paciente (10 dígitos)", sm.InputKindNumber, nil, ""),
+	registerAgentField(sm.StateAskUpdatePhone, asking(updatePhoneQuestion,
+		agentTextInput("Celular nuevo del paciente (10 dígitos)", sm.InputKindNumber, nil, "")),
 		askAgainOption())
 	registerAgentField(sm.StateAskUpdateEmail, asking(contactEmailQuestion,
 		agentTextInput("Correo nuevo del paciente (o NA si no tiene)", sm.InputKindText, emailOr(contactEmailNoAnswers),
@@ -472,7 +472,7 @@ func confirmContactInfoHandler(patientSvc *services.PatientService) sm.StateHand
 
 		case "contact_update":
 			return sm.NewResult(sm.StateAskUpdatePhone).
-				WithText("Ingresa tu número de celular (debe ser un número con WhatsApp):\n\nEj: 3001234567").
+				WithText(updatePhoneQuestion).
 				WithEvent("contact_update_requested", nil), nil
 		}
 
@@ -554,9 +554,10 @@ func updateContactInfoHandler(patientSvc *services.PatientService) sm.StateHandl
 	}
 }
 
-// Preguntas de ASK_DOCUMENT y ASK_UPDATE_EMAIL: las hace el paso anterior y las repite el retorno
-// sin dato del agente de Néctar (ReturnInput.Prompt).
+// Preguntas de ASK_DOCUMENT, ASK_UPDATE_PHONE y ASK_UPDATE_EMAIL: las hace el paso anterior y las
+// repite el retorno sin dato del agente de Néctar (ReturnInput.Prompt).
 const (
 	documentNumberQuestion = "Ahora ingresa tu *número de documento* (sin puntos ni espacios):"
+	updatePhoneQuestion    = "Ingresa tu número de celular (debe ser un número con WhatsApp):\n\nEj: 3001234567"
 	contactEmailQuestion   = "Ingresa tu correo electrónico o responde *NA* si no tienes:"
 )

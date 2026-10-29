@@ -135,6 +135,10 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 		})
 }
 
+// SelectOptionText es lo que ValidateButtonResponse le dice al paciente ante una respuesta que no es
+// ninguno de los botones del paso.
+const SelectOptionText = "Por favor selecciona una de las opciones disponibles."
+
 // ValidateButtonResponse valida que la respuesta sea uno de los postback esperados.
 // Acepta: postbacks exactos, texto numérico (1, 2, 3...), o texto que coincida
 // con un payload (case-insensitive, ej: "casado" → "CASADO").
@@ -168,7 +172,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 	}
 
 	if IsAgentResumeTurn(sess) {
-		return agentResumeReprompt(sess, "Por favor selecciona una de las opciones disponibles."), ""
+		return agentResumeReprompt(sess, SelectOptionText), ""
 	}
 
 	// Input no válido → retry. Registrar SIEMPRE el texto (enmascarado por estado): es la materia
@@ -195,7 +199,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 	}
 
 	return NewResult(sess.CurrentState).
-		WithText("Por favor selecciona una de las opciones disponibles.").
+		WithText(SelectOptionText).
 		WithEvent("invalid_input", map[string]interface{}{
 			"state": sess.CurrentState,
 			"retry": sess.RetryCount,

@@ -331,10 +331,24 @@ func buildWaitingListSelection(entries []domain.WaitingListEntry) *sm.StateResul
 // SELECT_WAITING_LIST (interactivo) — el paciente elige una cita ya en lista de espera (retoma la
 // búsqueda de slots con los datos guardados) o "cita nueva" (sigue al flujo de subir la orden).
 func selectWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
-	return func(ctx context.Context, _ *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		choice := strings.TrimSpace(msg.Text)
 		if msg.IsPostback {
 			choice = msg.PostbackPayload
+		}
+
+		// Retorno sin dato del agente de Néctar: `__resume__` no es una entrada de la lista. Se le
+		// vuelve a mostrar la lista vigente; si ya no hay entradas activas, sigue con la orden nueva.
+		if sm.IsAgentResumeTurn(sess) && sm.IsReservedKeyword(choice) {
+			if wlRepo != nil {
+				if entries, err := wlRepo.GetActiveByPatient(ctx, sess.GetContext("patient_id")); err == nil && len(entries) > 0 {
+					r := buildWaitingListSelection(entries)
+					r.Events = nil
+					return r.WithEvent("agent_resume_reprompt", map[string]interface{}{"state": sess.CurrentState}), nil
+				}
+			}
+			return sm.NewResult(sm.StateAskMedicalOrder).
+				WithContext("wl_offer_done", "1"), nil
 		}
 
 		// "Cita nueva" (o sin selección clara) → seguir al flujo normal de subir la orden.
@@ -661,34 +675,37 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 		// Re-serializar con datos enriquecidos
 		cupsJSON, _ := json.Marshal(cups)
 
-		// Construir resumen
-		summary := "Detectamos los siguientes procedimientos en tu orden:\n\n"
-		for i, cup := range cups {
-			summary += fmt.Sprintf("%d. *%s*", i+1, cup.Name)
-			qty := cup.Quantity
-			if qty < 1 {
-				qty = 1
-			}
-			if qty > 1 {
-				summary += fmt.Sprintf(" — Cantidad: *%d*", qty)
-			}
-			summary += "\n"
-		}
-
-		if len(skipped) > 0 {
-			summary += fmt.Sprintf("\n⚠️ %d procedimiento(s) de tu orden no están disponibles y fueron omitidos.\n", len(skipped))
-		}
-
-		summary += "\n¿Es correcto?"
-
 		return sm.NewResult(sm.StateConfirmOCRResult).
 			WithContext("ocr_cups_json", string(cupsJSON)).
 			WithButtons(
-				summary,
+				ocrSummaryText(cups, len(skipped)),
 				sm.Button{Text: "Sí, correcto", Payload: "ocr_correct"},
 				sm.Button{Text: "No, corregir", Payload: "ocr_incorrect"},
 			), nil
 	}
+}
+
+// ocrSummaryText es la pregunta de CONFIRM_OCR_RESULT: los procedimientos leídos de la orden
+// (con su cantidad) y cuántos se omitieron por no estar disponibles.
+func ocrSummaryText(cups []services.CUPSEntry, skipped int) string {
+	summary := "Detectamos los siguientes procedimientos en tu orden:\n\n"
+	for i, cup := range cups {
+		summary += fmt.Sprintf("%d. *%s*", i+1, cup.Name)
+		qty := cup.Quantity
+		if qty < 1 {
+			qty = 1
+		}
+		if qty > 1 {
+			summary += fmt.Sprintf(" — Cantidad: *%d*", qty)
+		}
+		summary += "\n"
+	}
+
+	if skipped > 0 {
+		summary += fmt.Sprintf("\n⚠️ %d procedimiento(s) de tu orden no están disponibles y fueron omitidos.\n", skipped)
+	}
+
+	return summary + "\n¿Es correcto?"
 }
 
 // CONFIRM_OCR_RESULT (interactivo) — usuario confirma o corrige
@@ -696,8 +713,16 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "ocr_correct", "ocr_incorrect")
 		if result != nil {
+			question := "¿Es correcto?"
+			// En el retorno sin dato del agente, «¿Es correcto?» solo no dice qué: se repite lo leído.
+			if sm.IsAgentResumeTurn(sess) {
+				var cups []services.CUPSEntry
+				if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err == nil && len(cups) > 0 {
+					question = ocrSummaryText(cups, 0)
+				}
+			}
 			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
-				Text: "¿Es correcto?",
+				Text: question,
 				Buttons: []sm.Button{
 					{Text: "Sí, correcto", Payload: "ocr_correct"},
 					{Text: "No, corregir", Payload: "ocr_incorrect"},
@@ -873,6 +898,10 @@ func ocrFailedHandler(birdClient *bird.Client) sm.StateHandler {
 	}
 }
 
+// manualCupsQuestion es la pregunta de ASK_MANUAL_CUPS que repite el retorno sin dato del agente
+// de Néctar («Buscar de nuevo»). Los pasos que llevan aquí la hacen con su propio texto.
+const manualCupsQuestion = "Escribe el *nombre del procedimiento* que necesitas.\n\nEjemplo: \"Electromiografía\", \"Resonancia\", \"Potenciales evocados\""
+
 // ASK_MANUAL_CUPS (interactivo) — usuario escribe nombre del procedimiento
 func askManualCupsHandler(procedureRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
@@ -886,7 +915,7 @@ func askManualCupsHandler(procedureRepo repository.ProcedureRepository) sm.State
 
 		if len(input) < 3 {
 			retryResult := sm.ValidateWithRetry(sess, input, func(s string) bool { return len(s) >= 3 },
-				"Por favor escribe al menos 3 caracteres del nombre del procedimiento.")
+				sm.ResumeText(sess, "Por favor escribe al menos 3 caracteres del nombre del procedimiento.", manualCupsQuestion))
 			return retryResult, nil
 		}
 
@@ -940,32 +969,52 @@ func askManualCupsHandler(procedureRepo repository.ProcedureRepository) sm.State
 
 		rows := make([]sm.ListRow, len(procs))
 		for i, p := range procs {
-			desc := p.ServiceName
-			if desc == "" {
-				desc = p.Code
-			}
-			rows[i] = sm.ListRow{
-				ID:          fmt.Sprintf("%d", p.ID),
-				Title:       truncate(p.Name, 24),
-				Description: truncate(desc, 72),
-			}
+			rows[i] = procedureRow(p.ID, p.Name, p.ServiceName, p.Code)
 		}
 
-		return sm.NewResult(sm.StateSelectProcedure).
+		return withProcedureList(sm.NewResult(sm.StateSelectProcedure), rows).
 			WithContext("search_procedures_json", string(procsJSON)).
-			WithList(
-				fmt.Sprintf("Encontramos *%d procedimientos*.\nSelecciona el correcto:", len(procs)),
-				"Ver procedimientos",
-				sm.ListSection{Title: "Procedimientos", Rows: rows},
-			).
 			WithEvent("procedure_search_results", map[string]interface{}{"count": len(procs)}), nil
 	}
+}
+
+// procedureRow es la fila de un procedimiento en la lista de SELECT_PROCEDURE.
+func procedureRow(id int, name, serviceName, code string) sm.ListRow {
+	desc := serviceName
+	if desc == "" {
+		desc = code
+	}
+	return sm.ListRow{
+		ID:          fmt.Sprintf("%d", id),
+		Title:       truncate(name, 24),
+		Description: truncate(desc, 72),
+	}
+}
+
+// withProcedureList le pone a r la lista de SELECT_PROCEDURE con esas filas.
+func withProcedureList(r *sm.StateResult, rows []sm.ListRow) *sm.StateResult {
+	return r.WithList(
+		fmt.Sprintf("Encontramos *%d procedimientos*.\nSelecciona el correcto:", len(rows)),
+		"Ver procedimientos",
+		sm.ListSection{Title: "Procedimientos", Rows: rows},
+	)
 }
 
 // SELECT_PROCEDURE (interactivo) — selección de procedimiento de la lista
 func selectProcedureHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		if !msg.IsPostback {
+			// Retorno sin dato del agente de Néctar: se vuelve a mostrar la lista que vio el paciente.
+			if sm.IsAgentResumeTurn(sess) {
+				if procs, err := searchedProcedures(sess); err == nil && len(procs) > 0 {
+					rows := make([]sm.ListRow, len(procs))
+					for i, p := range procs {
+						rows[i] = procedureRow(p.ID, p.Name, p.ServiceName, p.Code)
+					}
+					return withProcedureList(sm.NewResult(sess.CurrentState), rows).
+						WithEvent("agent_resume_reprompt", map[string]interface{}{"state": sess.CurrentState}), nil
+				}
+			}
 			result := sm.RetryOrEscalate(sess, "Por favor selecciona un procedimiento de la lista, o escribe otro nombre para buscar de nuevo.")
 			if result.NextState == sm.StateEscalateToAgent {
 				return result, nil

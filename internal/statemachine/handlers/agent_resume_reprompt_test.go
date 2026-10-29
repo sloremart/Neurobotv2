@@ -269,6 +269,8 @@ func TestTextSteps_NectarResumeAsksTheStepQuestion(t *testing.T) {
 		{sm.StateRegPhone, mainPhoneQuestion, "Número no válido."},
 		{sm.StateRegEmail, regEmailQuestion, "Email no válido."},
 		{sm.StateAskUpdateEmail, contactEmailQuestion, "Email no válido."},
+		{sm.StateAskUpdatePhone, updatePhoneQuestion, "Número no válido."},
+		{sm.StateGfrWeight, weightQuestion, "Peso no válido."},
 	}
 	m := returnMenuMachine()
 	for _, c := range cases {

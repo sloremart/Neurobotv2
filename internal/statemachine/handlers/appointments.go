@@ -176,7 +176,16 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 		InputType: sm.InputButton,
 		Options:   []string{"confirm", "cancel"},
 		ErrorMsg:  "Por favor selecciona una opción.",
-		Handler:   notifRescheduleFallbackHandler(apptSvc, procRepo, addrMapper, onCancel),
+		RetryPrompt: resumeOnlyRetryPrompt(func(sess *session.Session) sm.OutboundMessage {
+			return &sm.ButtonMessage{
+				Text: rescheduleFallbackQuestion(sess.GetContext("cups_name")),
+				Buttons: []sm.Button{
+					{Text: "Confirmar cita", Payload: "confirm"},
+					{Text: "Cancelar cita", Payload: "cancel"},
+				},
+			}
+		}),
+		Handler: notifRescheduleFallbackHandler(apptSvc, procRepo, addrMapper, onCancel),
 	})
 }
 
@@ -756,6 +765,12 @@ func notifPendingHandler(apptSvc *services.AppointmentService, procRepo reposito
 				), nil
 		}
 	}
+}
+
+// rescheduleFallbackQuestion es la pregunta de NOTIF_RESCHEDULE_FALLBACK: no hubo horarios para
+// reprogramar y la cita original sigue vigente.
+func rescheduleFallbackQuestion(cupsName string) string {
+	return fmt.Sprintf("No hay horarios disponibles para *%s* en otra fecha.\n\nTu cita original sigue vigente. ¿Qué deseas hacer?", cupsName)
 }
 
 // notifRescheduleFallbackHandler handles NOTIF_RESCHEDULE_FALLBACK state.

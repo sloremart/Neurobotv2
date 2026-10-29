@@ -615,12 +615,60 @@ func anyCupCovered(ctx context.Context, priceRepo repository.PriceRepository, en
 	return false, lastErr
 }
 
+// coverageGateQuestion es la pregunta de COVERAGE_NO_CONVENIO cuando el «sin convenio» se detecta
+// antes de mostrar horarios.
+func coverageGateQuestion(cupsName string) *sm.ButtonMessage {
+	return &sm.ButtonMessage{
+		Text: fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Puedes agendarlo como *particular*, que tiene un costo.\n\n¿Cómo deseas continuar?", cupsName),
+		Buttons: []sm.Button{
+			{Text: "Continuar particular", Payload: "cov_particular"},
+			{Text: "Hablar con agente", Payload: "cov_agente"},
+		},
+	}
+}
+
+// coverageBookingQuestion es la pregunta de COVERAGE_NO_CONVENIO cuando el «sin convenio» se
+// detecta al agendar el horario elegido (slot, si se conoce): se ofrece particular para ESE horario.
+func coverageBookingQuestion(cupsName string, slot *services.AvailableSlot) *sm.ButtonMessage {
+	slotWhen := ""
+	if slot != nil {
+		if d, perr := time.Parse("2006-01-02", slot.Date); perr == nil {
+			slotWhen = fmt.Sprintf(" para el *%s a las %s*", d.Format("02/01/2006"), services.FormatTimeSlot(slot.TimeSlot))
+		}
+	}
+	return &sm.ButtonMessage{
+		Text: fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Como *particular* tiene un costo.\n\n¿Deseas agendarlo como particular%s?", cupsName, slotWhen),
+		Buttons: []sm.Button{
+			{Text: "Sí, particular", Payload: "cov_particular"},
+			{Text: "Hablar con agente", Payload: "cov_agente"},
+		},
+	}
+}
+
+// coverageNoConvenioQuestion rearma, con la sesión, la pregunta con la que se llegó a
+// COVERAGE_NO_CONVENIO (coverage_from_booking dice cuál de las dos fue).
+func coverageNoConvenioQuestion(sess *session.Session) *sm.ButtonMessage {
+	cupsName := sess.GetContext("cups_name")
+	if cupsName == "" {
+		cupsName = sess.GetContext("cups_code")
+	}
+	if sess.GetContext("coverage_from_booking") == "1" {
+		return coverageBookingQuestion(cupsName, findSelectedSlot(sess))
+	}
+	return coverageGateQuestion(cupsName)
+}
+
 // COVERAGE_NO_CONVENIO (interactivo) — el contrato del paciente no cubre el CUP; ofrece continuar
 // como particular (que sí tiene tarifa) o escalar a un agente.
 func coverageNoConvenioHandler() sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "cov_particular", "cov_agente")
 		if result != nil {
+			// En el retorno sin dato del agente se repite la pregunta con sus botones, no el
+			// «selecciona una opción» suelto.
+			if sm.IsAgentResumeTurn(sess) && result.NextState == sess.CurrentState {
+				result.Messages = []sm.OutboundMessage{coverageNoConvenioQuestion(sess)}
+			}
 			return result, nil // input inválido (retry) o escalamiento, ya resuelto
 		}
 		if selected == "cov_agente" {
@@ -705,12 +753,9 @@ func searchSlotsHandler(slotSvc *services.SlotService, apptSvc *services.Appoint
 				if cupsName == "" {
 					cupsName = cupsCode
 				}
+				q := coverageGateQuestion(cupsName)
 				return sm.NewResult(sm.StateCoverageNoConvenio).
-					WithButtons(
-						fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Puedes agendarlo como *particular*, que tiene un costo.\n\n¿Cómo deseas continuar?", cupsName),
-						sm.Button{Text: "Continuar particular", Payload: "cov_particular"},
-						sm.Button{Text: "Hablar con agente", Payload: "cov_agente"},
-					).
+					WithButtons(q.Text, q.Buttons...).
 					WithEvent("coverage_no_convenio", map[string]interface{}{"cup": cupsCode}), nil
 			} else if checkErr != nil {
 				slog.Warn("coverage_check_failed_fail_open", "cup", cupsCode, "error", checkErr)
@@ -1109,7 +1154,7 @@ func noSlotsHandler(wlRepo WaitingListCreator) sm.StateHandler {
 		if sess.GetContext("reschedule_appt_id") != "" {
 			return sm.NewResult(sm.StateNotifRescheduleFallback).
 				WithButtons(
-					fmt.Sprintf("No hay horarios disponibles para *%s* en otra fecha.\n\nTu cita original sigue vigente. ¿Qué deseas hacer?", cupsName),
+					rescheduleFallbackQuestion(cupsName),
 					sm.Button{Text: "Confirmar cita", Payload: "confirm"},
 					sm.Button{Text: "Reprogramar", Payload: "reschedule"},
 					sm.Button{Text: "Cancelar cita", Payload: "cancel"},
@@ -1747,17 +1792,10 @@ func createAppointmentHandler(apptSvc *services.AppointmentService, priceRepo re
 			}
 			// Se detectó "sin convenio" AL AGENDAR (ya hay slot elegido). Se conserva ese horario: se
 			// ofrece particular PARA EL MISMO slot (no se re-busca). coverage_from_booking lo indica.
-			slotWhen := ""
-			if d, perr := time.Parse("2006-01-02", slot.Date); perr == nil {
-				slotWhen = fmt.Sprintf(" para el *%s a las %s*", d.Format("02/01/2006"), services.FormatTimeSlot(slot.TimeSlot))
-			}
+			q := coverageBookingQuestion(cupsName, slot)
 			return sm.NewResult(sm.StateCoverageNoConvenio).
 				WithContext("coverage_from_booking", "1").
-				WithButtons(
-					fmt.Sprintf("Tu EPS/contrato *no tiene convenio* para *%s*. Como *particular* tiene un costo.\n\n¿Deseas agendarlo como particular%s?", cupsName, slotWhen),
-					sm.Button{Text: "Sí, particular", Payload: "cov_particular"},
-					sm.Button{Text: "Hablar con agente", Payload: "cov_agente"},
-				).
+				WithButtons(q.Text, q.Buttons...).
 				WithEvent("coverage_no_convenio", map[string]interface{}{"cup": sess.GetContext("cups_code"), "from_booking": true}), nil
 		}
 
