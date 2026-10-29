@@ -98,3 +98,57 @@ func TestConfirmConsolidate_NoGoesToAskEmgOrder(t *testing.T) {
 		t.Errorf("esperaba ASK_EMG_ORDER, got %s", res.NextState)
 	}
 }
+
+// Los dos canales de los tests de reintentos agotados.
+var exhaustedRetriesChannels = []struct{ name, phone string }{
+	{"bird", "+573001234567"},
+	{"nectar", "nectar:12"},
+}
+
+// assertOnlyEscalationNotice exige que la escalación en curso conserve SOLO su aviso.
+func assertOnlyEscalationNotice(t *testing.T, res *sm.StateResult) {
+	t.Helper()
+	if res.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("esperaba ESCALATE_TO_AGENT, got %s", res.NextState)
+	}
+	if len(res.Messages) != 1 {
+		t.Fatalf("esperaba solo el aviso, got %d mensajes", len(res.Messages))
+	}
+	txt, ok := res.Messages[0].(*sm.TextMessage)
+	if !ok || txt.Text != sm.EscalationNoticeText {
+		t.Fatalf("esperaba el aviso de escalación, got %#v", res.Messages[0])
+	}
+}
+
+// Agotar reintentos en la pregunta de consolidar conserva el aviso, no repite la pregunta.
+func TestConfirmConsolidate_ExhaustedRetriesKeepsNotice(t *testing.T) {
+	for _, ch := range exhaustedRetriesChannels {
+		t.Run(ch.name, func(t *testing.T) {
+			apptSvc := services.NewAppointmentService(&testutil.MockAppointmentRepo{}, &config.Config{})
+			sess := testSess(sm.StateConfirmConsolidate)
+			sess.PhoneNumber = ch.phone
+			sess.RetryCount = 2
+			res, err := confirmConsolidateHandler(apptSvc)(context.Background(), sess, textM("quizás"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOnlyEscalationNotice(t, res)
+		})
+	}
+}
+
+// Agotar reintentos en la pregunta de la orden EMG conserva el aviso.
+func TestAskEmgOrder_ExhaustedRetriesKeepsNotice(t *testing.T) {
+	for _, ch := range exhaustedRetriesChannels {
+		t.Run(ch.name, func(t *testing.T) {
+			sess := testSess(sm.StateAskEmgOrder)
+			sess.PhoneNumber = ch.phone
+			sess.RetryCount = 2
+			res, err := askEmgOrderHandler()(context.Background(), sess, textM("quizás"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOnlyEscalationNotice(t, res)
+		})
+	}
+}

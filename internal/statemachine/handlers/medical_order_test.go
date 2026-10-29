@@ -1045,3 +1045,29 @@ func TestOCRRetryButtons_BirdUnchanged(t *testing.T) {
 		t.Fatalf("Bird sin asesores: solo reintentar; got %v", got)
 	}
 }
+
+// Agotar reintentos en la pregunta «¿tienes orden?» conserva el aviso, no repite la pregunta.
+func TestAskMedicalOrderParticular_NectarExhaustedRetriesKeepsNotice(t *testing.T) {
+	sess := testSess(sm.StateAskMedicalOrder)
+	sess.PhoneNumber = "nectar:12"
+	sess.SetContext("entity_category", "PARTICULAR")
+	sess.SetContext("_prompted_has_order", "1")
+	sess.RetryCount = 2
+	res, err := askMedicalOrderHandler(&testutil.MockWaitingListCreator{}, nil, nil)(context.Background(), sess, textM("hola"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOnlyEscalationNotice(t, res)
+}
+
+func TestAskMedicalOrderParticular_BirdExhaustedRetriesKeepsNotice(t *testing.T) {
+	sess := testSess(sm.StateAskMedicalOrder)
+	sess.SetContext("entity_category", "PARTICULAR")
+	sess.SetContext("_prompted_has_order", "1")
+	sess.RetryCount = 2
+	res, err := askMedicalOrderHandler(&testutil.MockWaitingListCreator{}, nil, nil)(context.Background(), sess, textM("hola"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOnlyEscalationNotice(t, res)
+}

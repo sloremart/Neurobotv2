@@ -219,6 +219,10 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRServi
 
 			result, selected := sm.ValidateButtonResponse(sess, msg, "has_order_yes", "has_order_no")
 			if result != nil {
+				// Reintentos agotados: el paciente recibe el aviso de la escalación, no la pregunta otra vez.
+				if result.NextState == sm.StateEscalateToAgent {
+					return result, nil
+				}
 				result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
 					Text: "¿Cuentas con una *orden médica* para este procedimiento?",
 					Buttons: []sm.Button{

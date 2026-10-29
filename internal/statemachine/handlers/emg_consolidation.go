@@ -60,6 +60,10 @@ func confirmConsolidateHandler(apptSvc *services.AppointmentService) sm.StateHan
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "consolidate_yes", "consolidate_no")
 		if result != nil {
+			// Reintentos agotados: el paciente recibe el aviso de la escalación, no la pregunta otra vez.
+			if result.NextState == sm.StateEscalateToAgent {
+				return result, nil
+			}
 			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
 				Text: "¿Confirmas agregar estos procedimientos a tu cita existente?",
 				Buttons: []sm.Button{
@@ -120,6 +124,10 @@ func askEmgOrderHandler() sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "emg_order_yes", "emg_order_no")
 		if result != nil {
+			// Reintentos agotados: el paciente recibe el aviso de la escalación, no la pregunta otra vez.
+			if result.NextState == sm.StateEscalateToAgent {
+				return result, nil
+			}
 			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
 				Text: "¿Tienes también la *orden de la electromiografía (EMG)*?",
 				Buttons: []sm.Button{
