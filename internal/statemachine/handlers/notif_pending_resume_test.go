@@ -365,7 +365,9 @@ func TestNotifPending_RescheduleBuildsTheSearchFromTheNotifiedAppointment(t *tes
 }
 
 // Con varias citas ese día el paciente elige cuál en la lista de «Mis citas»: la sesión ya queda
-// con el paciente de la cita notificada y sin el trámite viejo.
+// con el paciente de la cita notificada y sin el trámite viejo. Si la escalación reusó la sesión de
+// una reprogramación por cancelación de la clínica (reschedule_skip_cancel=1), esa marca no puede
+// sobrevivir: la cita nueva no cancelaría la original y quedarían dos en SIESA.
 func TestNotifPending_RescheduleWithSeveralAppointmentsFixesThePatient(t *testing.T) {
 	repo := newNotifApptRepo()
 	m := sm.NewMachine()
@@ -374,10 +376,14 @@ func TestNotifPending_RescheduleWithSeveralAppointmentsFixesThePatient(t *testin
 	delete(sess.Context, sm.CtxAgentResumeTurn)
 	sess.Context["patient_id"] = "OTRO-PACIENTE"
 	sess.Context["selected_slot_id"] = "1|3|202611030730"
+	sess.Context["reschedule_skip_cancel"] = "1"
 
 	result, err := m.Process(context.Background(), sess, postbackM("reschedule"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := result.UpdateCtx["reschedule_skip_cancel"]; got != "0" {
+		t.Errorf("reschedule_skip_cancel = %q, quería 0 (la cita original se cancela al reprogramar)", got)
 	}
 	if result.NextState != sm.StateListAppointments || result.UpdateCtx["patient_id"] != "PAT001" {
 		t.Fatalf("next=%s patient_id=%q", result.NextState, result.UpdateCtx["patient_id"])

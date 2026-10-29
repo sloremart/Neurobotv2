@@ -751,7 +751,7 @@ func notifPendingHandler(apptSvc *services.AppointmentService, procRepo reposito
 				listMsg := buildAppointmentList(ctx, apptSvc, dayAppts, procRepo)
 				r := sm.NewResult(sm.StateListAppointments).
 					WithContext("appointments_json", string(apptJSON))
-				for _, k := range notifReschedulePatientKeys {
+				for _, k := range notifRescheduleListKeys {
 					r.WithContext(k, rc[k])
 				}
 				return r.WithClearCtx(staleRescheduleKeys(rc)...).
@@ -791,15 +791,20 @@ func rescheduleFallbackQuestion(cupsName string) string {
 	return fmt.Sprintf("No hay horarios disponibles para *%s* en otra fecha.\n\nTu cita original sigue vigente. ¿Qué deseas hacer?", cupsName)
 }
 
-// notifReschedulePatientKeys son las claves del paciente de la cita notificada que fija la
-// reprogramación también cuando el paciente elige la cita de una lista (las del procedimiento las
-// arma «Mis citas» con la cita elegida).
-var notifReschedulePatientKeys = []string{"patient_id", "patient_name", "patient_entity", "patient_contract", "patient_age"}
+// notifRescheduleListKeys son las claves de RescheduleContext que la reprogramación fija también
+// cuando el paciente elige la cita de una lista: las del paciente de la cita notificada y la marca
+// de cancelar la original (una sesión reusada de una cancelación de la clínica la trae en "1").
+// Las del procedimiento las arma «Mis citas» con la cita elegida.
+var notifRescheduleListKeys = []string{
+	"patient_id", "patient_name", "patient_entity", "patient_contract", "patient_age",
+	"reschedule_skip_cancel",
+}
 
 // staleRescheduleKeys son las claves que la búsqueda de la reprogramación leería y que la sesión
 // pudo traer de otro trámite (las del grupo de procedimientos, más las de la preselección de lista
-// de espera), sin las que rc vuelve a fijar: borrar y escribir la misma clave en un turno la
-// dejaría borrada.
+// de espera), sin las que trae rc: borrar y escribir la misma clave en un turno la dejaría borrada.
+// En la búsqueda directa rc las vuelve a fijar; en la de la lista, las del procedimiento las fija
+// «Mis citas» después, con la cita elegida.
 func staleRescheduleKeys(rc map[string]string) []string {
 	keys := make([]string, 0, len(procedureGroupContextKeys)+2)
 	for _, k := range append(slices.Clone(procedureGroupContextKeys), "from_waiting_list", "procedure_type") {

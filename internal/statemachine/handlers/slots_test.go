@@ -965,14 +965,14 @@ func TestAdvanceToNextProcedure_NextGroupSearchesWithoutTheGestationalWindow(t *
 	RegisterSlotHandlers(m, slotSvc, nil, nil, nil, nil, nil, nil, nil)
 
 	sess := twoProcSession(sm.StateShowSlots)
-	// Ventana de la ecografía obstétrica del grupo anterior: el cupo de dentro de 60 días queda fuera.
-	sess.Context["gestational_min_date"] = time.Now().AddDate(0, 0, 100).Format("2006-01-02")
-	sess.Context["gestational_max_date"] = time.Now().AddDate(0, 0, 10).Format("2006-01-02")
+	// Ventana de la ecografía obstétrica del grupo anterior (entre 10 y 30 días): el cupo de dentro
+	// de 60 días queda fuera.
+	sess.Context["gestational_min_date"] = time.Now().AddDate(0, 0, 10).Format("2006-01-02")
+	sess.Context["gestational_max_date"] = time.Now().AddDate(0, 0, 30).Format("2006-01-02")
 
 	res := advanceToNextProcedure(sess)
 	if res == nil {
 		t.Fatal("expected advance to next procedure, got nil")
-		return
 	}
 	// Lo que el worker persiste al seguir: el contexto nuevo y el borrado del grupo anterior.
 	for k, v := range res.UpdateCtx {
