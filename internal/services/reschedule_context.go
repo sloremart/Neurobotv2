@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -32,9 +34,8 @@ func (s *AppointmentService) RescheduleContext(ctx context.Context, appt *domain
 		espacios = 1
 	}
 
-	cupsCode, cupsName := "", ""
+	cupsName := ""
 	if len(appt.Procedures) > 0 {
-		cupsCode = appt.Procedures[0].CupCode
 		cupsName = appt.Procedures[0].CupName
 	}
 
@@ -55,6 +56,25 @@ func (s *AppointmentService) RescheduleContext(ctx context.Context, appt *domain
 	isSedated := "0"
 	if utils.AppointmentIsSedated(appt.Observations, asunto) {
 		isSedated = "1"
+	}
+
+	return rescheduleContextMap(appt, espacios, isContrasted, isSedated)
+}
+
+// RescheduleContextKeys son las claves que fija RescheduleContext, sacadas del mismo armado: quien
+// tenga que soltar un trámite de reprogramación las borra sin mantener otra lista.
+func RescheduleContextKeys() []string {
+	keys := slices.Collect(maps.Keys(rescheduleContextMap(&domain.Appointment{}, 1, "0", "0")))
+	slices.Sort(keys)
+	return keys
+}
+
+// rescheduleContextMap arma el contexto de RescheduleContext con los valores ya resueltos.
+func rescheduleContextMap(appt *domain.Appointment, espacios int, isContrasted, isSedated string) map[string]string {
+	cupsCode, cupsName := "", ""
+	if len(appt.Procedures) > 0 {
+		cupsCode = appt.Procedures[0].CupCode
+		cupsName = appt.Procedures[0].CupName
 	}
 
 	// procedures_json, que necesita createAppointmentHandler.

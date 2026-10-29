@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -172,16 +173,20 @@ func escalationDiverted(preState string, r *sm.StateResult) *sm.StateResult {
 	return r
 }
 
-// rescheduleTramiteKeys son las claves del trámite de reprogramación que la búsqueda y el
-// agendamiento leen: la cita que se reprograma (createAppointmentHandler la CANCELA al agendar si
-// reschedule_skip_cancel no es "1"), los datos de su canal, el médico de la cita original, que la
-// búsqueda de una orden nueva tomaría como preferido (CHECK_PRIOR_CONSULT no lo borra si no halla
-// otro), y los datos de visualización de la cita que dejó RescheduleContext.
-var rescheduleTramiteKeys = []string{
-	"reschedule_appt_id", "reschedule_skip_cancel", "reschedule_conversation_id", "reschedule_bird_msg_id",
-	"preferred_doctor_doc",
-	"reschedule_appt_date", "reschedule_appt_time", "reschedule_appt_cups_name",
-}
+// rescheduleTramiteKeys son las claves del trámite de reprogramación que suelta una escalación
+// desviada desde NOTIF_RESCHEDULE_FALLBACK: TODAS las que fija RescheduleContext (derivadas de la
+// propia función, para no mantener otra lista) y las que añaden sus callers (canal y mensaje de la
+// notificación). Sin ellas, la cita original se cancelaría al agendar otra cosa
+// (reschedule_appt_id) y la búsqueda de una orden nueva heredaría su CUPS, sus espacios, su
+// médico preferido o su edad "0".
+//
+// Se conservan patient_id y patient_name: dicen quién es el paciente de ESTA conversación, no el
+// trámite, y el resumen de una escalación que pida desde el menú los muestra. Los flujos del menú
+// (agendar, citas, medicamentos) vuelven a identificarlo y los reescriben.
+var rescheduleTramiteKeys = slices.DeleteFunc(
+	append(services.RescheduleContextKeys(), "reschedule_conversation_id", "reschedule_bird_msg_id"),
+	func(k string) bool { return k == "patient_id" || k == "patient_name" },
+)
 
 // reasonNotifiesPatient dice si el motivo interno obliga a avisarle al paciente de Néctar aunque
 // no lo haya pedido: son las escalaciones cuyo caller no trae texto para él (la entidad «particular

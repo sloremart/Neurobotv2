@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
@@ -21,13 +22,23 @@ func rescheduleEscalationSess() *session.Session {
 	sess.ConversationID = "conv-test"
 	sess.Context[sm.CtxPreAutoState] = sm.StateNotifRescheduleFallback
 	sess.Context[sm.CtxEscalationReason] = sm.EscalationReasonRescheduleNoSlots
-	for _, k := range rescheduleTramiteKeys {
+	for _, k := range rescheduleSessionKeys() {
 		sess.Context[k] = "viejo"
 	}
 	sess.Context["reschedule_appt_id"] = "APT-ORIGINAL"
 	sess.Context["reschedule_skip_cancel"] = "0"
 	return sess
 }
+
+// rescheduleSessionKeys son TODAS las claves que deja una sesión de reprogramación: las de
+// RescheduleContext más las que añaden sus callers (canal y mensaje de la notificación).
+func rescheduleSessionKeys() []string {
+	return append(services.RescheduleContextKeys(), "reschedule_conversation_id", "reschedule_bird_msg_id")
+}
+
+// keptAfterDivert son las que la salida desviada conserva: quién es el paciente de esta
+// conversación (no el trámite), para el resumen de una escalación que pida desde el menú.
+var keptAfterDivert = []string{"patient_id", "patient_name"}
 
 func TestEscalateFromRescheduleFallback_DivertedExitDropsTheReschedule(t *testing.T) {
 	cases := map[string]func(t *testing.T) (*sm.Machine, *session.Session){
@@ -59,9 +70,10 @@ func TestEscalateFromRescheduleFallback_DivertedExitDropsTheReschedule(t *testin
 			if result.NextState == sm.StateEscalated {
 				t.Fatal("el caso debía desviarse, no escalar")
 			}
-			for _, k := range rescheduleTramiteKeys {
-				if !slices.Contains(result.ClearCtx, k) {
-					t.Errorf("%s sobrevive a la escalación desviada; ClearCtx=%v", k, result.ClearCtx)
+			for _, k := range rescheduleSessionKeys() {
+				kept := slices.Contains(keptAfterDivert, k)
+				if cleared := slices.Contains(result.ClearCtx, k); cleared == kept {
+					t.Errorf("%s: borrada=%v, debía conservarse=%v; ClearCtx=%v", k, cleared, kept, result.ClearCtx)
 				}
 			}
 		})
@@ -80,8 +92,13 @@ func TestEscalateFromRescheduleFallback_RealEscalationKeepsTheReschedule(t *test
 	if result.NextState != sm.StateEscalated {
 		t.Fatalf("next = %s, debía escalar", result.NextState)
 	}
-	if slices.Contains(result.ClearCtx, "reschedule_appt_id") || sess.GetContext("reschedule_appt_id") != "APT-ORIGINAL" {
-		t.Errorf("la escalación real conserva la cita a reprogramar; ClearCtx=%v", result.ClearCtx)
+	for _, k := range rescheduleSessionKeys() {
+		if slices.Contains(result.ClearCtx, k) {
+			t.Errorf("la escalación real conserva el trámite, y borra %s; ClearCtx=%v", k, result.ClearCtx)
+		}
+	}
+	if sess.GetContext("reschedule_appt_id") != "APT-ORIGINAL" {
+		t.Error("la escalación real conserva la cita a reprogramar")
 	}
 }
 
