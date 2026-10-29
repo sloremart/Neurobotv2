@@ -17,7 +17,6 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
-	"github.com/neuro-bot/neuro-bot/internal/testutil"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -758,24 +757,20 @@ func representativeSess(step string) *session.Session {
 
 func TestAppointmentReturnOptions_DataIsTheAppointmentID(t *testing.T) {
 	appts := sampleAppointments()
-	// La 2ª cita solo trae el código: el nombre sale del catálogo, como en la lista del paciente.
+	// La 2ª cita solo trae el código y no trae médico: el menú del agente se arma en el turno de
+	// escalación sin consultar el catálogo (rotula con el código) y sin «Dr.» vacío.
 	appts[1].Procedures[0].CupName = ""
+	appts[1].DoctorName = ""
 	b, _ := json.Marshal(appts)
 	sess := testSess(sm.StateListAppointments)
 	sess.Context["appointments_json"] = string(b)
-	procRepo := &testutil.MockProcedureRepo{
-		FindByCodeFn: func(_ context.Context, code string) (*domain.Procedure, error) {
-			return &domain.Procedure{Code: code, Name: "RM CEREBRO SIMPLE"}, nil
-		},
-	}
-	got := appointmentReturnOptions(procRepo)(sess)
+	got := appointmentReturnOptions(sess)
 	if len(got) != 3 {
 		t.Fatalf("opciones = %+v, quiero una por cita y recargar", got)
 	}
-	wantCup := []string{"CONSULTA NEUROLOGIA", "RM CEREBRO SIMPLE"}
+	wantRest := []string{" — Dr. Ortega — CONSULTA NEUROLOGIA", " — 883141"}
 	for i, a := range appts {
-		wantLabel := utils.FormatFriendlyDateShort(a.Date) + " " + services.FormatTimeSlot(a.TimeSlot) +
-			" — Dr. " + a.DoctorName + " — " + wantCup[i]
+		wantLabel := utils.FormatFriendlyDateShort(a.Date) + " " + services.FormatTimeSlot(a.TimeSlot) + wantRest[i]
 		o := got[i]
 		if o.Label != wantLabel || o.Value != "cita_"+a.ID || o.Data != a.ID || o.Target != "" {
 			t.Errorf("opción %d = %+v, quiero rótulo %q, token cita_%s y Data %q", i, o, wantLabel, a.ID, a.ID)

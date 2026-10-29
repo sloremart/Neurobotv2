@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
@@ -51,7 +50,7 @@ func notifyFreedSlots(ctx context.Context, onCancel CancellationCallback, block 
 func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
 	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo))
 	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo))
-	sm.RegisterReturnMenu(sm.StateListAppointments, appointmentReturnOptions(procRepo))
+	sm.RegisterReturnMenu(sm.StateListAppointments, appointmentReturnOptions)
 	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper))
 	sm.RegisterStaticReturnMenu(sm.StateAppointmentAction,
 		payloadOption("Confirmar la cita", "appt_confirm"),
@@ -1199,10 +1198,6 @@ type appointmentListData struct {
 // appointmentListMax es cuántas citas muestra la lista de LIST_APPOINTMENTS.
 const appointmentListMax = 10
 
-// appointmentLabelLookupTimeout acota la búsqueda de nombres de procedimiento al armar el menú
-// del agente, que no tiene el ctx de un turno.
-const appointmentLabelLookupTimeout = 3 * time.Second
-
 // appointmentListTitle es la fecha y hora de una fila de la lista de citas.
 func appointmentListTitle(appt domain.Appointment) string {
 	return fmt.Sprintf("%s %s", utils.FormatFriendlyDateShort(appt.Date), services.FormatTimeSlot(appt.TimeSlot))
@@ -1226,31 +1221,39 @@ func appointmentListCupName(ctx context.Context, appt domain.Appointment, procRe
 // de su fila. El token identifica la cita (cita_<ID>) y el Data es su ID, el payload de la fila
 // que el handler reconoce como postback: una cita que ya no esté en la sesión deja el token
 // desconocido y el paso vuelve a mostrar la lista.
-func appointmentReturnOptions(procRepo repository.ProcedureRepository) sm.ReturnOptionsBuilder {
-	return func(sess *session.Session) []sm.ReturnOption {
-		reload := sm.ReturnOption{
-			Label: "Recargar citas desde el sistema", Value: "recargar_citas", Target: sm.StateFetchAppointments,
-		}
-		if sess == nil {
-			return []sm.ReturnOption{reload}
-		}
-		var appts []domain.Appointment
-		if err := json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appts); err != nil {
-			return []sm.ReturnOption{reload}
-		}
-		if len(appts) > appointmentListMax {
-			appts = appts[:appointmentListMax]
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), appointmentLabelLookupTimeout)
-		defer cancel()
-		options := make([]sm.ReturnOption, 0, len(appts)+1)
-		for _, a := range appts {
-			label := fmt.Sprintf("%s — Dr. %s — %s", appointmentListTitle(a), a.DoctorName,
-				appointmentListCupName(ctx, a, procRepo))
-			options = append(options, sm.ReturnOption{Label: label, Value: "cita_" + returnTokenPart(a.ID), Data: a.ID})
-		}
-		return append(options, reload)
+//
+// Se arma dentro del turno de escalación y sin su ctx: no consulta el catálogo de procedimientos;
+// una cita que solo trae el código se rotula con el código.
+func appointmentReturnOptions(sess *session.Session) []sm.ReturnOption {
+	reload := sm.ReturnOption{
+		Label: "Recargar citas desde el sistema", Value: "recargar_citas", Target: sm.StateFetchAppointments,
 	}
+	if sess == nil {
+		return []sm.ReturnOption{reload}
+	}
+	var appts []domain.Appointment
+	if err := json.Unmarshal([]byte(sess.GetContext("appointments_json")), &appts); err != nil {
+		return []sm.ReturnOption{reload}
+	}
+	if len(appts) > appointmentListMax {
+		appts = appts[:appointmentListMax]
+	}
+	options := make([]sm.ReturnOption, 0, len(appts)+1)
+	for _, a := range appts {
+		label := appointmentListTitle(a)
+		if a.DoctorName != "" {
+			label += " — Dr. " + a.DoctorName
+		}
+		cup := services.GetFirstCupName(a)
+		if cup == "" {
+			cup = services.GetFirstCupCode(a)
+		}
+		if cup != "" {
+			label += " — " + cup
+		}
+		options = append(options, sm.ReturnOption{Label: label, Value: "cita_" + returnTokenPart(a.ID), Data: a.ID})
+	}
+	return append(options, reload)
 }
 
 // buildAppointmentList constructs the list display for appointments.
