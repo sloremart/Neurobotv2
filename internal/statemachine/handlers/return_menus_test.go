@@ -1,14 +1,18 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -522,12 +526,118 @@ func TestReturnMenus_SearchSlotsOptionsRetakeWithoutData(t *testing.T) {
 	for _, step := range []string{sm.StateOfferWaitingList, sm.StateConfirmBooking} {
 		var found bool
 		for _, o := range sm.ReturnOptionsFor(nil, step) {
-			if o.Value == "buscar_horarios" {
-				found = o.Target == sm.StateSearchSlots && o.Data == "" && !o.Close
+			if o.Value == "buscar_horarios" && o.Target == sm.StateSearchSlots && o.Data == "" && !o.Close {
+				found = true
 			}
 		}
 		if !found {
 			t.Errorf("%s: falta «buscar_horarios» hacia SEARCH_SLOTS sin dato", step)
 		}
+	}
+}
+
+// virtualAgentMessage es el mensaje virtual con el que el worker reanuda una opción con Data:
+// postback y texto a la vez (igual que el webhook de Bird).
+func virtualAgentMessage(data string) bird.InboundMessage {
+	return bird.InboundMessage{
+		ID: "msg-virtual", Phone: "+573001234567", MessageType: "postback",
+		Text: data, IsPostback: true, PostbackPayload: data, ReceivedAt: time.Now(),
+	}
+}
+
+// Pasa cada opción propia con Data por el handler REAL del paso, con el mensaje virtual del
+// worker. La opción debe ser aceptada: sin reintento contado y sin el aviso de entrada inválida.
+// Con dependencias nil, un handler que llega a su lógica de negocio puede paniquear o devolver
+// error DESPUÉS de validar: eso cuenta como aceptada (un re-prompt nunca llega ahí) y se cuenta
+// aparte en el log. Ningún paso queda excluido: todos se pueden manejar con nil.
+func TestReturnMenus_EveryOptionIsAcceptedByTheRealHandler(t *testing.T) {
+	m := returnMenuMachine()
+	var driven, reachedBusinessLogic int
+	for _, step := range sm.RegisteredReturnSteps() {
+		if !m.IsRegistered(step) {
+			continue
+		}
+		for _, o := range sm.ReturnOptionsFor(nil, step) {
+			if sm.IsUniversalReturnValue(o.Value) || o.Data == "" {
+				continue
+			}
+			sess := testSess(step)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						reachedBusinessLogic++
+						t.Logf("negocio: %s/%s", step, o.Value)
+						driven++
+						if sess.RetryCount != 0 {
+							t.Errorf("%s/%s: contó un reintento antes de entrar en la lógica de negocio", step, o.Value)
+						}
+					}
+				}()
+				result, err := m.Process(context.Background(), sess, virtualAgentMessage(o.Data))
+				driven++
+				if err != nil {
+					reachedBusinessLogic++
+					t.Logf("negocio(error): %s/%s", step, o.Value)
+					return
+				}
+				if sess.RetryCount != 0 {
+					t.Errorf("%s/%s: RetryCount = %d, la opción no se aceptó", step, o.Value, sess.RetryCount)
+				}
+				for _, e := range result.Events {
+					if e.Type == "invalid_input" {
+						t.Errorf("%s/%s: el handler la rechazó como entrada inválida", step, o.Value)
+					}
+				}
+			}()
+		}
+	}
+	t.Logf("opciones pasadas por el handler real: %d (llegaron a la lógica de negocio con dependencias nil: %d)",
+		driven, reachedBusinessLogic)
+	if driven < 100 {
+		t.Errorf("solo se pasaron %d opciones; la prueba dejó de recorrer los pasos", driven)
+	}
+}
+
+// stubMunicipalityRepo cuenta las búsquedas por nombre y no devuelve ninguna.
+type stubMunicipalityRepo struct{ searched []string }
+
+func (s *stubMunicipalityRepo) Search(_ context.Context, name string) ([]domain.Municipality, error) {
+	s.searched = append(s.searched, name)
+	return nil, nil
+}
+
+func (s *stubMunicipalityRepo) SearchBarrios(context.Context, string, string, string) ([]domain.Barrio, error) {
+	return nil, nil
+}
+
+func (s *stubMunicipalityRepo) CreateNeighborhood(context.Context, string, string, string, string) (string, error) {
+	return "", nil
+}
+
+// C2: CONFIRM_MUNICIPALITY solo acepta POSTBACK. El Data de la opción llega como postback y por
+// eso funciona; el mismo valor como texto solo se toma por un nombre de municipio a buscar.
+func TestReturnMenus_ConfirmMunicipalityOnlyAcceptsThePostback(t *testing.T) {
+	repo := &stubMunicipalityRepo{}
+	m := sm.NewMachine()
+	RegisterRegistrationHandlers(m, nil, repo)
+
+	sess := testSess(sm.StateConfirmMunicipality)
+	res, err := m.Process(context.Background(), sess, virtualAgentMessage("muni_change"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.searched) != 0 {
+		t.Fatalf("como postback no se busca ningún municipio, se buscó %v", repo.searched)
+	}
+	if res.NextState != sm.StateConfirmMunicipality || len(res.Messages) == 0 {
+		t.Fatalf("muni_change como postback debe pedir el municipio de nuevo, fue %+v", res)
+	}
+
+	textOnly := bird.InboundMessage{ID: "m", Phone: "+573001234567", MessageType: "text", Text: "muni_change", ReceivedAt: time.Now()}
+	if _, err := m.Process(context.Background(), testSess(sm.StateConfirmMunicipality), textOnly); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(repo.searched, []string{"muni_change"}) {
+		t.Fatalf("como texto solo se debe tomar por un nombre a buscar, búsquedas = %v", repo.searched)
 	}
 }
