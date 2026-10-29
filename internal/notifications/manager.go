@@ -61,6 +61,28 @@ func (p PendingNotification) DialPhone() string {
 	return p.Phone
 }
 
+// sessionContact es el contacto con el que queda la sesión que el NotificationManager abre desde
+// este pending: el teléfono del paciente tal como lo da Néctar (E.164 sin «+») cuando la clave es de
+// una conversación de Néctar; "" en Bird, donde la sesión sale como siempre.
+func (p PendingNotification) sessionContact() string {
+	if p.ContactPhone == "" || !session.IsNectarSession(p.Phone) {
+		return ""
+	}
+	return strings.TrimPrefix(p.ContactPhone, "+")
+}
+
+// attachNewSessionContact deja el contacto en una sesión que todavía no se insertó: la columna
+// contact_identifier (Create la inserta) y la clave de contexto CtxContactIdentifier (viaja en el
+// SetContextBatch que sigue). Es lo que SessionManager.AttachContact deja en una sesión ya creada,
+// sin un UPDATE más. Vacío no toca nada (Bird).
+func attachNewSessionContact(sess *session.Session, sessCtx map[string]string, contact string) {
+	if contact == "" {
+		return
+	}
+	sess.ContactIdentifier = contact
+	sessCtx[session.CtxContactIdentifier] = contact
+}
+
 // WaitingListFinder reads/updates waiting list entries (avoids importing repo/local directly).
 type WaitingListFinder interface {
 	FindByID(ctx context.Context, id string) (*domain.WaitingListEntry, error)
@@ -1367,7 +1389,7 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	nectarSession := session.IsNectarSession(p.Phone)
 	var sessID string
 	if !nectarSession {
-		sessID = m.escalatedNotifSession(ctx, p.Phone, convID, sessCtx)
+		sessID = m.escalatedNotifSession(ctx, p.Phone, convID, p.sessionContact(), sessCtx)
 	}
 
 	// Nota interna + mensaje al paciente + asignación de agente
@@ -1426,7 +1448,7 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 	}
 	if nectarSession {
 		sessCtx["notif_conv_id"] = convID
-		sessID = m.escalatedNotifSession(ctx, p.Phone, convID, sessCtx)
+		sessID = m.escalatedNotifSession(ctx, p.Phone, convID, p.sessionContact(), sessCtx)
 	}
 
 	// Escalación efectiva: registrar el evento (cuenta en 'Escaladas' y en el KPI de paso from_state) y
@@ -1458,7 +1480,9 @@ func (m *NotificationManager) escalateNotifToAgent(p *PendingNotification, incom
 // con sessID vacío, así que el handoff a Bird ocurría pero NO se registraba (sin fila en
 // escalations → sin SLA, sin recordatorio al agente, sin no-show) y la sesión original quedaba
 // activa: el bot le seguía respondiendo al paciente mientras el agente lo atendía.
-func (m *NotificationManager) escalatedNotifSession(ctx context.Context, phone, convID string, sessCtx map[string]string) (sessionID string) {
+//
+// contact (sessionContact del pending) va en la sesión NUEVA; "" en Bird.
+func (m *NotificationManager) escalatedNotifSession(ctx context.Context, phone, convID, contact string, sessCtx map[string]string) (sessionID string) {
 	if m.sessionRepo == nil {
 		return ""
 	}
@@ -1500,6 +1524,7 @@ func (m *NotificationManager) escalatedNotifSession(ctx context.Context, phone, 
 		Status:         session.StatusEscalated,
 		ExpiresAt:      time.Now().Add(24 * time.Hour),
 	}
+	attachNewSessionContact(sess, sessCtx, contact)
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {
 		slog.Error("escalatedNotifSession: create session", "error", err, "phone", utils.MaskPhone(phone))
 		return ""

@@ -73,6 +73,7 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 	}
 	sessionCtx["reschedule_conversation_id"] = pending.ConversationID
 	sessionCtx["reschedule_bird_msg_id"] = pending.BirdMessageID
+	attachNewSessionContact(sess, sessionCtx, pending.sessionContact())
 
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {
 		slog.Error("self_reschedule: create session", "error", err)

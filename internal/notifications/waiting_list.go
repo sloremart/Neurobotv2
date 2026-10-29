@@ -79,6 +79,7 @@ func (m *NotificationManager) handleWaitingList(phone, action string, pending *P
 		if entry.PreferredDoctorDoc != "" {
 			sessionCtx["preferred_doctor_doc"] = entry.PreferredDoctorDoc
 		}
+		attachNewSessionContact(sess, sessionCtx, pending.sessionContact())
 
 		// Crear sesión + contexto en BD.
 		//

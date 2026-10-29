@@ -178,9 +178,11 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 				Status:         session.StatusActive,
 				ExpiresAt:      time.Now().Add(30 * time.Minute),
 			}
+			postCtx := map[string]string{"post_confirmed": "1"}
+			attachNewSessionContact(sess, postCtx, pending.sessionContact())
 			if err := m.sessionRepo.Create(ctx, sess); err != nil {
 				slog.Warn("confirm: create post-confirm session", "phone", utils.MaskPhone(phone), "error", err)
-			} else if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, map[string]string{"post_confirmed": "1"}); err != nil {
+			} else if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, postCtx); err != nil {
 				slog.Warn("confirm: set post_confirmed context", "phone", utils.MaskPhone(phone), "error", err)
 			}
 		}
@@ -384,7 +386,8 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		note = "⚠️ El paciente CONFIRMÓ su cita vía WhatsApp, pero la persistencia en SIESA FALLÓ.\n" +
 			"Revisar y confirmar la cita manualmente en el sistema (NO re-pedir confirmación al paciente).\n" + apptInfo
 	default: // escalationNoResponse
-		note = buildNoResponseNote(pending.SameDay, pending.Phone, apptInfo)
+		// El teléfono a marcar (DialPhone): con Néctar la clave es "nectar:<id>", que no se puede llamar.
+		note = buildNoResponseNote(pending.SameDay, pending.DialPhone(), apptInfo)
 	}
 
 	// 2. La nota interna (visible SOLO en el Inbox; el paciente no la ve) viaja como resumen de la
@@ -423,7 +426,7 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 			// (sin ella el worker lo descarta). Se persiste SOLO tras escalar con éxito: una sesión
 			// ESCALATED sin agente dejaría al paciente sin bot hasta el barrido de vencidas. En Bird
 			// no se crea, como siempre.
-			m.registerNectarNotifEscalation(ctx, pending.Phone, pending.ConversationID, sessCtx)
+			m.registerNectarNotifEscalation(ctx, pending.Phone, pending.ConversationID, pending.sessionContact(), sessCtx)
 		}
 	}
 
@@ -451,8 +454,8 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 // registerNectarNotifEscalation persiste la sesión escalada de una escalación de confirmación ya
 // hecha en Néctar y la registra como escalateNotifToAgent (KPI de escaladas y SLA por escalación,
 // from_state = NOTIF_PENDING).
-func (m *NotificationManager) registerNectarNotifEscalation(ctx context.Context, phone, convID string, sessCtx map[string]string) {
-	sessID := m.escalatedNotifSession(ctx, phone, convID, sessCtx)
+func (m *NotificationManager) registerNectarNotifEscalation(ctx context.Context, phone, convID, contact string, sessCtx map[string]string) {
+	sessID := m.escalatedNotifSession(ctx, phone, convID, contact, sessCtx)
 	if sessID == "" {
 		return
 	}
@@ -513,6 +516,7 @@ func (m *NotificationManager) startConfirmRescheduleSession(phone string, pendin
 	sessCtx["notif_appt_date"] = utils.FormatFriendlyDate(appt.Date)
 	sessCtx["notif_appt_time"] = services.FormatTimeSlot(appt.TimeSlot)
 	sessCtx["notif_cups_name"] = services.GetFirstCupName(*appt)
+	attachNewSessionContact(sess, sessCtx, pending.sessionContact())
 
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {
 		slog.Error("startConfirmRescheduleSession: create session", "error", err)
@@ -611,6 +615,7 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 		"notif_cups_name":   cupsText,
 		"notif_bird_msg_id": pending.BirdMessageID,
 	}
+	attachNewSessionContact(sess, sessCtx, pending.sessionContact())
 
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {
 		slog.Error("startConfirmCancelSession: create session", "error", err)
