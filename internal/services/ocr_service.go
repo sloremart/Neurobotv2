@@ -51,7 +51,7 @@ type OCRService struct {
 	// analyzeTimeout es el techo de UN análisis completo (download + Vision + reintentos). 0 = default.
 	analyzeTimeout time.Duration
 	// mediaRetryDelays son las esperas entre reintentos de la descarga de un adjunto de Néctar ante
-	// un 404 (ver downloadMedia). nil = defaultMediaRetryDelays; inyectable para que los tests no
+	// un 404 o un 500 (ver downloadMedia). nil = defaultMediaRetryDelays; inyectable para que los tests no
 	// esperen los ~17 s reales.
 	mediaRetryDelays []time.Duration
 }
@@ -468,8 +468,8 @@ func (s *OCRService) SetNectarCredentials(baseURL, serviceKey, requestSecret str
 	s.nectarRequestSecret = requestSecret
 }
 
-// defaultMediaRetryDelays son las esperas de producción entre reintentos ante un 404 de un adjunto
-// de Néctar: ~2 s, ~5 s, ~10 s (≈17 s en total, 4 GET como máximo).
+// defaultMediaRetryDelays son las esperas de producción entre reintentos ante un 404 o un 500 de un
+// adjunto de Néctar: ~2 s, ~5 s, ~10 s (≈17 s en total, 4 GET como máximo).
 var defaultMediaRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
 
 // isNectarURL dice si la URL es del Néctar configurado (mismo anfitrión Y mismo esquema).
@@ -479,11 +479,15 @@ func (s *OCRService) isNectarURL(u *url.URL) bool {
 
 // downloadMedia baja el adjunto (cap 20 MB) con la credencial que corresponde a su anfitrión.
 //
-// Solo para adjuntos de Néctar, un 404 se reintenta: en los primeros segundos tras el aviso,
-// Néctar puede seguir bajando el archivo del lado de WhatsApp y su endpoint responde 404 aunque
-// todo esté bien (contrato de avisos, ver internal/nectar/notice.go). Normalmente queda listo en
-// 1-5 s; a los ~17 s sin resolver es un fallo permanente y reintentar más no ayuda. Bird no cambia:
-// un 404 suyo falla al primer GET.
+// Solo para adjuntos de Néctar se reintentan, con las mismas esperas, dos respuestas transitorias:
+//   - 404: en los primeros segundos tras el aviso, Néctar puede seguir bajando el archivo del lado
+//     de WhatsApp y su endpoint responde 404 aunque todo esté bien (contrato de avisos, ver
+//     internal/nectar/notice.go). Normalmente queda listo en 1-5 s.
+//   - 500 (sin cuerpo): Néctar no pudo escribir su bitácora de la descarga y pide reintentar con
+//     espera (contrato del Plan 44).
+//
+// A los ~17 s sin resolver es un fallo permanente y reintentar más no ayuda. Los demás códigos (un
+// 401 es de credencial) fallan al primer GET. Bird no cambia: nada suyo se reintenta.
 func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]byte, error) {
 	var delays []time.Duration
 	if u, err := url.Parse(documentURL); err == nil && s.isNectarURL(u) {
@@ -497,7 +501,7 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 		if err == nil {
 			return fileData, nil
 		}
-		if status != http.StatusNotFound || attempt >= len(delays) {
+		if !retryableMediaStatus(status) || attempt >= len(delays) {
 			return nil, err
 		}
 		select {
@@ -506,6 +510,12 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 		case <-time.After(delays[attempt]):
 		}
 	}
+}
+
+// retryableMediaStatus dice si un código de la descarga de un adjunto de Néctar es transitorio
+// (ver downloadMedia).
+func retryableMediaStatus(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusInternalServerError
 }
 
 // downloadMediaOnce hace UN GET al adjunto. status queda en 0 cuando el error es previo a tener

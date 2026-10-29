@@ -479,3 +479,44 @@ func TestDownloadMedia_BirdNoRetryOn404(t *testing.T) {
 		t.Fatalf("calls=%d, want 1", rt.calls)
 	}
 }
+
+// TestDownloadMedia_NectarRetriesOn500: Néctar responde 500 sin cuerpo si no puede escribir su
+// bitácora (contrato del Plan 44: reintentar con espera); el bot reintenta como con el 404.
+func TestDownloadMedia_NectarRetriesOn500(t *testing.T) {
+	rt := &statusSeqTransport{statuses: []int{500, 200}}
+	s := newRetrySvc(rt)
+
+	data, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7")
+	if err != nil {
+		t.Fatalf("debía recuperarse tras el 500: %v", err)
+	}
+	if string(data) != "data" || rt.calls != 2 {
+		t.Fatalf("data=%q calls=%d, want data y 2 GET", data, rt.calls)
+	}
+}
+
+// TestDownloadMedia_NectarGivesUpOnPersistent500: un 500 persistente agota las mismas esperas.
+func TestDownloadMedia_NectarGivesUpOnPersistent500(t *testing.T) {
+	rt := &statusSeqTransport{statuses: []int{500}}
+	s := newRetrySvc(rt)
+
+	if _, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7"); err == nil {
+		t.Fatal("un 500 persistente debe terminar en error")
+	}
+	if rt.calls != 4 {
+		t.Fatalf("calls=%d, want 4 (1 + 3 reintentos)", rt.calls)
+	}
+}
+
+// TestDownloadMedia_BirdNoRetryOn500: Bird no cambia, un 500 falla al primer GET.
+func TestDownloadMedia_BirdNoRetryOn500(t *testing.T) {
+	rt := &statusSeqTransport{statuses: []int{500, 200}}
+	s := newRetrySvc(rt)
+
+	if _, err := s.downloadMedia(context.Background(), "https://media.api.bird.com/x.jpg"); err == nil {
+		t.Fatal("en Bird un 500 debe fallar sin reintentar")
+	}
+	if rt.calls != 1 {
+		t.Fatalf("calls=%d, want 1", rt.calls)
+	}
+}
