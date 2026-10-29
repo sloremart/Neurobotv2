@@ -224,30 +224,54 @@ func (b BusinessHours) String() string {
 	return b.raw
 }
 
-// closedDescription y closedEmphasized son lo que se le dice al paciente con el horario cerrado
-// toda la semana: no pueden quedar vacíos porque van dentro de frases hechas ("Te atendemos %s",
-// "Te atendemos en horario de %s").
-const (
-	closedDescription = "en nuestro horario habitual de atención"
-	closedEmphasized  = "nuestro horario habitual de atención"
-)
-
 // Describe es el horario EN PALABRAS, para el paciente, con la forma que el bot ha usado siempre:
 // "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m.".
+//
+// Con el horario CERRADO TODA LA SEMANA (Néctar sin ventanas) devuelve "": no hay horario que
+// nombrar, y cada texto que lo incrusta tiene su frase para ese caso (una frase fija metida en
+// «Te atendemos %s» o «en horario de %s» quedaba rota).
 func (b BusinessHours) Describe() string {
 	if b.closed {
-		return closedDescription
+		return ""
 	}
 	return b.describe("%s")
 }
 
 // DescribeEmphasized es Describe con cada ventana en negrilla de WhatsApp, la forma del aviso de
-// «no hay asesores»: "*Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.*".
+// «no hay asesores» y del de la orden fuera de horario:
+// "*Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.*". "" si cerrado.
 func (b BusinessHours) DescribeEmphasized() string {
 	if b.closed {
-		return closedEmphasized
+		return ""
 	}
 	return b.describe("*%s*")
+}
+
+// SameAsDefault dice si este horario decide y se describe igual que el de siempre (sin festivos).
+// Lo usa el texto de ayuda, que con el horario de siempre conserva su forma propia.
+func (b BusinessHours) SameAsDefault() bool {
+	return !b.closed && len(b.holidays) == 0 && b.String() == DefaultBusinessHours().String()
+}
+
+// OpenedEarlierToday dice si hoy (la fecha civil de t) hubo una apertura a la hora de t o antes:
+// el día es hábil y ya empezó. Separa la pausa de una jornada partida (07-12 y 14-17, a las
+// 12:30) de la madrugada antes de abrir.
+func (b BusinessHours) OpenedEarlierToday(t time.Time) bool {
+	if b.closed || b.IsHoliday(t) {
+		return false
+	}
+	minute := t.Hour()*60 + t.Minute()
+	for _, w := range b.effectiveWindows() {
+		if w.covers(t.Weekday()) && w.start <= minute {
+			return true
+		}
+	}
+	return false
+}
+
+// ClockText es la hora de t como la escribe el bot: "2:00 p.m.", "7:30 a.m.", "12:00 m.".
+func ClockText(t time.Time) string {
+	return describeClock(t.Hour()*60 + t.Minute())
 }
 
 func (b BusinessHours) describe(wrap string) string {

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +14,35 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
+
+// logSink guarda lo que el refrescador escribe en slog: los tests no ensucian la salida y pueden
+// mirar el aviso que importa. Seguro para la goroutine de Run.
+type logSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *logSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *logSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// captureSlog desvía slog al sumidero mientras dure el test.
+func captureSlog(t *testing.T) *logSink {
+	t.Helper()
+	sink := &logSink{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return sink
+}
 
 // EL REFRESCO DEL HORARIO DESDE NÉCTAR (port de hdg-bot, cmd/server/schedule_nectar_test.go).
 //
@@ -96,6 +128,7 @@ var saturday = time.Date(2026, 10, 31, 9, 0, 0, 0, cot)
 
 func refresherFor(t *testing.T, f *fakeScheduleServer) (*config.Config, *nectarScheduleRefresher, *config.CachedSchedule) {
 	t.Helper()
+	captureSlog(t)
 	cfg := &config.Config{}
 	cache := wireSchedule(cfg)
 	client := nectar.NewClient(f.srv.URL, "clave", "secreto")
@@ -232,6 +265,7 @@ func TestNectarScheduleRefresher_RunReleeEnCadaTic(t *testing.T) {
 // Apagada (el default) no se llama a Néctar y rige el horario de siempre; encendida sin cliente,
 // tampoco.
 func TestStartNectarSchedule_ApagadaNoLlamaANadie(t *testing.T) {
+	logs := captureSlog(t)
 	f := newFakeScheduleServer(t, withoutSaturday)
 	cfg := &config.Config{}
 	cache := wireSchedule(cfg)
@@ -252,10 +286,33 @@ func TestStartNectarSchedule_ApagadaNoLlamaANadie(t *testing.T) {
 	if startNectarSchedule(context.Background(), cfg, nil, cache) {
 		t.Fatal("sin cliente de Néctar no hay de dónde leer el horario")
 	}
+	// Los dos casos lo dicen en el log: apagada (Info) y encendida sin puente (Error).
+	out := logs.String()
+	if !strings.Contains(out, "NECTAR_SCHEDULE_ENABLED apagada") ||
+		!strings.Contains(out, "level=ERROR msg=\"NECTAR_SCHEDULE_ENABLED encendida sin puente") {
+		t.Errorf("log = %s", out)
+	}
+}
+
+// Néctar publicando CERO ventanas es válido pero deja al bot cerrado: se aplica y se avisa en ERROR.
+func TestNectarScheduleRefresher_SinVentanasAvisaEnError(t *testing.T) {
+	f := newFakeScheduleServer(t, `{"timezone":"America/Bogota","version":"v0","windows":[]}`)
+	cfg, r, _ := refresherFor(t, f)
+	logs := captureSlog(t)
+	if err := r.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hours().Open(saturday) || cfg.Hours().Open(saturday.AddDate(0, 0, 3)) {
+		t.Error("sin ventanas el bot queda cerrado")
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "SIN ventanas") {
+		t.Errorf("el cierre total se avisa en ERROR: %s", logs.String())
+	}
 }
 
 // Encendida sí arranca (con el intervalo 0 cayendo en el default, no en un bucle sin pausa).
 func TestStartNectarSchedule_EncendidaLee(t *testing.T) {
+	captureSlog(t)
 	f := newFakeScheduleServer(t, withSaturday)
 	cfg := &config.Config{NectarScheduleEnabled: true}
 	cache := wireSchedule(cfg)

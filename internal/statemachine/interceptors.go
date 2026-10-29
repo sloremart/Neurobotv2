@@ -72,8 +72,15 @@ func UnsupportedMessageInterceptor() Interceptor {
 	}
 }
 
-// ImageOutOfContextInterceptor rechaza imágenes y documentos fuera del estado UPLOAD_MEDICAL_ORDER
+// ImageOutOfContextInterceptor rechaza imágenes y documentos fuera del estado UPLOAD_MEDICAL_ORDER.
+// Con el horario de siempre; RegisterInterceptors cablea el vigente (imageOutOfContextInterceptor).
 func ImageOutOfContextInterceptor() Interceptor {
+	return imageOutOfContextInterceptor(nil)
+}
+
+// imageOutOfContextInterceptor es ImageOutOfContextInterceptor preguntando el horario a `m` en
+// cada aviso (Machine.SetBusinessHoursText). m nil = el horario de siempre.
+func imageOutOfContextInterceptor(m *Machine) Interceptor {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool) {
 		if msg.MessageType != "image" && msg.MessageType != "document" {
 			return nil, false
@@ -109,7 +116,7 @@ func ImageOutOfContextInterceptor() Interceptor {
 		// dead-end genérico, se acusa recibo y se recuerdan los horarios de agendamiento.
 		if sess.CurrentState == StateOutOfHoursMenu {
 			return NewResult(sess.CurrentState).
-				WithText("Recibimos tu orden 📷. Nuestro horario para *agendar citas* es *Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.*\n\nEscríbenos en ese horario y con gusto te ayudamos a programar tu cita. 😊").
+				WithText(outOfHoursOrderText(m.businessHoursTextValue())).
 				WithEvent("image_out_of_hours", map[string]interface{}{"state": sess.CurrentState}), true
 		}
 
@@ -293,10 +300,21 @@ func AIRecoveryInterceptor(m *Machine) Interceptor {
 	}
 }
 
+// outOfHoursOrderText es el acuse de la orden que llega fuera de horario, con el horario vigente
+// en negrilla. Con el horario de siempre es, letra por letra, el texto de siempre; cerrado toda
+// la semana (hours "") no hay horario que nombrar.
+func outOfHoursOrderText(hours string) string {
+	if hours == "" {
+		return "Recibimos tu orden 📷. Escríbenos más tarde y con gusto te ayudamos a programar tu cita. 😊"
+	}
+	return "Recibimos tu orden 📷. Nuestro horario para *agendar citas* es " + hours +
+		"\n\nEscríbenos en ese horario y con gusto te ayudamos a programar tu cita. 😊"
+}
+
 // RegisterInterceptors registra todos los interceptores en la máquina
 func RegisterInterceptors(machine *Machine) {
 	machine.AddInterceptor(UnsupportedMessageInterceptor())
-	machine.AddInterceptor(ImageOutOfContextInterceptor())
+	machine.AddInterceptor(imageOutOfContextInterceptor(machine))
 	machine.AddInterceptor(EscalationKeywordsInterceptor()) // Before menu reset
 	machine.AddInterceptor(MenuResetInterceptor())
 	machine.AddInterceptor(AIRecoveryInterceptor(machine)) // Last: keywords/menu escape first

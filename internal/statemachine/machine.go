@@ -46,6 +46,29 @@ type Machine struct {
 	// escribirle al paciente, así que el aviso "te conecto con un asesor" tiene que salir
 	// ANTES. En Bird no hace falta y el pool declina (false).
 	preEscalationFlush PreEscalationFlush
+	// businessHoursText es el horario de atención EN PALABRAS, en negrilla de WhatsApp, que nombra
+	// el aviso de la orden recibida fuera de horario. Se PREGUNTA en cada aviso (el horario puede
+	// cambiar sin redespliegue: Néctar). Sin cablear rige el horario de siempre.
+	businessHoursText func() string
+}
+
+// defaultBusinessHoursEmphasized es el horario de siempre en negrilla: el texto que el aviso de
+// la orden fuera de horario ha dicho siempre. Es igual a
+// config.DefaultBusinessHours().DescribeEmphasized() (lo fija un test).
+const defaultBusinessHoursEmphasized = "*Lunes a Viernes de 7:00 a.m. a 6:00 p.m.* y *Sábados de 7:00 a.m. a 12:00 m.*"
+
+// SetBusinessHoursText cablea el horario vigente en palabras (con negrilla). "" = no hay horario
+// que nombrar (cerrado toda la semana).
+func (m *Machine) SetBusinessHoursText(f func() string) {
+	m.businessHoursText = f
+}
+
+// businessHoursTextValue es el horario vigente en el instante del aviso.
+func (m *Machine) businessHoursTextValue() string {
+	if m == nil || m.businessHoursText == nil {
+		return defaultBusinessHoursEmphasized
+	}
+	return m.businessHoursText()
 }
 
 // CtxEscalationNoticeFlushed marca, SOLO durante este turno, que los mensajes acumulados

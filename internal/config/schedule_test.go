@@ -162,8 +162,9 @@ func TestBusinessHoursFromSchedule_SinVentanasEsCerrado(t *testing.T) {
 	if got := bh.NextOpen(now); !got.Equal(now) {
 		t.Errorf("sin ninguna apertura NextOpen devuelve t, no %s", got)
 	}
-	if strings.TrimSpace(bh.Describe()) == "" || strings.TrimSpace(bh.DescribeEmphasized()) == "" {
-		t.Error("el texto no puede quedar vacío ni con el horario cerrado")
+	// Sin horario que nombrar el texto va vacío: cada frase que lo incrusta tiene la suya.
+	if bh.Describe() != "" || bh.DescribeEmphasized() != "" || bh.SameAsDefault() {
+		t.Errorf("cerrado toda la semana: Describe=%q DescribeEmphasized=%q", bh.Describe(), bh.DescribeEmphasized())
 	}
 }
 

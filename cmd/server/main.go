@@ -208,6 +208,8 @@ func main() {
 	machine := statemachine.NewMachine()
 	statemachine.SetMaxRetries(cfg.MaxRetries)
 	statemachine.RegisterInterceptors(machine)
+	// El acuse de la orden fuera de horario nombra el horario VIGENTE (el mismo de los gates).
+	machine.SetBusinessHoursText(func() string { return cfg.Hours().DescribeEmphasized() })
 
 	// Location repo (local DB)
 	locationRepo := localrepo.NewLocationRepo(localDB)

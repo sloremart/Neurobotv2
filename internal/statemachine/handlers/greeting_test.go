@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -515,6 +516,29 @@ func (legacyHours) description() string {
 	return "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
 }
 
+// queuedNotice es el aviso de la escalación encolada de antes (escalation_nectar.go hasta 69f2087).
+func (l legacyHours) queuedNotice() string {
+	return fmt.Sprintf("Tu solicitud quedó registrada ✅. "+
+		"Un asesor te atenderá el próximo día hábil y te escribirá por aquí. "+
+		"Te atendemos %s", l.description())
+}
+
+// legacyHelpTail es el cierre de la guía de antes (greeting.go hasta 69f2087).
+const legacyHelpTail = "Si en algún momento necesitas ayuda humana, el bot te conectará con un agente.\n\n" +
+	"*Horario de atención:*\n" +
+	"Lunes a viernes: 7:00 AM - 6:00 PM\n" +
+	"Sábados: 7:00 AM - 12:00 PM"
+
+// helpText corre SHOW_HELP y devuelve el texto que recibe el paciente.
+func helpText(t *testing.T, cfg *config.Config) string {
+	t.Helper()
+	res, err := showHelpHandler(cfg)(context.Background(), testSess(sm.StateShowHelp), textM(""))
+	if err != nil || len(res.Messages) == 0 {
+		t.Fatalf("SHOW_HELP: %v", err)
+	}
+	return sm.OutboundText(res.Messages[0])
+}
+
 func (legacyHours) window(d time.Weekday) (openMin, closeMin int, ok bool) {
 	switch d {
 	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday:
@@ -604,16 +628,24 @@ func TestBusinessHours_FallbackEqualsLegacy(t *testing.T) {
 			if got := noAgentsText(cfg); got != legacyNoAgents {
 				t.Errorf("noAgentsText = %q, want %q", got, legacyNoAgents)
 			}
+			if got := helpText(t, cfg); !strings.HasSuffix(got, legacyHelpTail+closingNote) {
+				t.Errorf("la guía con el horario de siempre conserva su cierre: %q", got)
+			}
 			for step := 0; step < 7*24*4; step++ {
 				for _, extra := range []time.Duration{0, 14 * time.Minute} {
 					now := start.Add(time.Duration(step)*15*time.Minute + extra)
 					h := cfg.Hours()
 					var open bool
 					var q escalationQueue
+					var notice string
 					withTime(now, func() {
 						open = businessHoursOpen(cfg)
 						q = nextBusinessDayQueue(cfg)
+						notice = escalationNoticeText(cfg, true)
 					})
+					if notice != legacy.queuedNotice() {
+						t.Fatalf("%s: escalationNoticeText = %q, want %q", now, notice, legacy.queuedNotice())
+					}
 					if open != legacy.open(now) {
 						t.Fatalf("%s: businessHoursOpen = %v, want %v", now, open, legacy.open(now))
 					}
@@ -717,4 +749,89 @@ func TestBusinessHours_ClosedAllWeekNeverQueues(t *testing.T) {
 			t.Errorf("sin ninguna apertura la ventana está activa pero no se encola: %+v", q)
 		}
 	})
+
+	// Y cada frase que incrusta el horario se lee bien sin él (frases completas).
+	if got, want := noAgentsText(cfg), "En este momento no hay asesores disponibles. 🕐\n\n"+
+		"Por favor escríbenos más tarde y con gusto te ayudamos. 😊"; got != want {
+		t.Errorf("noAgentsText = %q", got)
+	}
+	withTime(at(2026, 10, 27, 10, 0), func() {
+		if got, want := escalationNoticeText(cfg, true), "Tu solicitud quedó registrada ✅. "+
+			"Un asesor te atenderá el próximo día hábil y te escribirá por aquí."; got != want {
+			t.Errorf("escalationNoticeText = %q", got)
+		}
+	})
+	if got := helpText(t, cfg); !strings.HasSuffix(got, "te conectará con un agente."+closingNote) ||
+		strings.Contains(got, "Horario de atención") {
+		t.Errorf("la guía sin horario termina en el aviso del agente: %q", got)
+	}
+}
+
+// publishedConfig arma una configuración que decide con la publicación dada.
+func publishedConfig(t *testing.T, windows ...config.ScheduleWindowSpec) *config.Config {
+	t.Helper()
+	hours, err := config.BusinessHoursFromSchedule(config.ScheduleSpec{Timezone: config.ScheduleTimezone, Windows: windows})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := config.NewCachedSchedule(config.DefaultBusinessHours())
+	cache.Set(hours, "v1")
+	cfg := queueConfig()
+	cfg.Schedule = cache
+	return cfg
+}
+
+// Jornada PARTIDA publicada en Néctar (martes 07-12 y 14-17, el volcado real): lo que se encola en
+// el margen de las 11:50 o en la pausa del almuerzo se atiende HOY a las 14:00, no «el próximo día
+// hábil». El margen de la tarde y la madrugada siguen diciendo «el próximo día hábil».
+func TestEscalationNotice_SplitDaySameDay(t *testing.T) {
+	cfg := publishedConfig(t,
+		config.ScheduleWindowSpec{Weekday: 2, From: "07:00", To: "12:00"},
+		config.ScheduleWindowSpec{Weekday: 2, From: "14:00", To: "17:00"},
+		config.ScheduleWindowSpec{Weekday: 3, From: "07:00", To: "12:00"},
+		config.ScheduleWindowSpec{Weekday: 3, From: "13:00", To: "17:00"},
+	)
+	tuesday := func(h, m int) time.Time { return at(2026, 10, 27, h, m) }
+	cases := []struct {
+		name string
+		now  time.Time
+		when string
+	}{
+		{"margen antes del almuerzo", tuesday(11, 50), "hoy a partir de las 2:00 p.m."},
+		{"en la pausa", tuesday(12, 30), "hoy a partir de las 2:00 p.m."},
+		{"reabre a la 1", at(2026, 10, 28, 12, 30), "hoy a partir de la 1:00 p.m."},
+		{"margen de la tarde", tuesday(16, 50), "el próximo día hábil"},
+		{"madrugada", tuesday(5, 0), "el próximo día hábil"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var q escalationQueue
+			var notice string
+			withTime(c.now, func() {
+				q = nextBusinessDayQueue(cfg)
+				notice = escalationNoticeText(cfg, true)
+			})
+			if !q.queue {
+				t.Fatalf("se encola: %+v", q)
+			}
+			want := "Tu solicitud quedó registrada ✅. Un asesor te atenderá " + c.when +
+				" y te escribirá por aquí. Te atendemos " + BusinessHoursDescription(cfg)
+			if notice != want {
+				t.Errorf("aviso = %q, want %q", notice, want)
+			}
+		})
+	}
+}
+
+// La guía nombra el horario publicado en Néctar.
+func TestHelpText_PublishedHours(t *testing.T) {
+	var w []config.ScheduleWindowSpec
+	for d := 1; d <= 5; d++ {
+		w = append(w, config.ScheduleWindowSpec{Weekday: d, From: "08:00", To: "17:00"})
+	}
+	got := helpText(t, publishedConfig(t, w...))
+	if !strings.HasSuffix(got, "*Horario de atención:*\nLunes a Viernes de 8:00 a.m. a 5:00 p.m."+closingNote) ||
+		strings.Contains(got, "7:00 AM") {
+		t.Errorf("la guía nombra el horario publicado: %q", got)
+	}
 }

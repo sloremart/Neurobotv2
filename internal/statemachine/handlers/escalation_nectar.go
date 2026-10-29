@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -226,9 +225,33 @@ func escalationNoticeText(cfg *config.Config, nextDay bool) string {
 	if !nextDay {
 		return sm.EscalationNoticeText
 	}
-	return fmt.Sprintf("Tu solicitud quedó registrada ✅. "+
-		"Un asesor te atenderá el próximo día hábil y te escribirá por aquí. "+
-		"Te atendemos %s", BusinessHoursDescription(cfg))
+	h := cfg.Hours()
+	text := "Tu solicitud quedó registrada ✅. Un asesor te atenderá " + queuedWhen(h, nowFunc()) +
+		" y te escribirá por aquí."
+	if hours := h.Describe(); hours != "" {
+		text += " Te atendemos " + hours
+	}
+	return text
+}
+
+// queuedWhen dice CUÁNDO atienden lo que se encola en `now`. En una jornada PARTIDA (07-12 y
+// 14-17 publicados en Néctar) lo encolado en el margen de las 11:50 o en la pausa se atiende HOY,
+// al reabrir: «el próximo día hábil» sería falso. Solo aplica si hoy ya se abrió: la madrugada
+// antes de abrir conserva «el próximo día hábil» de siempre, y con el horario de siempre (una
+// ventana al día) la espera nunca termina el mismo día después de abrir — el texto no cambia.
+func queuedWhen(h config.BusinessHours, now time.Time) string {
+	end := queuedWaitEnd(h, now)
+	y1, m1, d1 := now.Date()
+	y2, m2, d2 := end.Date()
+	if !end.After(now) || y1 != y2 || m1 != m2 || d1 != d2 || !h.OpenedEarlierToday(now) {
+		return "el próximo día hábil"
+	}
+	clock := config.ClockText(end)
+	article := "las "
+	if strings.HasPrefix(clock, "1:") {
+		article = "la " // «a partir de la 1:00 p.m.»
+	}
+	return "hoy a partir de " + article + clock
 }
 
 // NextDayQueueApplies devuelve el predicado que el pre-envío del pool consulta antes del escalate:

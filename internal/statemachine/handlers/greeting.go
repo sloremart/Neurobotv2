@@ -51,7 +51,7 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 	// Automático: valida el contrato SANITAS REAL del paciente ya identificado (no autodeclarado) y
 	// bifurca a canal externo (link wa.me) o escalación a agente.
 	m.Register(sm.StateMedicationCheckSanitas, medicationCheckSanitasHandler(cfg))
-	m.Register(sm.StateShowHelp, showHelpHandler())
+	m.Register(sm.StateShowHelp, showHelpHandler(cfg))
 }
 
 // EL HORARIO SALE DEL PROVEEDOR (cfg.Hours()): el de siempre (L-V 7:00-17:59, Sáb 7:00-11:59,
@@ -80,10 +80,16 @@ func BusinessHoursDescription(cfg *config.Config) string {
 // noAgentsText es el desvío de la escalación cuando no hay asesores o el horario está cerrado,
 // con el horario vigente en negrilla. Con el horario de siempre es, letra por letra, el texto que
 // el bot ha mandado siempre.
+//
+// Con el horario cerrado toda la semana no hay horario que nombrar: se le pide volver más tarde.
 func noAgentsText(cfg *config.Config) string {
+	hours := cfg.Hours().DescribeEmphasized()
+	if hours == "" {
+		return "En este momento no hay asesores disponibles. 🕐\n\n" +
+			"Por favor escríbenos más tarde y con gusto te ayudamos. 😊"
+	}
 	return "En este momento no hay asesores disponibles. 🕐\n\nTe atendemos en horario de " +
-		cfg.Hours().DescribeEmphasized() +
-		" Por favor escríbenos en ese horario y con gusto te ayudamos. 😊"
+		hours + " Por favor escríbenos en ese horario y con gusto te ayudamos. 😊"
 }
 
 // minutesToClose son los minutos que le quedan a la jornada vigente en t, o 0 si está cerrado.
@@ -437,10 +443,26 @@ func buildEntityTypeRows() []sm.ListRow {
 	return rows
 }
 
+// helpHoursBlock es el cierre de la guía con el horario de atención. Con el horario de siempre es
+// el texto de siempre, letra por letra; con otro horario vigente (el publicado en Néctar) nombra
+// ese; cerrado toda la semana no hay horario que mostrar y la guía termina antes.
+func helpHoursBlock(cfg *config.Config) string {
+	h := cfg.Hours()
+	if h.SameAsDefault() {
+		return "\n\n*Horario de atención:*\n" +
+			"Lunes a viernes: 7:00 AM - 6:00 PM\n" +
+			"Sábados: 7:00 AM - 12:00 PM"
+	}
+	if hours := h.Describe(); hours != "" {
+		return "\n\n*Horario de atención:*\n" + hours
+	}
+	return ""
+}
+
 // SHOW_HELP (automático) — muestra guia de uso del bot y vuelve al menu correspondiente.
 // Si viene del menú fuera de horario (help_source=ooh), vuelve a OUT_OF_HOURS_MENU.
 // Si viene del menú principal, vuelve a MAIN_MENU.
-func showHelpHandler() sm.StateHandler {
+func showHelpHandler(cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		msg1 := "📋 *GUÍA RÁPIDA DEL BOT*\n\n" +
 			"Soy tu asistente virtual para gestionar citas médicas por WhatsApp. " +
@@ -463,10 +485,8 @@ func showHelpHandler() sm.StateHandler {
 			"• *Seleccionar opciones:* Cuando te muestre una lista, toca el botón para ver las opciones\n" +
 			"• *Horarios:* Te mostraré los horarios disponibles más cercanos. Si no hay, puedes quedar en lista de espera\n" +
 			"• *Volver al menú:* Escribe *menú* o *0* en cualquier momento para volver al inicio\n\n" +
-			"Si en algún momento necesitas ayuda humana, el bot te conectará con un agente.\n\n" +
-			"*Horario de atención:*\n" +
-			"Lunes a viernes: 7:00 AM - 6:00 PM\n" +
-			"Sábados: 7:00 AM - 12:00 PM"
+			"Si en algún momento necesitas ayuda humana, el bot te conectará con un agente." +
+			helpHoursBlock(cfg)
 
 		// Auto-close: combinar ambos mensajes y cerrar sesion
 		if sess.GetContext("help_source") == "ooh" {
