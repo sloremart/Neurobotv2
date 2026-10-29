@@ -12,6 +12,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	"github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
 // GET /api/nectar/capabilities — la SEGUNDA ruta del bot hacia Néctar (protocolo
@@ -64,6 +65,9 @@ func signedCapabilitiesRequest(method, secret string) *http.Request {
 }
 
 func TestHandleNectarCapabilities_200WithETag(t *testing.T) {
+	// Con un candado declarado (el real, el de la máquina de estados) el registro lo anuncia.
+	statemachine.RegisterResolveGuard("CAPS_TEST_STEP", statemachine.ResolveGuardPendingReturn)
+	t.Cleanup(func() { statemachine.RegisterResolveGuard("CAPS_TEST_STEP", "") })
 	cfg := &config.Config{NectarNoticeSecret: capabilitiesTestSecret, ProtocolEscaladoVersion: config.ProtocolEscaladoV1}
 	rec := httptest.NewRecorder()
 	capabilitiesMux(cfg).ServeHTTP(rec, signedCapabilitiesRequest(http.MethodGet, capabilitiesTestSecret))
@@ -79,7 +83,7 @@ func TestHandleNectarCapabilities_200WithETag(t *testing.T) {
 		t.Fatalf("cuerpo no decodificable: %v", err)
 	}
 	// El cuerpo es el registro que el bot declara con la bandera en 1.
-	body, _, err := nectar.Capabilities(config.ProtocolEscaladoV1).Encode()
+	body, _, err := nectar.Capabilities(config.ProtocolEscaladoV1, true).Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,5 +292,35 @@ func TestHandleNectarCapabilities_ETagFollowsConfigFlag(t *testing.T) {
 	}
 	if v0, v1 := etag(config.ProtocolEscaladoV0), etag(config.ProtocolEscaladoV1); v0 == "" || v0 == v1 {
 		t.Fatalf("el ETag tiene que cambiar con la bandera: v0=%q v1=%q", v0, v1)
+	}
+}
+
+// El cableado: lo que se sirve sale de los candados REALMENTE declarados en cada petición, y
+// declararlos mueve cuerpo y ETag (Néctar renegocia por versión).
+func TestHandleNectarCapabilities_ResolveLockFollowsDeclaredGuards(t *testing.T) {
+	cfg := &config.Config{NectarNoticeSecret: capabilitiesTestSecret, ProtocolEscaladoVersion: config.ProtocolEscaladoV1}
+	mux := capabilitiesMux(cfg)
+	read := func() (bool, string) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, signedCapabilitiesRequest(http.MethodGet, capabilitiesTestSecret))
+		var reg nectar.CapabilityRegistry
+		if err := json.Unmarshal(rec.Body.Bytes(), &reg); err != nil {
+			t.Fatalf("cuerpo no decodificable: %v", err)
+		}
+		return reg.Capabilities.Escalation.ResolveLock, rec.Header().Get("ETag")
+	}
+
+	lockOff, etagOff := read()
+	if lockOff {
+		t.Fatal("sin candados declarados resolve_lock debe ser false")
+	}
+	statemachine.RegisterResolveGuard("CAPS_TEST_STEP", statemachine.ResolveGuardPendingReturn)
+	t.Cleanup(func() { statemachine.RegisterResolveGuard("CAPS_TEST_STEP", "") })
+	lockOn, etagOn := read()
+	if !lockOn {
+		t.Fatal("con un candado declarado resolve_lock debe ser true")
+	}
+	if etagOn == etagOff {
+		t.Errorf("el ETag no cambió con el flag: %s", etagOn)
 	}
 }

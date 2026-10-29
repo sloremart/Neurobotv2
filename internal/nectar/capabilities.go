@@ -151,7 +151,7 @@ type ReturnCapabilities struct {
 // un `false` en una recepción viva le haría mandar el dialecto a un bot que lee el retorno v1.
 // Un booleano del registro dice qué HACE este binario con la bandera donde está, no en qué
 // versión nació la clave.
-func Capabilities(protocolVersion int) CapabilityRegistry {
+func Capabilities(protocolVersion int, resolveLock bool) CapabilityRegistry {
 	v1 := protocolVersion == config.ProtocolEscaladoV1
 	descriptor := emitsInputDescriptor && v1
 
@@ -174,8 +174,8 @@ func Capabilities(protocolVersion int) CapabilityRegistry {
 				ReasonDetail: emitsReasonDetail && v1,
 				// El candado NO lo gobierna la bandera: escalateRequest lo emite en los dos
 				// dialectos, bajo `resolve_lock` y bajo su alias. Se anuncia solo si algún paso
-				// lo declara (Néctar lo guarda y aún no actúa sobre él).
-				ResolveLock:      HasResolveGuards(),
+				// lo declara (`resolveLock`); Néctar lo guarda y aún no actúa sobre él.
+				ResolveLock:      resolveLock,
 				ResolveLockAlias: ResolveLockAliasKey,
 				Reasons:          []string{ReasonBotCannotAnswer, ReasonPatientAskedForHuman},
 			},
@@ -227,9 +227,3 @@ func (r CapabilityRegistry) Encode() ([]byte, string, error) {
 	}
 	return body, r.Version, nil
 }
-
-// HasResolveGuards dice si algún paso del bot declara un candado de «Resolver». Este paquete no
-// puede importar la máquina de estados (ella depende del cliente de Bird, que depende de este),
-// así que quien monta los pasos lo enchufa. Sin enchufar no hay candados declarados y el
-// registro dice la verdad: `resolve_lock` en false.
-var HasResolveGuards = func() bool { return false }

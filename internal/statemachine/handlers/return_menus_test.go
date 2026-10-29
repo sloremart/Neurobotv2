@@ -279,7 +279,7 @@ func TestElRegistroDelDescriptorNoMiente(t *testing.T) {
 		}
 	}
 
-	published := nectar.Capabilities(config.ProtocolEscaladoV1).Capabilities.Input
+	published := nectar.Capabilities(config.ProtocolEscaladoV1, true).Capabilities.Input
 
 	for k := range kinds {
 		if !slices.Contains(published.Kinds, k) {
@@ -968,17 +968,5 @@ func TestResolveGuards_DeclaredWherePendingWork(t *testing.T) {
 	got[sm.StateAskDocument] = "otro"
 	if sm.DeclaredResolveGuards()[sm.StateAskDocument] != "retorno_pendiente" {
 		t.Error("DeclaredResolveGuards debe devolver una copia")
-	}
-}
-
-// El registro de capacidades no promete un candado que nadie declara (C8).
-func TestCapabilities_ResolveLockIsTruthful(t *testing.T) {
-	returnMenuMachine()
-	want := len(sm.DeclaredResolveGuards()) > 0
-	if !want {
-		t.Fatal("el montaje de handlers no declaró ningún candado")
-	}
-	if got := nectar.Capabilities(1).Capabilities.Escalation.ResolveLock; got != want {
-		t.Errorf("resolve_lock = %v, y hay candados declarados = %v", got, want)
 	}
 }

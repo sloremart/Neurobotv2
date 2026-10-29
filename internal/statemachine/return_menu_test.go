@@ -972,3 +972,16 @@ func TestResolveGuard_ShapeIsEnforced(t *testing.T) {
 	RegisterResolveGuard("RETURN_TEST_SHAPE", "")                      // limpiar no es un motivo
 	RegisterResolveGuard("RETURN_TEST_SHAPE", strings.Repeat("a", 64)) // el límite exacto vale
 }
+
+// "" significa «sin candado»: borra la entrada, no la deja vacía contando en lo declarado.
+func TestResolveGuard_EmptyMotivoRemovesTheEntry(t *testing.T) {
+	RegisterResolveGuard("RETURN_TEST_EMPTY", "cita_pendiente")
+	t.Cleanup(func() { RegisterResolveGuard("RETURN_TEST_EMPTY", "") })
+	if _, ok := DeclaredResolveGuards()["RETURN_TEST_EMPTY"]; !ok {
+		t.Fatal("el candado registrado debe figurar")
+	}
+	RegisterResolveGuard("RETURN_TEST_EMPTY", "")
+	if _, ok := DeclaredResolveGuards()["RETURN_TEST_EMPTY"]; ok {
+		t.Fatal("un motivo vacío debe borrar la entrada de lo declarado")
+	}
+}

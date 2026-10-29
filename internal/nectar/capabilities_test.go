@@ -15,21 +15,11 @@ import (
 // es peor que no declararla, así que lo que estas pruebas persiguen es UNA SOLA cosa: que el
 // registro NO PUEDA MENTIR.
 
-// withResolveGuards fija si algún paso declara candado (en producción lo enchufa el montaje de
-// handlers) y lo restaura al terminar.
-func withResolveGuards(t *testing.T, declared bool) {
-	t.Helper()
-	prev := HasResolveGuards
-	HasResolveGuards = func() bool { return declared }
-	t.Cleanup(func() { HasResolveGuards = prev })
-}
-
 // Sin ningún candado declarado el registro NO anuncia `resolve_lock` (C8): no promete lo que
 // ningún paso emite.
 func TestCapabilities_ResolveLockFalseWithoutDeclaredGuards(t *testing.T) {
-	withResolveGuards(t, false)
 	for _, ver := range []int{config.ProtocolEscaladoV0, config.ProtocolEscaladoV1} {
-		if Capabilities(ver).Capabilities.Escalation.ResolveLock {
+		if Capabilities(ver, false).Capabilities.Escalation.ResolveLock {
 			t.Errorf("versión %d: resolve_lock en true sin candados declarados", ver)
 		}
 	}
@@ -40,7 +30,7 @@ func TestCapabilities_SchemaShape(t *testing.T) {
 	// las claves obligatorias tienen que estar TODAS y con su tipo, y no puede sobrar ninguna.
 	// Sin librería de JSON Schema en go.mod, se comprueban las claves y los tipos a mano.
 	for _, ver := range []int{config.ProtocolEscaladoV0, config.ProtocolEscaladoV1} {
-		body, _, err := Capabilities(ver).Encode()
+		body, _, err := Capabilities(ver, true).Encode()
 		if err != nil {
 			t.Fatalf("versión %d: %v", ver, err)
 		}
@@ -87,14 +77,13 @@ func TestCapabilities_SchemaShape(t *testing.T) {
 }
 
 func TestCapabilities_V0HidesEmissionOnlyFields(t *testing.T) {
-	withResolveGuards(t, true)
 	// §1.3: «Con PROTOCOL_ESCALADO_VERSION=0, escalate.facts y escalate.reason_detail salen
 	// false, porque el emisor está apagado. Así el registro y el cable dicen lo mismo en los dos
 	// estados de la bandera, y Néctar no pide lo que no va a recibir.»
 	//
 	// `return.valores` NO está en esa lista: es RECEPCIÓN, no emisión, y declararla false mientras
 	// el lector está vivo sería el registro mintiendo. Tiene su propia prueba, abajo.
-	c := Capabilities(config.ProtocolEscaladoV0).Capabilities
+	c := Capabilities(config.ProtocolEscaladoV0, true).Capabilities
 	if c.Escalation.Facts || c.Escalation.ReasonDetail {
 		t.Fatalf("con la bandera en 0 no se declara lo que no se emite: %+v", c)
 	}
@@ -125,7 +114,6 @@ func TestCapabilities_V0HidesEmissionOnlyFields(t *testing.T) {
 }
 
 func TestCapabilities_V1(t *testing.T) {
-	withResolveGuards(t, true)
 	// Con la bandera en 1 TODO está encendido salvo `repetible`: Neuro no tiene formulario
 	// repetible (el descriptor nunca lleva piezas), así que declararlo sería prometerle a Néctar
 	// una pantalla que el bot no sabe interpretar. Se compara el conjunto ENTERO y con los
@@ -159,7 +147,7 @@ func TestCapabilities_V1(t *testing.T) {
 		// Neuro no tiene plantillas que un agente pueda abrir hacia el bot.
 		Plantillas: []string{},
 	}
-	reg := Capabilities(config.ProtocolEscaladoV1)
+	reg := Capabilities(config.ProtocolEscaladoV1, true)
 	if reg.Protocol != 1 {
 		t.Fatalf("protocol = %d, quiero 1", reg.Protocol)
 	}
@@ -176,9 +164,8 @@ func TestCapabilities_V1(t *testing.T) {
 // `input.repetible` no está en la tabla: en Neuro es false con las dos banderas (se comprueba
 // aparte), así que no tiene un estado «cumplido con la bandera en 1» que contrastar.
 func TestCapabilities_EmissionFollowsFlagReceptionDoesNot(t *testing.T) {
-	withResolveGuards(t, true)
-	c0 := Capabilities(config.ProtocolEscaladoV0).Capabilities
-	c1 := Capabilities(config.ProtocolEscaladoV1).Capabilities
+	c0 := Capabilities(config.ProtocolEscaladoV0, true).Capabilities
+	c1 := Capabilities(config.ProtocolEscaladoV1, true).Capabilities
 
 	// Las TRES categorías. No son dos porque `resolve_lock` es EMISIÓN y aun así no la gobierna
 	// la bandera: se emite en los dos dialectos, y un booleano declara lo que el binario hace en
@@ -263,7 +250,7 @@ func TestCapabilities_NoticesMatchKnownKinds(t *testing.T) {
 	// `notices` no es una lista escrita a mano: son los CUATRO Kind que ParseNotice admite
 	// (KnownKinds, notice.go), en el orden del diseño. Un aviso declarado que el parser
 	// rechazara sería una invitación a que Néctar lo mandara.
-	got := Capabilities(config.ProtocolEscaladoV1).Capabilities.Notices
+	got := Capabilities(config.ProtocolEscaladoV1, true).Capabilities.Notices
 	want := make([]string, 0, len(KnownKinds()))
 	for _, k := range KnownKinds() {
 		want = append(want, string(k))
@@ -287,11 +274,11 @@ func TestCapabilities_NoticesMatchKnownKinds(t *testing.T) {
 }
 
 func TestCapabilities_EncodeVersionIsStable(t *testing.T) {
-	body1, v1, err := Capabilities(config.ProtocolEscaladoV1).Encode()
+	body1, v1, err := Capabilities(config.ProtocolEscaladoV1, true).Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
-	body2, v2, err := Capabilities(config.ProtocolEscaladoV1).Encode()
+	body2, v2, err := Capabilities(config.ProtocolEscaladoV1, true).Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +291,7 @@ func TestCapabilities_EncodeVersionIsStable(t *testing.T) {
 		t.Fatalf("la versión mide %d, quiero 16 hex", len(v1))
 	}
 	// Y CAMBIA cuando cambia el contenido: es lo único que hace útil el 304.
-	other := Capabilities(config.ProtocolEscaladoV1)
+	other := Capabilities(config.ProtocolEscaladoV1, true)
 	other.Capabilities.Escalation.Facts = !other.Capabilities.Escalation.Facts
 	if _, otherVersion, _ := other.Encode(); otherVersion == v1 {
 		t.Fatal("la versión no cambió al cambiar las capacidades declaradas")
@@ -323,11 +310,11 @@ func TestCapabilities_FlagMovesBodyAndVersion(t *testing.T) {
 	// Con `facts` y `reason_detail` encendidos las dos banderas dan cuerpos DISTINTOS y
 	// `version` cambia con ellos: ese movimiento del ETag es, literalmente, la señal con que
 	// Néctar se entera de que el bot ya emite el resumen estructurado.
-	b0, v0, err := Capabilities(config.ProtocolEscaladoV0).Encode()
+	b0, v0, err := Capabilities(config.ProtocolEscaladoV0, true).Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
-	b1, v1, err := Capabilities(config.ProtocolEscaladoV1).Encode()
+	b1, v1, err := Capabilities(config.ProtocolEscaladoV1, true).Encode()
 	if err != nil {
 		t.Fatal(err)
 	}

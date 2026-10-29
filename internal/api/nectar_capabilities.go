@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	"github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
 // La ruta del registro de capacidades del protocolo de escalado v1 de Néctar (ver
@@ -51,7 +52,7 @@ func (h *WebhookHandler) HandleNectarCapabilities(w http.ResponseWriter, r *http
 		return
 	}
 
-	body, version, err := nectar.Capabilities(h.cfg.ProtocolVersion()).Encode()
+	body, version, err := nectar.Capabilities(h.cfg.ProtocolVersion(), len(statemachine.DeclaredResolveGuards()) > 0).Encode()
 	if err != nil {
 		// Serializar el registro no depende de nada externo: si falla, es un defecto nuestro.
 		slog.Error("nectar: el registro de capacidades no se pudo serializar", "error", err)
