@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -880,6 +881,74 @@ func TestSendVoiceReminders_ConfirmedPatient_Excluded(t *testing.T) {
 	err := tasks.sendVoiceReminders(context.Background())
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+// TestVoiceReminders_DialsContactPhone: un pending con clave de sesión Néctar se empareja con la
+// cita y se llama por el teléfono del paciente (ContactPhone); el registro de la llamada y la marca
+// de IVR enviado siguen yendo a la clave del pending.
+func TestVoiceReminders_DialsContactPhone(t *testing.T) {
+	var dialed atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/calls") {
+			var body struct {
+				To string `json:"to"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			dialed.Store(body.To)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"id":"call-77"}`))
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"msg-123"}`))
+	}))
+	defer srv.Close()
+
+	birdClient := bird.NewVoiceClientForTest(srv.URL)
+	cfg := testConfig()
+	// El whitelist lista el teléfono del paciente, no la clave: prueba que se evalúa sobre DialPhone.
+	cfg.TestingWhitelistPhones = []string{"573001112233"}
+	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+	nm.RegisterPending(notifications.PendingNotification{
+		Type:          "confirmation",
+		Phone:         "nectar:77",
+		ContactPhone:  "573001112233",
+		AppointmentID: "apt-77",
+	})
+	defer func() {
+		if p, ok := nm.LoadPendingForTest("nectar:77"); ok && p.Timer != nil {
+			p.Timer.Stop()
+		}
+	}()
+
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			return []domain.Appointment{{
+				ID: "apt-77", PatientID: "P077", PatientName: "Ana",
+				PatientPhone: "300 111 2233", Date: tomorrow, TimeSlot: tomorrow.Format("200601021504"),
+			}}, nil
+		},
+	}
+	tasks := &Tasks{AppointmentRepo: mockRepo, BirdClient: birdClient, NotifyManager: nm, Cfg: cfg}
+
+	if err := tasks.sendVoiceReminders(context.Background()); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if got, _ := dialed.Load().(string); got != "573001112233" {
+		t.Fatalf("PlaceCall debe marcar al teléfono del paciente, marcó %q", got)
+	}
+	p, ok := nm.LoadPendingForTest("nectar:77")
+	if !ok {
+		t.Fatal("el pending debe seguir bajo su clave tras el IVR")
+	}
+	if p.CallID != "call-77" {
+		t.Errorf("RegisterCallID debe usar la clave del pending: CallID = %q", p.CallID)
+	}
+	if p.RetryCount != 3 {
+		t.Errorf("MarkIVRSent debe usar la clave del pending: RetryCount = %d, want 3", p.RetryCount)
 	}
 }
 

@@ -616,11 +616,15 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
-		if !t.Cfg.IsPhoneWhitelisted(pending.Phone) {
+		// Se llama al teléfono del paciente (DialPhone): en Bird es la clave del pending; en Néctar la
+		// clave es "nectar:<id>" y el teléfono viene en ContactPhone (E.164 sin '+', de ahí normalizar
+		// para emparejar con apptByPhone; en Bird la clave ya está normalizada y no cambia).
+		dialPhone := pending.DialPhone()
+		if !t.Cfg.IsPhoneWhitelisted(dialPhone) {
 			continue
 		}
 
-		appt, ok := apptByPhone[pending.Phone]
+		appt, ok := apptByPhone[utils.ParseColombianPhone(dialPhone)]
 		if !ok {
 			continue // No matching appointment — may have been confirmed/cancelled meanwhile
 		}
@@ -639,7 +643,7 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 			}
 		}
 
-		callID, err := t.BirdClient.PlaceCall(pending.Phone, map[string]string{
+		callID, err := t.BirdClient.PlaceCall(dialPhone, map[string]string{
 			"patient_name":     appt.PatientName,
 			"appointment_date": utils.FormatFriendlyDate(appt.Date),
 			"appointment_time": services.FormatTimeSlot(appt.TimeSlot),
@@ -647,11 +651,11 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 			"clinic_address":   clinicAddress,
 		})
 		if err != nil {
-			slog.Error("voice call failed", "phone", utils.MaskPhone(pending.Phone), "error", err)
+			slog.Error("voice call failed", "phone", utils.MaskPhone(dialPhone), "error", err)
 			continue
 		}
 
-		// Register callId → phone mapping for DTMF webhook correlation
+		// Register callId → clave del pending (no el teléfono marcado) para correlacionar el DTMF
 		if callID != "" {
 			t.NotifyManager.RegisterCallID(callID, pending.Phone)
 		}

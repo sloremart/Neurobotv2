@@ -24,8 +24,11 @@ import (
 
 // PendingNotification tracks a proactive notification awaiting response.
 type PendingNotification struct {
-	Type          string // "confirmation", "reschedule", "cancellation", "waiting_list"
-	Phone         string
+	Type  string // "confirmation", "reschedule", "cancellation", "waiting_list"
+	Phone string // clave del pending: el teléfono (Bird) o la clave de sesión "nectar:<id>" (Néctar)
+	// ContactPhone: teléfono E.164 del paciente cuando Phone es una clave de sesión de Néctar.
+	// Vacío = Phone ya es el teléfono (Bird). Lo usan la idempotencia por teléfono y el IVR.
+	ContactPhone  string
 	AppointmentID string
 	WaitingListID string // only for waiting_list type
 	// WLTrigger: origen de la notificación WL (WLTriggerSlotRelease | WLTriggerDailyCheck) — viaja
@@ -47,6 +50,15 @@ type PendingNotification struct {
 	// re-valida antes de actuar, para no procesar como "vencida" una entrada que fue re-armada
 	// (p.ej. el timer post-IVR de MarkIVRSent) cuando la dispara un trigger viejo.
 	ExpiresAt time.Time
+}
+
+// DialPhone devuelve el teléfono al que se llama o se compara al paciente: ContactPhone si lo hay,
+// si no la clave (en Bird la clave ya es el teléfono).
+func (p PendingNotification) DialPhone() string {
+	if p.ContactPhone != "" {
+		return p.ContactPhone
+	}
+	return p.Phone
 }
 
 // WaitingListFinder reads/updates waiting list entries (avoids importing repo/local directly).
@@ -87,7 +99,7 @@ type PreparationFinder interface {
 
 // NotificationPersister persists pending notifications to the database.
 type NotificationPersister interface {
-	Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID string, retryCount int, expiresAt time.Time) error
+	Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, retryCount int, expiresAt time.Time) error
 	UpdateCallID(ctx context.Context, phone, callID string) error
 	Resolve(ctx context.Context, phone, status string) error
 	DeleteHistoryOlderThan(ctx context.Context, days int) (int64, error)
@@ -109,6 +121,7 @@ type PendingRow struct {
 	WaitingListID  string
 	BirdMessageID  string
 	ConversationID string
+	ContactPhone   string
 	CallID         string
 	RetryCount     int
 	ExpiresAt      time.Time
@@ -156,6 +169,7 @@ type EligibleCupsResolver interface {
 type NotificationManager struct {
 	pending         sync.Map // phone → *PendingNotification
 	callIDMap       sync.Map // callId → phone (for IVR DTMF result correlation)
+	contactIndex    sync.Map // ContactPhone → clave del pending; solo lo tocan storePending/takePending
 	birdClient      *bird.Client
 	apptSvc         *services.AppointmentService
 	cfg             *config.Config
@@ -217,6 +231,39 @@ func (m *NotificationManager) lockPhone(phone string) bool {
 func (m *NotificationManager) unlockPhone(phone string) {
 	if m.phoneLock != nil {
 		m.phoneLock.Unlock(phone)
+	}
+}
+
+// storePending guarda p bajo key y mantiene el índice de contacto: si la entrada que reemplaza
+// tenía otro ContactPhone, ese teléfono deja de apuntar a key. Toda escritura de `pending` pasa por aquí.
+func (m *NotificationManager) storePending(key string, p *PendingNotification) {
+	if old, ok := m.pending.Load(key); ok {
+		if op, _ := old.(*PendingNotification); op != nil && op.ContactPhone != p.ContactPhone {
+			m.unindexContact(key, op.ContactPhone)
+		}
+	}
+	m.pending.Store(key, p)
+	if p.ContactPhone != "" {
+		m.contactIndex.Store(p.ContactPhone, key)
+	}
+}
+
+// takePending quita atómicamente el pending de key (reclama su propiedad, como LoadAndDelete) y su
+// entrada en el índice de contacto. Toda baja de `pending` pasa por aquí.
+func (m *NotificationManager) takePending(key string) (*PendingNotification, bool) {
+	val, ok := m.pending.LoadAndDelete(key)
+	if !ok {
+		return nil, false
+	}
+	p := val.(*PendingNotification)
+	m.unindexContact(key, p.ContactPhone)
+	return p, true
+}
+
+// unindexContact borra contact → key solo si sigue apuntando a key (otra clave pudo tomarlo después).
+func (m *NotificationManager) unindexContact(key, contact string) {
+	if contact != "" {
+		m.contactIndex.CompareAndDelete(contact, key)
 	}
 }
 
@@ -349,14 +396,14 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) bool {
 		m.handleTimeout(notif.Phone)
 	})
 
-	m.pending.Store(notif.Phone, &notif)
+	m.storePending(notif.Phone, &notif)
 
 	// Persist to DB (survives restarts)
 	if m.persister != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := m.persister.Upsert(ctx, notif.Phone, notif.Type,
-			notif.AppointmentID, notif.WaitingListID, notif.BirdMessageID, notif.ConversationID,
+			notif.AppointmentID, notif.WaitingListID, notif.BirdMessageID, notif.ConversationID, notif.ContactPhone,
 			notif.RetryCount, expiresAt); err != nil {
 			slog.Error("persist pending notification", "phone", utils.MaskPhone(notif.Phone), "error", err)
 		}
@@ -374,13 +421,12 @@ func (m *NotificationManager) HandleResponse(phone, payload, conversationID stri
 	}
 	defer m.unlockPhone(phone)
 
-	val, ok := m.pending.LoadAndDelete(phone)
+	pending, ok := m.takePending(phone)
 	if !ok {
 		slog.Warn("no pending notification for phone", "phone", utils.MaskPhone(phone), "payload", payload)
 		return
 	}
 
-	pending := val.(*PendingNotification)
 	if pending.Timer != nil { // #18: entradas restauradas de la BD pueden no tener Timer en memoria
 		pending.Timer.Stop()
 	}
@@ -482,6 +528,20 @@ func (m *NotificationManager) HasPending(phone string) bool {
 	return ok
 }
 
+// HasPendingForContact reporta si hay un pending cuya clave o cuyo teléfono del paciente es phone.
+// Con Néctar la clave es "nectar:<id>" y el teléfono vive en ContactPhone; en Bird equivale a HasPending.
+func (m *NotificationManager) HasPendingForContact(phone string) bool {
+	if m.HasPending(phone) {
+		return true
+	}
+	key, ok := m.contactIndex.Load(phone)
+	if !ok {
+		return false
+	}
+	val, ok := m.pending.Load(key)
+	return ok && val.(*PendingNotification).ContactPhone == phone
+}
+
 // HandleInvalidInput is called when a patient sends free text while a notification is pending.
 // Resends the confirmation prompt (up to 3 times) instead of starting a new bot session.
 // Returns true if the message was consumed (caller should not route to state machine).
@@ -491,18 +551,17 @@ func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) b
 	}
 	defer m.unlockPhone(phone)
 
-	val, ok := m.pending.LoadAndDelete(phone) // atomic claim
+	p, ok := m.takePending(phone) // atomic claim
 	if !ok {
 		return false
 	}
-	p := val.(*PendingNotification)
 
 	// Intercept all notification types that show buttons
 	switch p.Type {
 	case "confirmation", "reschedule", "cancellation", "waiting_list":
 		// These types have interactive buttons — intercept free text
 	default:
-		m.pending.Store(phone, p) // re-store: not our type
+		m.storePending(phone, p) // re-store: not our type
 		return false
 	}
 
@@ -529,7 +588,7 @@ func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) b
 		return true
 	}
 
-	m.pending.Store(phone, p)
+	m.storePending(phone, p)
 
 	convID := conversationID
 	if convID == "" {
@@ -634,11 +693,10 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 				return
 			}
 			defer m.unlockPhone(phone)
-			val, ok := m.pending.LoadAndDelete(phone)
+			pp, ok := m.takePending(phone)
 			if !ok {
 				return // el DTMF ya lo consumió
 			}
-			pp := val.(*PendingNotification)
 			if pp.CallID != "" {
 				m.callIDMap.Delete(pp.CallID) // evita el leak de callIDMap en llamadas sin respuesta
 			}
@@ -649,12 +707,12 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 			}
 			slog.Info("IVR grace window expired (followup disabled), pending cleared", "phone", utils.MaskPhone(phone))
 		})
-		m.pending.Store(phone, p)
+		m.storePending(phone, p)
 		if m.persister != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if err := m.persister.Upsert(ctx, p.Phone, p.Type,
-				p.AppointmentID, p.WaitingListID, p.BirdMessageID, p.ConversationID,
+				p.AppointmentID, p.WaitingListID, p.BirdMessageID, p.ConversationID, p.ContactPhone,
 				p.RetryCount, p.ExpiresAt); err != nil {
 				slog.Error("persist IVR sent (followup disabled)", "phone", utils.MaskPhone(phone), "error", err)
 			}
@@ -669,13 +727,13 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 	p.Timer = time.AfterFunc(duration, func() {
 		m.handleTimeout(phone)
 	})
-	m.pending.Store(phone, p)
+	m.storePending(phone, p)
 
 	if m.persister != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := m.persister.Upsert(ctx, p.Phone, p.Type,
-			p.AppointmentID, p.WaitingListID, p.BirdMessageID, p.ConversationID,
+			p.AppointmentID, p.WaitingListID, p.BirdMessageID, p.ConversationID, p.ContactPhone,
 			p.RetryCount, expiresAt); err != nil {
 			slog.Error("persist IVR sent notification", "phone", utils.MaskPhone(phone), "error", err)
 		}
@@ -703,7 +761,7 @@ func (m *NotificationManager) RegisterCallID(callID, phone string) {
 	if val, ok := m.pending.Load(phone); ok {
 		p := val.(*PendingNotification)
 		p.CallID = callID
-		m.pending.Store(phone, p)
+		m.storePending(phone, p)
 		apptID = p.AppointmentID
 	}
 
@@ -752,11 +810,10 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 		// ── CONFIRM ──────────────────────────────────────────────────────────
 		slog.Info("IVR: patient confirmed", "phone", utils.MaskPhone(phone), "callId", callID)
 
-		pendVal, ok := m.pending.LoadAndDelete(phone)
+		p, ok := m.takePending(phone)
 		if !ok {
 			return
 		}
-		p := pendVal.(*PendingNotification)
 		if p.Timer != nil {
 			p.Timer.Stop()
 		}
@@ -809,11 +866,10 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 		// ── CANCEL (pressed any key other than 1) ────────────────────────────
 		slog.Info("IVR: patient cancelled", "phone", utils.MaskPhone(phone), "keys", keys, "callId", callID)
 
-		pendVal, ok := m.pending.LoadAndDelete(phone)
+		p, ok := m.takePending(phone)
 		if !ok {
 			return
 		}
-		p := pendVal.(*PendingNotification)
 		if p.Timer != nil {
 			p.Timer.Stop()
 		}
@@ -970,6 +1026,7 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 			WaitingListID:  row.WaitingListID,
 			BirdMessageID:  row.BirdMessageID,
 			ConversationID: row.ConversationID,
+			ContactPhone:   row.ContactPhone,
 			CallID:         row.CallID,
 			RetryCount:     row.RetryCount,
 			CreatedAt:      row.CreatedAt,
@@ -984,7 +1041,7 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 		if now.After(row.ExpiresAt) {
 			// Ya vencida. L10: NO procesar inline (handleTimeout adquiere lock 30s + red si el followup
 			// está activo → serializaría el arranque). Guardar y recolectar; se procesa tras el loop.
-			m.pending.Store(row.Phone, notif)
+			m.storePending(row.Phone, notif)
 			expiredPhones = append(expiredPhones, row.Phone)
 			expired++
 			continue
@@ -996,7 +1053,7 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 		notif.Timer = time.AfterFunc(remaining, func() {
 			m.handleTimeout(phone)
 		})
-		m.pending.Store(row.Phone, notif)
+		m.storePending(row.Phone, notif)
 		restored++
 	}
 
@@ -1081,18 +1138,16 @@ func (m *NotificationManager) handleTimeout(phone string) {
 	}
 	defer m.unlockPhone(phone)
 
-	val, ok := m.pending.LoadAndDelete(phone)
+	pending, ok := m.takePending(phone)
 	if !ok {
 		return
 	}
-
-	pending := val.(*PendingNotification)
 
 	// N-19: si la entrada fue re-armada con un ExpiresAt futuro (p.ej. MarkIVRSent fijó el timer
 	// post-IVR), y este disparo viene de un trigger viejo (checkExpired sobre un snapshot de BD
 	// rancio, o un timer anterior), NO procesarla como vencida: re-insertarla y salir.
 	if !pending.ExpiresAt.IsZero() && time.Now().Before(pending.ExpiresAt) {
-		m.pending.Store(phone, pending)
+		m.storePending(phone, pending)
 		slog.Debug("handleTimeout: entry re-armed, not expired yet — skipping", "phone", utils.MaskPhone(phone))
 		return
 	}

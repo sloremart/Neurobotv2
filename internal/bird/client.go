@@ -235,6 +235,14 @@ func NewClientForTest(baseURL string) *Client {
 	}
 }
 
+// NewVoiceClientForTest es NewClientForTest con canal de voz configurado, para probar PlaceCall
+// contra un httptest.Server.
+func NewVoiceClientForTest(baseURL string) *Client {
+	c := NewClientForTest(baseURL)
+	c.voiceChannelID = "vc-test"
+	return c
+}
+
 // collectTeamIDs extracts non-empty team IDs from config for agent availability filtering.
 func collectTeamIDs(cfg *config.Config) []string {
 	var ids []string
