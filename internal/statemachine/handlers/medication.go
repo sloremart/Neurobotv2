@@ -22,6 +22,15 @@ func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingR
 	m.Register(sm.StateMedicationAskLastDate, medicationAskLastDateHandler())
 	m.Register(sm.StateMedicationAskDose, medicationAskDoseHandler())
 	m.Register(sm.StateMedicationAskFrequency, medicationAskFrequencyHandler())
+	// Texto libre (C12): el handler no guarda una palabra reservada y no se ofrece «volver a
+	// preguntar».
+	registerAgentField(sm.StateMedicationAskLastDate,
+		agentTextInput("Fecha o tiempo de la última aplicación", sm.InputKindText, freeTextAnswer,
+			"Escribe cuándo fue la última aplicación."))
+	registerAgentField(sm.StateMedicationAskDose,
+		agentTextInput("Dosis que se aplica", sm.InputKindText, freeTextAnswer, "Escribe la dosis."))
+	registerAgentField(sm.StateMedicationAskFrequency,
+		agentTextInput("Frecuencia de aplicación", sm.InputKindText, freeTextAnswer, "Escribe la frecuencia."))
 	sm.RegisterStaticReturnMenu(sm.StateMedicationAskSymptoms,
 		payloadOption("Sin síntomas", "sin_sintomas"),
 		payloadOption("Con síntomas", "con_sintomas"),
@@ -164,7 +173,8 @@ func buildMedDescription(rec *local.MedicationPendingRecord) string {
 func medicationAskLastDateHandler() sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		text := strings.TrimSpace(msg.Text)
-		if text == "" {
+		// C12: una palabra reservada (__resume__ al volver del agente) cuenta como vacía.
+		if !freeTextAnswer(text) {
 			return sm.NewResult(sess.CurrentState).
 				WithText("Por favor escribe la fecha de tu última aplicación. Ejemplo: *15/08/2026* o *\"hace 6 meses\"*."), nil
 		}
@@ -178,7 +188,8 @@ func medicationAskLastDateHandler() sm.StateHandler {
 func medicationAskDoseHandler() sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		text := strings.TrimSpace(msg.Text)
-		if text == "" {
+		// C12: una palabra reservada (__resume__ al volver del agente) cuenta como vacía.
+		if !freeTextAnswer(text) {
 			return sm.NewResult(sess.CurrentState).
 				WithText("Por favor escribe la dosis. Ejemplo: *1 jeringa de 40mg*."), nil
 		}
@@ -192,7 +203,8 @@ func medicationAskDoseHandler() sm.StateHandler {
 func medicationAskFrequencyHandler() sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		text := strings.TrimSpace(msg.Text)
-		if text == "" {
+		// C12: una palabra reservada (__resume__ al volver del agente) cuenta como vacía.
+		if !freeTextAnswer(text) {
 			return sm.NewResult(sess.CurrentState).
 				WithText("Por favor escribe la frecuencia. Ejemplo: *cada mes*."), nil
 		}

@@ -54,11 +54,11 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	// El agente escribe el número de documento. NO lleva Validate propio: sin él, ResolveReturnInput
 	// aplica el TextValidate del paso (validators.Document) y su ErrorMsg ANTES de inyectar, con el
 	// mismo veredicto que recibe el paciente. Un Validate aquí SUSTITUIRÍA esa regla.
-	sm.RegisterReturnInput(sm.StateAskDocument, sm.ReturnInput{
+	registerAgentField(sm.StateAskDocument, sm.ReturnInput{
 		Kind:     sm.InputKindText,
 		Label:    "Número de documento",
 		Required: true,
-	})
+	}, askAgainOption())
 	m.RegisterWithConfig(sm.StateAskDocument, sm.HandlerConfig{
 		InputType:    sm.InputText,
 		TextValidate: validators.Document,
@@ -105,6 +105,15 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 		Handler:      askUpdatePhoneHandler(),
 	})
 	m.Register(sm.StateAskUpdateEmail, askUpdateEmailHandler())
+	// Campos del agente: el celular lo juzga el TextValidate del paso (sin Validate propio); el
+	// correo, el mismo contactEmailOrNA del handler.
+	registerAgentField(sm.StateAskUpdatePhone,
+		agentTextInput("Celular nuevo del paciente (10 dígitos)", sm.InputKindNumber, nil, ""),
+		askAgainOption())
+	registerAgentField(sm.StateAskUpdateEmail,
+		agentTextInput("Correo nuevo del paciente (o NA si no tiene)", sm.InputKindText, contactEmailOrNA,
+			"Debe ser un correo válido (ejemplo@correo.com) o NA si el paciente no tiene."),
+		askAgainOption())
 	m.Register(sm.StateUpdateContactInfo, updateContactInfoHandler(patientSvc))
 }
 
@@ -488,17 +497,14 @@ func askUpdateEmailHandler() sm.StateHandler {
 		lower := strings.ToLower(input)
 
 		// Aceptar NA y variantes
-		naResponses := map[string]bool{
-			"no tengo": true, "no": true, "na": true, "n/a": true, "-": true, "ninguno": true,
-		}
-		if naResponses[lower] {
+		if contactEmailNoAnswers[lower] {
 			return sm.NewResult(sm.StateUpdateContactInfo).
 				WithContext("contact_new_email", "").
 				WithEvent("contact_email_skipped", nil), nil
 		}
 
 		// Validar formato de email
-		retryResult := sm.ValidateWithRetry(sess, lower, validators.Email, "Email no válido. Ingresa un correo como ejemplo@correo.com o responde *NA* si no tienes.")
+		retryResult := sm.ValidateWithRetry(sess, lower, contactEmailOrNA, "Email no válido. Ingresa un correo como ejemplo@correo.com o responde *NA* si no tienes.")
 		if retryResult != nil {
 			return retryResult, nil
 		}

@@ -66,6 +66,31 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	m.Register(sm.StateCheckAgeRestriction, checkAgeRestrictionHandler())
 
 	registerMedicalRecovery(m)
+	registerMedicalAgentFields()
+}
+
+// registerMedicalAgentFields declara los campos que el agente de Néctar llena en los pasos
+// clínicos de texto, cada uno con el validador de su handler. El peso no lleva Validate propio:
+// lo juzga el TextValidate del paso.
+func registerMedicalAgentFields() {
+	registerAgentField(sm.StateGfrCreatinine,
+		agentTextInput("Creatinina en mg/dL (ej: 0.96)", sm.InputKindNumber, validCreatinine,
+			"Debe ser un número mayor que 0 y hasta 30 (mg/dL)."), askAgainOption())
+	registerAgentField(sm.StateGfrExamDate,
+		agentTextInput("Fecha de toma del examen de creatinina", sm.InputKindDate, validExamDate,
+			"Debe ser una fecha válida que no sea futura."), askAgainOption())
+	registerAgentField(sm.StateGfrHeight,
+		agentTextInput("Estatura en centímetros (ej: 170)", sm.InputKindNumber, validHeightCm,
+			"Debe ser la estatura en centímetros, entre 30 y 250."), askAgainOption())
+	registerAgentField(sm.StateGfrWeight,
+		agentTextInput("Peso en kilogramos (ej: 70)", sm.InputKindNumber, nil, ""), askAgainOption())
+	// weeks_yes / weeks_no son los comandos del agente que el handler ya reconoce (sin número).
+	registerAgentField(sm.StateAskGestationalWeeks,
+		agentTextInput("Semanas de gestación (ej: 12 o 12.5)", sm.InputKindNumber, validGestationalWeeks,
+			"Debe ser el número de semanas, mayor que 0."),
+		askAgainOption(),
+		noInputPayloadOption("Sí está en el rango", "weeks_yes"),
+		noInputPayloadOption("No está en el rango", "weeks_no"))
 }
 
 // registerMedicalRecovery habilita la recuperación IA en los estados clínicos de entrada numérica /
@@ -342,10 +367,8 @@ func askBabyWeightHandler() sm.StateHandler {
 // GFR_CREATININE (interactivo) — pide valor de creatinina.
 func gfrCreatinineHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		input := strings.TrimSpace(msg.Text)
-
-		value, err := strconv.ParseFloat(strings.Replace(input, ",", ".", 1), 64)
-		if err != nil || value <= 0 || value > 30 {
+		value, ok := parseCreatinine(msg.Text)
+		if !ok {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
 				"Valor no válido. Escribe solo el número de creatinina en mg/dL.\n\n_Ejemplo: si tu resultado dice Creatinina 0.96 mg/dL, escribe *0.96*_")
 			return retryResult, nil
@@ -365,11 +388,9 @@ func gfrCreatinineHandler() sm.StateHandler {
 func gfrExamDateHandler() sm.StateHandler {
 	const dateHelp = "Escribe la *fecha de toma* del examen como *DD/MM/AAAA*, por ejemplo *05/07/2026*."
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		input := strings.TrimSpace(msg.Text)
-
 		// Mismo parser flexible que la fecha de nacimiento (ISO y DD/MM/AAAA, con - o /).
-		examDate, ok := parseBirthDate(input)
-		if !ok || examDate.After(time.Now()) {
+		examDate, ok := parseExamDate(msg.Text)
+		if !ok {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
 				"No entendí la fecha. "+dateHelp)
 			return retryResult, nil
@@ -454,9 +475,8 @@ func gfrDiseaseHandler() sm.StateHandler {
 // GFR_HEIGHT (interactivo) — pide estatura en cm.
 func gfrHeightHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		input := strings.TrimSpace(msg.Text)
-		value, err := strconv.ParseFloat(strings.Replace(input, ",", ".", 1), 64)
-		if err != nil || value < 30 || value > 250 {
+		value, ok := parseHeightCm(msg.Text)
+		if !ok {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
 				"Estatura no válida. Escribe la altura del paciente en centímetros. (Ejemplo: si mide 1.70 m, escribir 170)")
 			return retryResult, nil
@@ -839,9 +859,8 @@ func askGestationalWeeksHandler() sm.StateHandler {
 		}
 
 		// Parsear número de semanas (paciente o agente con número específico).
-		weekStr := strings.TrimSpace(strings.Replace(msg.Text, ",", ".", 1))
-		weeks, err := strconv.ParseFloat(weekStr, 64)
-		if err != nil || weeks <= 0 {
+		weeks, ok := parseGestationalWeeks(msg.Text)
+		if !ok {
 			// Respuesta no reconocida: re-preguntar (máx 3 intentos antes de escalar).
 			return sm.NewResult(sess.CurrentState).
 				WithText(fmt.Sprintf("Por favor indica el número de semanas (ejemplo: *12* o *12.5*).\n\n%s", questionText)), nil

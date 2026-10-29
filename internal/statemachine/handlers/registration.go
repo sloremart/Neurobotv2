@@ -106,7 +106,7 @@ func RegisterRegistrationHandlers(
 		Handler: withCorrectionRedirect(regEducationLevelHandler()),
 	})
 	m.Register(sm.StateRegOccupation, withCorrectionRedirect(regOccupationHandler()))
-	m.Register(sm.StateRegAddress, withCorrectionRedirect(regFieldHandler("reg_address", "Escribe tu dirección (calle y número).", validateNotEmpty, sm.StateRegBarrio, "¿En qué *barrio* vives? Escribe el nombre (ej: La Esperanza) o responde *NA* si no lo sabes:")))
+	m.Register(sm.StateRegAddress, withCorrectionRedirect(regFieldHandler("reg_address", "Escribe tu dirección (calle y número).", freeTextAnswer, sm.StateRegBarrio, "¿En qué *barrio* vives? Escribe el nombre (ej: La Esperanza) o responde *NA* si no lo sabes:")))
 	m.Register(sm.StateRegPhone, withCorrectionRedirect(regPhoneHandler()))
 	m.Register(sm.StateRegPhone2, regOptionalPhoneHandler())
 	m.Register(sm.StateRegEmail, withCorrectionRedirect(regEmailHandler()))
@@ -194,6 +194,53 @@ func RegisterRegistrationHandlers(
 	m.Register(sm.StateCreatePatient, createPatientHandler(patientSvc))
 
 	registerRegistrationRecovery(m)
+	registerRegistrationAgentFields()
+}
+
+// registerRegistrationAgentFields declara los campos que el agente de Néctar llena en los pasos
+// de texto del registro, cada uno con el validador de su handler. «Volver a preguntar» solo va
+// donde el handler re-pregunta ante __resume__; en REG_PHONE2 no, porque su handler acepta
+// cualquier texto y seguiría al correo.
+func registerRegistrationAgentFields() {
+	const nameProblem = "Solo letras (2 a 50), sin números ni símbolos."
+	const optionalNameProblem = "Solo letras (2 a 50), sin números ni símbolos, o NA si no tiene."
+	registerAgentField(sm.StateRegFirstSurname,
+		agentTextInput("Primer apellido", sm.InputKindText, validateName, nameProblem), askAgainOption())
+	registerAgentField(sm.StateRegFirstName,
+		agentTextInput("Primer nombre", sm.InputKindText, validateName, nameProblem), askAgainOption())
+	registerAgentField(sm.StateRegSecondSurname,
+		agentTextInput("Segundo apellido (o NA si no tiene)", sm.InputKindText, optionalName, optionalNameProblem),
+		askAgainOption())
+	registerAgentField(sm.StateRegSecondName,
+		agentTextInput("Segundo nombre (o NA si no tiene)", sm.InputKindText, optionalName, optionalNameProblem),
+		askAgainOption())
+	registerAgentField(sm.StateRegBirthDate,
+		agentTextInput("Fecha de nacimiento", sm.InputKindDate, validBirthDate,
+			"Debe ser una fecha válida, no futura y desde 1900."), askAgainOption())
+	registerAgentField(sm.StateRegPhone,
+		agentTextInput("Celular principal (10 dígitos)", sm.InputKindNumber, validators.ColombianPhone,
+			"Debe ser un celular colombiano de 10 dígitos (ej: 3001234567)."), askAgainOption())
+	registerAgentField(sm.StateRegPhone2,
+		agentTextInput("Celular secundario (o NA si no tiene)", sm.InputKindText, optionalPhone,
+			"Debe ser un celular colombiano de 10 dígitos o NA si no tiene."))
+	registerAgentField(sm.StateRegEmail,
+		agentTextInput("Correo electrónico (o NA si no tiene)", sm.InputKindText, emailOrNA,
+			"Debe ser un correo válido (ejemplo@correo.com) o NA si no tiene."), askAgainOption())
+	// Texto libre (C12): el handler no guarda una palabra reservada y no se ofrece «volver a
+	// preguntar».
+	registerAgentField(sm.StateRegAddress,
+		agentTextInput("Dirección de residencia", sm.InputKindText, freeTextAnswer,
+			"Escribe la dirección de residencia."))
+	registerAgentField(sm.StateRegOccupation,
+		agentTextInput("Ocupación u oficio (o NA)", sm.InputKindText, freeTextAnswer,
+			"Escribe la ocupación u oficio, o NA."))
+	registerAgentField(sm.StateRegBarrio,
+		agentTextInput("Barrio (o NA si no lo sabe)", sm.InputKindText, freeTextAnswer,
+			"Escribe el nombre del barrio, o NA si no lo sabe."))
+	// El municipio lo busca el handler por nombre, como si lo escribiera el paciente.
+	registerAgentField(sm.StateRegMunicipality,
+		agentTextInput("Municipio y departamento de residencia (ej: Villavicencio - Meta)", sm.InputKindText,
+			validateNotEmpty, "Escribe el municipio y el departamento de residencia."))
 }
 
 // registerRegistrationRecovery habilita la recuperación IA (opt-in) en los campos de TEXTO LIBRE del
@@ -298,24 +345,16 @@ func regOptionalFieldHandler(ctxKey, prompt, nextState, nextPrompt string) sm.St
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 
-		if noResponses[strings.ToLower(input)] {
-			r := sm.NewResult(nextState).
-				WithContext(ctxKey, "")
-			if nextPrompt != "" {
-				r.WithText(nextPrompt)
-			}
-			return r, nil
+		if !optionalName(input) {
+			return sm.ValidateWithRetry(sess, input, optionalName, "Respuesta no válida. "+prompt), nil
 		}
 
-		if !validateName(input) {
-			retryResult := sm.ValidateWithRetry(sess, input, validateName, "Respuesta no válida. "+prompt)
-			if retryResult != nil {
-				return retryResult, nil
-			}
+		value := strings.ToUpper(input)
+		if isNoAnswer(input) {
+			value = ""
 		}
-
 		r := sm.NewResult(nextState).
-			WithContext(ctxKey, strings.ToUpper(input))
+			WithContext(ctxKey, value)
 		if nextPrompt != "" {
 			r.WithText(nextPrompt)
 		}
@@ -520,21 +559,16 @@ func regBirthDateHandler() sm.StateHandler {
 	const dateHelp = "Ingresa tu *fecha de nacimiento*, por ejemplo *17/04/1992* (día/mes/año)."
 
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		input := strings.TrimSpace(msg.Text)
-
-		parsedDate, ok := parseBirthDate(input)
-		if !ok {
+		parsedDate, verdict := judgeBirthDate(msg.Text)
+		switch verdict {
+		case birthDateUnreadable:
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
 				"No entendí la fecha. "+dateHelp)
 			return retryResult, nil
-		}
-
-		now := time.Now()
-		if parsedDate.After(now) {
+		case birthDateInFuture:
 			return sm.NewResult(sess.CurrentState).
 				WithText("La fecha no puede ser en el futuro. " + dateHelp), nil
-		}
-		if parsedDate.Year() < 1900 {
+		case birthDateBefore1900:
 			return sm.NewResult(sess.CurrentState).
 				WithText("Fecha no válida. " + dateHelp), nil
 		}
@@ -602,16 +636,24 @@ func regEducationLevelHandler() sm.StateHandler {
 		selected := sm.ValidatedPayload(ctx)
 		return sm.NewResult(sm.StateRegOccupation).
 			WithContext("reg_education_level", selected).
-			WithText("¿Cuál es tu *ocupación* u oficio? (ej: docente, comerciante, ama de casa, estudiante). Si prefieres, responde *NA*:"), nil
+			WithText(occupationQuestion), nil
 	}
 }
+
+// occupationQuestion es la pregunta de REG_OCCUPATION.
+const occupationQuestion = "¿Cuál es tu *ocupación* u oficio? (ej: docente, comerciante, ama de casa, estudiante). Si prefieres, responde *NA*:"
 
 // REG_OCCUPATION — ocupación (sis_paci.ocupacion, texto libre varchar(50)). Campo opcional: NA lo deja vacío.
 func regOccupationHandler() sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
+		// C12: una palabra reservada (__resume__ al volver del agente) no es la ocupación: se
+		// vuelve a hacer la pregunta, sin guardar nada.
+		if sm.IsReservedKeyword(input) {
+			return sm.NewResult(sess.CurrentState).WithText(occupationQuestion), nil
+		}
 		occupation := input
-		if noResponses[strings.ToLower(input)] {
+		if isNoAnswer(input) {
 			occupation = ""
 		}
 		sess.RetryCount = 0
@@ -626,13 +668,13 @@ func regPhoneHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 
-		parsed := utils.ParseColombianPhone(input)
-		if parsed == "" {
+		if !validators.ColombianPhone(input) {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
 				"Número no válido. Ingresa tu celular principal preferiblemente con WhatsApp (ej: 3001234567).")
 			return retryResult, nil
 		}
 
+		parsed := utils.ParseColombianPhone(input)
 		sess.RetryCount = 0
 		return sm.NewResult(sm.StateRegPhone2).
 			WithContext("reg_phone", parsed).
@@ -646,22 +688,14 @@ func regOptionalPhoneHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		input := strings.TrimSpace(msg.Text)
 
-		if noResponses[strings.ToLower(input)] {
-			return sm.NewResult(sm.StateRegEmail).
-				WithContext("reg_phone2", "").
-				WithText("Indica tu correo electrónico o responde *NA*:"), nil
+		// Campo opcional: NA o un texto que no es teléfono (optionalPhone lo rechaza) se guardan
+		// vacíos y se sigue igual.
+		phone2 := ""
+		if optionalPhone(input) && !isNoAnswer(input) {
+			phone2 = utils.ParseColombianPhone(input)
 		}
-
-		parsed := utils.ParseColombianPhone(input)
-		if parsed == "" {
-			// No es un teléfono válido, pero es campo opcional, guardar vacío
-			return sm.NewResult(sm.StateRegEmail).
-				WithContext("reg_phone2", "").
-				WithText("Indica tu correo electrónico o responde *NA*:"), nil
-		}
-
 		return sm.NewResult(sm.StateRegEmail).
-			WithContext("reg_phone2", parsed).
+			WithContext("reg_phone2", phone2).
 			WithText("Indica tu correo electrónico o responde *NA*:"), nil
 	}
 }
@@ -679,7 +713,7 @@ func regEmailHandler() sm.StateHandler {
 					sm.ListSection{Title: "Tipo de usuario", Rows: userTypeListRows()}), nil
 		}
 
-		if !validators.Email(lower) {
+		if !emailOrNA(lower) {
 			retryResult := sm.ValidateWithRetry(sess, "", func(string) bool { return false },
 				"Email no válido. Indica tu correo electrónico o responde *NA*:")
 			return retryResult, nil
@@ -720,7 +754,7 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 		}
 
 		input := strings.TrimSpace(msg.Text)
-		if input == "" {
+		if !validateNotEmpty(input) {
 			return sm.NewResult(sess.CurrentState).
 				WithText("Nombre completo de tu municipio y departamento de residencia. Ejemplo: Villavicencio - Meta:"), nil
 		}
@@ -971,7 +1005,8 @@ func regBarrioHandler(municipalityRepo repository.MunicipalityRepository) sm.Sta
 			sess.RetryCount = 0
 			return finishRegistrationWithBarrio(sess, "", ""), nil
 		}
-		if input == "" {
+		// C12: una palabra reservada (__resume__ al volver del agente) cuenta como vacía.
+		if !freeTextAnswer(input) {
 			return sm.NewResult(sm.StateRegBarrio).
 				WithText("Escribe el nombre de tu *barrio* (ej: La Esperanza) o responde *NA* si no lo sabes:"), nil
 		}

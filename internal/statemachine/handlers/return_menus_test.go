@@ -165,9 +165,8 @@ func TestReturnMenus_CupsInputUsesTheAgentCommandGrammar(t *testing.T) {
 // (reanudar / cerrar). La lista está FIJADA aquí para que nadie quede fuera en silencio: un paso
 // nuevo en buildAgentCommands, o uno de estos que gane registro, hace fallar la prueba.
 var deferredAgentCommandSteps = []string{
-	"ASK_UPDATE_PHONE", "ASK_UPDATE_EMAIL", "ASK_ENTITY_NUMBER", "CHANGE_ENTITY",
-	"SHOW_ENTITY_LIST", "SELECT_PROCEDURE", "ASK_GESTATIONAL_WEEKS", "GFR_CREATININE",
-	"GFR_HEIGHT", "GFR_WEIGHT", "CHECK_SPECIAL_CUPS", "SHOW_SLOTS", "LIST_APPOINTMENTS",
+	"ASK_ENTITY_NUMBER", "SHOW_ENTITY_LIST", "SELECT_PROCEDURE", "CHECK_SPECIAL_CUPS",
+	"SHOW_SLOTS", "LIST_APPOINTMENTS",
 }
 
 // unreachableAgentCommandSteps son pasos que buildAgentCommands nombra pero que NO son un estado
@@ -459,6 +458,8 @@ func handlerButtonPayloads() map[string][]string {
 		sm.StateMedicationConfirmOrden:  {"med_confirm_ok", "med_confirm_retry"},
 		sm.StateConfirmConsolidate:      {"consolidate_yes", "consolidate_no"},
 		sm.StateAskEmgOrder:             {"emg_order_yes", "emg_order_no"},
+		sm.StateConfirmOCRResult:        {"ocr_correct", "ocr_incorrect"},
+		sm.StateAskGestationalWeeks:     {"weeks_yes", "weeks_no"},
 	}
 }
 

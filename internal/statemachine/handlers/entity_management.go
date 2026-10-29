@@ -47,6 +47,11 @@ func RegisterEntityManagementHandlers(
 		payloadOption("Cambiar la entidad", "entity_change"),
 	)
 	m.Register(sm.StateChangeEntity, changeEntityHandler(entityRepo, patientRepo))
+	// El agente escribe el nombre de la entidad, que el handler busca como si lo escribiera el
+	// paciente. Sin «volver a preguntar»: el handler buscaría __resume__ como un nombre.
+	registerAgentField(sm.StateChangeEntity,
+		agentTextInput("Nombre de la entidad o EPS del paciente", sm.InputKindText, validateNotEmpty,
+			"Escribe el nombre de la entidad o EPS."))
 }
 
 // ASK_CLIENT_TYPE (interactivo) — selecciona tipo de entidad (6 categorías).
@@ -584,7 +589,7 @@ func changeEntityHandler(entityRepo repository.EntityRepository, patientRepo rep
 		}
 
 		input := strings.TrimSpace(msg.Text)
-		if input == "" {
+		if !validateNotEmpty(input) {
 			return sm.NewResult(sess.CurrentState).
 				WithText("Escribe el nombre de tu *entidad o EPS*:"), nil
 		}

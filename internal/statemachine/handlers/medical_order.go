@@ -43,12 +43,24 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 		sm.StateOCRFailed, sm.StateConfirmOCRResult, sm.StateAskManualCups,
 	} {
 		sm.RegisterReturnInput(step, agentCupsReturnInput())
+		sm.RegisterResumeLabel(step, agentCupsResumeLabel)
 	}
 	// Reintentar la subida de la foto (`/bot resume UPLOAD_MEDICAL_ORDER`): no lleva dato.
-	sm.RegisterStaticReturnMenu(sm.StateAskMedicalOrder, sm.ReturnOption{
+	askOrderAgain := sm.ReturnOption{
 		Label: "Pedir de nuevo la foto de la orden", Value: "pedir_orden",
 		Target: sm.StateUploadMedicalOrder, NoInput: true,
-	})
+	}
+	for _, step := range []string{
+		sm.StateAskMedicalOrder, sm.StateUploadMedicalOrder, sm.StateValidateOCR, sm.StateOCRFailed,
+	} {
+		sm.RegisterStaticReturnMenu(step, askOrderAgain)
+	}
+	// En la confirmación de lo leído, el agente también contesta los botones del paciente.
+	sm.RegisterStaticReturnMenu(sm.StateConfirmOCRResult,
+		askOrderAgain,
+		noInputPayloadOption("Los procedimientos leídos son correctos", "ocr_correct"),
+		noInputPayloadOption("Los procedimientos leídos están mal", "ocr_incorrect"),
+	)
 
 	// Consolidación EMG/NC entre órdenes separadas.
 	m.Register(sm.StateCheckEmgConsolidation, checkEmgConsolidationHandler(apptSvc))
