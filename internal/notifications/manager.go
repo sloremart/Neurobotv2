@@ -138,6 +138,12 @@ type SlotSearcher interface {
 	GetAvailableSlots(ctx context.Context, query services.SlotQuery) ([]services.AvailableSlot, error)
 }
 
+// PatientReader lee la ficha del paciente en SIESA. La usa la lista de espera para el teléfono de
+// las entradas que nacieron en una sesión de Néctar (guardan la clave "nectar:<id>", no un teléfono).
+type PatientReader interface {
+	FindByID(ctx context.Context, id string) (*domain.Patient, error)
+}
+
 // FutureAppointmentChecker checks if a patient already has a future appointment for a CUPS.
 type FutureAppointmentChecker interface {
 	HasFutureForCup(ctx context.Context, patientID, cupCode string) (bool, error)
@@ -169,7 +175,7 @@ type EligibleCupsResolver interface {
 type NotificationManager struct {
 	pending         sync.Map // phone → *PendingNotification
 	callIDMap       sync.Map // callId → phone (for IVR DTMF result correlation)
-	contactIndex    sync.Map // ContactPhone → clave del pending; solo lo tocan storePending/takePending
+	contactIndex    sync.Map // ContactPhone → clave del pending (UNA por contacto, ver storePending)
 	birdClient      *bird.Client
 	apptSvc         *services.AppointmentService
 	cfg             *config.Config
@@ -190,6 +196,7 @@ type NotificationManager struct {
 	wlChecker      WaitingListChecker
 	agendaResolver AgendaAsuntoResolver // matching por slot: asuntos de la agenda liberada
 	cupsResolver   EligibleCupsResolver // matching por slot: CUPS elegibles del médico+asuntos
+	patientReader  PatientReader        // teléfono en SIESA de las entradas nacidas en Néctar (nil = se saltan)
 
 	// phoneLock serializa por-teléfono TODO acceso al estado de notificación (pending/callIDMap),
 	// que es propiedad exclusiva de este manager. Cierra el data race N-17 (campos de
@@ -236,6 +243,10 @@ func (m *NotificationManager) unlockPhone(phone string) {
 
 // storePending guarda p bajo key y mantiene el índice de contacto: si la entrada que reemplaza
 // tenía otro ContactPhone, ese teléfono deja de apuntar a key. Toda escritura de `pending` pasa por aquí.
+//
+// El índice guarda UNA clave por contacto: Néctar mantiene una sola conversación viva por contacto y
+// canal, así que un teléfono no tiene dos pendings "nectar:<id>" a la vez. Si los tuviera, gana el
+// último guardado (el anterior sigue vivo bajo su clave; solo deja de encontrarse por el teléfono).
 func (m *NotificationManager) storePending(key string, p *PendingNotification) {
 	if old, ok := m.pending.Load(key); ok {
 		if op, _ := old.(*PendingNotification); op != nil && op.ContactPhone != p.ContactPhone {
@@ -275,7 +286,14 @@ const waServiceWindow = 23*time.Hour + 30*time.Minute
 // escribió hace menos de ~24h). Fuera de ella WhatsApp NO entrega texto libre (solo templates),
 // pero Bird cobra el intento igual. Fail-open ante falta de repo o error de BD: un fallo de
 // infraestructura no debe silenciar los followups.
+//
+// Con una clave de sesión de Néctar ("nectar:<id>") la ventana la publica Néctar y se le pregunta a
+// él (error = cerrada): la conversación que abre una plantilla no tiene aún mensajes del paciente
+// en la BD del bot, y la ventana de Néctar es la que de verdad gobierna la entrega.
 func (m *NotificationManager) WindowOpen(ctx context.Context, phone string) bool {
+	if open, ok := m.birdClient.NectarWindowOpen(ctx, phone); ok {
+		return open
+	}
 	if m.sessionRepo == nil {
 		return true
 	}
@@ -339,6 +357,12 @@ type EscalationRecorder interface {
 // SetEscalationRecorder injects the per-escalation recorder (tabla escalations) for SLA tracking.
 func (m *NotificationManager) SetEscalationRecorder(e EscalationRecorder) {
 	m.escalations = e
+}
+
+// SetPatientReader inyecta la lectura de la ficha del paciente (teléfono de las entradas de lista de
+// espera nacidas en Néctar). Sin ella esas entradas se saltan: no hay a qué teléfono ofrecerles.
+func (m *NotificationManager) SetPatientReader(p PatientReader) {
+	m.patientReader = p
 }
 
 // SetWaitingListCheckDeps injects Cambio 13 dependencies for real-time WL notification.
@@ -756,13 +780,17 @@ func (m *NotificationManager) RegisterCallID(callID, phone string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Store callID in the in-memory pending so MarkIVRSent can carry it forward
+	// Store callID in the in-memory pending so MarkIVRSent can carry it forward.
+	// dialPhone es el número marcado (DialPhone): el registro de la llamada guarda el teléfono del
+	// paciente, nunca la clave "nectar:<id>"; callIDMap y el pending siguen bajo la clave.
 	apptID := ""
+	dialPhone := phone
 	if val, ok := m.pending.Load(phone); ok {
 		p := val.(*PendingNotification)
 		p.CallID = callID
 		m.storePending(phone, p)
 		apptID = p.AppointmentID
+		dialPhone = p.DialPhone()
 	}
 
 	// Persist callId to notification_pending for restart recovery
@@ -774,8 +802,8 @@ func (m *NotificationManager) RegisterCallID(callID, phone string) {
 
 	// KPI: insert call record into communication_calls
 	if m.callTracker != nil {
-		if err := m.callTracker.InsertCall(ctx, callID, phone, apptID); err != nil {
-			slog.Error("insert ivr call record", "callId", callID, "phone", utils.MaskPhone(phone), "error", err)
+		if err := m.callTracker.InsertCall(ctx, callID, dialPhone, apptID); err != nil {
+			slog.Error("insert ivr call record", "callId", callID, "phone", utils.MaskPhone(dialPhone), "error", err)
 		}
 	}
 }

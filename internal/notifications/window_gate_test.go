@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
 )
 
 // Los followups de WhatsApp fueron ELIMINADOS (decisión 06-ago-2026): eran texto libre que
@@ -84,5 +86,39 @@ func TestWindowOpen_FailOpenWithoutRepo(t *testing.T) {
 	mgr := NewNotificationManager(nil, nil, cfg)
 	if !mgr.WindowOpen(t.Context(), "+573001234567") {
 		t.Error("sin sessionRepo el gate debe ser fail-open (true)")
+	}
+}
+
+// Con una clave de sesión de Néctar la ventana la dice Néctar (GET …/state), no el último mensaje
+// del paciente en la BD del bot: la conversación que abre una plantilla aún no tiene sesión aquí.
+func TestWindowOpen_NectarAsksTheBridge(t *testing.T) {
+	client := bird.NewClientForTest("http://unused")
+	fb := &fakenectar.Bridge{Window: true}
+	client.SetNectar(fb)
+	recent := time.Now().Add(-1 * time.Hour)
+	sessRepo := &mockSessionCreator{lastPatientMsgAt: &recent}
+	mgr := NewNotificationManager(client, nil, &config.Config{})
+	mgr.SetWaitingListDeps(nil, sessRepo, nil)
+
+	if !mgr.WindowOpen(t.Context(), "nectar:77") {
+		t.Error("Néctar dice abierta")
+	}
+	fb.Window = false
+	if mgr.WindowOpen(t.Context(), "nectar:77") {
+		t.Error("Néctar dice cerrada, aunque la BD del bot tenga un mensaje reciente")
+	}
+	fb.Window, fb.WindowErr = true, errors.New("timeout")
+	if mgr.WindowOpen(t.Context(), "nectar:77") {
+		t.Error("un error de Néctar cuenta como ventana cerrada")
+	}
+	if got := fb.WindowQuestions(); len(got) != 3 || got[0] != 77 {
+		t.Fatalf("las tres preguntas van a Néctar por la conversación 77: %v", got)
+	}
+	if sessRepo.lastPatientAsks != 0 {
+		t.Errorf("con Néctar no se consulta LastPatientMessageAt (%d)", sessRepo.lastPatientAsks)
+	}
+	// Un teléfono de Bird sigue preguntando a la BD, aunque el puente esté puesto.
+	if !mgr.WindowOpen(t.Context(), "+573001234567") || sessRepo.lastPatientAsks != 1 {
+		t.Errorf("Bird: ventana por LastPatientMessageAt (%d consultas)", sessRepo.lastPatientAsks)
 	}
 }

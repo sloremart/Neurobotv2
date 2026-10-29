@@ -434,6 +434,8 @@ func main() {
 	// Cambio 13: Inyectar dependencias para WL check en tiempo real
 	if notifyManager != nil && slotSvc != nil && repos != nil {
 		notifyManager.SetWaitingListCheckDeps(slotSvc, repos.Appointment, waitingListRepo, repos.Schedule, repos.Procedure)
+		// Teléfono en SIESA de las entradas de lista de espera nacidas en Néctar (guardan "nectar:<id>").
+		notifyManager.SetPatientReader(repos.Patient)
 	}
 
 	var schedulerTasks *scheduler.Tasks

@@ -430,3 +430,28 @@ func TestBridgeContactAndWindow(t *testing.T) {
 		t.Fatal("ventana cerrada")
 	}
 }
+
+// Con el puente puesto pero sin canal de apertura (NECTAR_CHANNEL_ID=0), la plantilla proactiva
+// falla de forma permanente y nada sale: ni a Néctar ni a Bird.
+func TestSendProactiveTemplate_NoChannel(t *testing.T) {
+	f := newFakeOpen(t)
+	c, _ := newOpenClient(f)
+	b := NewBridge(c, map[string]string{"p": "plantilla_x"})
+
+	var birdCalls int
+	birdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		birdCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(birdSrv.Close)
+	bc := bird.NewClientForTest(birdSrv.URL)
+	bc.SetNectar(b)
+
+	_, err := bc.SendProactiveTemplate(context.Background(), "+573001112233", bird.TemplateConfig{ProjectID: "p"})
+	if !errors.Is(err, ErrOpenNotConfigured) || !errors.Is(err, bird.ErrPermanentSend) {
+		t.Fatalf("sin canal: %v", err)
+	}
+	if f.calls() != 0 || birdCalls != 0 {
+		t.Fatalf("ninguna llamada HTTP: néctar=%d bird=%d", f.calls(), birdCalls)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -187,10 +188,17 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 		if remaining < 1 {
 			break
 		}
+		trace := observability.TraceWaitingList(entry.ID)
+		// Desde aquí la entrada (copia local) lleva el teléfono al que se le ofrece el cupo: el de
+		// siempre, o el de SIESA si nació en Néctar. El whitelist y el envío van sobre ese E.164.
+		phone, ok := m.waitingListPhone(ctx, entry)
+		if !ok {
+			continue
+		}
+		entry.PhoneNumber = phone
 		if !m.cfg.IsPhoneWhitelisted(entry.PhoneNumber) {
 			continue
 		}
-		trace := observability.TraceWaitingList(entry.ID)
 		// BLOQUEOS SANITAS (H146): el bot JAMÁS agenda bloqueos a contratos SANITAS — los gates de
 		// búsqueda/creación lo cortarían de todas formas, así que OFRECER esta entrada sería pagar
 		// un template condenado (principio de costo: ni un envío que no puede terminar en cita).
@@ -264,9 +272,13 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 		// Enviar; si falla TRANSITORIO se revierte a 'waiting' (el siguiente ciclo reintenta).
 		// Un fallo PERMANENTE (4xx de Bird / identificador no contactable) queda 'unreachable':
 		// devolverlo a 'waiting' sería pagar un envío condenado en cada ciclo, para siempre.
+		// El paciente conversando con un agente en Néctar es pasajero (envuelve ErrPermanentSend,
+		// pero no es «no contactable»): vuelve a 'waiting' y el próximo ciclo la ofrece de nuevo.
 		if err := m.sendWaitingNotification(ctx, entry, trigger); err != nil {
 			status := "waiting"
-			if bird.IsPermanentSendError(err) || errors.Is(err, ErrSuppressedNoWhatsApp) {
+			switch {
+			case errors.Is(err, bird.ErrConversationWithAgent):
+			case bird.IsPermanentSendError(err) || errors.Is(err, ErrSuppressedNoWhatsApp):
 				status = "unreachable"
 				slog.Warn("wl_check: entrada no contactable (fallo permanente, sin reintentos)",
 					"entry_id", entry.ID, "phone", utils.MaskPhone(entry.PhoneNumber), "error", err)
@@ -280,6 +292,34 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 		notified++
 	}
 	return notified
+}
+
+// waitingListPhone devuelve el teléfono al que se ofrece la entrada. Las entradas creadas desde una
+// sesión de Néctar guardan la clave "nectar:<id>" en phone_number, y esa conversación ya no sirve
+// para una oferta días después: el teléfono sale de la ficha del paciente en SIESA. Sin teléfono
+// válido (o sin poder leerlo) la entrada se salta sin envío y sin tocarla: queda 'waiting'.
+func (m *NotificationManager) waitingListPhone(ctx context.Context, entry domain.WaitingListEntry) (string, bool) {
+	if !session.IsNectarSession(entry.PhoneNumber) {
+		return entry.PhoneNumber, true
+	}
+	phone := ""
+	if m.patientReader != nil && entry.PatientID != "" {
+		p, err := m.patientReader.FindByID(ctx, entry.PatientID)
+		if err != nil {
+			slog.Warn("wl_check: no se pudo leer el paciente de una entrada de Néctar",
+				"entry_id", entry.ID, "patient_id", entry.PatientID, "error", err)
+		} else if p != nil {
+			phone = utils.ParseColombianPhone(p.Phone)
+		}
+	}
+	if phone == "" {
+		slog.Warn("wl_check: entrada de Néctar sin teléfono válido en SIESA, se omite",
+			"entry_id", entry.ID, "patient_id", entry.PatientID)
+		observability.Emit(observability.TraceWaitingList(entry.ID), "lista_espera", "skipped",
+			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "no_contact_phone"})
+		return "", false
+	}
+	return phone, true
 }
 
 // entrySlotQuery arma la consulta de slots para una entrada de lista de espera, con sus
@@ -384,7 +424,20 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "suppressed_no_whatsapp"})
 		return ErrSuppressedNoWhatsApp
 	}
-	msgID, err := m.birdClient.SendTemplate(entry.PhoneNumber, tmpl)
+	// Plantilla proactiva: con Néctar abre la conversación y proactive.Key es la clave de la sesión
+	// que contestará ("nectar:<id>"); en Bird, el teléfono de siempre.
+	proactive, err := m.birdClient.SendProactiveTemplate(ctx, entry.PhoneNumber, tmpl)
+	if errors.Is(err, bird.ErrConversationWithAgent) {
+		slog.Info("wl_check: oferta omitida, el paciente conversa con un agente en Néctar",
+			"phone", utils.MaskPhone(entry.PhoneNumber), "entry_id", entry.ID)
+		if m.tracker != nil {
+			m.tracker.LogEvent(ctx, "", entry.PhoneNumber, "notification_skipped_agent_owned",
+				map[string]interface{}{"type": "waiting_list", "waiting_list_id": entry.ID, "cups_code": entry.CupsCode})
+		}
+		observability.Emit(trace, "lista_espera", "skipped",
+			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "agent_owned"})
+		return err
+	}
 	if err != nil {
 		// H148: un contacto no alcanzable (username sin BSUID resoluble) es un RESULTADO
 		// esperado del gate, no un fallo del servidor — va en WARN. Si sonara en ERROR, cada
@@ -405,10 +458,8 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		return err
 	}
 
-	convID := m.birdClient.GetCachedConversationID(entry.PhoneNumber)
-	if convID == "" {
-		convID, _ = m.birdClient.LookupConversationByPhone(entry.PhoneNumber)
-	}
+	msgID := proactive.MessageID
+	convID := m.birdClient.ProactiveConversationID(entry.PhoneNumber, proactive)
 
 	// L12: si el pending NO se almacena (timeout del lock), la respuesta del paciente se perdería
 	// (HandleResponse no encontraría pending). Error transitorio → el caller revierte el claim a
@@ -416,7 +467,8 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 	//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado para el Upsert; se llama igual desde webhooks/scheduler).
 	if !m.RegisterPending(PendingNotification{
 		Type:           "waiting_list",
-		Phone:          entry.PhoneNumber,
+		Phone:          proactive.Key,
+		ContactPhone:   proactive.ContactPhone(entry.PhoneNumber),
 		WaitingListID:  entry.ID,
 		BirdMessageID:  msgID,
 		ConversationID: convID,
@@ -428,7 +480,7 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 	}
 
 	if m.tracker != nil {
-		m.tracker.LogEvent(ctx, "", entry.PhoneNumber, "notification_sent",
+		m.tracker.LogEvent(ctx, "", proactive.Key, "notification_sent",
 			map[string]interface{}{
 				"type":            "waiting_list",
 				"waiting_list_id": entry.ID,

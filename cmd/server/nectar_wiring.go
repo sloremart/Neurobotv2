@@ -21,7 +21,9 @@ func nectarBridgeFromConfig(cfg *config.Config) (*nectar.Client, bird.NectarBrid
 	if !client.Configured() || cfg.NectarNoticeSecret == "" {
 		return nil, nil, errors.New("NECTAR_BASE_URL puesta pero faltan NECTAR_SERVICE_KEY, NECTAR_REQUEST_SECRET o NECTAR_NOTICE_SECRET")
 	}
-	return client, nectar.NewBridge(client, cfg.NectarTemplateNames), nil
+	bridge := nectar.NewBridge(client, cfg.NectarTemplateNames)
+	bridge.ChannelID = cfg.NectarChannelID
+	return client, bridge, nil
 }
 
 // nectarHealth es el valor de `nectar_host` en /health: SOLO el host (ni claves ni ruta), o "none".

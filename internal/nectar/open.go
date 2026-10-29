@@ -37,21 +37,10 @@ var (
 	ErrOpenNotConfigured = fmt.Errorf("nectar: apertura sin canal configurado (NECTAR_CHANNEL_ID): %w", bird.ErrPermanentSend)
 )
 
-// AlreadyOpenError es el 409 already_open: el contacto ya tiene una conversación viva en ese canal.
-// Mine dice de quién es: true = del bot (sigue en ella, ConversationID), false = de un agente o
-// en cola (no se le escribe). Envuelve bird.ErrPermanentSend: reabrir no cambia la respuesta.
-type AlreadyOpenError struct {
-	ConversationID int64
-	Mine           bool
-}
-
-func (e *AlreadyOpenError) Error() string {
-	return fmt.Sprintf("nectar: el contacto ya tiene conversación abierta (409 already_open, conversation_id=%d, mine=%t)",
-		e.ConversationID, e.Mine)
-}
-
-// Unwrap la marca como permanente para cualquier envoltorio de reintentos.
-func (e *AlreadyOpenError) Unwrap() error { return bird.ErrPermanentSend }
+// AlreadyOpenError es el 409 already_open (ConversationID, Mine). El tipo vive en el paquete bird
+// —bird.Client.SendProactiveTemplate tiene que reconocerlo y ese paquete no importa a este—; aquí
+// queda el alias para que la apertura lo nombre como siempre.
+type AlreadyOpenError = bird.AlreadyOpenError
 
 // OpenRecipient es el destinatario: EXACTAMENTE UNO de los dos (Néctar rechaza ninguno y ambos).
 type OpenRecipient struct {

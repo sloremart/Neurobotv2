@@ -1,0 +1,186 @@
+package notifications
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
+)
+
+// Con el puente de Néctar puesto, la oferta de lista de espera ABRE la conversación con la plantilla
+// y el pending queda bajo la clave de la sesión que contestará. Una entrada que nació en una sesión
+// de Néctar guarda "nectar:<id>" en phone_number: esa conversación ya no sirve días después, así que
+// el teléfono de la oferta sale de la ficha del paciente en SIESA.
+
+type keyedEvent struct{ phone, eventType string }
+
+type keyedEventLogger struct {
+	mu     sync.Mutex
+	events []keyedEvent
+}
+
+func (l *keyedEventLogger) LogEvent(_ context.Context, _, phone, eventType string, _ map[string]interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, keyedEvent{phone: phone, eventType: eventType})
+}
+
+func (l *keyedEventLogger) find(eventType string) (keyedEvent, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.events {
+		if e.eventType == eventType {
+			return e, true
+		}
+	}
+	return keyedEvent{}, false
+}
+
+type patientStub struct {
+	patient *domain.Patient
+	err     error
+	asks    []string
+}
+
+func (p *patientStub) FindByID(_ context.Context, id string) (*domain.Patient, error) {
+	p.asks = append(p.asks, id)
+	return p.patient, p.err
+}
+
+// nectarWLRig: manager con el puente puesto y un Bird que cuenta toda petición.
+func nectarWLRig(t *testing.T, bridge *fakenectar.Bridge, entry domain.WaitingListEntry) (*NotificationManager, *mockWLChecker, *keyedEventLogger, *atomic.Int32) {
+	t.Helper()
+	var birdHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		birdHits.Add(1)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"msg-bird"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := bird.NewClientForTest(srv.URL)
+	client.SetNectar(bridge)
+	mgr, wl := wlTestManager(t, client, entry)
+	events := &keyedEventLogger{}
+	mgr.SetTracker(events)
+	t.Cleanup(func() {
+		for _, k := range []string{"nectar:77", "nectar:55", entry.PhoneNumber} {
+			if p, ok := mgr.LoadPendingForTest(k); ok && p.Timer != nil {
+				p.Timer.Stop()
+			}
+		}
+	})
+	return mgr, wl, events, &birdHits
+}
+
+func TestWaitingList_NectarOpensAndRegistersUnderKey(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenID: 77, OpenMsg: "901"}
+	mgr, _, events, birdHits := nectarWLRig(t, bridge, wlEntry("+573005551234"))
+
+	if n := mgr.CheckWaitingListForCups(context.Background(), "890271"); n != 1 {
+		t.Fatalf("notificados = %d", n)
+	}
+	if got := bridge.Opens(); len(got) != 1 || got[0] != "+573005551234" {
+		t.Fatalf("se abre al teléfono de la entrada: %v", got)
+	}
+	p, ok := mgr.LoadPendingForTest("nectar:77")
+	if !ok || p.ContactPhone != "+573005551234" || p.ConversationID != "77" || p.WaitingListID != "wl-perm-1" {
+		t.Fatalf("pending bajo nectar:77: %+v ok=%v", p, ok)
+	}
+	if ev, ok := events.find("notification_sent"); !ok || ev.phone != "nectar:77" {
+		t.Fatalf("el evento va con la clave de la sesión: %+v", events.events)
+	}
+	if birdHits.Load() != 0 {
+		t.Fatalf("Bird no recibe nada (ni plantilla ni lookup): %d", birdHits.Load())
+	}
+}
+
+// Entrada nacida en Néctar: el teléfono sale de SIESA y el whitelist se evalúa sobre ese E.164.
+func TestWaitingList_NectarEntryUsesSiesaPhone(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenID: 77}
+	mgr, _, _, _ := nectarWLRig(t, bridge, wlEntry("nectar:12"))
+	patients := &patientStub{patient: &domain.Patient{ID: "PAT-1", Phone: "300 555 1234"}}
+	mgr.SetPatientReader(patients)
+	mgr.cfg.TestingWhitelistPhones = []string{"+573005551234"}
+
+	if n := mgr.CheckWaitingListForCups(context.Background(), "890271"); n != 1 {
+		t.Fatalf("notificados = %d", n)
+	}
+	if len(patients.asks) != 1 || patients.asks[0] != "PAT-1" {
+		t.Fatalf("se consulta la ficha del paciente de la entrada: %v", patients.asks)
+	}
+	if got := bridge.Opens(); len(got) != 1 || got[0] != "+573005551234" {
+		t.Fatalf("la apertura va al teléfono de SIESA, nunca a la clave: %v", got)
+	}
+	if p, ok := mgr.LoadPendingForTest("nectar:77"); !ok || p.ContactPhone != "+573005551234" {
+		t.Fatalf("pending: %+v ok=%v", p, ok)
+	}
+}
+
+// Sin teléfono válido en SIESA (o sin poder leerlo): se salta, sin envío y sin tocar la entrada.
+func TestWaitingList_NectarEntryWithoutPhoneSkipped(t *testing.T) {
+	for name, patients := range map[string]*patientStub{
+		"sin teléfono":   {patient: &domain.Patient{ID: "PAT-1", Phone: "no tiene"}},
+		"error de SIESA": {err: errors.New("timeout")},
+		"sin ficha":      {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bridge := &fakenectar.Bridge{OpenID: 77}
+			mgr, wl, _, _ := nectarWLRig(t, bridge, wlEntry("nectar:12"))
+			mgr.SetPatientReader(patients)
+
+			if n := mgr.CheckWaitingListForCups(context.Background(), "890271"); n != 0 {
+				t.Fatalf("notificados = %d", n)
+			}
+			if got := bridge.Opens(); len(got) != 0 {
+				t.Fatalf("sin teléfono no hay envío: %v", got)
+			}
+			wl.mu.Lock()
+			defer wl.mu.Unlock()
+			if wl.notifiedID != "" || wl.updatedStatus != "" {
+				t.Fatalf("la entrada no se reclama ni cambia: notified=%q status=%q", wl.notifiedID, wl.updatedStatus)
+			}
+		})
+	}
+}
+
+// El whitelist de pruebas se evalúa sobre el E.164 resuelto: otro teléfono no recibe nada.
+func TestWaitingList_NectarEntryWhitelistOnResolvedPhone(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenID: 77}
+	mgr, _, _, _ := nectarWLRig(t, bridge, wlEntry("nectar:12"))
+	mgr.SetPatientReader(&patientStub{patient: &domain.Patient{ID: "PAT-1", Phone: "3005551234"}})
+	mgr.cfg.TestingWhitelistPhones = []string{"+573009999999", "nectar:12"}
+
+	mgr.CheckWaitingListForCups(context.Background(), "890271")
+	if got := bridge.Opens(); len(got) != 0 {
+		t.Fatalf("el teléfono de SIESA no está en el whitelist (la clave no cuenta): %v", got)
+	}
+}
+
+// Con el paciente hablando con un agente: evento, sin pending, y la entrada vuelve a 'waiting'
+// (no 'unreachable': es pasajero, el próximo ciclo la vuelve a ofrecer).
+func TestWaitingList_AgentOwnedRevertsToWaiting(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenErr: &bird.AlreadyOpenError{ConversationID: 55, Mine: false}}
+	mgr, wl, events, _ := nectarWLRig(t, bridge, wlEntry("+573005551234"))
+
+	if n := mgr.CheckWaitingListForCups(context.Background(), "890271"); n != 0 {
+		t.Fatalf("notificados = %d", n)
+	}
+	if _, ok := events.find("notification_skipped_agent_owned"); !ok {
+		t.Fatalf("falta el evento del salto: %+v", events.events)
+	}
+	if mgr.PendingCount() != 0 {
+		t.Fatal("sin pending")
+	}
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+	if wl.updatedStatus != "waiting" {
+		t.Fatalf("la entrada vuelve a 'waiting', got %q", wl.updatedStatus)
+	}
+}

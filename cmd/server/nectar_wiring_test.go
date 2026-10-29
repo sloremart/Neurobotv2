@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
 
 func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
@@ -30,11 +31,15 @@ func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
 	// Completa: cliente y puente.
 	full := &config.Config{
 		NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
-		NectarTemplateNames: map[string]string{"p": "n"},
+		NectarTemplateNames: map[string]string{"p": "n"}, NectarChannelID: 7,
 	}
 	c, b, err = nectarBridgeFromConfig(full)
 	if c == nil || b == nil || err != nil {
 		t.Fatalf("completa: got %v %v %v", c, b, err)
+	}
+	// El canal de apertura llega al puente: sin él las plantillas proactivas no saldrían.
+	if nb, ok := b.(*nectar.Bridge); !ok || nb.ChannelID != 7 {
+		t.Fatalf("NECTAR_CHANNEL_ID no llegó al puente: %#v", b)
 	}
 }
 

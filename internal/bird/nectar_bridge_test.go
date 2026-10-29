@@ -40,6 +40,11 @@ type fakeBridge struct {
 	state                            string  // el estado crudo que devuelve GET …/state
 	stateErr                         error   //
 	stateAsks                        []int64 // a qué conversaciones se les preguntó
+	// Guion de la apertura: openID/openMsg son el 201; openErr, el rechazo. Sin guion, falla.
+	openID     int64
+	openMsg    string
+	openErr    error
+	openPhones []string // a qué teléfonos se intentó abrir
 }
 
 func (f *fakeBridge) SendText(_ context.Context, id int64, _ string) (string, error) {
@@ -104,8 +109,15 @@ func (f *fakeBridge) ConversationState(_ context.Context, id int64) (string, err
 
 func (f *fakeBridge) IsNotMine(err error) bool { return errors.Is(err, errNotMine) }
 
-func (f *fakeBridge) OpenWithTemplate(context.Context, string, TemplateConfig) (int64, string, error) {
-	return 0, "", errors.New("fakeBridge: OpenWithTemplate sin guion")
+func (f *fakeBridge) OpenWithTemplate(_ context.Context, phone string, _ TemplateConfig) (int64, string, error) {
+	f.openPhones = append(f.openPhones, phone)
+	if f.openErr != nil {
+		return 0, "", f.openErr
+	}
+	if f.openID == 0 {
+		return 0, "", errors.New("fakeBridge: OpenWithTemplate sin guion")
+	}
+	return f.openID, f.openMsg, nil
 }
 
 func (f *fakeBridge) Contact(context.Context, int64) (NectarContact, error) {
@@ -117,7 +129,7 @@ func (f *fakeBridge) WindowOpen(context.Context, int64) (bool, error) { return f
 // untouched dice si el puente no vio NINGUNA llamada.
 func (f *fakeBridge) untouched() bool {
 	return f.texts+f.buttons+f.lists+f.templates+f.availableAsks+len(f.escalations)+
-		len(f.closed)+len(f.stateAsks) == 0
+		len(f.closed)+len(f.stateAsks)+len(f.openPhones) == 0
 }
 
 // birdStub es el Bird de mentira: cuenta cada petición que le llega y contesta 404 a todo

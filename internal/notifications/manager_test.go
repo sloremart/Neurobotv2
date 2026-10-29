@@ -884,6 +884,7 @@ type mockSessionCreator struct {
 	batchKVs         map[string]string
 	completedPhone   string     // teléfono cuyo cupo se liberó con CompleteActiveByPhone
 	lastPatientMsgAt *time.Time // ventana de servicio WA (nil = el paciente nunca escribió)
+	lastPatientAsks  int        // cuántas veces se consultó LastPatientMessageAt
 }
 
 func (m *mockSessionCreator) Create(ctx context.Context, s *session.Session) error {
@@ -936,6 +937,7 @@ func (m *mockSessionCreator) RenewExpiry(_ context.Context, _ string, _ time.Tim
 func (m *mockSessionCreator) LastPatientMessageAt(_ context.Context, _ string) (*time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastPatientAsks++
 	return m.lastPatientMsgAt, nil
 }
 
@@ -2658,12 +2660,12 @@ func TestHasPendingForContact(t *testing.T) {
 	mgr.RegisterPending(PendingNotification{
 		Type:           "cancellation",
 		Phone:          "nectar:77",
-		ContactPhone:   "573001112233",
+		ContactPhone:   "+573001112233",
 		AppointmentID:  "APT001",
 		ConversationID: "conv-77",
 	})
 
-	if !mgr.HasPendingForContact("573001112233") {
+	if !mgr.HasPendingForContact("+573001112233") {
 		t.Error("el pending debe encontrarse por el teléfono del paciente")
 	}
 	if !mgr.HasPendingForContact("nectar:77") {
@@ -2672,13 +2674,13 @@ func TestHasPendingForContact(t *testing.T) {
 	if !mgr.HasPending("nectar:77") {
 		t.Error("el pending debe seguir encontrándose por su clave")
 	}
-	if mgr.HasPendingForContact("573009998877") {
+	if mgr.HasPendingForContact("+573009998877") {
 		t.Error("otro teléfono no debe tener pending")
 	}
 
 	mgr.HandleResponse("nectar:77", "understood", "conv-77")
 
-	if mgr.HasPendingForContact("573001112233") {
+	if mgr.HasPendingForContact("+573001112233") {
 		t.Error("tras la respuesta el teléfono no debe tener pending")
 	}
 	if mgr.HasPending("nectar:77") {
@@ -2690,18 +2692,18 @@ func TestHasPendingForContact(t *testing.T) {
 // teléfono no deja al teléfono anterior apuntando a ese pending.
 func TestHasPendingForContact_ReRegisterDropsOldContact(t *testing.T) {
 	mgr := NewNotificationManager(nil, nil, &config.Config{})
-	mgr.RegisterPending(PendingNotification{Type: "cancellation", Phone: "nectar:77", ContactPhone: "573001112233"})
-	mgr.RegisterPending(PendingNotification{Type: "cancellation", Phone: "nectar:77", ContactPhone: "573004445566"})
+	mgr.RegisterPending(PendingNotification{Type: "cancellation", Phone: "nectar:77", ContactPhone: "+573001112233"})
+	mgr.RegisterPending(PendingNotification{Type: "cancellation", Phone: "nectar:77", ContactPhone: "+573004445566"})
 	defer func() {
 		if p, ok := mgr.LoadPendingForTest("nectar:77"); ok && p.Timer != nil {
 			p.Timer.Stop()
 		}
 	}()
 
-	if mgr.HasPendingForContact("573001112233") {
+	if mgr.HasPendingForContact("+573001112233") {
 		t.Error("el teléfono anterior no debe seguir apuntando al pending re-registrado")
 	}
-	if !mgr.HasPendingForContact("573004445566") {
+	if !mgr.HasPendingForContact("+573004445566") {
 		t.Error("el teléfono nuevo debe encontrar el pending")
 	}
 }
@@ -2712,7 +2714,7 @@ func TestPendingNotification_DialPhone(t *testing.T) {
 	if got := (PendingNotification{Phone: "+573001112233"}).DialPhone(); got != "+573001112233" {
 		t.Errorf("Bird: DialPhone = %q, want la clave", got)
 	}
-	if got := (PendingNotification{Phone: "nectar:77", ContactPhone: "573001112233"}).DialPhone(); got != "573001112233" {
+	if got := (PendingNotification{Phone: "nectar:77", ContactPhone: "+573001112233"}).DialPhone(); got != "+573001112233" {
 		t.Errorf("Néctar: DialPhone = %q, want el teléfono del paciente", got)
 	}
 }
@@ -2724,7 +2726,7 @@ func TestRestorePending_KeepsContact(t *testing.T) {
 	mgr := NewNotificationManager(nil, nil, &config.Config{})
 	mgr.SetPersister(saver)
 	mgr.RegisterPending(PendingNotification{
-		Type: "cancellation", Phone: "nectar:77", ContactPhone: "573001112233", AppointmentID: "APT001",
+		Type: "cancellation", Phone: "nectar:77", ContactPhone: "+573001112233", AppointmentID: "APT001",
 	})
 	if p, ok := mgr.LoadPendingForTest("nectar:77"); ok && p.Timer != nil {
 		p.Timer.Stop()
@@ -2733,7 +2735,7 @@ func TestRestorePending_KeepsContact(t *testing.T) {
 		t.Fatalf("esperaba 1 Upsert, hubo %d", len(saver.upserted))
 	}
 	row := saver.upserted[0]
-	if row.ContactPhone != "573001112233" {
+	if row.ContactPhone != "+573001112233" {
 		t.Fatalf("Upsert debe persistir el teléfono del paciente, persistió %q", row.ContactPhone)
 	}
 
@@ -2748,10 +2750,53 @@ func TestRestorePending_KeepsContact(t *testing.T) {
 	if p.Timer != nil {
 		defer p.Timer.Stop()
 	}
-	if p.ContactPhone != "573001112233" {
+	if p.ContactPhone != "+573001112233" {
 		t.Errorf("ContactPhone restaurado = %q", p.ContactPhone)
 	}
-	if !restored.HasPendingForContact("573001112233") {
+	if !restored.HasPendingForContact("+573001112233") {
 		t.Error("el índice de contacto debe reconstruirse al restaurar")
+	}
+}
+
+// callRecorder es un CallTracker que anota el teléfono de cada llamada registrada.
+type callRecorder struct{ phones []string }
+
+func (c *callRecorder) InsertCall(_ context.Context, _, phone, _ string) error {
+	c.phones = append(c.phones, phone)
+	return nil
+}
+func (c *callRecorder) UpdateCallResult(context.Context, string, string, string) error { return nil }
+
+// TestRegisterCallID_RecordsDialPhone: el registro de la llamada (communication_calls) guarda el
+// teléfono marcado, nunca la clave "nectar:<id>"; la correlación del DTMF sigue con la clave.
+func TestRegisterCallID_RecordsDialPhone(t *testing.T) {
+	calls := &callRecorder{}
+	mgr := NewNotificationManager(nil, nil, &config.Config{})
+	mgr.SetCallTracker(calls)
+	mgr.RegisterPending(PendingNotification{
+		Type: "confirmation", Phone: "nectar:77", ContactPhone: "+573001112233", AppointmentID: "APT001",
+	})
+	defer func() {
+		if p, ok := mgr.LoadPendingForTest("nectar:77"); ok && p.Timer != nil {
+			p.Timer.Stop()
+		}
+	}()
+
+	mgr.RegisterCallID("call-1", "nectar:77")
+
+	if len(calls.phones) != 1 || calls.phones[0] != "+573001112233" {
+		t.Fatalf("el registro de la llamada lleva el teléfono marcado: %v", calls.phones)
+	}
+	if key, _ := mgr.callIDMap.Load("call-1"); key != "nectar:77" {
+		t.Errorf("callIDMap sigue con la clave del pending: %v", key)
+	}
+	if p, _ := mgr.LoadPendingForTest("nectar:77"); p == nil || p.CallID != "call-1" {
+		t.Errorf("el pending sigue bajo su clave con el CallID")
+	}
+
+	// Bird: sin ContactPhone la clave ya es el teléfono.
+	mgr.RegisterCallID("call-2", "+573009998877")
+	if calls.phones[1] != "+573009998877" {
+		t.Errorf("Bird: %v", calls.phones)
 	}
 }

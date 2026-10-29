@@ -209,6 +209,22 @@ func (c *Client) ConversationState(ctx context.Context, phone, conversationID st
 	return c.nectar.ConversationState(ctx, id)
 }
 
+// NectarWindowOpen dice si la ventana de 24 h de una conversación de Néctar está abierta, preguntándole
+// a Néctar (GET …/state). ok=false: la clave no es de Néctar y quien pregunta decide como siempre. Un
+// error cuenta como CERRADA: un texto libre fuera de ventana no llega, así que ante la duda no se manda.
+func (c *Client) NectarWindowOpen(ctx context.Context, phone string) (open, ok bool) {
+	id, ok := c.nectarConversation(phone, "")
+	if !ok {
+		return false, false
+	}
+	open, err := c.nectar.WindowOpen(ctx, id)
+	if err != nil {
+		slog.Warn("nectar: no se pudo leer la ventana; se asume cerrada", "conversation_id", id, "error", err)
+		return false, true
+	}
+	return open, true
+}
+
 // EscalateToAgentWithSummary escala y entrega el resumen del caso al agente. En Bird son
 // dos pasos (EscalateToAgent + nota interna, en ese orden, como siempre); en Néctar es UNO:
 // el resumen viaja en el cuerpo del escalate porque después de escalar el bot ya no alcanza

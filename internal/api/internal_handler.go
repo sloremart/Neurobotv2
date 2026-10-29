@@ -1369,32 +1369,21 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 				},
 			}
 
-			msgID, err := h.birdClient.SendTemplate(phone, tmpl)
+			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", firstAppt.ID)
 			if err != nil {
-				slog.Error("agenda confirmation: send failed", "phone", utils.MaskPhone(phone), "error", err)
+				if !errors.Is(err, bird.ErrConversationWithAgent) {
+					slog.Error("agenda confirmation: send failed", "phone", utils.MaskPhone(phone), "error", err)
+				}
 				skipped++
 				continue
 			}
 
-			convID := h.birdClient.GetCachedConversationID(phone)
-			if convID == "" {
-				convID, _ = h.birdClient.LookupConversationByPhone(phone)
-			}
-
-			h.notifyManager.RegisterPending(notifications.PendingNotification{
-				Type:           "confirmation",
-				Phone:          phone,
-				AppointmentID:  firstAppt.ID,
-				BirdMessageID:  msgID,
-				ConversationID: convID,
-			})
-
 			if h.tracker != nil {
-				h.tracker.LogEvent(ctx, "", phone, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
+				h.tracker.LogEvent(ctx, "", notice.Key, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
 					"type":            "confirmation",
 					"appointment_id":  firstAppt.ID,
-					"bird_msg_id":     msgID,
-					"conversation_id": convID,
+					"bird_msg_id":     notice.MessageID,
+					"conversation_id": notice.ConversationID,
 					"agenda_id":       req.AgendaID,
 				})
 			}
@@ -1534,32 +1523,20 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 					},
 				}
 
-				msgID, err := h.birdClient.SendTemplate(phone, tmpl)
+				notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", firstAppt.ID)
 				if err != nil {
-					slog.Error("send cancellation notification", "phone", utils.MaskPhone(phone), "error", err)
+					if !errors.Is(err, bird.ErrConversationWithAgent) {
+						slog.Error("send cancellation notification", "phone", utils.MaskPhone(phone), "error", err)
+					}
 					continue
 				}
 
-				// Look up conversationID for Bird Inbox visibility
-				convID := h.birdClient.GetCachedConversationID(phone)
-				if convID == "" {
-					convID, _ = h.birdClient.LookupConversationByPhone(phone)
-				}
-
-				h.notifyManager.RegisterPending(notifications.PendingNotification{
-					Type:           "cancellation",
-					Phone:          phone,
-					AppointmentID:  firstAppt.ID,
-					BirdMessageID:  msgID,
-					ConversationID: convID,
-				})
-
 				if h.tracker != nil {
-					h.tracker.LogEvent(ctx, "", phone, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
+					h.tracker.LogEvent(ctx, "", notice.Key, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
 						"type":            "cancellation",
 						"appointment_id":  firstAppt.ID,
-						"bird_msg_id":     msgID,
-						"conversation_id": convID,
+						"bird_msg_id":     notice.MessageID,
+						"conversation_id": notice.ConversationID,
 					})
 				}
 
@@ -1637,25 +1614,41 @@ func (h *InternalHandler) resolvePatientNamePhone(ctx context.Context, appt *dom
 	return name, phone
 }
 
-// sendTemplateAndRegister envía una plantilla de WhatsApp y registra el pending para capturar la
-// respuesta del paciente. Devuelve (messageID, enviado). SendTemplate/RegisterPending son APIs sin
-// ctx (heredadas del bot); el envío es best-effort → se suprime contextcheck aquí.
+// proactiveNotice es lo que deja un aviso proactivo ya enviado y registrado: Key es la clave de la
+// sesión que recibirá la respuesta (el teléfono en Bird, "nectar:<id>" en Néctar).
+type proactiveNotice struct {
+	MessageID, Key, ConversationID string
+}
+
+// sendTemplateAndRegister envía una plantilla proactiva y registra el pending para capturar la
+// respuesta del paciente. Con Néctar la plantilla ABRE la conversación y el pending queda bajo su
+// clave, con el teléfono del paciente en ContactPhone. Si el paciente ya conversa con un agente en
+// Néctar devuelve bird.ErrConversationWithAgent tras dejar el evento notification_skipped_agent_owned,
+// sin pending; cualquier otro error lo registra quien llama. RegisterPending no toma ctx → contextcheck.
 //
 //nolint:contextcheck
-func (h *InternalHandler) sendTemplateAndRegister(phone string, tmpl bird.TemplateConfig, notifType, apptID string) (string, bool) {
-	msgID, err := h.birdClient.SendTemplate(phone, tmpl)
+func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone string, tmpl bird.TemplateConfig, notifType, apptID string) (proactiveNotice, error) {
+	// Sin cancelación: una apertura cortada a medias (cliente del dashboard que se va, timeout del
+	// lote) queda «en duda» y no se puede reintentar sin arriesgar una plantilla doble.
+	sent, err := h.birdClient.SendProactiveTemplate(context.WithoutCancel(ctx), phone, tmpl)
+	if errors.Is(err, bird.ErrConversationWithAgent) {
+		slog.Info("aviso omitido: el paciente conversa con un agente en Néctar", //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+			"type", notifType, "phone", utils.MaskPhone(phone), "appointment_id", apptID)
+		if h.tracker != nil {
+			h.tracker.LogEvent(ctx, "", phone, "notification_skipped_agent_owned",
+				map[string]interface{}{"type": notifType, "appointment_id": apptID})
+		}
+		return proactiveNotice{}, err
+	}
 	if err != nil {
-		slog.Error("dashboard notif", "type", notifType, "phone", utils.MaskPhone(phone), "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
-		return "", false
+		return proactiveNotice{}, err
 	}
-	convID := h.birdClient.GetCachedConversationID(phone)
-	if convID == "" {
-		convID, _ = h.birdClient.LookupConversationByPhone(phone)
-	}
+	convID := h.birdClient.ProactiveConversationID(phone, sent)
 	h.notifyManager.RegisterPending(notifications.PendingNotification{
-		Type: notifType, Phone: phone, AppointmentID: apptID, BirdMessageID: msgID, ConversationID: convID,
+		Type: notifType, Phone: sent.Key, ContactPhone: sent.ContactPhone(phone),
+		AppointmentID: apptID, BirdMessageID: sent.MessageID, ConversationID: convID,
 	})
-	return msgID, true
+	return proactiveNotice{MessageID: sent.MessageID, Key: sent.Key, ConversationID: convID}, nil
 }
 
 // sendCancellationTemplate envía la plantilla de cancelación al paciente. Devuelve true si se envió.
@@ -1676,8 +1669,13 @@ func (h *InternalHandler) sendCancellationTemplate(ctx context.Context, appt *do
 			{Type: "string", Key: "reason", Value: reason},
 		},
 	}
-	_, ok := h.sendTemplateAndRegister(phone, tmpl, "cancellation", appt.ID)
-	return ok
+	if _, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", appt.ID); err != nil {
+		if !errors.Is(err, bird.ErrConversationWithAgent) {
+			slog.Error("dashboard notif", "type", "cancellation", "phone", utils.MaskPhone(phone), "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+		}
+		return false
+	}
+	return true
 }
 
 // HandleCancelAppointment cancela UNA cita (y todos sus slots) en SIESA con la lógica existente.
@@ -1799,11 +1797,17 @@ func (h *InternalHandler) HandleNotifyConfirmation(w http.ResponseWriter, r *htt
 			{Type: "string", Key: "procedures", Value: proceduresText(appt.Procedures)},
 		},
 	}
-	msgID, ok := h.sendTemplateAndRegister(phone, tmpl, "confirmation", appt.ID)
-	if !ok {
+	notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", appt.ID)
+	if errors.Is(err, bird.ErrConversationWithAgent) {
+		http.Error(w, "el paciente está conversando con un asesor", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		slog.Error("dashboard notif", "type", "confirmation", "phone", utils.MaskPhone(phone), "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
 		http.Error(w, "error enviando la confirmación", http.StatusBadGateway)
 		return
 	}
+	msgID := notice.MessageID
 	observability.Emit(agendaTrace(appt.AgendaID, appt.Date.Format("2006-01-02")), "admin_agenda", "confirmation_sent",
 		observability.EmitOpts{Phone: phone, RefType: "appointment", RefID: id})
 	slog.Info("confirmation sent (dashboard)", "id", id) //nolint:gosec // G706: endpoint admin; slog estructura los valores.
@@ -2012,32 +2016,20 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 				},
 			}
 
-			msgID, err := h.birdClient.SendTemplate(phone, tmpl)
+			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "reschedule", firstAppt.ID)
 			if err != nil {
-				slog.Error("send reschedule notification", "phone", utils.MaskPhone(phone), "error", err)
+				if !errors.Is(err, bird.ErrConversationWithAgent) {
+					slog.Error("send reschedule notification", "phone", utils.MaskPhone(phone), "error", err)
+				}
 				continue
 			}
 
-			// Look up conversationID for Bird Inbox visibility
-			convID := h.birdClient.GetCachedConversationID(phone)
-			if convID == "" {
-				convID, _ = h.birdClient.LookupConversationByPhone(phone)
-			}
-
-			h.notifyManager.RegisterPending(notifications.PendingNotification{
-				Type:           "reschedule",
-				Phone:          phone,
-				AppointmentID:  firstAppt.ID,
-				BirdMessageID:  msgID,
-				ConversationID: convID,
-			})
-
 			if h.tracker != nil {
-				h.tracker.LogEvent(ctx, "", phone, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
+				h.tracker.LogEvent(ctx, "", notice.Key, "notification_sent", map[string]interface{}{ // N-45: ctx cancelable
 					"type":            "reschedule",
 					"appointment_id":  firstAppt.ID,
-					"bird_msg_id":     msgID,
-					"conversation_id": convID,
+					"bird_msg_id":     notice.MessageID,
+					"conversation_id": notice.ConversationID,
 				})
 			}
 

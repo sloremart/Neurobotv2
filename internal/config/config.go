@@ -107,6 +107,10 @@ type Config struct {
 	// CUPS (ver CupsGroup). Néctar reparte por canal y no sabe qué equipo atiende qué estudio, así
 	// que el bot se lo SUGIERE al escalar (SuggestedTeamForCups). Vacía: no se sugiere nada.
 	NectarTeamByGroup map[string]int64
+	// NectarChannelID (NECTAR_CHANNEL_ID) es el canal de Néctar por el que el bot ABRE conversaciones
+	// con plantilla (recordatorios, lista de espera, avisos). 0 = la apertura no está configurada:
+	// con el puente puesto, esas plantillas fallan con un error permanente y nada sale.
+	NectarChannelID int64
 	// ProtocolEscaladoVersion (PROTOCOL_ESCALADO_VERSION) es la versión del protocolo de
 	// escalado que el bot EMITE: 0 = el dialecto de hoy, 1 = v1. NO gobierna la recepción (dual
 	// siempre). Se lee con ProtocolVersion()/EmitsProtocolV1() — protocol.go.
@@ -422,6 +426,12 @@ func Load() *Config {
 		log.Fatalf("NECTAR_TEAM_BY_GROUP inválida: %v", err)
 	}
 	cfg.NectarTeamByGroup = teams
+
+	channelID, err := parseNectarChannelID(os.Getenv("NECTAR_CHANNEL_ID"))
+	if err != nil {
+		log.Fatalf("NECTAR_CHANNEL_ID inválida: %v", err)
+	}
+	cfg.NectarChannelID = channelID
 
 	// El margen de cierre y la espera máxima de la cola, por el mismo camino: un valor
 	// imposible tiene que verse al arrancar y no el día que alguien pregunte por qué todos los
@@ -758,4 +768,22 @@ func parseNectarCloseMin(raw string) (int, error) {
 		return 0, fmt.Errorf("cierre de Néctar %d debe ser positivo", minutes)
 	}
 	return minutes, nil
+}
+
+// parseNectarChannelID lee NECTAR_CHANNEL_ID: vacío = 0 (apertura sin configurar) y cualquier otra
+// cosa tiene que ser un id no negativo. Un valor ilegible tumba el arranque en vez de dejar mudas,
+// en silencio, todas las plantillas proactivas.
+func parseNectarChannelID(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("canal %q no numérico", raw)
+	}
+	if id < 0 {
+		return 0, fmt.Errorf("canal %d negativo", id)
+	}
+	return id, nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -212,8 +213,9 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 		// hoy; restaurado desde BD tras un reinicio), no reenviar. Hace seguro el re-run del
 		// catch-up cuando una corrida previa quedó cortada a media lista: notifica solo a los que
 		// faltaban, sin duplicar. En la corrida normal de las 07:00 aún no hay pending para la cita
-		// de mañana, así que no altera el flujo establecido.
-		if t.NotifyManager != nil && t.NotifyManager.HasPending(phone) {
+		// de mañana, así que no altera el flujo establecido. Por CONTACTO: con Néctar el pending vive
+		// bajo "nectar:<id>" y el teléfono del paciente va en ContactPhone.
+		if t.NotifyManager != nil && t.NotifyManager.HasPendingForContact(phone) {
 			skipped++
 			slog.Debug("skip reminder - already pending (idempotent re-run)", "phone", utils.MaskPhone(phone))
 			continue
@@ -256,8 +258,15 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			},
 		}
 
-		msgID, err := t.BirdClient.SendTemplate(phone, tmpl)
+		// Plantilla proactiva: con Néctar abre la conversación y proactive.Key es la clave de la
+		// sesión que contestará ("nectar:<id>"); en Bird, el teléfono de siempre.
+		proactive, err := t.BirdClient.SendProactiveTemplate(ctx, phone, tmpl)
 		if err != nil {
+			if errors.Is(err, bird.ErrConversationWithAgent) {
+				skipped++
+				t.skipAgentOwned(ctx, phone, "confirmation", firstAppt.ID)
+				continue
+			}
 			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
 			// En WARN para no disparar una alerta Telegram por cada paciente username en la
 			// corrida diaria; el conteo queda en el evento suppressed_no_whatsapp/funnel.
@@ -269,26 +278,25 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			}
 			continue
 		}
+		msgID := proactive.MessageID
 		slog.Info("reminder template sent", "phone", utils.MaskPhone(phone), "bird_msg_id", msgID)
 
-		// Try to get conversationID for Bird Inbox visibility
-		convID := t.BirdClient.GetCachedConversationID(phone)
-		if convID == "" {
-			convID, _ = t.BirdClient.LookupConversationByPhone(phone)
-		}
+		// Conversación del pending: la de Néctar, o la de Bird para el Inbox
+		convID := t.BirdClient.ProactiveConversationID(phone, proactive)
 
 		// Register pending notification with 6h timer
 		t.NotifyManager.RegisterPending(notifications.PendingNotification{
 			Type:           "confirmation",
-			Phone:          phone,
+			Phone:          proactive.Key,
+			ContactPhone:   proactive.ContactPhone(phone),
 			AppointmentID:  firstAppt.ID,
 			BirdMessageID:  msgID,
 			ConversationID: convID,
 		})
 
-		// Log event
+		// Log event (con la clave de la sesión que responderá)
 		if t.Tracker != nil {
-			t.Tracker.LogEvent(ctx, "", phone, "notification_sent",
+			t.Tracker.LogEvent(ctx, "", proactive.Key, "notification_sent",
 				map[string]interface{}{
 					"type":            "confirmation",
 					"appointment_id":  firstAppt.ID,
@@ -302,9 +310,10 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 		// par.8.1 #8: preparacion del examen (si el catalogo la tiene) como texto aparte.
 		// Texto libre: WhatsApp solo lo entrega con la ventana de servicio abierta (el paciente
 		// escribio hace <24h). Cerrada = Bird cobra el envio y no llega; se omite — la preparacion
-		// completa viaja en la respuesta al confirmar (handleConfirmation).
-		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, phone) {
-			t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		// completa viaja en la respuesta al confirmar (handleConfirmation). Con Néctar la ventana la
+		// dice Néctar: la conversación recién abierta con la plantilla suele tenerla cerrada.
+		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, proactive.Key) {
+			t.sendReminderPrep(ctx, proactive.Key, convID, firstAppt.ID, group)
 		} else {
 			slog.Info("reminder prep skipped: ventana WA cerrada", "phone", utils.MaskPhone(phone))
 		}
@@ -394,7 +403,8 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 			continue
 		}
 		// Ya hay un pending vivo para este teléfono (p.ej. otro recordatorio en curso) → no duplicar.
-		if t.NotifyManager != nil && t.NotifyManager.HasPending(phone) {
+		// Por contacto, igual que el de día-antes (con Néctar la clave es "nectar:<id>").
+		if t.NotifyManager != nil && t.NotifyManager.HasPendingForContact(phone) {
 			skipped++
 			continue
 		}
@@ -438,21 +448,25 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 			},
 		}
 
-		msgID, err := t.BirdClient.SendTemplate(phone, tmpl) //nolint:contextcheck // SendTemplate no toma ctx (cliente Bird; mismo patrón que sendWhatsAppReminders)
+		proactive, err := t.BirdClient.SendProactiveTemplate(ctx, phone, tmpl)
 		if err != nil {
+			if errors.Is(err, bird.ErrConversationWithAgent) {
+				skipped++
+				t.skipAgentOwned(ctx, phone, "confirmation_same_day", firstAppt.ID)
+				continue
+			}
 			slog.Error("same-day reminder send failed", "phone", utils.MaskPhone(phone), "error", err)
 			continue
 		}
+		msgID := proactive.MessageID
 
-		convID := t.BirdClient.GetCachedConversationID(phone)
-		if convID == "" {
-			convID, _ = t.BirdClient.LookupConversationByPhone(phone)
-		}
+		convID := t.BirdClient.ProactiveConversationID(phone, proactive)
 
 		//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado; mismo patrón que waiting_list_check)
 		t.NotifyManager.RegisterPending(notifications.PendingNotification{
 			Type:           "confirmation",
-			Phone:          phone,
+			Phone:          proactive.Key,
+			ContactPhone:   proactive.ContactPhone(phone),
 			AppointmentID:  firstAppt.ID,
 			BirdMessageID:  msgID,
 			ConversationID: convID,
@@ -460,7 +474,7 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		})
 
 		if t.Tracker != nil {
-			t.Tracker.LogEvent(ctx, "", phone, "notification_sent",
+			t.Tracker.LogEvent(ctx, "", proactive.Key, "notification_sent",
 				map[string]interface{}{
 					"type":            "confirmation_same_day",
 					"appointment_id":  firstAppt.ID,
@@ -472,8 +486,8 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 			observability.EmitOpts{Phone: phone, RefID: msgID})
 
 		// Mismo gate de ventana WA que el recordatorio de dia-antes (texto libre no entregable).
-		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, phone) {
-			t.sendReminderPrep(ctx, phone, convID, firstAppt.ID, group)
+		if t.NotifyManager == nil || t.NotifyManager.WindowOpen(ctx, proactive.Key) {
+			t.sendReminderPrep(ctx, proactive.Key, convID, firstAppt.ID, group)
 		} else {
 			slog.Info("same-day prep skipped: ventana WA cerrada", "phone", utils.MaskPhone(phone))
 		}
@@ -520,6 +534,17 @@ func prepTextForGroup(ctx context.Context, group []domain.Appointment, procRepo 
 	return txt
 }
 
+// skipAgentOwned deja constancia de una plantilla proactiva NO enviada porque el paciente ya conversa
+// con un agente en Néctar (409 already_open, mine:false): no se le escribe encima ni hay pending.
+func (t *Tasks) skipAgentOwned(ctx context.Context, phone, notifType, apptID string) {
+	slog.Info("notificación omitida: el paciente conversa con un agente en Néctar",
+		"phone", utils.MaskPhone(phone), "type", notifType, "appointment_id", apptID)
+	if t.Tracker != nil {
+		t.Tracker.LogEvent(ctx, "", phone, "notification_skipped_agent_owned",
+			map[string]interface{}{"type": notifType, "appointment_id": apptID})
+	}
+}
+
 // sendReminderPrep envia la preparacion como texto aparte tras la plantilla (la plantilla es fija).
 func (t *Tasks) sendReminderPrep(ctx context.Context, phone, convID, apptID string, group []domain.Appointment) {
 	prep := prepTextForGroup(ctx, group, t.ProcedureRepo)
@@ -552,8 +577,18 @@ func (t *Tasks) sendMorningReengagement(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
-		ph := utils.ParseColombianPhone(phone)
+		// Una sesión de Néctar llega con su clave ("nectar:<id>"): el saludo es texto libre y solo se
+		// entrega con la ventana abierta, que en Néctar la publica Néctar. Los teléfonos de Bird
+		// siguen exactamente como antes (la consulta ya los filtra por ventana).
+		ph := phone
+		viaNectar := session.IsNectarSession(phone)
+		if !viaNectar {
+			ph = utils.ParseColombianPhone(phone)
+		}
 		if ph == "" || !t.Cfg.IsPhoneWhitelisted(ph) {
+			continue
+		}
+		if viaNectar && (t.NotifyManager == nil || !t.NotifyManager.WindowOpen(ctx, ph)) {
 			continue
 		}
 		convID := t.BirdClient.GetCachedConversationID(ph)
@@ -617,8 +652,8 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 			break
 		}
 		// Se llama al teléfono del paciente (DialPhone): en Bird es la clave del pending; en Néctar la
-		// clave es "nectar:<id>" y el teléfono viene en ContactPhone (E.164 sin '+', de ahí normalizar
-		// para emparejar con apptByPhone; en Bird la clave ya está normalizada y no cambia).
+		// clave es "nectar:<id>" y el teléfono viene en ContactPhone, con el mismo formato "+57…" que la
+		// clave de Bird. Se normaliza igual por defensa (un dato viejo o a mano), sin costo si ya lo está.
 		dialPhone := pending.DialPhone()
 		if !t.Cfg.IsPhoneWhitelisted(dialPhone) {
 			continue

@@ -908,12 +908,12 @@ func TestVoiceReminders_DialsContactPhone(t *testing.T) {
 	birdClient := bird.NewVoiceClientForTest(srv.URL)
 	cfg := testConfig()
 	// El whitelist lista el teléfono del paciente, no la clave: prueba que se evalúa sobre DialPhone.
-	cfg.TestingWhitelistPhones = []string{"573001112233"}
+	cfg.TestingWhitelistPhones = []string{"+573001112233"}
 	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
 	nm.RegisterPending(notifications.PendingNotification{
 		Type:          "confirmation",
 		Phone:         "nectar:77",
-		ContactPhone:  "573001112233",
+		ContactPhone:  "+573001112233",
 		AppointmentID: "apt-77",
 	})
 	defer func() {
@@ -937,7 +937,7 @@ func TestVoiceReminders_DialsContactPhone(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if got, _ := dialed.Load().(string); got != "573001112233" {
+	if got, _ := dialed.Load().(string); got != "+573001112233" {
 		t.Fatalf("PlaceCall debe marcar al teléfono del paciente, marcó %q", got)
 	}
 	p, ok := nm.LoadPendingForTest("nectar:77")

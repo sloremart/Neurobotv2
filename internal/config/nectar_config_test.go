@@ -210,7 +210,7 @@ func TestLoad_NectarVarsDefaultsAndValues(t *testing.T) {
 	setRequiredEnv(t)
 	for _, k := range []string{
 		"NECTAR_BASE_URL", "NECTAR_SERVICE_KEY", "NECTAR_NOTICE_SECRET", "NECTAR_REQUEST_SECRET",
-		"NECTAR_TEMPLATE_NAMES", "NECTAR_TEAM_BY_GROUP", "PROTOCOL_ESCALADO_VERSION",
+		"NECTAR_TEMPLATE_NAMES", "NECTAR_TEAM_BY_GROUP", "PROTOCOL_ESCALADO_VERSION", "NECTAR_CHANNEL_ID",
 	} {
 		t.Setenv(k, "")
 	}
@@ -228,6 +228,9 @@ func TestLoad_NectarVarsDefaultsAndValues(t *testing.T) {
 	if cfg.ProtocolEscaladoVersion != 0 {
 		t.Errorf("ProtocolEscaladoVersion = %d, want 0", cfg.ProtocolEscaladoVersion)
 	}
+	if cfg.NectarChannelID != 0 {
+		t.Errorf("NectarChannelID = %d, want 0 (apertura sin configurar)", cfg.NectarChannelID)
+	}
 
 	t.Setenv("NECTAR_BASE_URL", "https://nectar.example.com//")
 	t.Setenv("NECTAR_SERVICE_KEY", "svc")
@@ -236,6 +239,7 @@ func TestLoad_NectarVarsDefaultsAndValues(t *testing.T) {
 	t.Setenv("NECTAR_TEMPLATE_NAMES", "p1=recordatorio_cita, p2=lista_espera")
 	t.Setenv("NECTAR_TEAM_BY_GROUP", "imagenes:7,neuro:8,callcenter:9")
 	t.Setenv("PROTOCOL_ESCALADO_VERSION", "1")
+	t.Setenv("NECTAR_CHANNEL_ID", " 12 ")
 
 	cfg = Load()
 	if cfg.NectarBaseURL != "https://nectar.example.com" {
@@ -253,6 +257,9 @@ func TestLoad_NectarVarsDefaultsAndValues(t *testing.T) {
 	if !cfg.EmitsProtocolV1() {
 		t.Errorf("PROTOCOL_ESCALADO_VERSION=1 debe emitir v1")
 	}
+	if cfg.NectarChannelID != 12 {
+		t.Errorf("NectarChannelID = %d, want 12", cfg.NectarChannelID)
+	}
 }
 
 // Un valor que no se entendio tumba el arranque (log.Fatalf): se verifica en un subproceso
@@ -268,6 +275,8 @@ func TestLoad_InvalidNectarVarsAbortStartup(t *testing.T) {
 		{"NECTAR_TEAM_BY_GROUP", "neuro:0"},
 		{"PROTOCOL_ESCALADO_VERSION", "v1"},
 		{"PROTOCOL_ESCALADO_VERSION", "2"},
+		{"NECTAR_CHANNEL_ID", "siete"},
+		{"NECTAR_CHANNEL_ID", "-3"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.envKey+"="+tt.envVal, func(t *testing.T) {
