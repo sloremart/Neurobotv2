@@ -979,3 +979,154 @@ func TestIsNectarInboxRow(t *testing.T) {
 		}
 	}
 }
+
+// fakeNectarNotifier imita la parte del NotificationManager que clasifica la respuesta a una
+// notificación proactiva. HandleResponse corre en una goroutine (como en Bird): avisa por canal.
+type fakeNectarNotifier struct {
+	mu        sync.Mutex
+	pending   map[string]bool
+	responses chan [3]string
+	invalid   [][2]string
+}
+
+func newFakeNectarNotifier(pending ...string) *fakeNectarNotifier {
+	f := &fakeNectarNotifier{pending: map[string]bool{}, responses: make(chan [3]string, 4)}
+	for _, p := range pending {
+		f.pending[p] = true
+	}
+	return f
+}
+
+func (f *fakeNectarNotifier) HasPending(phone string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pending[phone]
+}
+
+func (f *fakeNectarNotifier) HandleResponse(phone, payload, conversationID string) {
+	f.responses <- [3]string{phone, payload, conversationID}
+}
+
+func (f *fakeNectarNotifier) HandleInvalidInput(phone, conversationID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.invalid = append(f.invalid, [2]string{phone, conversationID})
+	return true
+}
+
+func (f *fakeNectarNotifier) waitResponse(t *testing.T) [3]string {
+	t.Helper()
+	select {
+	case r := <-f.responses:
+		return r
+	case <-time.After(2 * time.Second):
+		t.Fatal("HandleResponse no se llamó")
+		return [3]string{}
+	}
+}
+
+func buttonBody(eventID, replyID string) string {
+	reply := ""
+	if replyID != "" {
+		reply = `,"interactive_reply_id":"` + replyID + `"`
+	}
+	return `{"event_id":"` + eventID + `","kind":"mensaje_entrante","conversation_id":77,
+	  "occurred_at":"2026-10-29T15:42:07Z","message":{"id":90,"external_id":"wamid.B","sequence":3,
+	  "kind":"button","text":""` + reply + `}}`
+}
+
+func TestNectarInbound_PendingButton_GoesToHandleResponse(t *testing.T) {
+	inbox := newMemInbox()
+	sink := &sinkRecorder{}
+	h := newNectarHandler(inbox, sink)
+	notify := newFakeNectarNotifier("nectar:77")
+	h.SetNectarNotifier(notify)
+
+	if rec := postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-btn-1", "Confirmar"))); rec.Code != http.StatusOK {
+		t.Fatalf("→ %d", rec.Code)
+	}
+	if got := notify.waitResponse(t); got != [3]string{"nectar:77", "confirm", "77"} {
+		t.Fatalf("HandleResponse%v", got)
+	}
+	if m, c := sink.counts(); m != 0 || c != 0 {
+		t.Fatalf("el worker no recibe nada: mensajes=%d comandos=%d", m, c)
+	}
+	if !inbox.isDone("e-btn-1") {
+		t.Error("la fila del WAL se cierra: el worker no la va a cerrar")
+	}
+}
+
+func TestNectarInbound_PendingEmptyButton_InvalidInput(t *testing.T) {
+	inbox := newMemInbox()
+	sink := &sinkRecorder{}
+	h := newNectarHandler(inbox, sink)
+	notify := newFakeNectarNotifier("nectar:77")
+	h.SetNectarNotifier(notify)
+
+	if rec := postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-btn-2", ""))); rec.Code != http.StatusOK {
+		t.Fatalf("→ %d", rec.Code)
+	}
+	notify.mu.Lock()
+	invalid := append([][2]string(nil), notify.invalid...)
+	notify.mu.Unlock()
+	if len(invalid) != 1 || invalid[0] != [2]string{"nectar:77", "77"} {
+		t.Fatalf("HandleInvalidInput = %v", invalid)
+	}
+	if m, _ := sink.counts(); m != 0 {
+		t.Fatalf("el worker no recibe nada, got %d", m)
+	}
+	if !inbox.isDone("e-btn-2") {
+		t.Error("la fila del WAL se cierra")
+	}
+	select {
+	case r := <-notify.responses:
+		t.Fatalf("no es una respuesta: %v", r)
+	default:
+	}
+}
+
+func TestNectarInbound_NoPending_GoesToWorker(t *testing.T) {
+	inbox := newMemInbox()
+	sink := &sinkRecorder{}
+	h := newNectarHandler(inbox, sink)
+	notify := newFakeNectarNotifier() // sin pending
+	h.SetNectarNotifier(notify)
+
+	if rec := postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-btn-3", "Confirmar"))); rec.Code != http.StatusOK {
+		t.Fatalf("→ %d", rec.Code)
+	}
+	if m, _ := sink.counts(); m != 1 {
+		t.Fatalf("sin pending va al worker, got %d", m)
+	}
+	// Sin pending NO se traduce el título: el postback llega tal cual a la máquina de estados.
+	if got := sink.messages[0]; !got.IsPostback || got.PostbackPayload != "Confirmar" {
+		t.Fatalf("%+v", got)
+	}
+	if len(notify.invalid) != 0 {
+		t.Fatalf("sin pending no hay entrada inválida: %v", notify.invalid)
+	}
+	if inbox.isDone("e-btn-3") {
+		t.Error("la fila la cierra el worker, no el despacho")
+	}
+}
+
+func TestNectarInbound_ReplayPendingButton_GoesToHandleResponse(t *testing.T) {
+	inbox := newMemInbox()
+	sink := &sinkRecorder{}
+	h := newNectarHandler(inbox, sink)
+	notify := newFakeNectarNotifier("nectar:77")
+	h.SetNectarNotifier(notify)
+
+	if err := h.DispatchNectarNotice(context.Background(), buttonBody("e-btn-4", "Confirmar")); err != nil {
+		t.Fatal(err)
+	}
+	if got := notify.waitResponse(t); got != [3]string{"nectar:77", "confirm", "77"} {
+		t.Fatalf("HandleResponse%v", got)
+	}
+	if m, _ := sink.counts(); m != 0 {
+		t.Fatalf("el worker no recibe nada, got %d", m)
+	}
+	if !inbox.isDone("e-btn-4") {
+		t.Error("el replay cierra la fila como en el camino de Bird")
+	}
+}

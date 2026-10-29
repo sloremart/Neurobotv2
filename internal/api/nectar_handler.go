@@ -13,8 +13,10 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 	"github.com/neuro-bot/neuro-bot/internal/worker"
 )
 
@@ -35,6 +37,15 @@ const nectarReplyToAgent = "agent"
 type nectarDispatcher interface {
 	Enqueue(msg bird.InboundMessage) bool
 	EnqueueAgentCommand(cmd worker.AgentCommand)
+}
+
+// nectarNotifier es la parte del NotificationManager que clasifica un mensaje entrante como
+// respuesta a una notificación proactiva (la misma que usa el camino de Bird). Interfaz estrecha
+// para poder probar el enrutamiento con un fake; solo la usa el camino de Néctar.
+type nectarNotifier interface {
+	HasPending(phone string) bool
+	HandleResponse(phone, payload, conversationID string)
+	HandleInvalidInput(phone, conversationID string) bool
 }
 
 // nectarSeen es la memoria local de event_id vistos: segunda línea detrás del WAL (y la
@@ -74,6 +85,25 @@ func (s *nectarSeen) claim(id string, now time.Time) bool {
 // para que las pruebas cuenten lo que llegó a la cola sin arrancar workers.
 func (h *WebhookHandler) SetNectarSink(sink nectarDispatcher) {
 	h.nectarSink = sink
+}
+
+// SetNectarNotifier sustituye el NotificationManager del camino de Néctar (por defecto,
+// notifyManager). Existe para las pruebas.
+func (h *WebhookHandler) SetNectarNotifier(n nectarNotifier) {
+	h.nectarNotify = n
+}
+
+// nectarNotifierOrNil devuelve el clasificador de notificaciones del camino de Néctar, o nil si el
+// bot arrancó sin NotificationManager. Sin esto, un *NotificationManager nil metido en la interfaz
+// no sería nil.
+func (h *WebhookHandler) nectarNotifierOrNil() nectarNotifier {
+	if h.nectarNotify != nil {
+		return h.nectarNotify
+	}
+	if h.notifyManager != nil {
+		return h.notifyManager
+	}
+	return nil
 }
 
 // HandleNectarNotice atiende POST /api/webhooks/nectar: los cuatro avisos de Néctar
@@ -241,11 +271,17 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 
 	switch n.Kind {
 	case nectar.KindInboundMessage:
-		// El worker marca la fila del WAL como done al terminar (msg.ID = event_id).
 		// La raíz de Néctar viaja para componer la URL del adjunto cuando el aviso trae solo
 		// su `id` (§5.3): sin ella, ese mensaje llegaba al paso de la orden como una imagen
 		// sin imagen.
-		sink.Enqueue(n.ToInboundMessage(h.cfg.NectarBaseURL))
+		msg := n.ToInboundMessage(h.cfg.NectarBaseURL)
+		if h.routeNectarInbound(msg) {
+			// Lo consumió el NotificationManager: el worker no va a cerrar la fila, se cierra
+			// aquí (como el replay de Bird) o el replay de arranque la volvería a despachar.
+			break
+		}
+		// El worker marca la fila del WAL como done al terminar (msg.ID = event_id).
+		sink.Enqueue(msg)
 		return
 	case nectar.KindConversationResolved:
 		// El caso se cerró fuera del bot: soltar el estado de sesión (Complete). El motivo
@@ -305,6 +341,39 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 			slog.Warn("nectar: mark done failed", "event_id", n.EventID, "error", err)
 		}
 	}
+}
+
+// routeNectarInbound es la clasificación de webhook_handler.go (HandleWhatsAppInbound) para un
+// mensaje de Néctar: con una notificación pendiente, la pulsación de uno de sus botones va a
+// HandleResponse y cualquier otra cosa a HandleInvalidInput (reenvía los botones). true = lo
+// consumió el NotificationManager; false = sigue al worker.
+//
+// Diferencia con Bird, solo de transporte: Néctar manda como interactive_reply_id el TÍTULO del
+// botón de la plantilla («Confirmar»), no su payload. Se traduce SOLO con pending: sin él, el
+// postback sigue tal cual a la máquina de estados y los menús propios del bot no cambian. Una
+// pulsación de plantilla que llega vacía (kind button sin interactive_reply_id, lo de hoy antes
+// del arreglo de Néctar) no es postback y cae en HandleInvalidInput, como un texto libre.
+func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage) bool {
+	notify := h.nectarNotifierOrNil()
+	if notify == nil || !notify.HasPending(msg.Phone) {
+		return false
+	}
+	if msg.IsPostback {
+		payload := msg.PostbackPayload
+		if p, ok := notifications.TemplateButtonPayload(payload); ok {
+			payload = p
+		}
+		if IsNotificationPostback(payload) {
+			slog.Info("nectar: notification postback received",
+				"phone", utils.MaskPhone(msg.Phone), "payload", payload)
+			go func() {
+				defer recoverLog("notification-response")
+				notify.HandleResponse(msg.Phone, payload, msg.ConversationID)
+			}()
+			return true
+		}
+	}
+	return notify.HandleInvalidInput(msg.Phone, msg.ConversationID)
 }
 
 // DispatchNectarNotice es la entrada del replay del WAL para filas con msg_type =

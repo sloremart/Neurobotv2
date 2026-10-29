@@ -91,6 +91,8 @@ type WebhookHandler struct {
 	// memoria local de event_id vistos.
 	nectarSink    nectarDispatcher
 	nectarSeenIDs nectarSeen
+	// nectarNotify sustituye a notifyManager en el camino de Néctar (pruebas); nil → notifyManager.
+	nectarNotify nectarNotifier
 }
 
 // DeliveryTracker registra el resultado de ENTREGA de los envíos salientes (webhook outbound).

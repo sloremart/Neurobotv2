@@ -51,8 +51,10 @@ type replayDeps struct {
 // de atascados (inboxReplaySource), así que las dos rutas no pueden discrepar. logPrefix
 // ("inbox replay" / "stale replay") dice de cuál viene cada línea del registro.
 //
-// Un mensaje_entrante entra al pool por Enqueue (que deduplica por ID); un aviso ilegible se cierra
-// para no repetirlo en cada corrida.
+// Un mensaje_entrante pasa por la misma clasificación que el camino HTTP (dispatchNectar →
+// routeNectarInbound): la respuesta a una notificación pendiente va al NotificationManager y su fila
+// se cierra allí, como en el replay de Bird de abajo; el resto entra al pool por Enqueue (que
+// deduplica por ID). Un aviso ilegible se cierra para no repetirlo en cada corrida.
 func replayNectarRow(ctx context.Context, logPrefix string, row localrepo.InboxRow, r nectarReplayer, c inboxCloser) {
 	slog.Info(logPrefix+": re-despachando aviso de Néctar", "id", row.ID)
 	if err := r.DispatchNectarNotice(ctx, row.RawBody); err != nil {

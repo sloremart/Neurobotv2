@@ -548,30 +548,20 @@ func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) b
 		m.birdClient.CacheConversationID(phone, conversationID)
 	}
 
-	// Re-send type-appropriate buttons
+	// Re-send type-appropriate buttons (tabla única en template_buttons.go)
 	switch p.Type {
 	case "confirmation", "reschedule":
 		m.birdClient.SendButtons(phone, convID,
 			"Por favor selecciona una opción para gestionar tu cita de mañana:",
-			[]bird.Button{
-				{Text: "Confirmar", Payload: "confirm"},
-				{Text: "Reprogramar", Payload: "reprogramar"},
-				{Text: "Cancelar", Payload: "cancelar"},
-			})
+			buttonsFor(p.Type))
 	case "cancellation":
 		m.birdClient.SendButtons(phone, convID,
 			"Por favor selecciona una opción para continuar con tu cita:",
-			[]bird.Button{
-				{Text: "Entendido", Payload: "understood"},
-				{Text: "Reprogramar", Payload: "reschedule"},
-			})
+			buttonsFor(p.Type))
 	case "waiting_list":
 		m.birdClient.SendButtons(phone, convID,
 			"Se liberó un espacio para tu procedimiento. ¿Deseas agendar la cita?",
-			[]bird.Button{
-				{Text: "Agendar", Payload: "wl_schedule"},
-				{Text: "No, gracias", Payload: "wl_decline"},
-			})
+			buttonsFor(p.Type))
 	}
 
 	slog.Info(
