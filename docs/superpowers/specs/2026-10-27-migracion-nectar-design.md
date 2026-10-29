@@ -205,6 +205,13 @@ pruebas de entrada/escalado/retorno no dependen de esto y van antes.
    `conversation_id, team_id, agent_id, agent_name, escalated_at, first_agent_reply_at,
    returned_at, resolved_at`). Sin fecha; registrada como deuda comprometida.
 
+**Construido el 2026-10-29 (Plan B).** (1) y (2) están en el bot. Se apartó de lo escrito arriba en:
+- La plantilla va por **nombre + idioma** (`NECTAR_TEMPLATE_NAMES` traduce `project_id` → nombre en Meta), no por `template_id`.
+- Los botones de plantilla se **traducen por título**: Néctar (versión 45b) entrega el toque como `interactive_reply_id` con el
+  texto del botón y el bot lo mapea a su payload (`internal/notifications/template_buttons.go`); los títulos en Meta deben coincidir.
+- **D5 sigue pendiente en Néctar** (su dueño lo agenda antes del Plan 43; la lectura usará `since` y luego un cursor opaco).
+- `/open` excluye solo `audience='agent'`; el dueño de Néctar marca las cuatro plantillas de Neuro como `bot`.
+
 hdg-bot confirmó por escrito que (1) y (3) no le afectan y que (2) en `state` tampoco.
 
 ---

@@ -342,6 +342,17 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   el arranque (`nectarBridgeFromConfig`). `/health` publica `nectar_host` (solo host).
 - Secretos: `NECTAR_SERVICE_KEY` y `NECTAR_NOTICE_SECRET` por cuenta (`openssl rand -hex 32`);
   `NECTAR_REQUEST_SECRET` = `BOT_WEBHOOK_SECRET_INBOUND` compartido. Nunca valores reales en el repo.
+- Apertura con plantilla (`POST /api/bot/conversations/open`, `NECTAR_CHANNEL_ID`): las plantillas se identifican por nombre+idioma
+  (`NECTAR_TEMPLATE_NAMES`); el pending se llama `nectar:<conversation_id>` y guarda el teléfono en `ContactPhone` (el IVR de las 13:00
+  sigue por Bird Voice). 409 `already_open` con `mine=false` no envía nada; ante duda (502, 504, `attempt_in_doubt`) no hay reintento
+  ni pending (evento `notification_in_doubt`); solo el 503 con `Retry-After` se reintenta (máx. 2).
+- Los botones de las plantillas en Meta deben titularse EXACTAMENTE (sin importar mayúsculas ni tildes; fuente
+  `internal/notifications/template_buttons.go`): confirmación/reprogramación «Confirmar», «Reprogramar», «Cancelar»; cancelación admin
+  «Entendido», «Reprogramar»; lista de espera «Agendar», «No, gracias». Néctar entrega el título como `interactive_reply_id` y el bot lo traduce a payload.
+- Contacto (D2): el bot lee `contact` de `GET state` una vez por conversación (caché 24 h) y lo guarda en `contact_identifier`
+  (migración 044); `TESTING_WHITELIST_PHONES` rige para los entrantes de Néctar con ese contacto (contacto vacío pasa).
+- Horario: `NECTAR_SCHEDULE_ENABLED` (por defecto false) hace que el horario y festivos de Néctar manden en atención y escalación; encenderlo
+  solo cuando los tres equipos tengan horario en Néctar (si no, publica «cerrado toda la semana» y las escalaciones se desvían).
 - Lo que Neuro pide a Néctar es aditivo: no debe romper a hdg-bot.
 - Menús del agente por paso: cada paso escalable registra sus opciones/campos (`sm.RegisterReturnMenu` y afines, llamado
   donde se registra el estado), más las universales `bot_reanudar`/`bot_reiniciar`/`bot_cerrar`; no hay lista de pasos aplazados.
