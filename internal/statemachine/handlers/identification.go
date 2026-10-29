@@ -50,12 +50,7 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	})
 	// El agente de Néctar elige el tipo de documento del paciente entre los del catálogo; el
 	// código se inyecta como lo escribiría él (`/bot resume ASK_DOCUMENT_TYPE CC`).
-	docTypeOptions := make([]sm.ReturnOption, 0, len(documentTypeCatalog))
-	for _, d := range documentTypeCatalog {
-		docTypeOptions = append(docTypeOptions,
-			sm.ReturnOption{Label: d.Label + " (" + d.Code + ")", Value: d.Code, Data: d.Code})
-	}
-	sm.RegisterStaticReturnMenu(sm.StateAskDocumentType, docTypeOptions...)
+	sm.RegisterStaticReturnMenu(sm.StateAskDocumentType, documentTypeOptions()...)
 	// El agente escribe el número de documento. NO lleva Validate propio: sin él, ResolveReturnInput
 	// aplica el TextValidate del paso (validators.Document) y su ErrorMsg ANTES de inyectar, con el
 	// mismo veredicto que recibe el paciente. Un Validate aquí SUSTITUIRÍA esa regla.
@@ -72,9 +67,18 @@ func RegisterIdentificationHandlers(m *sm.Machine, patientSvc *services.PatientS
 	})
 	m.Register(sm.StatePatientLookup, patientLookupHandler(patientSvc))
 	m.Register(sm.StateConfirmIdentity, confirmIdentityHandler())
+	// El agente confirma o rechaza la identidad por el paciente (`/bot resume CONFIRM_IDENTITY identity_yes|identity_no`).
+	sm.RegisterStaticReturnMenu(sm.StateConfirmIdentity,
+		payloadOption("Sí, es el paciente", "identity_yes"),
+		payloadOption("No es el paciente", "identity_no"),
+	)
 
 	// Verificación de datos de contacto
 	m.Register(sm.StateShowContactInfo, showContactInfoHandler())
+	sm.RegisterStaticReturnMenu(sm.StateConfirmContactInfo,
+		payloadOption("Los datos son correctos", "contact_ok"),
+		payloadOption("Actualizar datos de contacto", "contact_update"),
+	)
 	m.RegisterWithConfig(sm.StateConfirmContactInfo, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"contact_ok", "contact_update"},

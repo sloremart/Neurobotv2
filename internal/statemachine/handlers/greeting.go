@@ -21,13 +21,22 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 	m.Register(sm.StateCheckBusinessHours, checkBusinessHoursHandler(cfg))
 	m.Register(sm.StateOutOfHours, outOfHoursHandler(cfg))
 	m.Register(sm.StateOutOfHoursMenu, outOfHoursMenuHandler(cfg, locationRepo))
+	sm.RegisterStaticReturnMenu(sm.StateOutOfHoursMenu,
+		payloadOption("Consultar resultados", "ooh_resultados"),
+		payloadOption("Ver ubicaciones", "ooh_ubicacion"),
+		payloadOption("Cómo usar el bot", "ooh_ayuda"),
+	)
 	m.Register(sm.StateGreeting, greetingHandler(cfg))
-	// Salidas del agente de Néctar desde el menú: las dos decisiones que hoy ofrece
-	// `/bot resume MAIN_MENU agendar|consultar`. Se retoma en MAIN_MENU con la opción como dato
-	// (igual que el comando de Bird) para que mainMenuHandler fije el contexto de cada flujo.
+	// Salidas del agente de Néctar desde el menú: las seis opciones del menú del paciente. Se
+	// retoma en MAIN_MENU con la opción como dato (igual que `/bot resume MAIN_MENU agendar`)
+	// para que mainMenuHandler fije el contexto de cada flujo.
 	sm.RegisterStaticReturnMenu(sm.StateMainMenu,
-		sm.ReturnOption{Label: "Agendar cita", Value: "agendar", Data: "agendar"},
-		sm.ReturnOption{Label: "Citas programadas", Value: "consultar", Data: "consultar"},
+		payloadOption("Agendar cita", "agendar"),
+		payloadOption("Citas programadas", "consultar"),
+		payloadOption("Medicamentos", "medicamentos"),
+		payloadOption("Resultados", "resultados"),
+		payloadOption("Ubicación", "ubicacion"),
+		payloadOption("Ayuda", "ayuda"),
 	)
 	m.RegisterWithConfig(sm.StateMainMenu, sm.HandlerConfig{
 		InputType: sm.InputButton,

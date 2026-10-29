@@ -51,9 +51,29 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo))
 	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo))
 	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper))
+	sm.RegisterStaticReturnMenu(sm.StateAppointmentAction,
+		payloadOption("Confirmar la cita", "appt_confirm"),
+		payloadOption("Cancelar la cita", "appt_cancel"),
+		payloadOption("Reagendar la cita", "appt_reschedule"),
+		payloadOption("Ver la preparación", "appt_preparation"),
+		payloadOption("Volver a la lista de citas", "appt_back"),
+		payloadOption("Ir al menú principal", "appt_menu"),
+	)
 	m.Register(sm.StateConfirmAppointment, confirmAppointmentHandler(apptSvc, procRepo, addrMapper))
+	sm.RegisterStaticReturnMenu(sm.StateConfirmAppointment,
+		payloadOption("Sí, confirmar la cita", "confirm_yes"),
+		payloadOption("No, cancelar la acción", "confirm_no"),
+	)
 	m.Register(sm.StateCancelAppointment, cancelAppointmentHandler(apptSvc, procRepo, onCancel))
+	sm.RegisterStaticReturnMenu(sm.StateCancelAppointment,
+		payloadOption("Sí, cancelar la cita", "cancel_yes"),
+		payloadOption("No, mantener la cita", "cancel_no"),
+	)
 	m.Register(sm.StateNoAppointments, noAppointmentsHandler())
+	sm.RegisterStaticReturnMenu(sm.StateNoAppointments,
+		payloadOption("Volver al menú principal", "no_appt_menu"),
+		payloadOption("Terminar el chat", "no_appt_end"),
+	)
 
 	// Flujos de confirmación desde notificaciones proactivas
 	confirmReschedulePrompt := func(sess *session.Session, result *sm.StateResult) {
@@ -71,6 +91,10 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 			sm.Button{Text: "No, mantener", Payload: "reschedule_no"},
 		)
 	}
+	sm.RegisterStaticReturnMenu(sm.StateConfirmRescheduleNotif,
+		payloadOption("Sí, buscar nuevos horarios", "reschedule_yes"),
+		payloadOption("No, mantener la cita", "reschedule_no"),
+	)
 	m.RegisterWithConfig(sm.StateConfirmRescheduleNotif, sm.HandlerConfig{
 		InputType:   sm.InputButton,
 		Options:     []string{"reschedule_yes", "reschedule_no"},
@@ -94,6 +118,10 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 			sm.Button{Text: "No, mantener", Payload: "cancel_no"},
 		)
 	}
+	sm.RegisterStaticReturnMenu(sm.StateConfirmCancelNotif,
+		payloadOption("Sí, cancelar la cita", "cancel_yes"),
+		payloadOption("No, mantener la cita", "cancel_no"),
+	)
 	m.RegisterWithConfig(sm.StateConfirmCancelNotif, sm.HandlerConfig{
 		InputType:   sm.InputButton,
 		Options:     []string{"cancel_yes", "cancel_no"},
@@ -133,6 +161,10 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 	})
 
 	// Fallback: reschedule sin slots → ofrece Confirmar/Cancelar
+	sm.RegisterStaticReturnMenu(sm.StateNotifRescheduleFallback,
+		payloadOption("Confirmar la cita", "confirm"),
+		payloadOption("Cancelar la cita", "cancel"),
+	)
 	m.RegisterWithConfig(sm.StateNotifRescheduleFallback, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"confirm", "cancel"},

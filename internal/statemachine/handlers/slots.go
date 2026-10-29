@@ -429,9 +429,23 @@ func RegisterSlotHandlers(
 		sm.ReturnOption{Label: "Volver al menú", Value: "cov_menu", Target: sm.StateMainMenu},
 	)
 	m.Register(sm.StateSlotSearchRetry, slotSearchRetryHandler())
+	sm.RegisterStaticReturnMenu(sm.StateSlotSearchRetry,
+		payloadOption("Reintentar la búsqueda", "retry"),
+		payloadOption("Volver al menú", "menu"),
+	)
 	m.Register(sm.StateShowSlots, showSlotsHandler(addrMapper))
 	m.Register(sm.StateNoSlotsAvailable, noSlotsHandler(waitingListRepo))
 	m.Register(sm.StateOfferWaitingList, offerWaitingListHandler(waitingListRepo))
+	sm.RegisterStaticReturnMenu(sm.StateOfferWaitingList,
+		payloadOption("Agregar a la lista de espera", "wl_yes"),
+		payloadOption("No agregar", "wl_no"),
+		sm.ReturnOption{Label: "Buscar horarios de nuevo", Value: "buscar_horarios", Target: sm.StateSearchSlots},
+	)
+	sm.RegisterStaticReturnMenu(sm.StateConfirmBooking,
+		payloadOption("Confirmar la reserva", "booking_confirm"),
+		payloadOption("Cambiar el horario", "booking_change"),
+		sm.ReturnOption{Label: "Buscar horarios de nuevo", Value: "buscar_horarios", Target: sm.StateSearchSlots},
+	)
 	m.RegisterWithConfig(sm.StateConfirmBooking, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"booking_confirm", "booking_change"},
@@ -457,6 +471,10 @@ func RegisterSlotHandlers(
 		Handler: confirmBookingHandler(),
 	})
 	m.Register(sm.StateReconfirmBooking, reconfirmBookingHandler(addrMapper))
+	sm.RegisterStaticReturnMenu(sm.StateReconfirmBooking,
+		payloadOption("Sí, confirmar definitivamente", "reconfirm_yes"),
+		payloadOption("No, volver a los horarios", "reconfirm_no"),
+	)
 	m.Register(sm.StateCreateAppointment, createAppointmentHandler(apptSvc, priceRepo, entityRepo, procRepo, waitingListRepo))
 	m.Register(sm.StateBookingSuccess, bookingSuccessHandler(addrMapper))
 	m.Register(sm.StateBookingFailed, bookingFailedHandler())

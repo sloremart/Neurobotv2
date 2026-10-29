@@ -22,6 +22,10 @@ func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingR
 	m.Register(sm.StateMedicationAskLastDate, medicationAskLastDateHandler())
 	m.Register(sm.StateMedicationAskDose, medicationAskDoseHandler())
 	m.Register(sm.StateMedicationAskFrequency, medicationAskFrequencyHandler())
+	sm.RegisterStaticReturnMenu(sm.StateMedicationAskSymptoms,
+		payloadOption("Sin síntomas", "sin_sintomas"),
+		payloadOption("Con síntomas", "con_sintomas"),
+	)
 	m.RegisterWithConfig(sm.StateMedicationAskSymptoms, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"sin_sintomas", "con_sintomas"},
@@ -32,6 +36,10 @@ func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingR
 	})
 	m.Register(sm.StateMedicationReceiveHistoria, medicationReceiveHistoriaHandler())
 	m.Register(sm.StateMedicationReceiveOrden, medicationReceiveOrdenHandler(ocrSvc))
+	sm.RegisterStaticReturnMenu(sm.StateMedicationConfirmOrden,
+		payloadOption("La orden es correcta", "med_confirm_ok"),
+		payloadOption("Enviar la orden de nuevo", "med_confirm_retry"),
+	)
 	m.RegisterWithConfig(sm.StateMedicationConfirmOrden, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"med_confirm_ok", "med_confirm_retry"},

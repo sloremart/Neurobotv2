@@ -26,11 +26,26 @@ func RegisterEntityManagementHandlers(
 ) {
 	m.Register(sm.StateAskClientType, askClientTypeHandler(entityRepo))
 	m.Register(sm.StateAskEpsRegimen, askEpsRegimenHandler())
+	sm.RegisterStaticReturnMenu(sm.StateAskEpsRegimen,
+		payloadOption("Contributivo", "regimen_1"),
+		payloadOption("Subsidiado", "regimen_2"),
+	)
+	// Las seis categorías de entidad, con los rótulos que ve el paciente (ct_1 … ct_6).
+	clientTypeOptions := make([]sm.ReturnOption, 0, len(domain.EntityCategoryLabels))
+	for i := 1; i <= len(domain.EntityCategoryLabels); i++ {
+		clientTypeOptions = append(clientTypeOptions,
+			payloadOption(domain.EntityCategoryLabels[i], fmt.Sprintf("ct_%d", i)))
+	}
+	sm.RegisterStaticReturnMenu(sm.StateAskClientType, clientTypeOptions...)
 	m.Register(sm.StateShowEntityList, showEntityListHandler(entityRepo))
 	m.Register(sm.StateAskEntityNumber, askEntityNumberHandler(entityRepo))
 	// Legacy handlers kept for backwards compatibility
 	m.Register(sm.StateCheckEntity, checkEntityHandler(entityRepo))
 	m.Register(sm.StateConfirmEntity, confirmEntityHandler())
+	sm.RegisterStaticReturnMenu(sm.StateConfirmEntity,
+		payloadOption("Confirmar la entidad", "entity_ok"),
+		payloadOption("Cambiar la entidad", "entity_change"),
+	)
 	m.Register(sm.StateChangeEntity, changeEntityHandler(entityRepo, patientRepo))
 }
 

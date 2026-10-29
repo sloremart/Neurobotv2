@@ -26,6 +26,10 @@ func RegisterRegistrationHandlers(
 	patientSvc *services.PatientService,
 	municipalityRepo repository.MunicipalityRepository,
 ) {
+	sm.RegisterStaticReturnMenu(sm.StateRegistrationStart,
+		payloadOption("Sí, registrarse", "register_yes"),
+		payloadOption("No registrarse", "register_no"),
+	)
 	m.RegisterWithConfig(sm.StateRegistrationStart, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"register_yes", "register_no"},
@@ -44,11 +48,16 @@ func RegisterRegistrationHandlers(
 	// excluyen AS/MS/SI "sin identificación"). WhatsApp limita las listas interactivas a 10
 	// filas, por eso se ofrece como menú de texto numerado.
 	m.Register(sm.StateRegDocumentType, withCorrectionRedirect(regDocumentTypeHandler()))
+	sm.RegisterStaticReturnMenu(sm.StateRegDocumentType, documentTypeOptions()...)
 	m.Register(sm.StateRegFirstSurname, withCorrectionRedirect(regFieldHandler("reg_first_surname", "Por favor escribe tu primer apellido (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondSurname, "Si tienes *segundo apellido*, escríbelo. Si no, responde *NA*:")))
 	m.Register(sm.StateRegSecondSurname, regOptionalFieldHandler("reg_second_surname", "Si tienes segundo apellido, escríbelo. Si no, responde *NA*:", sm.StateRegFirstName, "Por favor escribe tu *primer nombre* (solo letras, sin números ni símbolos):"))
 	m.Register(sm.StateRegFirstName, withCorrectionRedirect(regFieldHandler("reg_first_name", "Por favor escribe tu primer nombre (solo letras, sin números, ni símbolos ni espacios).", validateName, sm.StateRegSecondName, "Si tienes *segundo nombre*, escríbelo. Si no, responde *NA*:")))
 	m.Register(sm.StateRegSecondName, regOptionalFieldHandler("reg_second_name", "Si tienes segundo nombre, escríbelo. Si no, responde *NA*:", sm.StateRegBirthDate, "Ingresa tu *fecha de nacimiento*, por ejemplo *17/04/1992* (día/mes/año):"))
 	m.Register(sm.StateRegBirthDate, withCorrectionRedirect(regBirthDateHandler()))
+	sm.RegisterStaticReturnMenu(sm.StateRegGender,
+		payloadOption("Masculino", "M"),
+		payloadOption("Femenino", "F"),
+	)
 	m.RegisterWithConfig(sm.StateRegGender, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"M", "F"},
@@ -60,6 +69,7 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: regGenderHandler(),
 	})
+	sm.RegisterStaticReturnMenu(sm.StateRegBloodType, optionsFromRows(bloodTypeListRows())...)
 	m.RegisterWithConfig(sm.StateRegBloodType, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   bloodTypeValues(),
@@ -71,6 +81,7 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: withCorrectionRedirect(regBloodTypeHandler()),
 	})
+	sm.RegisterStaticReturnMenu(sm.StateRegMaritalStatus, optionsFromRows(maritalStatusListRows())...)
 	m.RegisterWithConfig(sm.StateRegMaritalStatus, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"1", "2", "3", "4", "5"},
@@ -82,6 +93,7 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: withCorrectionRedirect(regMaritalStatusHandler()),
 	})
+	sm.RegisterStaticReturnMenu(sm.StateRegEducationLevel, optionsFromRows(educationLevelListRows())...)
 	m.RegisterWithConfig(sm.StateRegEducationLevel, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   educationLevelValues(),
@@ -101,6 +113,15 @@ func RegisterRegistrationHandlers(
 	m.Register(sm.StateRegMunicipality, regMunicipalityHandler(municipalityRepo))
 	m.Register(sm.StateRegBarrio, regBarrioHandler(municipalityRepo))
 	m.Register(sm.StateConfirmMunicipality, confirmMunicipalityHandler(municipalityRepo, patientSvc))
+	// Este handler solo acepta POSTBACK: el Data de una opción llega también como postback.
+	sm.RegisterStaticReturnMenu(sm.StateConfirmMunicipality,
+		payloadOption("El municipio es correcto", "muni_ok"),
+		payloadOption("Cambiar el municipio", "muni_change"),
+	)
+	sm.RegisterStaticReturnMenu(sm.StateRegZone,
+		payloadOption("Urbana", "U"),
+		payloadOption("Rural", "R"),
+	)
 	m.RegisterWithConfig(sm.StateRegZone, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"U", "R"},
@@ -112,6 +133,7 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: regZoneHandler(),
 	})
+	sm.RegisterStaticReturnMenu(sm.StateRegUserType, optionsFromRows(userTypeListRows())...)
 	m.RegisterWithConfig(sm.StateRegUserType, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   userTypePayloads(),
@@ -126,6 +148,7 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: withCorrectionRedirect(regUserTypeHandler()),
 	})
+	sm.RegisterStaticReturnMenu(sm.StateRegAffiliationType, optionsFromRows(affiliationTypeListRows())...)
 	m.RegisterWithConfig(sm.StateRegAffiliationType, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   affiliationTypeValues(),
@@ -137,6 +160,11 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: regAffiliationTypeHandler(),
 	})
+	correctionOptions := make([]sm.ReturnOption, 0, len(correctionFields()))
+	for _, f := range correctionFields() {
+		correctionOptions = append(correctionOptions, payloadOption(f.Title, f.ID))
+	}
+	sm.RegisterStaticReturnMenu(sm.StateRegSelectCorrection, correctionOptions...)
 	m.RegisterWithConfig(sm.StateRegSelectCorrection, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   correctionPayloads(),
@@ -145,6 +173,10 @@ func RegisterRegistrationHandlers(
 		},
 		Handler: regSelectCorrectionHandler(),
 	})
+	sm.RegisterStaticReturnMenu(sm.StateConfirmRegistration,
+		payloadOption("Confirmar y crear el paciente", "reg_confirm"),
+		payloadOption("Corregir algún dato", "reg_correct"),
+	)
 	m.RegisterWithConfig(sm.StateConfirmRegistration, sm.HandlerConfig{
 		InputType: sm.InputButton,
 		Options:   []string{"reg_confirm", "reg_correct"},

@@ -13,7 +13,16 @@ import (
 // RegisterPostActionHandlers registra los handlers de post-acción y estados terminales (Fase 11).
 func RegisterPostActionHandlers(m *sm.Machine, birdClient *bird.Client) {
 	m.Register(sm.StatePostActionMenu, postActionMenuHandler(birdClient))
+	sm.RegisterStaticReturnMenu(sm.StatePostActionMenu,
+		payloadOption("Consultar mis citas", "ver_citas"),
+		payloadOption("Ir al menú principal", "menu_principal"),
+		payloadOption("Terminar el chat", "terminar_chat"),
+	)
 	m.Register(sm.StateFallbackMenu, fallbackMenuHandler())
+	sm.RegisterStaticReturnMenu(sm.StateFallbackMenu,
+		payloadOption("Volver al inicio", "action:restart"),
+		payloadOption("Terminar el chat", "action:end"),
+	)
 	m.Register(sm.StateFarewell, farewellHandler())
 	m.Register(sm.StateTerminated, terminatedHandler())
 }

@@ -27,6 +27,13 @@ func returnMenuMachine() *sm.Machine {
 	RegisterMedicalOrderHandlers(m, nil, nil, nil, nil, nil)
 	RegisterAppointmentHandlers(m, nil, nil, nil, nil)
 	RegisterSlotHandlers(m, nil, nil, nil, nil, nil, nil, nil, nil)
+	// Los registros de estos handlers no tocan sus dependencias: se pasan nil.
+	RegisterRegistrationHandlers(m, nil, nil)
+	RegisterEntityManagementHandlers(m, nil, nil)
+	RegisterMedicalValidationHandlers(m, nil, nil, nil)
+	RegisterPostActionHandlers(m, nil)
+	RegisterMedicationHandlers(m, nil, nil)
+	RegisterResultsAndLocationHandlers(m, sampleConfig(), nil)
 	// BOT_DISABLED registra su menú aquí: sin él, que figurara o no en RegisteredReturnSteps
 	// dependería del orden de las pruebas.
 	RegisterEscalationHandlers(m, nil, nil, nil)
@@ -154,18 +161,14 @@ func TestReturnMenus_CupsInputUsesTheAgentCommandGrammar(t *testing.T) {
 // (reanudar / cerrar). La lista está FIJADA aquí para que nadie quede fuera en silencio: un paso
 // nuevo en buildAgentCommands, o uno de estos que gane registro, hace fallar la prueba.
 var deferredAgentCommandSteps = []string{
-	"OUT_OF_HOURS_MENU", "CONFIRM_IDENTITY", "CONFIRM_CONTACT_INFO", "ASK_UPDATE_PHONE",
-	"ASK_UPDATE_EMAIL", "ASK_EPS_REGIMEN", "ASK_CLIENT_TYPE", "ASK_ENTITY_NUMBER",
-	"CONFIRM_ENTITY", "CHANGE_ENTITY", "SHOW_ENTITY_LIST", "REGISTRATION_START",
-	"CONFIRM_REGISTRATION", "REG_SELECT_CORRECTION", "SELECT_PROCEDURE",
-	"ASK_GESTATIONAL_WEEKS", "ASK_CONTRASTED", "ASK_PREGNANCY", "ASK_BABY_WEIGHT",
-	"GFR_CREATININE", "GFR_HEIGHT", "GFR_WEIGHT", "GFR_DISEASE", "ASK_SEDATION",
-	"CHECK_SPECIAL_CUPS", "SHOW_SLOTS", "OFFER_WAITING_LIST", "CONFIRM_BOOKING",
-	"RECONFIRM_BOOKING", "NO_APPOINTMENTS", "LIST_APPOINTMENTS", "APPOINTMENT_ACTION",
-	"CONFIRM_APPOINTMENT", "CANCEL_APPOINTMENT", "CANCEL_REASON",
-	"CONFIRM_RESCHEDULE_NOTIF", "CONFIRM_CANCEL_NOTIF", "NOTIF_RESCHEDULE_FALLBACK",
-	"POST_ACTION_MENU", "FALLBACK_MENU",
+	"ASK_UPDATE_PHONE", "ASK_UPDATE_EMAIL", "ASK_ENTITY_NUMBER", "CHANGE_ENTITY",
+	"SHOW_ENTITY_LIST", "SELECT_PROCEDURE", "ASK_GESTATIONAL_WEEKS", "GFR_CREATININE",
+	"GFR_HEIGHT", "GFR_WEIGHT", "CHECK_SPECIAL_CUPS", "SHOW_SLOTS", "LIST_APPOINTMENTS",
 }
+
+// unreachableAgentCommandSteps son pasos que buildAgentCommands nombra pero que NO son un estado
+// de la máquina (sin handler): nunca se escala desde ellos, así que no llevan menú.
+var unreachableAgentCommandSteps = []string{"CANCEL_REASON"}
 
 // agentCommandSteps lee los estados que buildAgentCommands nombra con un `case` propio. Se lee
 // del código fuente porque la función cae a un caso genérico con cualquier estado, y por eso
@@ -206,6 +209,12 @@ func agentCommandSteps(t *testing.T) []string {
 func TestReturnMenusCoverAgentCommands(t *testing.T) {
 	m := returnMenuMachine()
 	for _, step := range agentCommandSteps(t) {
+		if slices.Contains(unreachableAgentCommandSteps, step) {
+			if m.IsRegistered(step) {
+				t.Errorf("%s: figura como inalcanzable pero tiene handler registrado", step)
+			}
+			continue
+		}
 		covered := hasReturnEntry(m, step)
 		deferred := slices.Contains(deferredAgentCommandSteps, step)
 		switch {
@@ -217,7 +226,7 @@ func TestReturnMenusCoverAgentCommands(t *testing.T) {
 	}
 	// Los aplazados deben seguir siendo estados que buildAgentCommands nombra.
 	named := agentCommandSteps(t)
-	for _, step := range deferredAgentCommandSteps {
+	for _, step := range append(slices.Clone(deferredAgentCommandSteps), unreachableAgentCommandSteps...) {
 		if !slices.Contains(named, step) {
 			t.Errorf("%s: figura como aplazado pero buildAgentCommands ya no lo nombra", step)
 		}
@@ -366,6 +375,159 @@ func TestReturnInputSteps_OwnOptionsNeverCarryTheValues(t *testing.T) {
 				t.Errorf("%s: la opción %q es «reanudar» en un paso con campo y recibiría lo escrito; debe ser NoInput o Close",
 					step, o.Value)
 			}
+		}
+	}
+}
+
+// ownData son los `Data` de las opciones propias del paso (las universales no cuentan, y las
+// opciones solo-Target, como buscar_horarios, tampoco: no inyectan ningún payload).
+func ownData(step string) []string {
+	var got []string
+	for _, o := range sm.ReturnOptionsFor(nil, step) {
+		if !sm.IsUniversalReturnValue(o.Value) && o.Data != "" {
+			got = append(got, o.Data)
+		}
+	}
+	slices.Sort(got)
+	return got
+}
+
+func sortedCopy(in []string) []string {
+	out := slices.Clone(in)
+	slices.Sort(out)
+	return out
+}
+
+func rowIDs(rows []sm.ListRow) []string {
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	return ids
+}
+
+// handlerButtonPayloads son, por paso, los payloads que el handler acepta HOY. Los pasos con
+// HandlerConfig se cruzan además con cfg.Options; los que validan con ValidateButtonResponse
+// directo (sin config) se fijan aquí, tomados del código de cada handler.
+func handlerButtonPayloads() map[string][]string {
+	docTypes := make([]string, len(documentTypeCatalog))
+	for i, d := range documentTypeCatalog {
+		docTypes[i] = d.Code
+	}
+	return map[string][]string{
+		sm.StateConfirmIdentity:         {"identity_yes", "identity_no"},
+		sm.StateConfirmContactInfo:      {"contact_ok", "contact_update"},
+		sm.StateAskEpsRegimen:           {"regimen_1", "regimen_2"},
+		sm.StateAskClientType:           {"ct_1", "ct_2", "ct_3", "ct_4", "ct_5", "ct_6"},
+		sm.StateConfirmEntity:           {"entity_ok", "entity_change"},
+		sm.StateRegistrationStart:       {"register_yes", "register_no"},
+		sm.StateConfirmRegistration:     {"reg_confirm", "reg_correct"},
+		sm.StateRegSelectCorrection:     correctionPayloads(),
+		sm.StateRegDocumentType:         docTypes,
+		sm.StateRegGender:               {"M", "F"},
+		sm.StateRegZone:                 {"U", "R"},
+		sm.StateRegBloodType:            bloodTypeValues(),
+		sm.StateRegMaritalStatus:        rowIDs(maritalStatusListRows()),
+		sm.StateRegEducationLevel:       educationLevelValues(),
+		sm.StateRegUserType:             userTypePayloads(),
+		sm.StateRegAffiliationType:      affiliationTypeValues(),
+		sm.StateConfirmMunicipality:     {"muni_ok", "muni_change"},
+		sm.StateAskContrasted:           {"contrast_yes", "contrast_no"},
+		sm.StateAskPregnancy:            {"pregnant_no", "pregnant_yes"},
+		sm.StateAskBabyWeight:           {"baby_normal", "baby_low"},
+		sm.StateGfrDisease:              {"disease_none", "disease_renal", "disease_diabetica"},
+		sm.StateAskSedation:             {"sedated_yes", "sedated_no"},
+		sm.StateOfferWaitingList:        {"wl_yes", "wl_no"},
+		sm.StateConfirmBooking:          {"booking_confirm", "booking_change"},
+		sm.StateReconfirmBooking:        {"reconfirm_yes", "reconfirm_no"},
+		sm.StateSlotSearchRetry:         {"retry", "menu"},
+		sm.StateNoAppointments:          {"no_appt_menu", "no_appt_end"},
+		sm.StateAppointmentAction:       {"appt_confirm", "appt_cancel", "appt_reschedule", "appt_preparation", "appt_back", "appt_menu"},
+		sm.StateConfirmAppointment:      {"confirm_yes", "confirm_no"},
+		sm.StateCancelAppointment:       {"cancel_yes", "cancel_no"},
+		sm.StateConfirmRescheduleNotif:  {"reschedule_yes", "reschedule_no"},
+		sm.StateConfirmCancelNotif:      {"cancel_yes", "cancel_no"},
+		sm.StateNotifRescheduleFallback: {"confirm", "cancel"},
+		sm.StatePostActionMenu:          {"ver_citas", "menu_principal", "terminar_chat"},
+		sm.StateFallbackMenu:            {"action:restart", "action:end"},
+		sm.StateOutOfHoursMenu:          {"ooh_resultados", "ooh_ubicacion", "ooh_ayuda"},
+		sm.StateMedicationAskSymptoms:   {"sin_sintomas", "con_sintomas"},
+		sm.StateMedicationConfirmOrden:  {"med_confirm_ok", "med_confirm_retry"},
+		sm.StateConfirmConsolidate:      {"consolidate_yes", "consolidate_no"},
+		sm.StateAskEmgOrder:             {"emg_order_yes", "emg_order_no"},
+	}
+}
+
+// Cada paso de elección ofrece al agente exactamente los payloads que su handler acepta del
+// paciente (llegan como postback y texto, Tarea 5).
+func TestReturnMenus_ButtonStepsOfferTheHandlerPayloads(t *testing.T) {
+	m := returnMenuMachine()
+	for step, want := range handlerButtonPayloads() {
+		if !m.IsRegistered(step) {
+			t.Errorf("%s: el paso de la tabla no está registrado", step)
+			continue
+		}
+		if got := ownData(step); !slices.Equal(got, sortedCopy(want)) {
+			t.Errorf("%s: Data de las opciones = %v, el handler acepta %v", step, got, sortedCopy(want))
+		}
+	}
+	// Los pasos con config de botones: sus opciones propias con Data son cfg.Options, en dos sentidos.
+	for _, step := range sm.RegisteredReturnSteps() {
+		cfg, ok := m.Config(step)
+		if !ok || cfg.InputType != sm.InputButton {
+			continue
+		}
+		if got := ownData(step); !slices.Equal(got, sortedCopy(cfg.Options)) {
+			t.Errorf("%s: Data de las opciones = %v, cfg.Options = %v", step, got, sortedCopy(cfg.Options))
+		}
+	}
+}
+
+// CANCEL_REASON lo nombra buildAgentCommands pero no tiene handler: no se escala desde ahí.
+func TestReturnMenus_CancelReasonIsUnreachable(t *testing.T) {
+	m := returnMenuMachine()
+	if m.IsRegistered(sm.StateCancelReason) {
+		t.Fatal("CANCEL_REASON tiene handler: ya es alcanzable, debe declarar un menú")
+	}
+	if !slices.Contains(unreachableAgentCommandSteps, sm.StateCancelReason) {
+		t.Error("CANCEL_REASON debe figurar en unreachableAgentCommandSteps")
+	}
+	if slices.Contains(sm.RegisteredReturnSteps(), sm.StateCancelReason) {
+		t.Error("un paso inalcanzable no debe registrar menú")
+	}
+}
+
+func TestReturnMenus_MainMenuOffersEveryMenuOption(t *testing.T) {
+	returnMenuMachine()
+	want := []string{"medicamentos", "agendar", "consultar", "resultados", "ubicacion", "ayuda"}
+	if got := ownData(sm.StateMainMenu); !slices.Equal(got, sortedCopy(want)) {
+		t.Errorf("MAIN_MENU ofrece %v, quiero %v", got, sortedCopy(want))
+	}
+}
+
+// Los pasos con lista derivan sus opciones de las filas del paciente, con rótulo y payload iguales.
+func TestOptionsFromRows_UsesTitleAndIDAsLabelAndPayload(t *testing.T) {
+	got := optionsFromRows([]sm.ListRow{{ID: "a", Title: "Uno"}, {ID: "b", Title: "Dos", Description: "x"}})
+	want := []sm.ReturnOption{{Label: "Uno", Value: "a", Data: "a"}, {Label: "Dos", Value: "b", Data: "b"}}
+	if !slices.EqualFunc(got, want, func(x, y sm.ReturnOption) bool {
+		return x.Label == y.Label && x.Value == y.Value && x.Data == y.Data && x.Target == y.Target
+	}) {
+		t.Fatalf("optionsFromRows = %+v, quiero %+v", got, want)
+	}
+}
+
+// Las opciones solo-Target (buscar horarios) retoman en SEARCH_SLOTS sin inyectar ningún payload.
+func TestReturnMenus_SearchSlotsOptionsRetakeWithoutData(t *testing.T) {
+	returnMenuMachine()
+	for _, step := range []string{sm.StateOfferWaitingList, sm.StateConfirmBooking} {
+		var found bool
+		for _, o := range sm.ReturnOptionsFor(nil, step) {
+			if o.Value == "buscar_horarios" {
+				found = o.Target == sm.StateSearchSlots && o.Data == "" && !o.Close
+			}
+		}
+		if !found {
+			t.Errorf("%s: falta «buscar_horarios» hacia SEARCH_SLOTS sin dato", step)
 		}
 	}
 }

@@ -53,7 +53,15 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	// Consolidación EMG/NC entre órdenes separadas.
 	m.Register(sm.StateCheckEmgConsolidation, checkEmgConsolidationHandler(apptSvc))
 	m.Register(sm.StateConfirmConsolidate, confirmConsolidateHandler(apptSvc))
+	sm.RegisterStaticReturnMenu(sm.StateConfirmConsolidate,
+		payloadOption("Sí, unir con la cita existente", "consolidate_yes"),
+		payloadOption("No, agendar aparte", "consolidate_no"),
+	)
 	m.Register(sm.StateAskEmgOrder, askEmgOrderHandler())
+	sm.RegisterStaticReturnMenu(sm.StateAskEmgOrder,
+		payloadOption("Tiene la orden de electromiografía", "emg_order_yes"),
+		payloadOption("No tiene la orden", "emg_order_no"),
+	)
 	m.Register(sm.StateUploadEmgOrder, uploadEmgOrderHandler(ocrSvc, birdClient))
 }
 

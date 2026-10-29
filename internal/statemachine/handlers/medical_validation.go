@@ -22,12 +22,29 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	m.Register(sm.StateCheckSpecialCups, checkSpecialCupsHandler())
 	m.Register(sm.StateAskGestationalWeeks, askGestationalWeeksHandler())
 	m.Register(sm.StateAskContrasted, askContrastedHandler())
+	sm.RegisterStaticReturnMenu(sm.StateAskContrasted,
+		payloadOption("Con contraste", "contrast_yes"),
+		payloadOption("Sin contraste", "contrast_no"),
+	)
 	m.Register(sm.StateAskPregnancy, askPregnancyHandler())
+	sm.RegisterStaticReturnMenu(sm.StateAskPregnancy,
+		payloadOption("No está embarazada", "pregnant_no"),
+		payloadOption("Está embarazada (bloquea la cita)", "pregnant_yes"),
+	)
 	m.Register(sm.StatePregnancyBlock, pregnancyBlockHandler())
 	m.Register(sm.StateAskBabyWeight, askBabyWeightHandler())
+	sm.RegisterStaticReturnMenu(sm.StateAskBabyWeight,
+		payloadOption("Peso normal", "baby_normal"),
+		payloadOption("Bajo peso", "baby_low"),
+	)
 	m.Register(sm.StateGfrCreatinine, gfrCreatinineHandler())
 	m.Register(sm.StateGfrExamDate, gfrExamDateHandler())
 	m.Register(sm.StateGfrDisease, gfrDiseaseHandler())
+	sm.RegisterStaticReturnMenu(sm.StateGfrDisease,
+		payloadOption("Sin enfermedad", "disease_none"),
+		payloadOption("Enfermedad renal", "disease_renal"),
+		payloadOption("Diabetes", "disease_diabetica"),
+	)
 	m.Register(sm.StateGfrHeight, gfrHeightHandler())
 	m.RegisterWithConfig(sm.StateGfrWeight, sm.HandlerConfig{
 		InputType:    sm.InputText,
@@ -38,6 +55,10 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	m.Register(sm.StateGfrResult, gfrResultHandler(gfrSvc, procRepo))
 	m.Register(sm.StateGfrNotEligible, gfrNotEligibleHandler())
 	m.Register(sm.StateAskSedation, askSedationHandler())
+	sm.RegisterStaticReturnMenu(sm.StateAskSedation,
+		payloadOption("Con sedación", "sedated_yes"),
+		payloadOption("Sin sedación", "sedated_no"),
+	)
 	m.Register(sm.StateCheckExisting, checkExistingHandler(apptSvc))
 	m.Register(sm.StateAppointmentExists, appointmentExistsHandler())
 	m.Register(sm.StateCheckPriorConsult, checkPriorConsultHandler(apptSvc))
