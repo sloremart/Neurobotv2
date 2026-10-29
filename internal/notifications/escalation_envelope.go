@@ -27,10 +27,19 @@ func notifEscalation(cfg *config.Config, phone string, view *session.Session, de
 	// Candado del botón «Resolver»: queda una cita o una acción de cita por hacer. Solo viaja en
 	// el sobre de Néctar; en Bird no existe.
 	esc.ResolveLock, _ = sm.ResolveGuardFor(sm.StateNotifPending)
+	// El equipo sugerido viaja en v0 y v1 (el campo existe desde antes de v1), igual que en los
+	// handlers; sale del grupo del CUPS de la cita notificada.
+	esc.SuggestedTeamID = cfg.SuggestedTeamForCups(view.GetContext(sm.CtxNotifCupsCode))
 	if cfg != nil && cfg.EmitsProtocolV1() {
 		esc.Protocol = config.ProtocolEscaladoV1
 		esc.ReasonDetail = detail
 		esc.Input = sm.StaticInputDescriptor(view, sm.StateNotifPending)
+		// Los hechos acompañan al resumen, no lo sustituyen. Sin serializar se escala sin ellos.
+		if raw, err := json.Marshal(notifFacts(view)); err != nil {
+			slog.Error("notificación: los hechos no se pudieron serializar, se escala sin ellos", "error", err)
+		} else {
+			esc.Facts = raw
+		}
 		return esc
 	}
 	// Sin poder serializar se escala sin menú: degrada la vuelta, no abandona al paciente.
@@ -40,4 +49,34 @@ func notifEscalation(cfg *config.Config, phone string, view *session.Session, de
 		esc.ReturnMenu = raw
 	}
 	return esc
+}
+
+// notifFacts son los hechos del caso de una notificación: el paciente y la cita notificada, con
+// las mismas claves y rótulos que el resumen de los handlers (nectar.Fact*). Los campos sin valor
+// se omiten; el teléfono nunca viaja (el agente ya lo ve en la conversación).
+func notifFacts(view *session.Session) []nectar.FactGroup {
+	var groups []nectar.FactGroup
+	add := func(key string, specs []nectar.FactSpec, values []string) {
+		g := nectar.FactGroup{Key: key}
+		for i, spec := range specs {
+			if values[i] != "" {
+				g.Fields = append(g.Fields, spec.Field(values[i]))
+			}
+		}
+		if len(g.Fields) > 0 {
+			groups = append(groups, g)
+		}
+	}
+	add("paciente", []nectar.FactSpec{nectar.FactPatientName}, []string{view.GetContext("patient_name")})
+	add("cita",
+		[]nectar.FactSpec{
+			nectar.FactAppointmentID, nectar.FactAppointmentDate, nectar.FactAppointmentTime,
+			nectar.FactProcedure, nectar.FactNotifType,
+		},
+		[]string{
+			view.GetContext("notif_appointment_id"), view.GetContext("notif_appt_date"),
+			view.GetContext("notif_appt_time"), view.GetContext("notif_cups_name"),
+			view.GetContext("notif_type"),
+		})
+	return groups
 }

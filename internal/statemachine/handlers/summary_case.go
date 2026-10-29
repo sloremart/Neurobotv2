@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -154,11 +155,11 @@ func writeAppointmentGroup(doc *summaryDoc, sess *session.Session) {
 	if id == "" {
 		id = sess.GetContext("consolidate_appt_id")
 	}
-	g.optional("id", "Cita", id)
-	g.optional("fecha", "Fecha", sess.GetContext("notif_appt_date"))
-	g.optional("hora", "Hora", sess.GetContext("notif_appt_time"))
-	g.optional("procedimiento", "Procedimiento de la cita", oneLine(sess.GetContext("notif_cups_name")))
-	g.optional("tipo_notificacion", "Notificación", sess.GetContext("notif_type"))
+	g.optional(nectar.FactAppointmentID.Key, nectar.FactAppointmentID.Label, id)
+	g.optional(nectar.FactAppointmentDate.Key, nectar.FactAppointmentDate.Label, sess.GetContext("notif_appt_date"))
+	g.optional(nectar.FactAppointmentTime.Key, nectar.FactAppointmentTime.Label, sess.GetContext("notif_appt_time"))
+	g.optional(nectar.FactProcedure.Key, nectar.FactProcedure.Label, oneLine(sess.GetContext("notif_cups_name")))
+	g.optional(nectar.FactNotifType.Key, nectar.FactNotifType.Label, sess.GetContext("notif_type"))
 }
 
 // writeSearchGroup muestra lo que devolvió la búsqueda manual de procedimientos.

@@ -578,7 +578,7 @@ func summaryForAgent(sess *session.Session, cupsCode, teamName string) (string, 
 	doc.untitled("encabezado").raw("Transferencia de chatbot\n\n")
 
 	patient := doc.untitled("paciente")
-	patient.line("nombre", "Paciente", patientName)
+	patient.line(nectar.FactPatientName.Key, nectar.FactPatientName.Label, patientName)
 	patient.line("documento", "Documento", patientDoc)
 
 	if note != "" {

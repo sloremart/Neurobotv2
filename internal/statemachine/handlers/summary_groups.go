@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
 
 // EL RESUMEN DEL AGENTE, EN SUS DOS FORMAS A LA VEZ.
@@ -35,12 +37,8 @@ import (
 // omitempty; Neuro no lo usa y su ausencia no cambia el cable.)
 //
 // summaryField es un par del resumen estructurado; los identificadores de Go van en inglés.
-type summaryField struct {
-	Key string `json:"clave"`
-	// Label es opcional en `facts`: un par sin rótulo sigue siendo legible por su clave.
-	Label string `json:"rotulo,omitempty"`
-	Value string `json:"valor"`
-}
+// Es el mismo tipo que usan las notificaciones (nectar.FactField).
+type summaryField = nectar.FactField
 
 // summaryGroup es un bloque del resumen. `titulo` NULO es un valor LEGAL y significa «bloque sin
 // título» (por eso es puntero y NO lleva omitempty: ausente, vacío y nulo son tres datos

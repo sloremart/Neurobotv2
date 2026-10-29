@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 )
 
@@ -250,5 +251,33 @@ func TestSummaryForAgent_ProcedureAndAppointmentProcedureDoNotCollide(t *testing
 	}
 	if v, _ := groupField(groups, "procedimiento", "cups_codigo"); v != "883141" {
 		t.Errorf("procedimiento.cups_codigo = %q", v)
+	}
+}
+
+// El grupo del resumen y el de nectar.FactGroup (que usan las notificaciones) son el MISMO cable.
+func TestSummaryGroupWireMatchesNectarFactGroup(t *testing.T) {
+	title := "Título"
+	for _, tc := range []struct {
+		name  string
+		group *summaryGroup
+		facts nectar.FactGroup
+	}{
+		{
+			"sin título", &summaryGroup{Key: "cita", Fields: []summaryField{{Key: "id", Label: "Cita", Value: "5"}, {Key: "x", Value: ""}}},
+			nectar.FactGroup{Key: "cita", Fields: []nectar.FactField{{Key: "id", Label: "Cita", Value: "5"}, {Key: "x"}}},
+		},
+		{
+			"con título y sin campos", &summaryGroup{Key: "g", Title: &title},
+			nectar.FactGroup{Key: "g", Title: &title},
+		},
+	} {
+		a, err1 := json.Marshal(tc.group)
+		b, err2 := json.Marshal(tc.facts)
+		if err1 != nil || err2 != nil {
+			t.Fatal(err1, err2)
+		}
+		if string(a) != string(b) {
+			t.Errorf("%s: %s != %s", tc.name, a, b)
+		}
 	}
 }

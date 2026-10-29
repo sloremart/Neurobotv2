@@ -385,3 +385,88 @@ func TestNotifEscalation_CarriesResolveLock(t *testing.T) {
 		t.Errorf("Bird no lleva candado: %q", esc.ResolveLock)
 	}
 }
+
+// notifFactsView es la sesión escalada de una notificación con los datos de la cita.
+func notifFactsView() *session.Session {
+	return &session.Session{Context: map[string]string{
+		"patient_name":         "Ana Pérez",
+		"notif_appointment_id": "555",
+		"notif_type":           "reminder",
+		"notif_appt_date":      "lunes 2 de noviembre",
+		"notif_appt_time":      "08:30",
+		"notif_cups_name":      "RADIOGRAFIA DE TORAX",
+		sm.CtxNotifCupsCode:    "883101",
+		"phone":                "+573001234567",
+	}}
+}
+
+// En Néctar v1 el sobre lleva los hechos de la cita y el equipo sugerido por el CUPS notificado.
+func TestNotifEscalation_NectarV1CarriesFactsAndTeam(t *testing.T) {
+	cfg := &config.Config{
+		ProtocolEscaladoVersion: config.ProtocolEscaladoV1,
+		NectarTeamByGroup:       map[string]int64{"imagenes": 7},
+	}
+	esc := notifEscalation(cfg, nectarPhone, notifFactsView(), "detalle", "resumen")
+
+	if esc.SuggestedTeamID == nil || *esc.SuggestedTeamID != 7 {
+		t.Fatalf("SuggestedTeamID = %v, quiero 7", esc.SuggestedTeamID)
+	}
+	var groups []nectar.FactGroup
+	if err := json.Unmarshal(esc.Facts, &groups); err != nil {
+		t.Fatalf("facts no es una lista de grupos: %v (%s)", err, esc.Facts)
+	}
+	byKey := map[string]nectar.FactGroup{}
+	for _, g := range groups {
+		byKey[g.Key] = g
+	}
+	cita, ok := byKey["cita"]
+	if !ok {
+		t.Fatalf("falta el grupo cita: %s", esc.Facts)
+	}
+	got := map[string]string{}
+	for _, f := range cita.Fields {
+		got[f.Key] = f.Value
+	}
+	want := map[string]string{
+		"id": "555", "fecha": "lunes 2 de noviembre", "hora": "08:30",
+		"procedimiento": "RADIOGRAFIA DE TORAX", "tipo_notificacion": "reminder",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("cita.%s = %q, quiero %q", k, got[k], v)
+		}
+	}
+	if p := byKey["paciente"]; len(p.Fields) != 1 || p.Fields[0].Key != "nombre" || p.Fields[0].Value != "Ana Pérez" {
+		t.Errorf("grupo paciente = %+v", p)
+	}
+	if strings.Contains(string(esc.Facts), "573001234567") {
+		t.Errorf("el teléfono no viaja en facts: %s", esc.Facts)
+	}
+}
+
+// Con v0 no hay facts, pero el equipo sugerido viaja igual (existe desde antes de v1).
+func TestNotifEscalation_V0NoFactsButTeam(t *testing.T) {
+	cfg := &config.Config{NectarTeamByGroup: map[string]int64{"imagenes": 7}}
+	esc := notifEscalation(cfg, nectarPhone, notifFactsView(), "detalle", "resumen")
+	if esc.Facts != nil {
+		t.Errorf("v0 no lleva facts: %s", esc.Facts)
+	}
+	if esc.SuggestedTeamID == nil || *esc.SuggestedTeamID != 7 {
+		t.Errorf("SuggestedTeamID = %v, quiero 7", esc.SuggestedTeamID)
+	}
+}
+
+// Bird conserva solo motivo y resumen.
+func TestNotifEscalation_BirdOnlySummary(t *testing.T) {
+	cfg := &config.Config{
+		ProtocolEscaladoVersion: config.ProtocolEscaladoV1,
+		NectarTeamByGroup:       map[string]int64{"imagenes": 7},
+	}
+	esc := notifEscalation(cfg, "+573001234567", notifFactsView(), "detalle", "resumen")
+	if esc.Facts != nil || esc.Input != nil || esc.SuggestedTeamID != nil {
+		t.Errorf("Bird no lleva extras: facts=%s input=%s team=%v", esc.Facts, esc.Input, esc.SuggestedTeamID)
+	}
+	if esc.Summary != "resumen" {
+		t.Errorf("Summary = %q", esc.Summary)
+	}
+}
