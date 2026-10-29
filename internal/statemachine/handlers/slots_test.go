@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -911,6 +912,34 @@ func TestAdvanceToNextProcedure_ClearsWaitingListEntryID(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("advanceToNextProcedure debe limpiar waiting_list_entry_id; ClearCtx=%v", res.ClearCtx)
+	}
+}
+
+// Lo que el grupo anterior dejó en la sesión no pasa al siguiente: la ventana de embarazo
+// (gestational_*) recortaba los cupos del nuevo procedimiento, la vigencia de la creatinina le
+// ponía el aviso de repetir el examen, el mapa de la sede era el del CUPS anterior y la marca de
+// la pregunta de semanas o la de «sin convenio al agendar» se saltaban su paso.
+func TestAdvanceToNextProcedure_ClearsGroupScopedKeys(t *testing.T) {
+	keys := []string{
+		"gestational_min_date", "gestational_max_date", "_prompted_weeks",
+		"gfr_exam_date", "gfr_creatinine_limit", "cups_maps_url", "coverage_from_booking",
+	}
+	sess := twoProcSession(sm.StateShowSlots)
+	for _, k := range keys {
+		sess.Context[k] = "stale"
+	}
+
+	res := advanceToNextProcedure(sess)
+	if res == nil {
+		t.Fatal("expected advance to next procedure, got nil")
+	}
+	for _, k := range keys {
+		if !slices.Contains(res.ClearCtx, k) {
+			t.Errorf("advanceToNextProcedure debe limpiar %s; ClearCtx=%v", k, res.ClearCtx)
+		}
+		if _, set := res.UpdateCtx[k]; set {
+			t.Errorf("%s no debe propagarse al siguiente grupo", k)
+		}
 	}
 }
 

@@ -361,11 +361,19 @@ var procedureGroupContextKeys = []string{
 	"is_contrasted", "is_sedated", "is_pregnant",
 	"gfr_creatinine", "gfr_height_cm", "gfr_weight_kg",
 	"gfr_disease_type", "gfr_calculated",
+	// Vigencia del examen de creatinina: sin borrarla, el grupo siguiente (aun sin contraste)
+	// recibía el aviso de repetir el examen al elegir horario.
+	"gfr_exam_date", "gfr_creatinine_limit",
+	// Ventana de embarazo de la ecografía obstétrica: sin borrarla, recortaba los cupos del
+	// siguiente procedimiento.
+	"gestational_min_date", "gestational_max_date",
 	"selected_slot_id", "available_slots_json", "slots_after_date",
 	"preferred_doctor_doc", "ocr_is_sedated", "ocr_is_contrasted",
-	"_prompted_contrast", "_prompted_sedation", "_prompted_pregnancy",
-	"cups_preparation", "cups_video_url", "cups_audio_url",
+	"_prompted_contrast", "_prompted_sedation", "_prompted_pregnancy", "_prompted_weeks",
+	"cups_preparation", "cups_video_url", "cups_audio_url", "cups_maps_url",
 	"alternative_cups_codes", "created_appointment_id",
+	// «Sin convenio» detectado al agendar el horario elegido de ESTE grupo.
+	"coverage_from_booking",
 	// La entrada de lista de espera pertenece al procedimiento ANTERIOR (el que se quedó sin
 	// slots); no debe propagarse al siguiente, o al agendarlo createAppointmentHandler marcaría
 	// esa entrada como 'scheduled' por error y la sacaría de la lista. Solo el flujo de
