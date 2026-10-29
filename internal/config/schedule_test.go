@@ -139,8 +139,22 @@ func TestBusinessHoursFromSchedule_DomingoYMedianoche(t *testing.T) {
 	if !bh.Open(sunday) || bh.Open(sunday.AddDate(0, 0, 1)) {
 		t.Error("abierto el domingo 23:59, cerrado el lunes a esa hora")
 	}
-	if got, want := bh.Describe(), "Domingos de 10:00 p.m. a 12:00 a.m."; got != want {
+	if got, want := bh.Describe(), "Domingos de 10:00 p.m. a medianoche"; got != want {
 		t.Errorf("Describe() = %q, want %q", got, want)
+	}
+}
+
+// El fin "24:00" se nombra «medianoche» (no «12:00 a.m.», que se lee como el inicio del día).
+func TestBusinessHoursDescribe_FinMedianoche(t *testing.T) {
+	bh, err := BusinessHoursFromSchedule(spec(ScheduleWindowSpec{Weekday: 1, From: "07:00", To: "24:00"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := bh.Describe(), "Lunes de 7:00 a.m. a medianoche"; got != want {
+		t.Errorf("Describe() = %q, want %q", got, want)
+	}
+	if got, want := bh.DescribeEmphasized(), "*Lunes de 7:00 a.m. a medianoche*"; got != want {
+		t.Errorf("DescribeEmphasized() = %q, want %q", got, want)
 	}
 }
 

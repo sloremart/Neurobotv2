@@ -309,10 +309,12 @@ func nameOf(d time.Weekday, plural bool) string {
 }
 
 // describeClock pasa los minutos a como los ha escrito el bot: 7:00 a.m., 6:00 p.m., 12:00 m.
-// (mediodía) y 12:00 a.m. (medianoche, el "24:00" de fin).
+// (mediodía) y «medianoche» para el "24:00" de fin («12:00 a.m.» se leería como el inicio del día).
 func describeClock(minute int) string {
 	h, m := (minute/60)%24, minute%60
 	switch {
+	case minute == 24*60:
+		return "medianoche"
 	case h == 12 && m == 0:
 		return "12:00 m."
 	case h < 12:
