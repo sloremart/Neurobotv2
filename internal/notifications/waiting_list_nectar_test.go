@@ -11,6 +11,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
 )
 
@@ -19,17 +20,20 @@ import (
 // de Néctar guarda "nectar:<id>" en phone_number: esa conversación ya no sirve días después, así que
 // el teléfono de la oferta sale de la ficha del paciente en SIESA.
 
-type keyedEvent struct{ phone, eventType string }
+type keyedEvent struct {
+	phone, eventType string
+	data             map[string]interface{}
+}
 
 type keyedEventLogger struct {
 	mu     sync.Mutex
 	events []keyedEvent
 }
 
-func (l *keyedEventLogger) LogEvent(_ context.Context, _, phone, eventType string, _ map[string]interface{}) {
+func (l *keyedEventLogger) LogEvent(_ context.Context, _, phone, eventType string, data map[string]interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.events = append(l.events, keyedEvent{phone: phone, eventType: eventType})
+	l.events = append(l.events, keyedEvent{phone: phone, eventType: eventType, data: data})
 }
 
 func (l *keyedEventLogger) find(eventType string) (keyedEvent, bool) {
@@ -182,5 +186,60 @@ func TestWaitingList_AgentOwnedRevertsToWaiting(t *testing.T) {
 	defer wl.mu.Unlock()
 	if wl.updatedStatus != "waiting" {
 		t.Fatalf("la entrada vuelve a 'waiting', got %q", wl.updatedStatus)
+	}
+}
+
+// Apertura en duda: la oferta pudo haber salido. La entrada queda 'notified' (la resuelve
+// ExpireStaleNotified como hoy), sin pending, sin reintento y con el evento notification_in_doubt.
+func TestWaitingList_InDoubtStaysNotified(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenErr: nectar.ErrOpenInDoubt}
+	mgr, wl, events, _ := nectarWLRig(t, bridge, wlEntry("+573005551234"))
+
+	if n := mgr.CheckWaitingListForCups(context.Background(), "890271"); n != 0 {
+		t.Fatalf("notificados = %d", n)
+	}
+	ev, ok := events.find("notification_in_doubt")
+	if !ok || ev.data["waiting_list_id"] != "wl-perm-1" {
+		t.Fatalf("falta el evento en duda: %+v", events.events)
+	}
+	if mgr.PendingCount() != 0 {
+		t.Fatal("sin pending")
+	}
+	if got := bridge.Opens(); len(got) != 1 {
+		t.Fatalf("una sola apertura: %v", got)
+	}
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+	if wl.notifiedID != "wl-perm-1" || wl.updatedStatus != "" {
+		t.Fatalf("la entrada queda 'notified' sin cambio de estado: notified=%q status=%q", wl.notifiedID, wl.updatedStatus)
+	}
+}
+
+// Un username/BSUID con el puente puesto: ErrNonContactable antes de abrir, y la entrada queda
+// 'unreachable' exactamente como con Bird hoy.
+func TestWaitingList_NectarNonE164Unreachable(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenID: 77}
+	mgr, wl, _, birdHits := nectarWLRig(t, bridge, wlEntry("laura.perez"))
+	mgr.CheckWaitingListForCups(context.Background(), "890271")
+	if got := bridge.Opens(); len(got) != 0 || birdHits.Load() != 0 {
+		t.Fatalf("ninguna llamada: opens=%v bird=%d", got, birdHits.Load())
+	}
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+	if wl.updatedStatus != "unreachable" {
+		t.Fatalf("esperaba 'unreachable', got %q", wl.updatedStatus)
+	}
+}
+
+// Puente sin canal de apertura (NECTAR_CHANNEL_ID=0): es configuración, no el paciente. La
+// entrada vuelve a 'waiting' para ofrecerse cuando el canal exista.
+func TestWaitingList_OpenNotConfiguredRevertsToWaiting(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenErr: nectar.ErrOpenNotConfigured}
+	mgr, wl, _, _ := nectarWLRig(t, bridge, wlEntry("+573005551234"))
+	mgr.CheckWaitingListForCups(context.Background(), "890271")
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+	if wl.updatedStatus != "waiting" {
+		t.Fatalf("esperaba 'waiting', got %q", wl.updatedStatus)
 	}
 }

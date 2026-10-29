@@ -11,6 +11,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/testutil"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
@@ -268,6 +269,54 @@ func TestMorningReengage_NectarFollowsWindow(t *testing.T) {
 		}
 		if birdPosts.Load() != 0 {
 			t.Errorf("Bird no recibe nada: %d", birdPosts.Load())
+		}
+	}
+}
+
+// Sin puente una clave "nectar:<id>" no es un destino: se salta como antes y Bird no ve nada
+// (ni la consulta de la ventana ni un envío por BSUID).
+func TestMorningReengage_NectarKeyWithoutBridgeSkipped(t *testing.T) {
+	var birdHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		birdHits.Add(1)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"m"}`))
+	}))
+	defer srv.Close()
+	birdClient := bird.NewClientForTest(srv.URL)
+	cfg := testConfig()
+	cfg.MorningReengageEnabled = true
+	recent := time.Now().Add(-1 * time.Hour)
+	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+	nm.SetWaitingListDeps(nil, &windowSessionStub{last: &recent}, nil) // la BD diría «abierta»
+	tasks := &Tasks{
+		BirdClient: birdClient, NotifyManager: nm, Cfg: cfg,
+		ReengageSource: reengageStub{phones: []string{"nectar:9"}},
+	}
+	if err := tasks.sendMorningReengagement(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := birdHits.Load(); n != 0 {
+		t.Fatalf("Bird no recibe nada: %d", n)
+	}
+}
+
+// Apertura en duda: la plantilla pudo salir. Evento notification_in_doubt, sin pending y sin
+// reintento (una sola apertura).
+func TestReminder_InDoubtNoPendingNoRetry(t *testing.T) {
+	for _, sameDay := range []bool{false, true} {
+		rig := newNectarReminderRig(t, &fakenectar.Bridge{OpenErr: nectar.ErrOpenInDoubt}, sameDay)
+		rig.run(t, sameDay)
+
+		ev, ok := rig.tracker.find("notification_in_doubt")
+		if !ok || ev.data["appointment_id"] != "apt-n1" || ev.phone != reminderPhone {
+			t.Fatalf("sameDay=%v: falta el evento en duda: %+v", sameDay, rig.tracker.events)
+		}
+		if rig.nm.PendingCount() != 0 {
+			t.Errorf("sameDay=%v: sin pending", sameDay)
+		}
+		if got := rig.bridge.Opens(); len(got) != 1 {
+			t.Errorf("sameDay=%v: una sola apertura, sin reintento: %v", sameDay, got)
 		}
 	}
 }

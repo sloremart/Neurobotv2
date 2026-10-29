@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -265,6 +266,8 @@ func TestOpenConversation_NoRetryOnDoubt(t *testing.T) {
 		{status: http.StatusBadGateway},
 		{status: http.StatusBadGateway, body: `<html>502 Bad Gateway</html>`},
 		{status: http.StatusBadGateway, body: `{"error":"x","reason":"algo_nuevo"}`},
+		// Un 504 de un proxy: la petición pudo llegar a Néctar y la plantilla salir.
+		{status: http.StatusGatewayTimeout},
 	}
 	for _, reply := range cases {
 		f := newFakeOpen(t, reply)
@@ -453,5 +456,37 @@ func TestSendProactiveTemplate_NoChannel(t *testing.T) {
 	}
 	if f.calls() != 0 || birdCalls != 0 {
 		t.Fatalf("ninguna llamada HTTP: néctar=%d bird=%d", f.calls(), birdCalls)
+	}
+}
+
+// Un fallo de transporte con la petición ya enviada (conexión cortada, timeout) está en duda: la
+// plantilla pudo salir. No se reintenta, ni aquí ni con otra clave en quien llama.
+func TestOpenConversation_TransportErrorIsInDoubt(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("sin hijacker")
+		}
+		conn, _, _ := hj.Hijack()
+		_ = conn.Close() // corta la conexión sin responder
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL, svcKey, reqSecret)
+	_, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+	if !errors.Is(err, ErrOpenInDoubt) || !bird.IsPermanentSendError(err) {
+		t.Fatalf("quiero ErrOpenInDoubt permanente, tengo %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("en duda NO se reintenta: %d llamadas", calls.Load())
+	}
+}
+
+// Sin configuración no sale nada: eso NO está en duda.
+func TestOpenConversation_NotConfiguredIsNotInDoubt(t *testing.T) {
+	_, err := NewClient("", "", "").OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+	if err == nil || errors.Is(err, ErrOpenInDoubt) {
+		t.Fatalf("sin configurar no hay duda: %v", err)
 	}
 }

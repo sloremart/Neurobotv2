@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // Plantillas PROACTIVAS: las que el bot manda sin que el paciente haya escrito (recordatorios, lista
@@ -84,6 +86,11 @@ func (c *Client) SendProactiveTemplate(ctx context.Context, phone string, tmpl T
 	}
 	if c.notifWADisabled {
 		return ProactiveSend{}, ErrWhatsAppNotificationsDisabled
+	}
+	// La apertura solo direcciona por teléfono: un username/BSUID se rechazaría con un 4xx. Se
+	// corta ANTES de cualquier llamada, con el mismo error que el gate E.164 de Bird.
+	if !utils.IsE164(phone) {
+		return ProactiveSend{}, ErrNonContactable
 	}
 	if !c.allowSend(phone) {
 		return ProactiveSend{}, ErrSendRateLimited

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"log/slog"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -23,6 +24,11 @@ func nectarBridgeFromConfig(cfg *config.Config) (*nectar.Client, bird.NectarBrid
 	}
 	bridge := nectar.NewBridge(client, cfg.NectarTemplateNames)
 	bridge.ChannelID = cfg.NectarChannelID
+	if bridge.ChannelID == 0 {
+		// El resto de Néctar funciona, pero sin canal de apertura el bot no puede iniciar
+		// conversaciones: cada plantilla proactiva fallaría en silencio. Que se vea al arrancar.
+		slog.Error("nectar: NECTAR_CHANNEL_ID sin configurar — los recordatorios, la lista de espera y los avisos administrativos NO van a salir")
+	}
 	return client, bridge, nil
 }
 

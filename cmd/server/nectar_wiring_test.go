@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -49,5 +52,31 @@ func TestNectarHealth(t *testing.T) {
 	}
 	if got := nectarHealth("https://nectar.colibrixa.com:8443/x?k=v"); got != "nectar.colibrixa.com" {
 		t.Errorf("host = %q", got)
+	}
+}
+
+// Puente puesto sin canal de apertura: arranca (el resto de Néctar funciona), pero lo dice en ERROR —
+// ninguna plantilla proactiva (recordatorios, lista de espera, avisos) va a salir.
+func TestNectarWiring_NoChannelLogsError(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	cfg := &config.Config{
+		NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
+	}
+	if _, b, err := nectarBridgeFromConfig(cfg); b == nil || err != nil {
+		t.Fatalf("sin canal el puente se arma igual: %v %v", b, err)
+	}
+	if out := buf.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "NECTAR_CHANNEL_ID") {
+		t.Fatalf("falta el error de arranque: %q", out)
+	}
+
+	buf.Reset()
+	cfg.NectarChannelID = 7
+	_, _, _ = nectarBridgeFromConfig(cfg)
+	if strings.Contains(buf.String(), "NECTAR_CHANNEL_ID") {
+		t.Fatalf("con canal no hay aviso: %q", buf.String())
 	}
 }

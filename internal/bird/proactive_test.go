@@ -182,3 +182,17 @@ func TestSendProactiveTemplate_SessionKeyUsesItsConversation(t *testing.T) {
 		t.Fatalf("sin apertura, plantilla a la 42: %+v", fb)
 	}
 }
+
+// Un identificador que no es E.164 (username/BSUID) no puede abrir por teléfono: ErrNonContactable
+// antes de cualquier llamada, ni a Néctar ni a Bird.
+func TestSendProactiveTemplate_NonE164NeverOpens(t *testing.T) {
+	c, fb, stub := newBridgedClient(t)
+	fb.openID = 77
+	_, err := c.SendProactiveTemplate(context.Background(), "laura.perez", proactiveTmpl)
+	if !errors.Is(err, ErrNonContactable) {
+		t.Fatalf("quiero ErrNonContactable, tengo %v", err)
+	}
+	if !fb.untouched() || len(stub.requests()) != 0 {
+		t.Fatalf("ninguna llamada: puente=%+v bird=%v", fb, stub.requests())
+	}
+}

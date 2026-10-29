@@ -11,6 +11,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -272,12 +273,20 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 		// Enviar; si falla TRANSITORIO se revierte a 'waiting' (el siguiente ciclo reintenta).
 		// Un fallo PERMANENTE (4xx de Bird / identificador no contactable) queda 'unreachable':
 		// devolverlo a 'waiting' sería pagar un envío condenado en cada ciclo, para siempre.
-		// El paciente conversando con un agente en Néctar es pasajero (envuelve ErrPermanentSend,
-		// pero no es «no contactable»): vuelve a 'waiting' y el próximo ciclo la ofrece de nuevo.
+		// En Néctar, tres errores envuelven ErrPermanentSend sin ser «no contactable»:
+		//   - el paciente conversando con un agente y el puente sin canal de apertura son pasajeros:
+		//     vuelve a 'waiting' y el próximo ciclo la ofrece de nuevo;
+		//   - la apertura EN DUDA (la oferta pudo salir) deja la entrada 'notified', sin tocarla:
+		//     la resuelve ExpireStaleNotified como a cualquier oferta sin respuesta. Su capacidad se
+		//     descuenta igual, por si el paciente la recibió.
 		if err := m.sendWaitingNotification(ctx, entry, trigger); err != nil {
+			if errors.Is(err, nectar.ErrOpenInDoubt) {
+				remaining -= entry.Espacios
+				continue
+			}
 			status := "waiting"
 			switch {
-			case errors.Is(err, bird.ErrConversationWithAgent):
+			case errors.Is(err, bird.ErrConversationWithAgent), errors.Is(err, nectar.ErrOpenNotConfigured):
 			case bird.IsPermanentSendError(err) || errors.Is(err, ErrSuppressedNoWhatsApp):
 				status = "unreachable"
 				slog.Warn("wl_check: entrada no contactable (fallo permanente, sin reintentos)",
@@ -436,6 +445,19 @@ func (m *NotificationManager) sendWaitingNotification(ctx context.Context, entry
 		}
 		observability.Emit(trace, "lista_espera", "skipped",
 			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "agent_owned"})
+		return err
+	}
+	if errors.Is(err, nectar.ErrOpenInDoubt) {
+		// La plantilla pudo haber salido: sin clave no hay pending, y no se reintenta (otra clave
+		// = oferta doble).
+		slog.Warn("wl_check: oferta en duda, la plantilla pudo haber salido (no se reintenta)",
+			"phone", utils.MaskPhone(entry.PhoneNumber), "entry_id", entry.ID, "error", err)
+		if m.tracker != nil {
+			m.tracker.LogEvent(ctx, "", entry.PhoneNumber, "notification_in_doubt",
+				map[string]interface{}{"type": "waiting_list", "waiting_list_id": entry.ID, "cups_code": entry.CupsCode})
+		}
+		observability.Emit(trace, "lista_espera", "notify_failed",
+			observability.EmitOpts{Phone: entry.PhoneNumber, Reason: "in_doubt"})
 		return err
 	}
 	if err != nil {

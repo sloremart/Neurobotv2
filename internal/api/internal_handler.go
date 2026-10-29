@@ -19,6 +19,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/logging"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
@@ -1371,7 +1372,7 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 
 			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", firstAppt.ID)
 			if err != nil {
-				if !errors.Is(err, bird.ErrConversationWithAgent) {
+				if !proactiveHandled(err) {
 					slog.Error("agenda confirmation: send failed", "phone", utils.MaskPhone(phone), "error", err)
 				}
 				skipped++
@@ -1525,7 +1526,7 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 
 				notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", firstAppt.ID)
 				if err != nil {
-					if !errors.Is(err, bird.ErrConversationWithAgent) {
+					if !proactiveHandled(err) {
 						slog.Error("send cancellation notification", "phone", utils.MaskPhone(phone), "error", err)
 					}
 					continue
@@ -1624,13 +1625,23 @@ type proactiveNotice struct {
 // respuesta del paciente. Con Néctar la plantilla ABRE la conversación y el pending queda bajo su
 // clave, con el teléfono del paciente en ContactPhone. Si el paciente ya conversa con un agente en
 // Néctar devuelve bird.ErrConversationWithAgent tras dejar el evento notification_skipped_agent_owned,
-// sin pending; cualquier otro error lo registra quien llama. RegisterPending no toma ctx → contextcheck.
+// sin pending. Una apertura EN DUDA (nectar.ErrOpenInDoubt: la plantilla pudo salir) deja el evento
+// notification_in_doubt, sin pending ni reintento. Cualquier otro error lo registra quien llama. RegisterPending no toma ctx → contextcheck.
 //
 //nolint:contextcheck
 func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone string, tmpl bird.TemplateConfig, notifType, apptID string) (proactiveNotice, error) {
 	// Sin cancelación: una apertura cortada a medias (cliente del dashboard que se va, timeout del
 	// lote) queda «en duda» y no se puede reintentar sin arriesgar una plantilla doble.
 	sent, err := h.birdClient.SendProactiveTemplate(context.WithoutCancel(ctx), phone, tmpl)
+	if errors.Is(err, nectar.ErrOpenInDoubt) {
+		slog.Warn("aviso en duda: la plantilla pudo haber salido, no se reintenta", //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
+			"type", notifType, "phone", utils.MaskPhone(phone), "appointment_id", apptID, "error", err)
+		if h.tracker != nil {
+			h.tracker.LogEvent(ctx, "", phone, "notification_in_doubt",
+				map[string]interface{}{"type": notifType, "appointment_id": apptID})
+		}
+		return proactiveNotice{}, err
+	}
 	if errors.Is(err, bird.ErrConversationWithAgent) {
 		slog.Info("aviso omitido: el paciente conversa con un agente en Néctar", //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
 			"type", notifType, "phone", utils.MaskPhone(phone), "appointment_id", apptID)
@@ -1649,6 +1660,12 @@ func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone str
 		AppointmentID: apptID, BirdMessageID: sent.MessageID, ConversationID: convID,
 	})
 	return proactiveNotice{MessageID: sent.MessageID, Key: sent.Key, ConversationID: convID}, nil
+}
+
+// proactiveHandled dice si sendTemplateAndRegister ya dejó constancia del error (agente dueño de la
+// conversación o apertura en duda): quien llama no lo registra otra vez como fallo.
+func proactiveHandled(err error) bool {
+	return errors.Is(err, bird.ErrConversationWithAgent) || errors.Is(err, nectar.ErrOpenInDoubt)
 }
 
 // sendCancellationTemplate envía la plantilla de cancelación al paciente. Devuelve true si se envió.
@@ -1670,7 +1687,7 @@ func (h *InternalHandler) sendCancellationTemplate(ctx context.Context, appt *do
 		},
 	}
 	if _, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", appt.ID); err != nil {
-		if !errors.Is(err, bird.ErrConversationWithAgent) {
+		if !proactiveHandled(err) {
 			slog.Error("dashboard notif", "type", "cancellation", "phone", utils.MaskPhone(phone), "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
 		}
 		return false
@@ -1800,6 +1817,10 @@ func (h *InternalHandler) HandleNotifyConfirmation(w http.ResponseWriter, r *htt
 	notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", appt.ID)
 	if errors.Is(err, bird.ErrConversationWithAgent) {
 		http.Error(w, "el paciente está conversando con un asesor", http.StatusConflict)
+		return
+	}
+	if errors.Is(err, nectar.ErrOpenInDoubt) {
+		http.Error(w, "la confirmación pudo haber salido; no reintentar", http.StatusConflict)
 		return
 	}
 	if err != nil {
@@ -2018,7 +2039,7 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 
 			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "reschedule", firstAppt.ID)
 			if err != nil {
-				if !errors.Is(err, bird.ErrConversationWithAgent) {
+				if !proactiveHandled(err) {
 					slog.Error("send reschedule notification", "phone", utils.MaskPhone(phone), "error", err)
 				}
 				continue

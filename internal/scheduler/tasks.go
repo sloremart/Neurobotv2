@@ -11,6 +11,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
@@ -267,6 +268,10 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 				t.skipAgentOwned(ctx, phone, "confirmation", firstAppt.ID)
 				continue
 			}
+			if errors.Is(err, nectar.ErrOpenInDoubt) {
+				t.logInDoubt(ctx, phone, "confirmation", firstAppt.ID, err)
+				continue
+			}
 			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
 			// En WARN para no disparar una alerta Telegram por cada paciente username en la
 			// corrida diaria; el conteo queda en el evento suppressed_no_whatsapp/funnel.
@@ -455,6 +460,10 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 				t.skipAgentOwned(ctx, phone, "confirmation_same_day", firstAppt.ID)
 				continue
 			}
+			if errors.Is(err, nectar.ErrOpenInDoubt) {
+				t.logInDoubt(ctx, phone, "confirmation_same_day", firstAppt.ID, err)
+				continue
+			}
 			slog.Error("same-day reminder send failed", "phone", utils.MaskPhone(phone), "error", err)
 			continue
 		}
@@ -545,6 +554,17 @@ func (t *Tasks) skipAgentOwned(ctx context.Context, phone, notifType, apptID str
 	}
 }
 
+// logInDoubt deja constancia de una apertura en Néctar EN DUDA: la plantilla pudo haber salido. No hay
+// clave de sesión, así que no se registra pending, y no se reintenta (otra clave = plantilla doble).
+func (t *Tasks) logInDoubt(ctx context.Context, phone, notifType, apptID string, err error) {
+	slog.Warn("notificación en duda: la plantilla pudo haber salido, no se reintenta",
+		"phone", utils.MaskPhone(phone), "type", notifType, "appointment_id", apptID, "error", err)
+	if t.Tracker != nil {
+		t.Tracker.LogEvent(ctx, "", phone, "notification_in_doubt",
+			map[string]interface{}{"type": notifType, "appointment_id": apptID})
+	}
+}
+
 // sendReminderPrep envia la preparacion como texto aparte tras la plantilla (la plantilla es fija).
 func (t *Tasks) sendReminderPrep(ctx context.Context, phone, convID, apptID string, group []domain.Appointment) {
 	prep := prepTextForGroup(ctx, group, t.ProcedureRepo)
@@ -588,8 +608,12 @@ func (t *Tasks) sendMorningReengagement(ctx context.Context) error {
 		if ph == "" || !t.Cfg.IsPhoneWhitelisted(ph) {
 			continue
 		}
-		if viaNectar && (t.NotifyManager == nil || !t.NotifyManager.WindowOpen(ctx, ph)) {
-			continue
+		// Solo Néctar contesta por su ventana: sin puente (ok=false) la clave no es un destino y se
+		// salta como antes, sin caer al camino de Bird.
+		if viaNectar {
+			if open, ok := t.BirdClient.NectarWindowOpen(ctx, ph); !ok || !open {
+				continue
+			}
 		}
 		convID := t.BirdClient.GetCachedConversationID(ph)
 		//nolint:contextcheck // cliente Bird sin ctx (patron existente)

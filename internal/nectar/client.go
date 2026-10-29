@@ -465,7 +465,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, in any) (rep
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return reply{}, fmt.Errorf("nectar: %s %s: %w", method, path, err)
+		return reply{}, fmt.Errorf("nectar: %s %s: %w", method, path, &transportError{err: err})
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -473,6 +473,13 @@ func (c *Client) exchange(ctx context.Context, method, path string, in any) (rep
 		"ms", time.Since(started).Milliseconds())
 	return reply{status: resp.StatusCode, header: resp.Header, body: raw}, nil
 }
+
+// transportError marca un fallo de la petición YA armada y lanzada (conexión cortada, timeout): a
+// diferencia de un error previo al envío, Néctar pudo recibirla. Es transparente para errors.Is/As.
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
 
 // do ejecuta una petición de las rutas de siempre y traduce los códigos del contrato a errores.
 // No reintenta NADA: el 404 significa «suelta el caso»; los 409 son instrucciones; y los

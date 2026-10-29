@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
 )
@@ -274,4 +276,26 @@ func TestRescheduleNotifications_NectarRegistersUnderKey(t *testing.T) {
 	}
 	waitFor(t, "notification_sent", func() bool { _, ok := rig.events.find("notification_sent"); return ok })
 	rig.assertNectarPending(t, "reschedule")
+}
+
+// Apertura en duda: la confirmación pudo haber salido. 409 que lo dice (no el 502 genérico, que
+// invita a reintentar), evento notification_in_doubt y ningún pending.
+func TestNotifyConfirmation_InDoubtIs409NoRetry(t *testing.T) {
+	bridge := &fakenectar.Bridge{OpenErr: nectar.ErrOpenInDoubt}
+	rig := newAdminRig(t, bridge, &mockApptRepoAPI{findByIDFn: findA1})
+
+	rec := notifyConfirmationRequest(rig)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "no reintentar") {
+		t.Fatalf("status %d cuerpo %q, esperaba 409 «no reintentar»", rec.Code, rec.Body.String())
+	}
+	ev, ok := rig.events.find("notification_in_doubt")
+	if !ok || ev.data["appointment_id"] != "A1" || ev.data["type"] != "confirmation" {
+		t.Fatalf("evento en duda: %+v", rig.events.events)
+	}
+	if rig.nm.PendingCount() != 0 {
+		t.Fatal("sin pending")
+	}
+	if got := bridge.Opens(); len(got) != 1 {
+		t.Fatalf("una sola apertura: %v", got)
+	}
 }

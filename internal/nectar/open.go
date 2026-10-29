@@ -3,6 +3,7 @@ package nectar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -23,7 +24,8 @@ import (
 
 var (
 	// ErrOpenInDoubt dice que no se sabe si la plantilla salió, o salió y Néctar no dejó el hilo
-	// (409 attempt_in_doubt / attempt_sent_unrecorded, 502 meta_no_answer / sent_but_not_recorded).
+	// (409 attempt_in_doubt / attempt_sent_unrecorded, todo 502, el 504 y un fallo de transporte
+	// con la petición ya enviada).
 	// NO SE REINTENTA, ni con la misma clave ni con otra: podría llegarle dos veces al paciente.
 	ErrOpenInDoubt = fmt.Errorf("nectar: apertura en duda, la plantilla pudo haber salido: %w", bird.ErrPermanentSend)
 	// ErrTemplateRejected dice que la plantilla no sirve tal como se pidió (400 template_parameters,
@@ -87,8 +89,14 @@ func (c *Client) OpenConversation(ctx context.Context, channelID int64, to OpenR
 	}
 	for attempt := 0; ; attempt++ {
 		resp, err := c.exchange(ctx, http.MethodPost, openPath, req)
+		var transport *transportError
+		if errors.As(err, &transport) {
+			// La petición salió y no hubo respuesta: Néctar pudo abrir y mandar la plantilla. En
+			// duda — no se reintenta aquí ni, con otra clave, en quien llama (costo primero).
+			return Opened{}, fmt.Errorf("%w (%w)", ErrOpenInDoubt, err)
+		}
 		if err != nil {
-			// Fallo de transporte: no se reintenta aquí (la regla solo admite el 503).
+			// Antes de enviar (sin configurar, cuerpo inválido): nada salió.
 			return Opened{}, err
 		}
 		wait, retry := openRetryAfter(resp)
@@ -162,6 +170,9 @@ func decodeOpen(resp reply) (Opened, error) {
 		// Néctar incluido): la plantilla pudo llegar a Meta, y un reintento de quien llama acuñaría
 		// otra clave y Néctar mandaría una SEGUNDA plantilla.
 		return Opened{}, fmt.Errorf("%w (502 %q)", ErrOpenInDoubt, reason)
+	case http.StatusGatewayTimeout:
+		// El 504 de un proxy delante de Néctar: la petición pudo llegar y la plantilla salir.
+		return Opened{}, fmt.Errorf("%w (504)", ErrOpenInDoubt)
 	}
 	// 4xx con otro motivo (channel_inactive, phone_invalid…) es un defecto de configuración o del
 	// cuerpo: permanente. 5xx sin motivo conocido (503 agotado incluido) se deja transitorio.
