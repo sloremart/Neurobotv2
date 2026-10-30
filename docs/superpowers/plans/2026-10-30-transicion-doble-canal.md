@@ -130,3 +130,28 @@ Contenido de la guía (para alguien del equipo, paso a paso, en español):
 - [ ] **Step 1: Escribir la guía, verificando cada afirmación contra el código.**
 - [ ] **Step 2: CLAUDE.md y .env.example.**
 - [ ] **Step 3: Commit** `docs(transicion): guía para volver a Bird y variables nuevas`
+
+### Task 6: Con el puente apagado, una conversación de Néctar no toca Bird ni se procesa
+
+Añadida por el controlador (Ruling 2 del ledger): al volver a Bird (`NECTAR_BASE_URL` vacía) las claves `nectar:*`
+siguen llegando a Bird — `sendViaBsuid` hace un PATCH upsert de contacto con `whatsappusername=nectar:<id>`
+(`internal/bird/bsuid.go:52`), `CreateConversationForPhone` crea y asigna una conversación de Bird
+(`internal/bird/client.go:631`), y `POST /api/webhooks/nectar` sigue procesando avisos (`cmd/server/main.go:583`): el
+bot puede confirmar en SIESA y no tiene cómo contestar.
+
+**Files:**
+- Modify: `internal/bird/nectar_bridge.go` (y los métodos de `client.go`/`proactive.go` que hoy caen al camino de Bird con una clave `nectar:*` sin puente)
+- Modify: `internal/api/nectar_handler.go` (`HandleNectarNotice`), cableado en `cmd/server/main.go`
+- Test: `internal/bird/nectar_bridge_test.go`, `internal/api/*nectar*_test.go`
+
+**Interfaces:**
+- Produces: `bird.ErrNectarBridgeOff` — envuelve `bird.ErrPermanentSend` (quien llama ya suprime reintentos ante un permanente). Todo método de `bird.Client` que reciba una clave con prefijo `nectar:` y `c.nectar == nil` devuelve `ErrNectarBridgeOff` (o el cero/false que corresponda en los que no devuelven error) SIN ninguna petición HTTP a Bird. Un solo predicado decide (junto a `nectarConversation`), no una copia por método.
+- `HandleNectarNotice` con el puente apagado: responde `503 {"error":"bridge_off"}` sin verificar más ni procesar ni escribir en el WAL, y loguea Warn una vez por aviso (sin PII). Con el puente encendido, igual que hoy. El handler conoce el estado del puente por inyección (como `SetAgentsInNectar`).
+- El replay del WAL de filas de Néctar ya guardadas, con el puente apagado: sus respuestas caen en `ErrNectarBridgeOff`; documentar en el reporte qué ocurre (no se cambia el replay).
+- No cambia nada para claves `+57…` ni con el puente encendido.
+
+- [ ] **Step 1: Tests que fallan** — puente nil + clave `nectar:55`: cada método de `bird.Client` con rama Néctar (la misma lista de 15 de `TestBirdSessionNeverTouchesNectarWithBridgeOn`, más `SendProactiveTemplate` con clave `nectar:55`) hace CERO peticiones al stub de Bird y, los que devuelven error, devuelven un error con `errors.Is(err, bird.ErrNectarBridgeOff)` y `bird.IsPermanentSendError(err)`. Clave `+573001112233` con puente nil: va a Bird como hoy. Handler: puente apagado → 503 `bridge_off`, nada en el WAL ni en el pool; puente encendido → camino de hoy.
+- [ ] **Step 2: Correrlos y ver que fallan.**
+- [ ] **Step 3: Implementar.**
+- [ ] **Step 4: Paquetes tocados verdes, `-race` en `./internal/bird/...`, suite completa con solo la línea base.**
+- [ ] **Step 5: Commit** `fix(transicion): sin puente, una conversación de Néctar no toca Bird ni se procesa`
