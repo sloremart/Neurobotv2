@@ -128,3 +128,18 @@ func TestResolveOutboundWebhookSecret_Fallback(t *testing.T) {
 		t.Errorf("expected main-secret (fallback), got %s", got)
 	}
 }
+
+// --- NEW_LINE_ANNOUNCEMENT ---
+
+// El anuncio de la línea nueva se toma tal cual, sin los espacios de alrededor (vacía = apagado).
+func TestNewLineAnnouncement_Trimmed(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("NEW_LINE_ANNOUNCEMENT", "  Escríbenos a la línea nueva.\n ")
+	if got := Load().NewLineAnnouncement; got != "Escríbenos a la línea nueva." {
+		t.Errorf("NewLineAnnouncement = %q", got)
+	}
+	t.Setenv("NEW_LINE_ANNOUNCEMENT", "   ")
+	if got := Load().NewLineAnnouncement; got != "" {
+		t.Errorf("solo espacios debe quedar vacía, got %q", got)
+	}
+}

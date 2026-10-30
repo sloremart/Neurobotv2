@@ -835,3 +835,103 @@ func TestHelpText_PublishedHours(t *testing.T) {
 		t.Errorf("la guía nombra el horario publicado: %q", got)
 	}
 }
+
+// ==================== Anuncio de la línea nueva ====================
+
+// Mientras conviven las dos líneas, los saludos de la línea de Bird anuncian la nueva
+// (NEW_LINE_ANNOUNCEMENT) con un texto ANTES del menú; el coalescer lo fusiona al body si cabe.
+
+const testAnnouncement = "Pronto te atenderemos por nuestra nueva línea de WhatsApp."
+
+func announcementConfig(text string) *config.Config {
+	cfg := sampleConfig()
+	cfg.NewLineAnnouncement = text
+	return cfg
+}
+
+// runGreetingState corre GREETING u OUT_OF_HOURS con la sesión dada y devuelve sus mensajes.
+func runGreetingState(t *testing.T, cfg *config.Config, state, phone string, ctxKV ...string) []sm.OutboundMessage {
+	t.Helper()
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, cfg, nil)
+	sess := testSess(state)
+	sess.PhoneNumber = phone
+	for i := 0; i+1 < len(ctxKV); i += 2 {
+		sess.Context[ctxKV[i]] = ctxKV[i+1]
+	}
+	result, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.Messages
+}
+
+func assertAnnouncementThenList(t *testing.T, msgs []sm.OutboundMessage) {
+	t.Helper()
+	if len(msgs) != 2 {
+		t.Fatalf("esperaba [TextMessage, ListMessage], got %d mensajes", len(msgs))
+	}
+	txt, ok := msgs[0].(*sm.TextMessage)
+	if !ok || txt.Text != testAnnouncement {
+		t.Fatalf("el primer mensaje debe ser el anuncio, got %#v", msgs[0])
+	}
+	if _, ok := msgs[1].(*sm.ListMessage); !ok {
+		t.Fatalf("el segundo mensaje debe ser el menú, got %T", msgs[1])
+	}
+}
+
+func assertOnlyList(t *testing.T, msgs []sm.OutboundMessage) {
+	t.Helper()
+	if len(msgs) != 1 {
+		t.Fatalf("esperaba solo el menú, got %d mensajes", len(msgs))
+	}
+	if _, ok := msgs[0].(*sm.ListMessage); !ok {
+		t.Fatalf("esperaba ListMessage, got %T", msgs[0])
+	}
+}
+
+func TestNewLineAnnouncement_BirdSession(t *testing.T) {
+	cfg := announcementConfig(testAnnouncement)
+	assertAnnouncementThenList(t, runGreetingState(t, cfg, sm.StateGreeting, "+573001112233"))
+	assertAnnouncementThenList(t, runGreetingState(t, cfg, sm.StateOutOfHours, "+573001112233"))
+}
+
+func TestNewLineAnnouncement_NectarSessionUnchanged(t *testing.T) {
+	cfg := announcementConfig(testAnnouncement)
+	assertOnlyList(t, runGreetingState(t, cfg, sm.StateGreeting, "nectar:55"))
+	assertOnlyList(t, runGreetingState(t, cfg, sm.StateOutOfHours, "nectar:55"))
+}
+
+func TestNewLineAnnouncement_EmptyUnchanged(t *testing.T) {
+	cfg := announcementConfig("")
+	assertOnlyList(t, runGreetingState(t, cfg, sm.StateGreeting, "+573001112233"))
+	assertOnlyList(t, runGreetingState(t, cfg, sm.StateOutOfHours, "+573001112233"))
+}
+
+func TestNewLineAnnouncement_PostConfirmedSkips(t *testing.T) {
+	cfg := announcementConfig(testAnnouncement)
+	assertOnlyList(t, runGreetingState(t, cfg, sm.StateGreeting, "+573001112233", "post_confirmed", "1"))
+}
+
+// Con la bienvenida real: un anuncio de 300 runas cabe en el body del menú (1 envío); uno de 600
+// pasa el tope interactivo y quedan dos mensajes.
+func TestNewLineAnnouncement_CoalescedWithRealWelcome(t *testing.T) {
+	for _, tc := range []struct {
+		runes int
+		want  int
+	}{{300, 1}, {600, 2}} {
+		announcement := strings.Repeat("a", tc.runes)
+		msgs := runGreetingState(t, announcementConfig(announcement), sm.StateGreeting, "+573001112233")
+		out := sm.CoalesceMessages(msgs)
+		if len(out) != tc.want {
+			t.Fatalf("anuncio de %d runas: esperaba %d mensajes, got %d", tc.runes, tc.want, len(out))
+		}
+		if tc.want == 1 {
+			lst, ok := out[0].(*sm.ListMessage)
+			if !ok || !strings.HasPrefix(lst.Body, announcement+"\n\n") ||
+				!strings.HasSuffix(lst.Body, "¿En qué puedo ayudarte hoy?") {
+				t.Fatalf("el body debe empezar con el anuncio y conservar la bienvenida: %#v", out[0])
+			}
+		}
+	}
+}

@@ -237,6 +237,10 @@ type Config struct {
 	// Testing whitelist — only these phones can interact with the bot (empty = all allowed)
 	TestingWhitelistPhones []string
 
+	// NewLineAnnouncement (NEW_LINE_ANNOUNCEMENT): mientras conviven las dos líneas, el texto con
+	// el que los saludos de la línea de Bird anuncian la nueva. Vacía = apagado (saludo de siempre).
+	NewLineAnnouncement string
+
 	// Scaling — configurable pool sizes and DB connections for load profiles
 	ScalingProfile    string // "normal" or "high-load" (informational, for monitoring alerts)
 	WorkerPoolSize    int    // Worker goroutines (default 10)
@@ -410,6 +414,9 @@ func Load() *Config {
 
 		// Testing whitelist
 		TestingWhitelistPhones: parsePhoneList(os.Getenv("TESTING_WHITELIST_PHONES")),
+
+		// Transición de líneas
+		NewLineAnnouncement: strings.TrimSpace(os.Getenv("NEW_LINE_ANNOUNCEMENT")),
 
 		// Scaling
 		ScalingProfile:       getEnv("SCALING_PROFILE", "normal"),

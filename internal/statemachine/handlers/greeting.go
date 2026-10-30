@@ -212,7 +212,11 @@ func outOfHoursHandler(cfg *config.Config) sm.StateHandler {
 			"Podrás ejercer tus derechos de acceso, rectificación o supresión en cualquier momento.",
 			cfg.BotName, cfg.CenterName)
 
-		return sm.NewResult(sm.StateOutOfHoursMenu).
+		r := sm.NewResult(sm.StateOutOfHoursMenu)
+		if announcement := announcementFor(cfg, sess); announcement != "" {
+			r.WithText(announcement)
+		}
+		return r.
 			WithList(welcomeText+"\n\n¿En qué puedo ayudarte hoy?", "Ver opciones",
 				sm.ListSection{
 					Title: "Opciones disponibles",
@@ -306,6 +310,16 @@ func buildLocationsText(ctx context.Context, locationRepo LocationReader) string
 	return "Actualmente no tenemos sedes configuradas. Comunícate con un agente para más información."
 }
 
+// announcementFor es el anuncio de la línea nueva para el saludo de esta sesión: solo en la línea
+// de Bird (en la de Néctar el paciente ya está en la línea nueva) y solo con NEW_LINE_ANNOUNCEMENT
+// puesta. Va como texto ANTES del menú; CoalesceMessages lo antepone al body si cabe.
+func announcementFor(cfg *config.Config, sess *session.Session) string {
+	if cfg.NewLineAnnouncement == "" || session.IsNectarSession(sess.PhoneNumber) {
+		return ""
+	}
+	return cfg.NewLineAnnouncement
+}
+
 // GREETING (automático) — envía bienvenida + lista del menú (5 opciones Bird V2).
 // Si la sesión tiene post_confirmed=1 (paciente que acaba de confirmar cita vía notificación),
 // se omite el texto de privacidad y se muestra solo el menú principal.
@@ -325,6 +339,9 @@ func greetingHandler(cfg *config.Config) sm.StateHandler {
 				"Podrás ejercer tus derechos de acceso, rectificación o supresión en cualquier momento.",
 				cfg.BotName, cfg.CenterName)
 			list.Body = welcomeText + "\n\n" + list.Body
+			if announcement := announcementFor(cfg, sess); announcement != "" {
+				r.WithText(announcement)
+			}
 		}
 
 		r.Messages = append(r.Messages, list)
