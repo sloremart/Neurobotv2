@@ -59,6 +59,9 @@ type Client struct {
 	// sleep es la espera entre reintentos de la apertura (503 con Retry-After). Inyectable para
 	// que las pruebas no duerman; respeta el contexto.
 	sleep func(ctx context.Context, d time.Duration) error
+	// urgent cuenta los fallos de Néctar para el aviso urgente de volver a Bird (urgent.go); nil = sin aviso.
+	urgent       UrgentReporter
+	urgentLimits UrgentLimits
 }
 
 // NewClient arma el cliente de las rutas /api/bot/* de Néctar. baseURL es la raíz pública (se le
@@ -393,6 +396,7 @@ func (c *Client) Escalate(ctx context.Context, conversationID int64, esc Escalat
 	var out EscalateResult
 	err := c.do(ctx, http.MethodPost, c.convPath(conversationID, "escalate"),
 		escalateBody(esc, suggestedTeamID), &out)
+	c.reportEscalation(ctx, err)
 	return out, err
 }
 
@@ -478,9 +482,13 @@ func (c *Client) exchangeWithHeaders(ctx context.Context, method, path string, i
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.reportDown(ctx, method, path, "transporte: "+err.Error())
 		return reply{}, fmt.Errorf("nectar: %s %s: %w", method, path, &transportError{err: err})
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 500 {
+		c.reportDown(ctx, method, path, fmt.Sprintf("status %d", resp.StatusCode))
+	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	slog.Debug("nectar: llamada", "method", method, "path", path, "status", resp.StatusCode,
 		"ms", time.Since(started).Milliseconds())

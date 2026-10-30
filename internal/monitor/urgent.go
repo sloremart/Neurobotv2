@@ -1,0 +1,131 @@
+package monitor
+
+import (
+	"context"
+	"fmt"
+	"html"
+	"log/slog"
+	"sync"
+	"time"
+)
+
+// Aviso URGENTE de la transición Bird → Néctar: cuando Néctar o la línea nueva fallan, una persona
+// tiene que devolver el bot a Bird a mano (NECTAR_BASE_URL vacía + reinicio) siguiendo la guía.
+// Es un mensaje PROPIO a Telegram, aparte de los errores comunes: NO pasa por slog.Error, porque el
+// AlertHandler los agrupa con su enfriamiento y este aviso quedaría tapado entre ellos.
+
+// UrgentTrigger es el motivo del aviso urgente; cada uno lleva su propio enfriamiento.
+type UrgentTrigger string
+
+const (
+	// TriggerNectarDown son fallos de transporte o 5xx de Néctar seguidos en una ventana corta.
+	TriggerNectarDown UrgentTrigger = "nectar_down"
+	// TriggerProactiveStopped es una corrida de plantillas proactivas se detuvo por configuración.
+	TriggerProactiveStopped UrgentTrigger = "proactive_stopped"
+	// TriggerRemindersUnsent es una corrida de recordatorios dejó demasiados sin enviar o en duda.
+	TriggerRemindersUnsent UrgentTrigger = "reminders_unsent"
+	// TriggerEscalationFailing son las escalaciones a Néctar fallan seguidas.
+	TriggerEscalationFailing UrgentTrigger = "escalation_failing"
+)
+
+// urgentTriggerLabels es lo que lee la persona de turno para cada disparador.
+var urgentTriggerLabels = map[UrgentTrigger]string{
+	TriggerNectarDown:        "Néctar no responde",
+	TriggerProactiveStopped:  "Plantillas proactivas detenidas por configuración",
+	TriggerRemindersUnsent:   "Recordatorios sin enviar por encima del umbral",
+	TriggerEscalationFailing: "Escalaciones a Néctar fallando",
+}
+
+// UrgentAlerter manda el aviso urgente. Por disparador, a lo sumo un aviso por cooldown: mientras
+// el problema siga, se repite cada cooldown. Un receptor nil no hace nada (Telegram sin configurar o
+// puente de Néctar apagado).
+type UrgentAlerter struct {
+	send      func(ctx context.Context, text string) error
+	guidePath string
+	cooldown  time.Duration
+	now       func() time.Time
+
+	mu        sync.Mutex
+	lastFired map[UrgentTrigger]time.Time
+	hits      map[UrgentTrigger][]time.Time // ocurrencias de Count dentro de la ventana
+}
+
+// NewUrgentAlerter arma el aviso. send es el envío directo a Telegram (tg.Client.SendMessage),
+// guidePath la ruta de la guía de vuelta a Bird y now el reloj (inyectable para las pruebas).
+func NewUrgentAlerter(send func(ctx context.Context, text string) error, guidePath string,
+	cooldown time.Duration, now func() time.Time,
+) *UrgentAlerter {
+	return &UrgentAlerter{
+		send:      send,
+		guidePath: guidePath,
+		cooldown:  cooldown,
+		now:       now,
+		lastFired: map[UrgentTrigger]time.Time{},
+		hits:      map[UrgentTrigger][]time.Time{},
+	}
+}
+
+// Fire manda el aviso del disparador salvo que ya haya salido uno dentro del enfriamiento.
+// El envío no hereda la cancelación de quien dispara: una petición vencida por tiempo es justo la
+// señal que se avisa (el cliente de Telegram tiene su propio timeout).
+func (a *UrgentAlerter) Fire(ctx context.Context, trigger UrgentTrigger, detail string) {
+	if a == nil {
+		return
+	}
+	now := a.now()
+	a.mu.Lock()
+	if last, ok := a.lastFired[trigger]; ok && now.Sub(last) < a.cooldown {
+		a.mu.Unlock()
+		return
+	}
+	a.lastFired[trigger] = now
+	a.mu.Unlock()
+
+	slog.Warn("aviso urgente: volver a Bird", "trigger", string(trigger), "detail", detail)
+	if err := a.send(context.WithoutCancel(ctx), a.message(trigger, detail, now)); err != nil {
+		// Warn y no Error: un Error subiría a Telegram por el AlertHandler, que es lo que acaba de fallar.
+		slog.Warn("aviso urgente: falló el envío a Telegram", "trigger", string(trigger), "error", err)
+	}
+}
+
+// Count suma una ocurrencia del disparador y, si en la ventana deslizante hay threshold o más, llama
+// a Fire (que aplica el enfriamiento) con cuántas fueron y desde cuándo.
+func (a *UrgentAlerter) Count(ctx context.Context, trigger UrgentTrigger, threshold int, window time.Duration, detail string) {
+	if a == nil {
+		return
+	}
+	now := a.now()
+	a.mu.Lock()
+	kept := a.hits[trigger][:0]
+	for _, at := range a.hits[trigger] {
+		if now.Sub(at) < window {
+			kept = append(kept, at)
+		}
+	}
+	kept = append(kept, now)
+	a.hits[trigger] = kept
+	count, since := len(kept), kept[0]
+	a.mu.Unlock()
+
+	if count < threshold {
+		return
+	}
+	a.Fire(ctx, trigger, fmt.Sprintf("%d en los últimos %s (desde las %s); %s",
+		count, window, since.Format("15:04:05"), detail))
+}
+
+// message arma el texto (HTML de Telegram; el detalle se escapa). Sin PII: los llamadores no ponen
+// teléfonos en el detalle.
+func (a *UrgentAlerter) message(trigger UrgentTrigger, detail string, at time.Time) string {
+	label := urgentTriggerLabels[trigger]
+	if label == "" {
+		label = string(trigger)
+	}
+	return fmt.Sprintf("🚨 <b>URGENTE — volver a Bird</b>\n\n"+
+		"Disparador: <b>%s</b> (<code>%s</code>)\n"+
+		"Detalle: %s\n"+
+		"Hora: %s\n\n"+
+		"Guía: <code>%s</code>",
+		html.EscapeString(label), trigger, html.EscapeString(detail),
+		at.Format("2006-01-02 15:04:05"), html.EscapeString(a.guidePath))
+}

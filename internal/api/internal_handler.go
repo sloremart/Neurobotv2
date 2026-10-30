@@ -19,6 +19,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/logging"
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
@@ -150,12 +151,22 @@ type InternalHandler struct {
 	cupsMedico      CupsMedicoReader     // optional: cups_medico reader for the conciliación cross
 	patientRepo     PatientReader        // optional: resolver teléfono/nombre del paciente al notificar
 	agentsInNectar  bool                 // puente de Néctar cableado y AGENTS_SOURCE=nectar: los agentes viven allá
+	urgent          UrgentReporter       // optional: aviso urgente de volver a Bird (nil = sin aviso)
 }
 
 // SetAgentsInNectar marca que los agentes viven en Néctar: main lo enciende solo si el puente se
 // armó Y AGENTS_SOURCE=nectar. NECTAR_BASE_URL puesta sin puente completo NO cuenta (el bot sigue
 // en Bird), y el puente solo tampoco (en la transición la mayoría de agentes sigue en Bird).
 func (h *InternalHandler) SetAgentsInNectar(v bool) { h.agentsInNectar = v }
+
+// UrgentReporter es el aviso urgente de volver a Bird (monitor.UrgentAlerter): los lotes de avisos
+// administrativos lo disparan cuando se detienen por configuración de Néctar.
+type UrgentReporter interface {
+	Fire(ctx context.Context, trigger monitor.UrgentTrigger, detail string)
+}
+
+// SetUrgentReporter inyecta el aviso urgente (opcional: main lo cablea solo con Telegram y el puente).
+func (h *InternalHandler) SetUrgentReporter(r UrgentReporter) { h.urgent = r }
 
 // PatientReader resuelve datos del paciente (teléfono/nombre) por su id (autoid), para las
 // notificaciones individuales del módulo Agenda. Lo inyecta SetPatientReader.
@@ -1373,7 +1384,7 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 			}
 
 			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", firstAppt.ID)
-			if stopOnProactiveConfig("agenda_confirmations", err, len(patients)-visited+1) {
+			if h.stopOnProactiveConfig(ctx, "agenda_confirmations", err, len(patients)-visited+1) {
 				break
 			}
 			if err != nil {
@@ -1531,7 +1542,7 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 				}
 
 				notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", firstAppt.ID)
-				if stopOnProactiveConfig("agenda_cancellation", err, len(patients)-visited+1) {
+				if h.stopOnProactiveConfig(ctx, "agenda_cancellation", err, len(patients)-visited+1) {
 					break
 				}
 				if err != nil {
@@ -1673,12 +1684,16 @@ func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone str
 
 // stopOnProactiveConfig dice si un lote de avisos tiene que DETENERSE: el error es de configuración
 // de Néctar (clave, plantilla, canal) y fallaría igual con cada paciente que queda. Deja el único
-// error del lote, con cuántos quedaron sin enviar (unsent cuenta al paciente en el que se detuvo).
-func stopOnProactiveConfig(run string, err error, unsent int) bool {
+// error del lote, con cuántos quedaron sin enviar (unsent cuenta al paciente en el que se detuvo), y
+// dispara el aviso urgente de volver a Bird.
+func (h *InternalHandler) stopOnProactiveConfig(ctx context.Context, run string, err error, unsent int) bool {
 	if !bird.IsProactiveConfigError(err) {
 		return false
 	}
 	bird.LogProactiveConfigStop(run, err, unsent)
+	if h.urgent != nil {
+		h.urgent.Fire(ctx, monitor.TriggerProactiveStopped, bird.ProactiveConfigStopDetail(run, err, unsent))
+	}
 	return true
 }
 
@@ -2059,7 +2074,7 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 			}
 
 			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "reschedule", firstAppt.ID)
-			if stopOnProactiveConfig("agenda_reschedule", err, len(patients)-visited+1) {
+			if h.stopOnProactiveConfig(ctx, "agenda_reschedule", err, len(patients)-visited+1) {
 				break
 			}
 			if err != nil {

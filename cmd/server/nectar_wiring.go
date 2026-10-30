@@ -3,10 +3,13 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	tg "github.com/neuro-bot/neuro-bot/internal/telegram"
 )
 
 // nectarBridgeFromConfig arma el cliente y el puente de Néctar desde la configuración.
@@ -39,4 +42,27 @@ func nectarHealth(baseURL string) string {
 		return h
 	}
 	return "none"
+}
+
+// urgentGuidePath es la guía que sigue la persona de turno para devolver el bot a Bird.
+const urgentGuidePath = "docs/GUIA-VOLVER-A-BIRD.md"
+
+// wireUrgentAlerter arma el aviso urgente de volver a Bird y lo cablea en el cliente de Néctar
+// (fallos de transporte/5xx y escalados). Solo con Telegram configurado Y el puente encendido
+// (bridgeClient nil = puente apagado): sin puente no hay a qué volver. Devuelve nil en otro caso,
+// y quien lo recibe no avisa nada. El envío va directo a Telegram, NO por slog.Error (el
+// AlertHandler lo agruparía con los errores comunes).
+func wireUrgentAlerter(cfg *config.Config, tgClient *tg.Client, bridgeClient *nectar.Client) *monitor.UrgentAlerter {
+	if tgClient == nil || bridgeClient == nil {
+		return nil
+	}
+	urgent := monitor.NewUrgentAlerter(tgClient.SendMessage, urgentGuidePath,
+		time.Duration(cfg.UrgentAlertCooldownMin)*time.Minute, time.Now)
+	bridgeClient.SetUrgentReporter(urgent, nectar.UrgentLimits{
+		DownCount:            cfg.UrgentNectarDownCount,
+		DownWindow:           time.Duration(cfg.UrgentNectarDownWindowMin) * time.Minute,
+		EscalationFailCount:  cfg.UrgentEscalationFailCount,
+		EscalationFailWindow: time.Duration(cfg.UrgentEscalationFailWindowMin) * time.Minute,
+	})
+	return urgent
 }

@@ -68,6 +68,13 @@ func LogProactiveConfigStop(run string, err error, unsent int) {
 		"run", run, "error", err, "unsent", unsent)
 }
 
+// ProactiveConfigStopDetail es el detalle del aviso urgente de volver a Bird que el llamador de
+// LogProactiveConfigStop dispara (el aviso no vive aquí: este paquete no conoce al alerter). Sin
+// teléfonos: la corrida, cuántos quedaron y la clase del error de Néctar.
+func ProactiveConfigStopDetail(run string, err error, unsent int) string {
+	return fmt.Sprintf("corrida %s detenida por configuración de Néctar; unsent=%d; %v", run, unsent, err)
+}
+
 // AlreadyOpenError es el 409 already_open de la apertura: el contacto ya tiene una conversación viva
 // en ese canal. Mine dice de quién es: true = del bot (sigue en ella, ConversationID), false = de un
 // agente o en cola (no se le escribe). Envuelve ErrPermanentSend: reabrir no cambia la respuesta.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	tg "github.com/neuro-bot/neuro-bot/internal/telegram"
 )
 
 func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
@@ -78,5 +79,26 @@ func TestNectarWiring_NoChannelLogsError(t *testing.T) {
 	_, _, _ = nectarBridgeFromConfig(cfg)
 	if strings.Contains(buf.String(), "NECTAR_CHANNEL_ID") {
 		t.Fatalf("con canal no hay aviso: %q", buf.String())
+	}
+}
+
+// El aviso urgente de volver a Bird existe solo con Telegram configurado Y el puente encendido: con
+// el puente apagado no hay nada a qué volver y no se dispara nada (el cliente de Néctar queda sin aviso).
+func TestUrgentAlerter_OnlyWithTelegramAndBridge(t *testing.T) {
+	cfg := &config.Config{
+		UrgentAlertCooldownMin: 10, UrgentNectarDownCount: 5, UrgentNectarDownWindowMin: 5,
+		UrgentEscalationFailCount: 3, UrgentEscalationFailWindowMin: 10,
+	}
+	tgClient := tg.NewClient("token-de-prueba", "chat-de-prueba")
+	client := nectar.NewClient("https://nectar.example", "k", "s")
+
+	if a := wireUrgentAlerter(cfg, nil, client); a != nil {
+		t.Fatal("sin Telegram no hay aviso")
+	}
+	if a := wireUrgentAlerter(cfg, tgClient, nil); a != nil {
+		t.Fatal("con el puente apagado no hay aviso")
+	}
+	if a := wireUrgentAlerter(cfg, tgClient, client); a == nil {
+		t.Fatal("con Telegram y puente hay aviso")
 	}
 }

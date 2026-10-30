@@ -16,9 +16,11 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
+	"github.com/neuro-bot/neuro-bot/internal/testutil/fakeurgent"
 )
 
 // Los avisos administrativos (confirmaciones de agenda, cancelaciones, reprogramaciones y la
@@ -377,6 +379,8 @@ func TestAdminBatches_ConfigErrorStopsBatch(t *testing.T) {
 			logs := captureAdminErrors(t)
 			bridge := &fakenectar.Bridge{OpenErr: nectar.ErrUnauthorized}
 			rig := newAdminRig(t, bridge, agendaRepo())
+			urgent := &fakeurgent.Recorder{}
+			rig.h.SetUrgentReporter(urgent)
 			start(rig)
 
 			waitFor(t, "el error de la corrida", func() bool { return len(logs.errors()) > 0 })
@@ -390,6 +394,11 @@ func TestAdminBatches_ConfigErrorStopsBatch(t *testing.T) {
 			}
 			if rig.nm.PendingCount() != 0 {
 				t.Fatal("sin pending")
+			}
+			// El lote detenido también dispara el aviso urgente de volver a Bird, una vez.
+			if fires := urgent.Fires(); len(fires) != 1 || fires[0].Trigger != monitor.TriggerProactiveStopped ||
+				!strings.Contains(fires[0].Detail, "unsent=3") || strings.Contains(fires[0].Detail, "300111") {
+				t.Fatalf("un aviso urgente sin teléfonos: %+v", fires)
 			}
 		})
 	}

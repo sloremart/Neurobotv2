@@ -11,6 +11,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
@@ -58,6 +59,12 @@ type FlowMaintainer interface {
 	PurgeOlderThan(ctx context.Context, days int) (int64, error)
 }
 
+// UrgentReporter es el aviso urgente de volver a Bird (monitor.UrgentAlerter): las corridas de
+// recordatorios lo disparan cuando se detienen por configuración o dejan demasiados sin enviar.
+type UrgentReporter interface {
+	Fire(ctx context.Context, trigger monitor.UrgentTrigger, detail string)
+}
+
 // Tasks holds dependencies for all scheduler tasks.
 type Tasks struct {
 	AppointmentRepo repository.AppointmentRepository
@@ -74,6 +81,7 @@ type Tasks struct {
 	FlowMaint       FlowMaintainer            // rollup + purga de flow_events (Fase 3, optional)
 	ReengageSource  ReengageSource            // re-enganche matutino (optional; nil = tarea muda)
 	NotifHistory    NotificationHistory       // dedup del recordatorio de corta antelación (optional; sin él la tarea NO envía — fail-closed)
+	Urgent          UrgentReporter            // aviso urgente de volver a Bird (optional; nil = sin aviso)
 }
 
 // RegisterAll registers the scheduled tasks: the 4 originales (cleanup, recordatorios 07:00, lista de
@@ -193,7 +201,16 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 	// solo para dejar pending (y llamada IVR) a los pacientes que faltaban, sin ninguna apertura.
 	configStopped := false
 	var inDoubt []string
-	defer func() { logInDoubtSummary("confirmation", inDoubt) }()
+	// unsent cuenta los recordatorios que no salieron (cada pending para el IVR) para el aviso urgente.
+	unsent := 0
+	unsentReminder := func(phone, apptID, reason string) {
+		unsent++
+		t.registerUnsentReminder(ctx, phone, apptID, reason)
+	}
+	defer func() {
+		logInDoubtSummary("confirmation", inDoubt)
+		t.reportUnsent(ctx, "confirmation", unsent, configStopped)
+	}()
 
 	for _, group := range patientGroups {
 		// Detener envíos si el contexto fue cancelado (apagado)
@@ -231,7 +248,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 		if configStopped {
 			skipped++
-			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
+			unsentReminder(phone, firstAppt.ID, "config_stop")
 			continue
 		}
 
@@ -247,7 +264,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			}
 			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
 				observability.EmitOpts{Phone: phone})
-			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "no_whatsapp")
+			unsentReminder(phone, firstAppt.ID, "no_whatsapp")
 			continue
 		}
 
@@ -282,23 +299,23 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			if errors.Is(err, bird.ErrConversationWithAgent) {
 				skipped++
 				t.skipAgentOwned(ctx, phone, "confirmation", firstAppt.ID)
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "agent_owned")
+				unsentReminder(phone, firstAppt.ID, "agent_owned")
 				continue
 			}
 			if errors.Is(err, nectar.ErrOpenInDoubt) {
 				t.logInDoubt(ctx, phone, "confirmation", firstAppt.ID, err)
 				inDoubt = append(inDoubt, firstAppt.ID)
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "in_doubt")
+				unsentReminder(phone, firstAppt.ID, "in_doubt")
 				continue
 			}
 			// Configuración de Néctar (clave, plantilla, canal): falla igual con todos. Se dejan de
 			// ENVIAR con UN solo error en vez de una apertura condenada por paciente; este paciente y
 			// los que faltan quedan con pending para el IVR (configStopped).
 			if bird.IsProactiveConfigError(err) {
-				bird.LogProactiveConfigStop("confirmation", err, len(patientGroups)-visited+1)
+				t.proactiveConfigStop(ctx, "confirmation", err, len(patientGroups)-visited+1)
 				configStopped = true
 				skipped++
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
+				unsentReminder(phone, firstAppt.ID, "config_stop")
 				continue
 			}
 			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
@@ -307,10 +324,10 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			if errors.Is(err, bird.ErrNonContactable) {
 				slog.Warn("recordatorio suprimido: contacto no alcanzable (sin costo)",
 					"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "non_contactable")
+				unsentReminder(phone, firstAppt.ID, "non_contactable")
 			} else {
 				slog.Error("send reminder failed", "phone", utils.MaskPhone(phone), "error", err)
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "send_error")
+				unsentReminder(phone, firstAppt.ID, "send_error")
 			}
 			continue
 		}
@@ -424,7 +441,14 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 	skipped := 0
 	visited := 0
 	var inDoubt []string
-	defer func() { logInDoubtSummary("confirmation_same_day", inDoubt) }()
+	// failed cuenta los envíos que fallaron (fuera de los en duda) y configStopped la detención por
+	// configuración: los dos van al aviso urgente de volver a Bird.
+	failed := 0
+	configStopped := false
+	defer func() {
+		logInDoubtSummary("confirmation_same_day", inDoubt)
+		t.reportUnsent(ctx, "confirmation_same_day", len(inDoubt)+failed, configStopped)
+	}()
 
 	for _, group := range patientGroups {
 		if ctx.Err() != nil {
@@ -501,10 +525,12 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 				continue
 			}
 			if bird.IsProactiveConfigError(err) {
-				bird.LogProactiveConfigStop("confirmation_same_day", err, len(patientGroups)-visited+1)
+				t.proactiveConfigStop(ctx, "confirmation_same_day", err, len(patientGroups)-visited+1)
+				configStopped = true
 				break
 			}
 			slog.Error("same-day reminder send failed", "phone", utils.MaskPhone(phone), "error", err)
+			failed++
 			continue
 		}
 		msgID := proactive.MessageID
@@ -617,6 +643,26 @@ func logInDoubtSummary(notifType string, apptIDs []string) {
 	}
 	slog.Error("recordatorios en duda: la plantilla pudo no haber llegado, revisar en el call center",
 		"type", notifType, "count", len(apptIDs), "appointment_ids", strings.Join(apptIDs, ","))
+}
+
+// proactiveConfigStop deja el único error de la corrida detenida por configuración de Néctar y
+// dispara el aviso urgente de volver a Bird (sin aviso cableado, solo el error de siempre).
+func (t *Tasks) proactiveConfigStop(ctx context.Context, run string, err error, unsent int) {
+	bird.LogProactiveConfigStop(run, err, unsent)
+	if t.Urgent != nil {
+		t.Urgent.Fire(ctx, monitor.TriggerProactiveStopped, bird.ProactiveConfigStopDetail(run, err, unsent))
+	}
+}
+
+// reportUnsent dispara el aviso urgente si la corrida dejó URGENT_UNSENT_THRESHOLD o más
+// recordatorios sin enviar o en duda. Una corrida detenida por configuración ya avisó con
+// TriggerProactiveStopped y cuántos quedaron: no se avisa dos veces por la misma causa. Sin teléfonos.
+func (t *Tasks) reportUnsent(ctx context.Context, run string, unsent int, configStopped bool) {
+	if t.Urgent == nil || t.Cfg == nil || configStopped || unsent == 0 || unsent < t.Cfg.UrgentUnsentThreshold {
+		return
+	}
+	t.Urgent.Fire(ctx, monitor.TriggerRemindersUnsent, fmt.Sprintf(
+		"corrida %s: %d recordatorios sin enviar o en duda (umbral %d)", run, unsent, t.Cfg.UrgentUnsentThreshold))
 }
 
 // registerUnsentReminder deja el pending de confirmación de un recordatorio de día-antes que NO salió

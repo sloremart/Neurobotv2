@@ -143,3 +143,40 @@ func TestNewLineAnnouncement_Trimmed(t *testing.T) {
 		t.Errorf("solo espacios debe quedar vacía, got %q", got)
 	}
 }
+
+// --- Aviso urgente de volver a Bird (URGENT_*) ---
+
+// Sin variables, los umbrales del aviso urgente son los del diseño de la transición.
+func TestLoad_UrgentAlertDefaults(t *testing.T) {
+	setRequiredEnv(t)
+	cfg := Load()
+	got := []int{
+		cfg.UrgentAlertCooldownMin, cfg.UrgentUnsentThreshold, cfg.UrgentNectarDownCount,
+		cfg.UrgentNectarDownWindowMin, cfg.UrgentEscalationFailCount, cfg.UrgentEscalationFailWindowMin,
+	}
+	want := []int{10, 10, 5, 5, 3, 10}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("defaults = %v, want %v", got, want)
+		}
+	}
+	t.Setenv("URGENT_UNSENT_THRESHOLD", " 25 ")
+	if got := Load().UrgentUnsentThreshold; got != 25 {
+		t.Fatalf("URGENT_UNSENT_THRESHOLD = %d, want 25", got)
+	}
+}
+
+// Los umbrales tienen que ser enteros positivos: un 0 o un texto se rechaza, no cae al default.
+func TestParsePositiveInt(t *testing.T) {
+	if got, err := parsePositiveInt("", 7); err != nil || got != 7 {
+		t.Errorf("vacío = (%d, %v), want (7, nil)", got, err)
+	}
+	if got, err := parsePositiveInt(" 12 ", 7); err != nil || got != 12 {
+		t.Errorf("«12» = (%d, %v), want (12, nil)", got, err)
+	}
+	for _, bad := range []string{"0", "-3", "diez", "5m", "1.5"} {
+		if _, err := parsePositiveInt(bad, 7); err == nil {
+			t.Errorf("%q tiene que ser rechazado", bad)
+		}
+	}
+}

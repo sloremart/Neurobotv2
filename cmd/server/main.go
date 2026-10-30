@@ -174,6 +174,13 @@ func main() {
 	}
 	startNectarSchedule(ctx, cfg, scheduleClient, schedule)
 
+	// Aviso urgente de volver a Bird (Telegram directo, aparte de los errores comunes): solo con
+	// Telegram y el puente encendido; scheduleClient es el cliente del puente (nil si está apagado).
+	urgent := wireUrgentAlerter(cfg, tgClient, scheduleClient)
+	if urgent != nil {
+		slog.Info("aviso urgente de volver a Bird activo", "cooldown_min", cfg.UrgentAlertCooldownMin)
+	}
+
 	// Services (dependen de repos)
 	var patientSvc *services.PatientService
 	var appointmentSvc *services.AppointmentService
@@ -306,6 +313,9 @@ func main() {
 	// Fase 12: Notificaciones Proactivas y Scheduler
 	if appointmentSvc != nil {
 		notifyManager = notifications.NewNotificationManager(birdClient, appointmentSvc, cfg)
+		if urgent != nil {
+			notifyManager.SetUrgentReporter(urgent)
+		}
 	}
 
 	// Fase 14: Event Tracking
@@ -487,6 +497,9 @@ func main() {
 		}
 		schedulerTasks.Reconciler = reconciler
 		schedulerTasks.FlowMaint = flowRepo // rollup + purga de flow_events (Fase 3)
+		if urgent != nil {
+			schedulerTasks.Urgent = urgent
+		}
 
 		schedulerTasks.RegisterAll(sched)
 		sched.RunMissedTasks(ctx) // Catch-up missed tasks before starting the regular loop
@@ -518,6 +531,9 @@ func main() {
 		// Agentes en Néctar solo con puente real Y AGENTS_SOURCE=nectar: en la transición el puente
 		// está encendido pero la mayoría de agentes sigue en Bird.
 		internalHandler.SetAgentsInNectar(nectarBridge != nil && cfg.AgentsInNectar())
+		if urgent != nil {
+			internalHandler.SetUrgentReporter(urgent)
+		}
 		internalHandler.SetSessionReader(sessionRepo)
 		internalHandler.SetFlowReader(flowRepo)
 		if repos.Patient != nil {

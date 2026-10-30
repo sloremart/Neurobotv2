@@ -234,6 +234,15 @@ type Config struct {
 	TelegramBotToken string
 	TelegramChatID   string
 
+	// Aviso URGENTE de volver a Bird (internal/monitor/urgent.go): solo con Telegram y el puente de
+	// Néctar encendido. Enteros positivos (parsePositiveInt); un valor ilegible tumba el arranque.
+	UrgentAlertCooldownMin        int // URGENT_ALERT_COOLDOWN_MIN: minutos entre avisos del mismo disparador
+	UrgentUnsentThreshold         int // URGENT_UNSENT_THRESHOLD: recordatorios sin enviar por corrida que avisan
+	UrgentNectarDownCount         int // URGENT_NECTAR_DOWN_COUNT: fallos de transporte/5xx de Néctar que avisan…
+	UrgentNectarDownWindowMin     int // URGENT_NECTAR_DOWN_WINDOW_MIN: …dentro de esta ventana (min)
+	UrgentEscalationFailCount     int // URGENT_ESCALATION_FAIL_COUNT: escalaciones a Néctar fallidas que avisan…
+	UrgentEscalationFailWindowMin int // URGENT_ESCALATION_FAIL_WINDOW_MIN: …dentro de esta ventana (min)
+
 	// Testing whitelist — only these phones can interact with the bot (empty = all allowed)
 	TestingWhitelistPhones []string
 
@@ -492,6 +501,26 @@ func Load() *Config {
 		log.Fatalf("ESCALATION_NECTAR_CLOSE_MIN inválido: %v", err)
 	}
 	cfg.EscalationNectarCloseMin = nectarClose
+
+	// Umbrales del aviso urgente de volver a Bird: mismo criterio, un valor ilegible se ve al arrancar.
+	for _, u := range []struct {
+		key  string
+		def  int
+		dest *int
+	}{
+		{"URGENT_ALERT_COOLDOWN_MIN", 10, &cfg.UrgentAlertCooldownMin},
+		{"URGENT_UNSENT_THRESHOLD", 10, &cfg.UrgentUnsentThreshold},
+		{"URGENT_NECTAR_DOWN_COUNT", 5, &cfg.UrgentNectarDownCount},
+		{"URGENT_NECTAR_DOWN_WINDOW_MIN", 5, &cfg.UrgentNectarDownWindowMin},
+		{"URGENT_ESCALATION_FAIL_COUNT", 3, &cfg.UrgentEscalationFailCount},
+		{"URGENT_ESCALATION_FAIL_WINDOW_MIN", 10, &cfg.UrgentEscalationFailWindowMin},
+	} {
+		v, err := parsePositiveInt(os.Getenv(u.key), u.def)
+		if err != nil {
+			log.Fatalf("%s inválido: %v", u.key, err)
+		}
+		*u.dest = v
+	}
 
 	cfg.validate()
 	return cfg
@@ -849,4 +878,22 @@ func parseNectarChannelID(raw string) (int64, error) {
 		return 0, fmt.Errorf("canal %d negativo", id)
 	}
 	return id, nil
+}
+
+// parsePositiveInt lee un entero positivo de una variable de entorno: vacío = def, y cualquier otra
+// cosa tiene que ser un número > 0. Mismo criterio que parseNectarCloseMin: no getEnvInt, que se
+// traga el error de Atoi y arrancaría con el default en silencio.
+func parsePositiveInt(raw string, def int) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%q no numérico", raw)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%d debe ser positivo", n)
+	}
+	return n, nil
 }

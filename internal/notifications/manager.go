@@ -15,6 +15,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -227,6 +228,7 @@ type NotificationManager struct {
 	agendaResolver AgendaAsuntoResolver // matching por slot: asuntos de la agenda liberada
 	cupsResolver   EligibleCupsResolver // matching por slot: CUPS elegibles del médico+asuntos
 	patientReader  PatientReader        // teléfono en SIESA de las entradas nacidas en Néctar (nil = se saltan)
+	urgent         UrgentReporter       // aviso urgente de volver a Bird (nil = sin aviso)
 
 	// phoneLock serializa por-teléfono TODO acceso al estado de notificación (pending/callIDMap),
 	// que es propiedad exclusiva de este manager. Cierra el data race N-17 (campos de
@@ -387,6 +389,17 @@ type EscalationRecorder interface {
 // SetEscalationRecorder injects the per-escalation recorder (tabla escalations) for SLA tracking.
 func (m *NotificationManager) SetEscalationRecorder(e EscalationRecorder) {
 	m.escalations = e
+}
+
+// UrgentReporter es el aviso urgente de volver a Bird (monitor.UrgentAlerter): la corrida de lista de
+// espera lo dispara cuando se detiene por configuración de Néctar.
+type UrgentReporter interface {
+	Fire(ctx context.Context, trigger monitor.UrgentTrigger, detail string)
+}
+
+// SetUrgentReporter inyecta el aviso urgente (opcional: main lo cablea solo con Telegram y el puente).
+func (m *NotificationManager) SetUrgentReporter(r UrgentReporter) {
+	m.urgent = r
 }
 
 // SetPatientReader inyecta la lectura de la ficha del paciente (teléfono de las entradas de lista de
