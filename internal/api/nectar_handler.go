@@ -48,7 +48,8 @@ type nectarNotifier interface {
 	HasPending(phone string) bool
 	HandleResponse(phone, payload, conversationID string)
 	HandleInvalidInput(phone, conversationID string) bool
-	AdoptPhonePending(contactPhone, sessionKey, conversationID string) bool
+	AdoptPhonePending(contactPhone, sessionKey, conversationID, payload string) bool
+	AcceptsPostback(phone, payload string) bool
 }
 
 // nectarSeen es la memoria local de event_id vistos: segunda línea detrás del WAL (y la
@@ -591,13 +592,15 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 // pulsación de plantilla que llega vacía (kind button sin interactive_reply_id, lo de hoy antes
 // del arreglo de Néctar) no es postback y cae en HandleInvalidInput, como un texto libre.
 //
-// Sin pending bajo la conversación, la pulsación de un botón de la plantilla adopta el pending del
-// teléfono del contacto («+57…», el que deja un recordatorio que no salió: la plantilla en duda sí
-// llegó) y sigue el mismo camino. Cualquier otro mensaje no adopta: sigue el flujo normal y el
+// Sin pending bajo la conversación, la pulsación de un botón de la plantilla del recordatorio adopta
+// el pending del teléfono del contacto («+57…», el que deja un recordatorio que no salió: la
+// plantilla en duda sí llegó) y sigue el mismo camino. Cualquier otro mensaje (también el botón de
+// otra plantilla) no adopta: sigue el flujo normal y el
 // pending queda para el IVR (regla del dueño). El contacto es el que ya resolvió dispatchNectar (sin
 // otra pregunta a Néctar); sin número (vacío o solo BSUID) no hay teléfono con qué buscar. La guarda
 // de conversación con agente vive en AdoptPhonePending. Con un pending de recordatorio fallido bajo
-// la conversación, HandleInvalidInput tampoco consume el mensaje (false = al worker).
+// la conversación, ni un botón de otra plantilla (AcceptsPostback) ni HandleInvalidInput consumen el
+// mensaje (false = al worker).
 func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage, contact bird.NectarContact) bool {
 	notify := h.nectarNotifierOrNil()
 	if notify == nil {
@@ -613,10 +616,10 @@ func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage, contact bir
 	}
 	if !notify.HasPending(msg.Phone) &&
 		(!notifPostback || contact.Identifier == "" ||
-			!notify.AdoptPhonePending("+"+contact.Identifier, msg.Phone, msg.ConversationID)) {
+			!notify.AdoptPhonePending("+"+contact.Identifier, msg.Phone, msg.ConversationID, payload)) {
 		return false
 	}
-	if notifPostback {
+	if notifPostback && notify.AcceptsPostback(msg.Phone, payload) {
 		slog.Info("nectar: notification postback received",
 			"phone", utils.MaskPhone(msg.Phone), "payload", payload)
 		go func() {

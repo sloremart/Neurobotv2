@@ -33,6 +33,7 @@ type fakeReplay struct {
 
 	pending           bool // HasPending: el paciente tiene una notificación proactiva viva
 	invalidInput      bool // HandleInvalidInput: ya reintentó el prompt
+	rejectPostback    bool // AcceptsPostback: recordatorio que no salió + botón de otra plantilla
 	responded         chan string
 	invalidInputCalls int
 }
@@ -68,6 +69,8 @@ func (f *fakeReplay) HandleInvalidInput(string, string) bool {
 	f.invalidInputCalls++
 	return f.invalidInput
 }
+
+func (f *fakeReplay) AcceptsPostback(string, string) bool { return !f.rejectPostback }
 
 func (f *fakeReplay) deps() replayDeps {
 	return replayDeps{nectar: f, notify: f, pool: f, inbox: f}
@@ -210,6 +213,26 @@ func TestInboxReplay_NotificationPostbackRoutedToNotifier(t *testing.T) {
 		t.Fatal("el postback de la notificación no llegó al NotificationManager")
 	}
 	if len(f.enqueued) != 0 || len(f.done) != 1 || f.done[0] != "b-pb" {
+		t.Fatalf("enqueued=%+v done=%v", f.enqueued, f.done)
+	}
+}
+
+// Recordatorio que no salió + botón de otra plantilla: no va a HandleResponse; HandleInvalidInput no
+// lo consume (false) y sigue al pool, como en el camino HTTP.
+func TestInboxReplay_RejectedPostbackGoesToPool(t *testing.T) {
+	f := &fakeReplay{pending: true, rejectPostback: true, responded: make(chan string, 1)}
+	rows := []localrepo.InboxRow{
+		{ID: "b-wl", RawBody: birdPostbackBody(t, "b-wl", "573001112233", "wl_schedule"), MsgType: "text"},
+	}
+
+	replayPendingRows(context.Background(), rows, f.deps())
+
+	select {
+	case payload := <-f.responded:
+		t.Fatalf("no debía llegar a HandleResponse: %q", payload)
+	default:
+	}
+	if len(f.enqueued) != 1 || len(f.done) != 0 {
 		t.Fatalf("enqueued=%+v done=%v", f.enqueued, f.done)
 	}
 }

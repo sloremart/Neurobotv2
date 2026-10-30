@@ -53,7 +53,7 @@ func TestAdoptPhonePending_MovesPendingToSessionKey(t *testing.T) {
 	before, _ := mgr.LoadPendingForTest(adoptPhone)
 	oldTimer, expiresAt := before.Timer, before.ExpiresAt
 
-	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("debía adoptar el pending del teléfono")
 	}
 	if mgr.HasPending(adoptPhone) {
@@ -98,7 +98,7 @@ func TestAdoptPhonePending_MovesPendingToSessionKey(t *testing.T) {
 // (f) un disparo tardío del timer viejo no encuentra nada bajo la clave vieja ni toca el adoptado.
 func TestAdoptPhonePending_OldKeyTimeoutIsNoop(t *testing.T) {
 	mgr, pers, _ := adoptManager(t)
-	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("adopt")
 	}
 	mgr.handleTimeout(adoptPhone)
@@ -115,7 +115,7 @@ func TestAdoptPhonePending_ConfirmConsumesPending(t *testing.T) {
 	base, _ := confirmManager(t)
 	mgr, pers, _ := seedAdopt(t, base)
 
-	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("adopt")
 	}
 	mgr.HandleResponse(adoptKey, "confirm", "55")
@@ -140,7 +140,7 @@ func TestAdoptPhonePending_EscalatedSessionNotAdopted(t *testing.T) {
 		asked = phone
 		return &session.Session{ID: "s1", PhoneNumber: phone, Status: session.StatusEscalated}, nil
 	}
-	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("con la conversación en manos de un agente no se adopta")
 	}
 	if asked != adoptKey {
@@ -155,7 +155,7 @@ func TestAdoptPhonePending_SessionLookupErrorNotAdopted(t *testing.T) {
 	sessRepo.findCurrentFn = func(context.Context, string) (*session.Session, error) {
 		return nil, errors.New("db down")
 	}
-	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("ante la duda no se adopta")
 	}
 	assertPhonePendingKept(t, mgr, pers)
@@ -168,7 +168,7 @@ func TestAdoptPhonePending_ActiveSessionAdopts(t *testing.T) {
 	sessRepo.findCurrentFn = func(_ context.Context, phone string) (*session.Session, error) {
 		return &session.Session{ID: "s1", PhoneNumber: phone, Status: session.StatusActive}, nil
 	}
-	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("una sesión activa del bot no bloquea la adopción")
 	}
 }
@@ -177,7 +177,7 @@ func TestAdoptPhonePending_ActiveSessionAdopts(t *testing.T) {
 func TestAdoptPhonePending_ExistingSessionPendingNotAdopted(t *testing.T) {
 	mgr, pers, _ := adoptManager(t)
 	mgr.RegisterPending(PendingNotification{Type: "waiting_list", Phone: adoptKey, ContactPhone: adoptPhone, WaitingListID: "wl-1"})
-	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("con pending bajo la conversación no se adopta")
 	}
 	if !mgr.HasPending(adoptPhone) {
@@ -195,7 +195,7 @@ func TestAdoptPhonePending_ExistingSessionPendingNotAdopted(t *testing.T) {
 func TestAdoptPhonePending_NothingToAdopt(t *testing.T) {
 	mgr := NewNotificationManager(nil, nil, &config.Config{})
 	mgr.SetWaitingListDeps(nil, &mockSessionCreator{}, &mockVirtualEnqueuer{})
-	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("sin pending no se adopta")
 	}
 	mgr.RegisterPending(PendingNotification{Type: "waiting_list", Phone: adoptPhone, WaitingListID: "wl-1"})
@@ -204,10 +204,10 @@ func TestAdoptPhonePending_NothingToAdopt(t *testing.T) {
 			p.Timer.Stop()
 		}
 	})
-	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("solo se adoptan confirmation/reschedule")
 	}
-	if mgr.AdoptPhonePending("", adoptKey, "55") || mgr.AdoptPhonePending(adoptPhone, adoptPhone, "55") {
+	if mgr.AdoptPhonePending("", adoptKey, "55", "confirm") || mgr.AdoptPhonePending(adoptPhone, adoptPhone, "55", "confirm") {
 		t.Fatal("teléfono vacío o misma clave no adoptan")
 	}
 }
@@ -217,7 +217,7 @@ func TestAdoptPhonePending_ExpiredNotAdopted(t *testing.T) {
 	mgr, pers, _ := adoptManager(t)
 	p, _ := mgr.LoadPendingForTest(adoptPhone)
 	p.ExpiresAt = time.Now().Add(-time.Minute)
-	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("vencido no se adopta")
 	}
 	assertPhonePendingKept(t, mgr, pers)
@@ -228,7 +228,7 @@ func TestAdoptPhonePending_ExpiredNotAdopted(t *testing.T) {
 func TestAdoptPhonePending_RekeyErrorNotAdopted(t *testing.T) {
 	mgr, pers, _ := adoptManager(t)
 	pers.rekeyErr = errors.New("db down")
-	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("sin persistir la clave no se adopta")
 	}
 	if !mgr.HasPending(adoptPhone) || mgr.HasPending(adoptKey) {
@@ -240,7 +240,7 @@ func TestAdoptPhonePending_RekeyErrorNotAdopted(t *testing.T) {
 func TestAdoptPhonePending_MovesCallID(t *testing.T) {
 	mgr, _, _ := adoptManager(t)
 	mgr.RegisterCallID("call-1", adoptPhone)
-	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("adopt")
 	}
 	if v, ok := mgr.callIDMap.Load("call-1"); !ok || v.(string) != adoptKey {
@@ -280,7 +280,7 @@ func TestHandleInvalidInput_UnsentNotConsumed(t *testing.T) {
 		t.Fatalf("y el IVR lo sigue viendo: %+v", ivr)
 	}
 	// Lo mismo tras adoptarlo bajo la conversación de Néctar.
-	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", "confirm") {
 		t.Fatal("adopt")
 	}
 	if mgr.HandleInvalidInput(adoptKey, "55") {
@@ -345,4 +345,53 @@ func TestUnsent_PersistedAndRestored(t *testing.T) {
 		t.Fatalf("restaurado con Unsent: %+v %v", p, ok)
 	}
 	p.Timer.Stop()
+}
+
+// Solo un botón de la plantilla del recordatorio adopta: el de otra plantilla (lista de espera, aviso
+// de cancelación) caería en handleConfirmation sin caso y la cita se perdería para el IVR.
+func TestAdoptPhonePending_OtherTemplateButtonNotAdopted(t *testing.T) {
+	for _, payload := range []string{"wl_schedule", "wl_decline", "understood", "agendar"} {
+		t.Run(payload, func(t *testing.T) {
+			mgr, pers, _ := adoptManager(t)
+			if mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", payload) {
+				t.Fatal("el botón de otra plantilla no adopta")
+			}
+			assertPhonePendingKept(t, mgr, pers)
+		})
+	}
+}
+
+func TestAdoptPhonePending_ReminderButtonsAdopt(t *testing.T) {
+	for _, payload := range []string{"confirm", "cancelar", "cancel", "reprogramar", "reschedule"} {
+		t.Run(payload, func(t *testing.T) {
+			mgr, _, _ := adoptManager(t)
+			if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55", payload) {
+				t.Fatal("los botones del recordatorio adoptan")
+			}
+		})
+	}
+}
+
+// AcceptsPostback: con recordatorio fallido solo sus botones; con uno enviado, todo como siempre.
+func TestAcceptsPostback(t *testing.T) {
+	mgr, _, _ := adoptManager(t) // Unsent bajo adoptPhone
+	if !mgr.AcceptsPostback(adoptPhone, "confirm") || !mgr.AcceptsPostback(adoptPhone, "cancelar") {
+		t.Fatal("los botones del recordatorio cuentan")
+	}
+	if mgr.AcceptsPostback(adoptPhone, "wl_schedule") || mgr.AcceptsPostback(adoptPhone, "understood") {
+		t.Fatal("el botón de otra plantilla no cuenta con recordatorio fallido")
+	}
+	const sent = "+573009990000"
+	mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: sent, AppointmentID: "APT002", BirdMessageID: "m1"})
+	t.Cleanup(func() {
+		if p, ok := mgr.LoadPendingForTest(sent); ok {
+			p.Timer.Stop()
+		}
+	})
+	if !mgr.AcceptsPostback(sent, "wl_schedule") {
+		t.Fatal("con la plantilla enviada, lo de siempre")
+	}
+	if !mgr.AcceptsPostback("+573000000000", "wl_schedule") {
+		t.Fatal("sin pending, lo de siempre")
+	}
 }

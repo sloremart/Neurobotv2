@@ -599,15 +599,23 @@ func (m *NotificationManager) HasPendingForContact(phone string) bool {
 // AdoptPhonePending mueve a sessionKey ("nectar:<id>") el pending de confirmación/reprogramación
 // que quedó bajo el teléfono contactPhone («+57…») porque el recordatorio no salió: con Néctar la
 // respuesta del paciente llega bajo la clave de la conversación, y sin esto no contaría y el IVR
-// de las 13:00 lo llamaría igual. Devuelve true si adoptó.
+// de las 13:00 lo llamaría igual. Devuelve true si adoptó. payload es el botón que pulsó el paciente
+// (ya traducido del título): solo un botón de ESA plantilla adopta; el de otra (lista de espera,
+// aviso de cancelación) no responde a la cita y el pending sigue para el IVR.
+//
+// Adopta cualquier pending de confirmación bajo el teléfono, no solo los Unsent: con Néctar un
+// pending con clave de teléfono solo sale de un envío fallido o de uno de Bird restaurado tras el
+// cambio, y en los dos casos la respuesta del paciente debe contar.
 //
 // No adopta (y el pending del teléfono sigue para el IVR) si ya hay pending bajo sessionKey, si el
 // del teléfono ya venció (lo procesa su timeout), si la sesión de la conversación está escalada
 // —el paciente lo atiende un agente; el bot no le contesta, igual que el worker— o si no se puede
 // comprobar, ni si la BD no deja cambiar la clave (un reinicio lo restauraría bajo el teléfono).
 // El vencimiento es el que ya tenía: el timer se re-arma con ExpiresAt, no se reinicia.
-func (m *NotificationManager) AdoptPhonePending(contactPhone, sessionKey, conversationID string) bool {
-	if contactPhone == "" || sessionKey == "" || contactPhone == sessionKey || !m.adoptable(contactPhone) || m.HasPending(sessionKey) {
+func (m *NotificationManager) AdoptPhonePending(contactPhone, sessionKey, conversationID, payload string) bool {
+	// Antes de los candados solo se mira el mapa (sin leer campos del pending, que se escriben bajo
+	// el candado): ahorra la consulta de la sesión cuando no hay nada que adoptar.
+	if contactPhone == "" || sessionKey == "" || contactPhone == sessionKey || !m.HasPending(contactPhone) || m.HasPending(sessionKey) {
 		return false
 	}
 	if !m.sessionFreeForAdoption(sessionKey) {
@@ -628,8 +636,8 @@ func (m *NotificationManager) AdoptPhonePending(contactPhone, sessionKey, conver
 	}
 	defer m.unlockPhone(second)
 
-	// Re-validar bajo los candados: una respuesta, un timeout o un registro pudo cruzarse.
-	if !m.adoptable(contactPhone) || m.HasPending(sessionKey) {
+	// Validar bajo los candados: una respuesta, un timeout o un registro pudo cruzarse.
+	if !m.adoptable(contactPhone, payload) || m.HasPending(sessionKey) {
 		return false
 	}
 	if m.persister != nil {
@@ -658,6 +666,8 @@ func (m *NotificationManager) AdoptPhonePending(contactPhone, sessionKey, conver
 	if p.CallID != "" {
 		m.callIDMap.Store(p.CallID, sessionKey) // el DTMF de una llamada en curso sigue correlacionando
 	}
+	// Si el IVR ya leyó este pending (GetPendingForIVR) su RegisterCallID/MarkIVRSent con la clave
+	// vieja no encuentran nada: a lo sumo sale una llamada de más (aceptado).
 	m.storePending(sessionKey, p)
 
 	slog.Info("phone pending adopted by nectar conversation",
@@ -665,14 +675,33 @@ func (m *NotificationManager) AdoptPhonePending(contactPhone, sessionKey, conver
 	return true
 }
 
-// adoptable: hay bajo phone un pending de confirmación/reprogramación aún vigente.
-func (m *NotificationManager) adoptable(phone string) bool {
+// adoptable: hay bajo phone un pending de confirmación/reprogramación aún vigente al que payload
+// responde. Se llama con el candado de phone tomado.
+func (m *NotificationManager) adoptable(phone, payload string) bool {
 	val, ok := m.pending.Load(phone)
 	if !ok {
 		return false
 	}
 	p := val.(*PendingNotification)
-	return (p.Type == "confirmation" || p.Type == "reschedule") && time.Now().Before(p.ExpiresAt)
+	return (p.Type == "confirmation" || p.Type == "reschedule") && answersType(p.Type, payload) &&
+		time.Now().Before(p.ExpiresAt)
+}
+
+// AcceptsPostback dice si HandleResponse debe tomar el postback de notificación payload para phone.
+// Siempre sí (lo de siempre), salvo con un recordatorio que no salió (Unsent): ahí solo cuenta un
+// botón de su plantilla; otro (p. ej. el «Agendar» de una lista de espera ya resuelta) caería en
+// handleConfirmation sin caso y se perdería la cita del IVR, así que sigue el flujo normal.
+func (m *NotificationManager) AcceptsPostback(phone, payload string) bool {
+	if !m.lockPhone(phone) {
+		return true // sin candado, lo de siempre: HandleResponse espera el suyo
+	}
+	defer m.unlockPhone(phone)
+	val, ok := m.pending.Load(phone)
+	if !ok {
+		return true
+	}
+	p := val.(*PendingNotification)
+	return !p.Unsent || answersType(p.Type, payload)
 }
 
 // sessionFreeForAdoption: la conversación no está con un agente. Es la señal que respeta el worker

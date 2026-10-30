@@ -237,7 +237,10 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 
 	// Clasificar: postback de notificación o mensaje de chatbot?
 	if h.notifyManager != nil && h.notifyManager.HasPending(msg.Phone) {
-		if msg.IsPostback && IsNotificationPostback(msg.PostbackPayload) {
+		// AcceptsPostback: con un recordatorio que no salió solo cuentan los botones de su plantilla;
+		// otro postback de notificación sigue el flujo normal (lo de abajo).
+		if msg.IsPostback && IsNotificationPostback(msg.PostbackPayload) &&
+			h.notifyManager.AcceptsPostback(msg.Phone, msg.PostbackPayload) { //nolint:contextcheck // el candado del manager acota su propia espera (como HandleInvalidInput)
 			slog.Info("notification postback received",
 				"phone", utils.MaskPhone(msg.Phone),
 				"payload", msg.PostbackPayload,

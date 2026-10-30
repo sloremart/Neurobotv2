@@ -45,6 +45,21 @@ func buttonsFor(notifType string) []bird.Button {
 	return out
 }
 
+// answersType dice si payload (ya traducido del título) es uno de los botones de la plantilla de
+// notifType, comparados tras normalizePostback («cancelar» y «cancel» son el mismo botón).
+func answersType(notifType, payload string) bool {
+	if notifType == "reschedule" {
+		notifType = "confirmation"
+	}
+	got := normalizePostback(payload)
+	for _, b := range resentButtons[notifType] {
+		if normalizePostback(b.Payload) == got {
+			return true
+		}
+	}
+	return false
+}
+
 // titleOrder fija el orden de búsqueda por título. «Reprogramar» aparece dos veces (reprogramar
 // en la confirmación, reschedule en la cancelación); gana el primero, y da igual: normalizePostback
 // lleva los dos a "reschedule" antes de despachar por tipo.

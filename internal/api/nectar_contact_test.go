@@ -279,7 +279,7 @@ func TestNectarInbound_PhonePendingAdopted_ButtonGoesToHandleResponse(t *testing
 	if rec := postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-ad-1", "Confirmar"))); rec.Code != http.StatusOK {
 		t.Fatalf("→ %d", rec.Code)
 	}
-	if got := notify.adoptCalls(); len(got) != 1 || got[0] != [3]string{"+573001112233", "nectar:77", "77"} {
+	if got := notify.adoptCalls(); len(got) != 1 || got[0] != [4]string{"+573001112233", "nectar:77", "77", "confirm"} {
 		t.Fatalf("AdoptPhonePending%v", got)
 	}
 	if got := notify.waitResponse(t); got != [3]string{"nectar:77", "confirm", "77"} {
@@ -364,5 +364,46 @@ func TestNectarInbound_SessionPending_NoAdoption(t *testing.T) {
 	}
 	if got := notify.adoptCalls(); len(got) != 0 {
 		t.Fatalf("no se intenta adoptar, got %v", got)
+	}
+}
+
+// El botón de otra plantilla («Agendar» de una lista de espera) llega traducido a AdoptPhonePending,
+// que lo rechaza (TestAdoptPhonePending_OtherTemplateButtonNotAdopted): sigue al worker tal cual.
+func TestNectarInbound_OtherTemplateButton_RefusedGoesToWorker(t *testing.T) {
+	h, sink, _, notify := phonePendingHandler(t, bird.NectarContact{Identifier: "573001112233"})
+	notify.refuse = true
+
+	postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-ad-7", "Agendar")))
+	if got := notify.adoptCalls(); len(got) != 1 || got[0][3] != "wl_schedule" {
+		t.Fatalf("se pregunta con el payload traducido, got %v", got)
+	}
+	if m, _ := sink.counts(); m != 1 || sink.messages[0].PostbackPayload != "Agendar" {
+		t.Fatalf("va al worker tal cual: %+v", sink.messages)
+	}
+	select {
+	case r := <-notify.responses:
+		t.Fatalf("no llega a HandleResponse: %v", r)
+	default:
+	}
+}
+
+// Recordatorio fallido ya adoptado bajo la conversación + botón de otra plantilla: AcceptsPostback
+// dice que no y HandleInvalidInput no lo consume → worker.
+func TestNectarInbound_AdoptedUnsent_OtherTemplateButtonGoesToWorker(t *testing.T) {
+	sink := &sinkRecorder{}
+	h := newNectarContactHandler(newMemInbox(), sink, &fakenectar.Bridge{ContactValue: bird.NectarContact{Identifier: "573001112233"}})
+	notify := newFakeNectarNotifier("nectar:77")
+	notify.unsent = map[string]bool{"nectar:77": true}
+	notify.rejectPostback = map[string]bool{"nectar:77": true}
+	h.SetNectarNotifier(notify)
+
+	postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-ad-8", "Agendar")))
+	if m, _ := sink.counts(); m != 1 {
+		t.Fatalf("va al worker, got %d", m)
+	}
+	select {
+	case r := <-notify.responses:
+		t.Fatalf("no llega a HandleResponse: %v", r)
+	default:
 	}
 }

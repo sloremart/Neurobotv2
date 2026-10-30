@@ -345,9 +345,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Apertura con plantilla (`POST /api/bot/conversations/open`, `NECTAR_CHANNEL_ID`): las plantillas se identifican por nombre+idioma
   (`NECTAR_TEMPLATE_NAMES`); el pending se llama `nectar:<conversation_id>` y guarda el teléfono en `ContactPhone` (el IVR de las 13:00
   sigue por Bird Voice). 409 `already_open` con `mine=false` no envía nada; ante duda (502, 504, `attempt_in_doubt`) no hay reintento
-  ni pending (evento `notification_in_doubt`); solo el 503 con `Retry-After` se reintenta (máx. 2).
+  (evento `notification_in_doubt`); en esos casos el recordatorio del día antes deja un pending `Unsent` para el IVR (abajo) y lo
+  demás (mismo día incluido) no deja pending; solo el 503 con `Retry-After` se reintenta (máx. 2).
 - Recordatorio del día antes que no salió → pending de confirmación `Unsent` bajo el teléfono (`+57…`, migración 045) para el IVR:
-  solo el botón de la plantilla cuenta como respuesta (con Néctar lo adopta por el contacto, `AdoptPhonePending`, no si la sesión está
+  solo un botón de esa plantilla (Confirmar/Reprogramar/Cancelar) cuenta como respuesta (con Néctar lo adopta por el contacto, `AdoptPhonePending`, no si la sesión está
   escalada); cualquier otro mensaje sigue el flujo normal y el pending queda para el IVR.
 - Los botones de las plantillas en Meta deben titularse EXACTAMENTE (sin importar mayúsculas ni tildes; fuente
   `internal/notifications/template_buttons.go`): confirmación/reprogramación «Confirmar», «Reprogramar», «Cancelar»; cancelación admin

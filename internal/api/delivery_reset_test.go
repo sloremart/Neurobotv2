@@ -86,3 +86,39 @@ func TestHandleWhatsApp_UnsentPendingTextGoesToWorker(t *testing.T) {
 		t.Fatalf("y el IVR lo sigue viendo: %+v", ivr)
 	}
 }
+
+// Recordatorio fallido + postback de OTRA plantilla («Agendar» de una lista de espera): en Bird no se
+// lo come HandleResponse (handleConfirmation no tiene caso y perdería la cita del IVR); va al worker.
+func TestHandleWhatsApp_UnsentPendingOtherTemplatePostbackGoesToWorker(t *testing.T) {
+	const secret = "test-secret"
+	const phone = "+573001234567"
+	birdClient := &bird.Client{WebhookSecret: secret}
+	pool := worker.NewMessageWorkerPool(1, 10)
+	nm := notifications.NewNotificationManager(birdClient, nil, &config.Config{})
+	nm.RegisterPending(notifications.PendingNotification{Type: "confirmation", Phone: phone, AppointmentID: "APT001", Unsent: true})
+	t.Cleanup(func() {
+		if p, ok := nm.LoadPendingForTest(phone); ok {
+			p.Timer.Stop()
+		}
+	})
+	h := NewWebhookHandler(birdClient, pool, nm, &config.Config{})
+
+	body := []byte(`{"payload":{"id":"msg-in-unsent-2","direction":"incoming",
+	  "sender":{"contacts":[{"identifierValue":"` + phone + `"}]},
+	  "body":{"type":"text","text":{"text":"Agendar","actions":[{"type":"postback","postback":{"payload":"wl_schedule"}}]}}}}`)
+	var ev bird.WebhookEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		t.Fatal(err)
+	}
+	if m := bird.ParseInboundMessage(ev); !m.IsPostback || m.PostbackPayload != "wl_schedule" {
+		t.Fatalf("la premisa: es un postback de notificación, got %+v", m)
+	}
+	h.HandleWhatsApp(httptest.NewRecorder(), signedRequest("POST", "/api/webhooks/whatsapp", body, secret))
+
+	if size, _ := pool.QueueStats(); size != 1 {
+		t.Fatalf("va al worker, encolados=%d", size)
+	}
+	if ivr := nm.GetPendingForIVR(); len(ivr) != 1 || ivr[0].Phone != phone {
+		t.Fatalf("el pending sigue para el IVR: %+v", ivr)
+	}
+}

@@ -991,9 +991,11 @@ type fakeNectarNotifier struct {
 	// simula la guarda del manager (conversación con agente). adopted anota cada intento.
 	phonePending map[string]bool
 	refuse       bool
-	adopted      [][3]string
+	adopted      [][4]string
 	// unsent: claves cuyo pending es de un recordatorio fallido; HandleInvalidInput no las consume.
 	unsent map[string]bool
+	// rejectPostback: claves cuyo AcceptsPostback dice que no (recordatorio fallido + otra plantilla).
+	rejectPostback map[string]bool
 }
 
 func newFakeNectarNotifier(pending ...string) *fakeNectarNotifier {
@@ -1021,10 +1023,10 @@ func (f *fakeNectarNotifier) HandleInvalidInput(phone, conversationID string) bo
 	return !f.unsent[phone]
 }
 
-func (f *fakeNectarNotifier) AdoptPhonePending(contactPhone, sessionKey, conversationID string) bool {
+func (f *fakeNectarNotifier) AdoptPhonePending(contactPhone, sessionKey, conversationID, payload string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.adopted = append(f.adopted, [3]string{contactPhone, sessionKey, conversationID})
+	f.adopted = append(f.adopted, [4]string{contactPhone, sessionKey, conversationID, payload})
 	if f.refuse || !f.phonePending[contactPhone] || f.pending[sessionKey] {
 		return false
 	}
@@ -1033,10 +1035,16 @@ func (f *fakeNectarNotifier) AdoptPhonePending(contactPhone, sessionKey, convers
 	return true
 }
 
-func (f *fakeNectarNotifier) adoptCalls() [][3]string {
+func (f *fakeNectarNotifier) adoptCalls() [][4]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([][3]string(nil), f.adopted...)
+	return append([][4]string(nil), f.adopted...)
+}
+
+func (f *fakeNectarNotifier) AcceptsPostback(phone, _ string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.rejectPostback[phone]
 }
 
 func (f *fakeNectarNotifier) waitResponse(t *testing.T) [3]string {

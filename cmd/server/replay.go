@@ -26,6 +26,7 @@ type replayNotifier interface {
 	HasPending(phone string) bool
 	HandleResponse(phone, payload, conversationID string)
 	HandleInvalidInput(phone, conversationID string) bool
+	AcceptsPostback(phone, payload string) bool
 }
 
 // replayPool es la cola de mensajes del worker pool.
@@ -86,7 +87,9 @@ func replayPendingRows(ctx context.Context, rows []localrepo.InboxRow, deps repl
 
 		// Classify: notification postback vs regular message
 		if deps.notify != nil && deps.notify.HasPending(msg.Phone) {
-			if msg.IsPostback && api.IsNotificationPostback(msg.PostbackPayload) {
+			// Misma regla que el camino HTTP: con un recordatorio que no salió solo sus botones cuentan.
+			if msg.IsPostback && api.IsNotificationPostback(msg.PostbackPayload) &&
+				deps.notify.AcceptsPostback(msg.Phone, msg.PostbackPayload) {
 				slog.Info("WAL replay: notification postback routed to handler",
 					"id", row.ID, "phone", msg.Phone, "payload", msg.PostbackPayload)
 				go deps.notify.HandleResponse(msg.Phone, msg.PostbackPayload, msg.ConversationID)
