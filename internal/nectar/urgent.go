@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"syscall"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
@@ -106,13 +105,16 @@ func escalationFailureClass(err error) (string, bool) {
 	}
 }
 
-// transportClass resume un fallo de transporte en su clase, sin la URL que lleva *url.Error.
+// transportClass resume un fallo de transporte en su clase, sin la URL que lleva *url.Error. La
+// conexión que no se pudo abrir se reconoce por el *net.OpError de "dial" (la misma regla que
+// notSent), no por el errno: ECONNREFUSED no es el mismo código en Windows.
 func transportClass(err error) string {
 	var netErr net.Error
+	var opErr *net.OpError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
 		return "timeout"
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case errors.As(err, &opErr) && opErr.Op == "dial":
 		return "conexión rechazada"
 	default:
 		return "transporte"
