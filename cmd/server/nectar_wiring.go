@@ -50,8 +50,8 @@ const urgentGuidePath = "docs/GUIA-VOLVER-A-BIRD.md"
 // wireUrgentAlerter arma el aviso urgente de volver a Bird y lo cablea en el cliente de Néctar
 // (fallos de transporte/5xx y escalados). Solo con Telegram configurado Y el puente encendido
 // (bridgeClient nil = puente apagado): sin puente no hay a qué volver. Devuelve nil en otro caso,
-// y quien lo recibe no avisa nada. El envío va directo a Telegram, NO por slog.Error (el
-// AlertHandler lo agruparía con los errores comunes).
+// y quien lo recibe no avisa nada; main corre su Start. El envío va directo a Telegram, NO por
+// slog.Error (el AlertHandler lo agruparía con los errores comunes).
 func wireUrgentAlerter(cfg *config.Config, tgClient *tg.Client, bridgeClient *nectar.Client) *monitor.UrgentAlerter {
 	if tgClient == nil || bridgeClient == nil {
 		return nil

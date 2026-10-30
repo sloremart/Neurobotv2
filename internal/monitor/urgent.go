@@ -36,22 +36,40 @@ var urgentTriggerLabels = map[UrgentTrigger]string{
 	TriggerEscalationFailing: "Escalaciones a Néctar fallando",
 }
 
+// urgentQueueSize acota los avisos pendientes de envío; urgentSendTimeout, cuánto espera cada uno a
+// Telegram. Con el enfriamiento por disparador nunca hay más de unos pocos en vuelo.
+const (
+	urgentQueueSize   = 16
+	urgentSendTimeout = 10 * time.Second
+)
+
 // UrgentAlerter manda el aviso urgente. Por disparador, a lo sumo un aviso por cooldown: mientras
 // el problema siga, se repite cada cooldown. Un receptor nil no hace nada (Telegram sin configurar o
 // puente de Néctar apagado).
+//
+// Fire y Count NUNCA bloquean a quien los llama (un envío a Néctar, una corrida de recordatorios):
+// la decisión (enfriamiento, ventana) es síncrona bajo el candado y el envío lo hace Start en su
+// propia goroutine, como el AlertHandler de internal/telegram.
 type UrgentAlerter struct {
 	send      func(ctx context.Context, text string) error
 	guidePath string
 	cooldown  time.Duration
 	now       func() time.Time
+	queue     chan urgentMessage
 
 	mu        sync.Mutex
 	lastFired map[UrgentTrigger]time.Time
-	hits      map[UrgentTrigger][]time.Time // ocurrencias de Count dentro de la ventana
+	hits      map[UrgentTrigger][]time.Time // últimas ocurrencias de Count dentro de la ventana (≤ umbral)
+}
+
+type urgentMessage struct {
+	trigger UrgentTrigger
+	text    string
 }
 
 // NewUrgentAlerter arma el aviso. send es el envío directo a Telegram (tg.Client.SendMessage),
 // guidePath la ruta de la guía de vuelta a Bird y now el reloj (inyectable para las pruebas).
+// Los avisos salen solo con Start corriendo.
 func NewUrgentAlerter(send func(ctx context.Context, text string) error, guidePath string,
 	cooldown time.Duration, now func() time.Time,
 ) *UrgentAlerter {
@@ -60,15 +78,47 @@ func NewUrgentAlerter(send func(ctx context.Context, text string) error, guidePa
 		guidePath: guidePath,
 		cooldown:  cooldown,
 		now:       now,
+		queue:     make(chan urgentMessage, urgentQueueSize),
 		lastFired: map[UrgentTrigger]time.Time{},
 		hits:      map[UrgentTrigger][]time.Time{},
 	}
 }
 
-// Fire manda el aviso del disparador salvo que ya haya salido uno dentro del enfriamiento.
-// El envío no hereda la cancelación de quien dispara: una petición vencida por tiempo es justo la
-// señal que se avisa (el cliente de Telegram tiene su propio timeout).
-func (a *UrgentAlerter) Fire(ctx context.Context, trigger UrgentTrigger, detail string) {
+// Start envía los avisos encolados, cada uno con su propio timeout. Bloquea hasta que ctx se
+// cancela; al apagar, intenta los que quedaban en la cola.
+func (a *UrgentAlerter) Start(ctx context.Context) {
+	if a == nil {
+		return
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			for {
+				select {
+				case m := <-a.queue:
+					a.deliver(context.WithoutCancel(ctx), m)
+				default:
+					return
+				}
+			}
+		case m := <-a.queue:
+			a.deliver(ctx, m)
+		}
+	}
+}
+
+func (a *UrgentAlerter) deliver(ctx context.Context, m urgentMessage) {
+	ctx, cancel := context.WithTimeout(ctx, urgentSendTimeout)
+	defer cancel()
+	if err := a.send(ctx, m.text); err != nil {
+		// Warn y no Error: un Error subiría a Telegram por el AlertHandler, que es lo que acaba de fallar.
+		slog.Warn("aviso urgente: falló el envío a Telegram", "trigger", string(m.trigger), "error", err)
+	}
+}
+
+// Fire encola el aviso del disparador salvo que ya haya salido uno dentro del enfriamiento. El
+// enfriamiento se marca al decidir, no al entregar: con Telegram caído no se martillea.
+func (a *UrgentAlerter) Fire(_ context.Context, trigger UrgentTrigger, detail string) {
 	if a == nil {
 		return
 	}
@@ -82,27 +132,33 @@ func (a *UrgentAlerter) Fire(ctx context.Context, trigger UrgentTrigger, detail 
 	a.mu.Unlock()
 
 	slog.Warn("aviso urgente: volver a Bird", "trigger", string(trigger), "detail", detail)
-	if err := a.send(context.WithoutCancel(ctx), a.message(trigger, detail, now)); err != nil {
-		// Warn y no Error: un Error subiría a Telegram por el AlertHandler, que es lo que acaba de fallar.
-		slog.Warn("aviso urgente: falló el envío a Telegram", "trigger", string(trigger), "error", err)
+	select {
+	case a.queue <- urgentMessage{trigger: trigger, text: a.message(trigger, detail, now)}:
+	default:
+		slog.Warn("aviso urgente: cola llena, se descarta", "trigger", string(trigger))
 	}
 }
 
 // Count suma una ocurrencia del disparador y, si en la ventana deslizante hay threshold o más, llama
-// a Fire (que aplica el enfriamiento) con cuántas fueron y desde cuándo.
+// a Fire (que aplica el enfriamiento) con cuántas fueron y desde cuándo. Solo guarda las últimas
+// threshold ocurrencias: una caída sostenida no hace crecer la memoria.
 func (a *UrgentAlerter) Count(ctx context.Context, trigger UrgentTrigger, threshold int, window time.Duration, detail string) {
 	if a == nil {
 		return
 	}
+	threshold = max(threshold, 1)
 	now := a.now()
 	a.mu.Lock()
-	kept := a.hits[trigger][:0]
+	kept := make([]time.Time, 0, threshold)
 	for _, at := range a.hits[trigger] {
 		if now.Sub(at) < window {
 			kept = append(kept, at)
 		}
 	}
 	kept = append(kept, now)
+	if len(kept) > threshold {
+		kept = kept[len(kept)-threshold:]
+	}
 	a.hits[trigger] = kept
 	count, since := len(kept), kept[0]
 	a.mu.Unlock()
@@ -110,7 +166,7 @@ func (a *UrgentAlerter) Count(ctx context.Context, trigger UrgentTrigger, thresh
 	if count < threshold {
 		return
 	}
-	a.Fire(ctx, trigger, fmt.Sprintf("%d en los últimos %s (desde las %s); %s",
+	a.Fire(ctx, trigger, fmt.Sprintf("%d en menos de %s (desde las %s); %s",
 		count, window, since.Format("15:04:05"), detail))
 }
 

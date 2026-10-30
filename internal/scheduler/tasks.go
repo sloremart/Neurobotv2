@@ -201,15 +201,11 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 	// solo para dejar pending (y llamada IVR) a los pacientes que faltaban, sin ninguna apertura.
 	configStopped := false
 	var inDoubt []string
-	// unsent cuenta los recordatorios que no salieron (cada pending para el IVR) para el aviso urgente.
-	unsent := 0
-	unsentReminder := func(phone, apptID, reason string) {
-		unsent++
-		t.registerUnsentReminder(ctx, phone, apptID, reason)
-	}
+	// failed cuenta los envíos que fallaron por la línea (fuera de los en duda), para el aviso urgente.
+	failed := 0
 	defer func() {
 		logInDoubtSummary("confirmation", inDoubt)
-		t.reportUnsent(ctx, "confirmation", unsent, configStopped)
+		t.reportUnsent(ctx, "confirmation", len(inDoubt)+failed, configStopped)
 	}()
 
 	for _, group := range patientGroups {
@@ -248,7 +244,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 		if configStopped {
 			skipped++
-			unsentReminder(phone, firstAppt.ID, "config_stop")
+			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
 			continue
 		}
 
@@ -264,7 +260,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			}
 			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
 				observability.EmitOpts{Phone: phone})
-			unsentReminder(phone, firstAppt.ID, "no_whatsapp")
+			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "no_whatsapp")
 			continue
 		}
 
@@ -299,13 +295,13 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			if errors.Is(err, bird.ErrConversationWithAgent) {
 				skipped++
 				t.skipAgentOwned(ctx, phone, "confirmation", firstAppt.ID)
-				unsentReminder(phone, firstAppt.ID, "agent_owned")
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "agent_owned")
 				continue
 			}
 			if errors.Is(err, nectar.ErrOpenInDoubt) {
 				t.logInDoubt(ctx, phone, "confirmation", firstAppt.ID, err)
 				inDoubt = append(inDoubt, firstAppt.ID)
-				unsentReminder(phone, firstAppt.ID, "in_doubt")
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "in_doubt")
 				continue
 			}
 			// Configuración de Néctar (clave, plantilla, canal): falla igual con todos. Se dejan de
@@ -315,7 +311,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 				t.proactiveConfigStop(ctx, "confirmation", err, len(patientGroups)-visited+1)
 				configStopped = true
 				skipped++
-				unsentReminder(phone, firstAppt.ID, "config_stop")
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
 				continue
 			}
 			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
@@ -324,10 +320,13 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			if errors.Is(err, bird.ErrNonContactable) {
 				slog.Warn("recordatorio suprimido: contacto no alcanzable (sin costo)",
 					"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
-				unsentReminder(phone, firstAppt.ID, "non_contactable")
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "non_contactable")
 			} else {
 				slog.Error("send reminder failed", "phone", utils.MaskPhone(phone), "error", err)
-				unsentReminder(phone, firstAppt.ID, "send_error")
+				if lineSendFailure(err) {
+					failed++
+				}
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "send_error")
 			}
 			continue
 		}
@@ -441,7 +440,7 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 	skipped := 0
 	visited := 0
 	var inDoubt []string
-	// failed cuenta los envíos que fallaron (fuera de los en duda) y configStopped la detención por
+	// failed cuenta los envíos que fallaron por la línea (fuera de los en duda) y configStopped la detención por
 	// configuración: los dos van al aviso urgente de volver a Bird.
 	failed := 0
 	configStopped := false
@@ -530,7 +529,9 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 				break
 			}
 			slog.Error("same-day reminder send failed", "phone", utils.MaskPhone(phone), "error", err)
-			failed++
+			if lineSendFailure(err) {
+				failed++
+			}
 			continue
 		}
 		msgID := proactive.MessageID
@@ -654,9 +655,18 @@ func (t *Tasks) proactiveConfigStop(ctx context.Context, run string, err error, 
 	}
 }
 
+// lineSendFailure dice si un envío fallido es falla de la línea y cuenta para el aviso urgente. No
+// cuentan el tope local de envíos por destinatario, el contacto no alcanzable ni un rechazo
+// permanente del destinatario (p. ej. 400 phone_invalid): ninguno se arregla volviendo a Bird.
+func lineSendFailure(err error) bool {
+	return !bird.IsPermanentSendError(err) && !errors.Is(err, bird.ErrSendRateLimited) &&
+		!errors.Is(err, bird.ErrNonContactable)
+}
+
 // reportUnsent dispara el aviso urgente si la corrida dejó URGENT_UNSENT_THRESHOLD o más
-// recordatorios sin enviar o en duda. Una corrida detenida por configuración ya avisó con
-// TriggerProactiveStopped y cuántos quedaron: no se avisa dos veces por la misma causa. Sin teléfonos.
+// recordatorios en duda o con falla de la línea (no los suprimidos ni los de un agente). Una
+// corrida detenida por configuración ya avisó con TriggerProactiveStopped y cuántos quedaron: no se
+// avisa dos veces por la misma causa. Sin teléfonos.
 func (t *Tasks) reportUnsent(ctx context.Context, run string, unsent int, configStopped bool) {
 	if t.Urgent == nil || t.Cfg == nil || configStopped || unsent == 0 || unsent < t.Cfg.UrgentUnsentThreshold {
 		return

@@ -178,6 +178,7 @@ func main() {
 	// Telegram y el puente encendido; scheduleClient es el cliente del puente (nil si está apagado).
 	urgent := wireUrgentAlerter(cfg, tgClient, scheduleClient)
 	if urgent != nil {
+		safeGo("urgent-alerts", func() { urgent.Start(ctx) })
 		slog.Info("aviso urgente de volver a Bird activo", "cooldown_min", cfg.UrgentAlertCooldownMin)
 	}
 

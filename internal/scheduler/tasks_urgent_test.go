@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
@@ -90,6 +91,53 @@ func TestUrgent_SendErrorsCount(t *testing.T) {
 		if fires := urgent.Fires(); len(fires) != 1 || fires[0].Trigger != monitor.TriggerRemindersUnsent {
 			t.Fatalf("sameDay=%v: un aviso de no enviados: %+v", sameDay, fires)
 		}
+	}
+}
+
+// No cuentan como falla de la línea: el tope local de envíos, el contacto no alcanzable, un rechazo
+// permanente del destinatario (400 phone_invalid) ni, en el de día antes, el paciente con un agente.
+// Con umbral 1, ninguno avisa en ninguna de las dos corridas.
+func TestUrgent_NonLineFailuresDoNotCount(t *testing.T) {
+	cases := []struct {
+		name    string
+		openErr error
+	}{
+		{"tope local", bird.ErrSendRateLimited},
+		{"no contactable", bird.ErrNonContactable},
+		{"rechazo permanente", fmt.Errorf("nectar: POST open: status 400 reason \"phone_invalid\": %w", bird.ErrPermanentSend)},
+		{"con un agente", &bird.AlreadyOpenError{ConversationID: 55, Mine: false}},
+	}
+	for _, sameDay := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s/sameDay=%v", tc.name, sameDay), func(t *testing.T) {
+				rig := newNectarReminderRigN(t, &fakenectar.Bridge{OpenErr: tc.openErr}, sameDay, 2)
+				stopRigTimers(t, rig.nm, 2)
+				urgent := &fakeurgent.Recorder{}
+				rig.tasks.Urgent = urgent
+				rig.tasks.Cfg.UrgentUnsentThreshold = 1
+				rig.run(t, sameDay)
+				if fires := urgent.Fires(); len(fires) != 0 {
+					t.Fatalf("no es falla de la línea: %+v", fires)
+				}
+			})
+		}
+	}
+}
+
+// Los suprimidos por entregas de WhatsApp fallando quedan para el IVR pero no avisan «volver a Bird».
+func TestUrgent_NoWhatsAppDoesNotCount(t *testing.T) {
+	rig := newNectarReminderRigN(t, &fakenectar.Bridge{OpenID: 77}, false, 1)
+	stopRigTimers(t, rig.nm, 1)
+	rig.nm.SetDeliverability(&failingDeliverability{failures: 2})
+	urgent := &fakeurgent.Recorder{}
+	rig.tasks.Urgent = urgent
+	rig.tasks.Cfg.UrgentUnsentThreshold = 1
+	rig.run(t, false)
+	if fires := urgent.Fires(); len(fires) != 0 {
+		t.Fatalf("la supresión no es falla de la línea: %+v", fires)
+	}
+	if rig.nm.PendingCount() != 1 {
+		t.Fatalf("el pending para el IVR sigue: %d", rig.nm.PendingCount())
 	}
 }
 

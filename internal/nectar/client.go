@@ -482,14 +482,15 @@ func (c *Client) exchangeWithHeaders(ctx context.Context, method, path string, i
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.reportDown(ctx, method, path, "transporte: "+err.Error())
+		c.reportDown(ctx, transportClass(err))
 		return reply{}, fmt.Errorf("nectar: %s %s: %w", method, path, &transportError{err: err})
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 500 {
-		c.reportDown(ctx, method, path, fmt.Sprintf("status %d", resp.StatusCode))
-	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Se cuenta DESPUÉS de leer el cuerpo: el 502 meta_rejected se distingue por él.
+	if resp.StatusCode >= 500 {
+		c.reportDown(ctx, fmt.Sprintf("HTTP %d", resp.StatusCode))
+	}
 	slog.Debug("nectar: llamada", "method", method, "path", path, "status", resp.StatusCode,
 		"ms", time.Since(started).Milliseconds())
 	return reply{status: resp.StatusCode, header: resp.Header, body: raw}, nil
@@ -521,7 +522,8 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		if replyReason(raw) == "escalation_disabled" {
 			return ErrEscalationDisabled
 		}
-		return fmt.Errorf("nectar: %s %s: status 403 %s", method, path, strings.TrimSpace(string(raw)))
+		return newStatusError(resp.status, raw,
+			fmt.Sprintf("nectar: %s %s: status 403 %s", method, path, strings.TrimSpace(string(raw))))
 	case resp.status == http.StatusConflict:
 		switch replyReason(raw) {
 		case "window_closed":
@@ -529,9 +531,11 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		case "idempotency_key_reused":
 			return ErrIdempotencyReused
 		}
-		return fmt.Errorf("nectar: %s %s: 409 %s", method, path, strings.TrimSpace(string(raw)))
+		return newStatusError(resp.status, raw,
+			fmt.Sprintf("nectar: %s %s: 409 %s", method, path, strings.TrimSpace(string(raw))))
 	case resp.status < 200 || resp.status > 299:
-		return fmt.Errorf("nectar: %s %s: status %d %s", method, path, resp.status, strings.TrimSpace(string(raw)))
+		return newStatusError(resp.status, raw,
+			fmt.Sprintf("nectar: %s %s: status %d %s", method, path, resp.status, strings.TrimSpace(string(raw))))
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
