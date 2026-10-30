@@ -408,8 +408,9 @@ func TestReminder_ConfigErrorStopsRun(t *testing.T) {
 	}
 }
 
-// Las aperturas EN DUDA de una corrida (la plantilla pudo o no salir; sin pending tampoco habrá
-// IVR) se resumen en UN error al final, con cuántas y qué citas, sin teléfonos.
+// Las aperturas EN DUDA de una corrida (la plantilla pudo o no salir; en el día antes queda el
+// pending del teléfono para el IVR, en el mismo día no hay IVR) se resumen en UN error al final,
+// con cuántas y qué citas, sin teléfonos.
 func TestReminder_InDoubtSummary(t *testing.T) {
 	for _, sameDay := range []bool{false, true} {
 		name := map[bool]string{false: "día antes", true: "mismo día"}[sameDay]

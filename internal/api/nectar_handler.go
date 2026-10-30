@@ -48,6 +48,7 @@ type nectarNotifier interface {
 	HasPending(phone string) bool
 	HandleResponse(phone, payload, conversationID string)
 	HandleInvalidInput(phone, conversationID string) bool
+	AdoptPhonePending(contactPhone, sessionKey, conversationID string) bool
 }
 
 // nectarSeen es la memoria local de event_id vistos: segunda línea detrás del WAL (y la
@@ -511,7 +512,7 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 			break // la fila del WAL se cierra abajo: el replay no debe volver a despacharlo
 		}
 		msg.ContactIdentifier = nectarContactIdentifier(contact)
-		if h.routeNectarInbound(msg) {
+		if h.routeNectarInbound(msg, contact) {
 			// Lo consumió el NotificationManager: el worker no va a cerrar la fila, se cierra
 			// aquí (como el replay de Bird) o el replay de arranque la volvería a despachar.
 			break
@@ -589,9 +590,18 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 // postback sigue tal cual a la máquina de estados y los menús propios del bot no cambian. Una
 // pulsación de plantilla que llega vacía (kind button sin interactive_reply_id, lo de hoy antes
 // del arreglo de Néctar) no es postback y cae en HandleInvalidInput, como un texto libre.
-func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage) bool {
+//
+// Sin pending bajo la conversación, el del teléfono del contacto («+57…», el que deja un
+// recordatorio que no salió) se adopta para esta conversación y sigue el mismo camino. El contacto
+// es el que ya resolvió dispatchNectar (sin otra pregunta a Néctar); sin número (vacío o solo BSUID)
+// no hay teléfono con qué buscar. La guarda de conversación con agente vive en AdoptPhonePending.
+func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage, contact bird.NectarContact) bool {
 	notify := h.nectarNotifierOrNil()
-	if notify == nil || !notify.HasPending(msg.Phone) {
+	if notify == nil {
+		return false
+	}
+	if !notify.HasPending(msg.Phone) &&
+		(contact.Identifier == "" || !notify.AdoptPhonePending("+"+contact.Identifier, msg.Phone, msg.ConversationID)) {
 		return false
 	}
 	if msg.IsPostback {

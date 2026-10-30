@@ -2336,6 +2336,8 @@ type mockPersister struct {
 	resolvedStatus string
 	findAllRows    []PendingRow
 	upserted       []PendingRow // filas escritas por Upsert, en orden
+	rekeyCalls     [][4]string  // {old, new, convID, contactPhone} de cada Rekey
+	rekeyErr       error
 }
 
 func (m *mockPersister) Upsert(_ context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, retryCount int, expiresAt time.Time) error {
@@ -2360,6 +2362,23 @@ func (m *mockPersister) DeleteHistoryOlderThan(_ context.Context, _ int) (int64,
 func (m *mockPersister) FindExpired(_ context.Context) ([]PendingRow, error) { return nil, nil }
 
 func (m *mockPersister) FindAll(_ context.Context) ([]PendingRow, error) { return m.findAllRows, nil }
+
+// Rekey imita el UPDATE de la clave: la fila de oldPhone pasa a newPhone con la conversación y el
+// contacto nuevos. rekeyErr simula una BD caída.
+func (m *mockPersister) Rekey(_ context.Context, oldPhone, newPhone, convID, contactPhone string) error {
+	m.rekeyCalls = append(m.rekeyCalls, [4]string{oldPhone, newPhone, convID, contactPhone})
+	if m.rekeyErr != nil {
+		return m.rekeyErr
+	}
+	for i := range m.findAllRows {
+		if m.findAllRows[i].Phone == oldPhone {
+			m.findAllRows[i].Phone = newPhone
+			m.findAllRows[i].ConversationID = convID
+			m.findAllRows[i].ContactPhone = contactPhone
+		}
+	}
+	return nil
+}
 
 // TestRestorePending_ExpiredProcessedAsync (L10): las notificaciones VENCIDAS no se procesan inline
 // (no bloquean el arranque) sino en una goroutine; las vigentes se restauran con su timer.

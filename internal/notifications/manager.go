@@ -123,6 +123,9 @@ type PreparationFinder interface {
 type NotificationPersister interface {
 	Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, retryCount int, expiresAt time.Time) error
 	UpdateCallID(ctx context.Context, phone, callID string) error
+	// Rekey cambia la clave de la fila de oldPhone a newPhone, con su conversación y su contacto
+	// (adopción del pending de un recordatorio fallido por una conversación de Néctar).
+	Rekey(ctx context.Context, oldPhone, newPhone, convID, contactPhone string) error
 	Resolve(ctx context.Context, phone, status string) error
 	DeleteHistoryOlderThan(ctx context.Context, days int) (int64, error)
 	FindExpired(ctx context.Context) ([]PendingRow, error)
@@ -586,6 +589,102 @@ func (m *NotificationManager) HasPendingForContact(phone string) bool {
 	}
 	val, ok := m.pending.Load(key)
 	return ok && val.(*PendingNotification).ContactPhone == phone
+}
+
+// AdoptPhonePending mueve a sessionKey ("nectar:<id>") el pending de confirmación/reprogramación
+// que quedó bajo el teléfono contactPhone («+57…») porque el recordatorio no salió: con Néctar la
+// respuesta del paciente llega bajo la clave de la conversación, y sin esto no contaría y el IVR
+// de las 13:00 lo llamaría igual. Devuelve true si adoptó.
+//
+// No adopta (y el pending del teléfono sigue para el IVR) si ya hay pending bajo sessionKey, si el
+// del teléfono ya venció (lo procesa su timeout), si la sesión de la conversación está escalada
+// —el paciente lo atiende un agente; el bot no le contesta, igual que el worker— o si no se puede
+// comprobar, ni si la BD no deja cambiar la clave (un reinicio lo restauraría bajo el teléfono).
+// El vencimiento es el que ya tenía: el timer se re-arma con ExpiresAt, no se reinicia.
+func (m *NotificationManager) AdoptPhonePending(contactPhone, sessionKey, conversationID string) bool {
+	if contactPhone == "" || sessionKey == "" || contactPhone == sessionKey || !m.adoptable(contactPhone) || m.HasPending(sessionKey) {
+		return false
+	}
+	if !m.sessionFreeForAdoption(sessionKey) {
+		return false
+	}
+
+	// Los dos candados en orden fijo: otro camino que tome los dos en orden inverso haría deadlock.
+	first, second := contactPhone, sessionKey
+	if second < first {
+		first, second = second, first
+	}
+	if !m.lockPhone(first) {
+		return false
+	}
+	defer m.unlockPhone(first)
+	if !m.lockPhone(second) {
+		return false
+	}
+	defer m.unlockPhone(second)
+
+	// Re-validar bajo los candados: una respuesta, un timeout o un registro pudo cruzarse.
+	if !m.adoptable(contactPhone) || m.HasPending(sessionKey) {
+		return false
+	}
+	if m.persister != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := m.persister.Rekey(ctx, contactPhone, sessionKey, conversationID, contactPhone); err != nil {
+			slog.Error("adopt phone pending: rekey failed, not adopted", "phone", utils.MaskPhone(contactPhone), "error", err)
+			return false
+		}
+	}
+
+	p, _ := m.takePending(contactPhone)
+	if p.Timer != nil {
+		p.Timer.Stop() // un disparo ya en vuelo no encuentra nada bajo la clave vieja
+	}
+	p.Phone = sessionKey
+	p.ConversationID = conversationID
+	p.ContactPhone = contactPhone
+	// Mismo callback que tendría bajo la clave vieja: la gracia post-IVR (seguimiento apagado)
+	// cierra con expireIVRGrace, todo lo demás con handleTimeout.
+	onExpire := m.handleTimeout
+	if p.RetryCount == 3 && !m.cfg.ConfirmFollowupEnabled {
+		onExpire = m.expireIVRGrace
+	}
+	p.Timer = time.AfterFunc(time.Until(p.ExpiresAt), func() { onExpire(sessionKey) })
+	if p.CallID != "" {
+		m.callIDMap.Store(p.CallID, sessionKey) // el DTMF de una llamada en curso sigue correlacionando
+	}
+	m.storePending(sessionKey, p)
+
+	slog.Info("phone pending adopted by nectar conversation",
+		"phone", utils.MaskPhone(contactPhone), "session_key", sessionKey, "type", p.Type)
+	return true
+}
+
+// adoptable: hay bajo phone un pending de confirmación/reprogramación aún vigente.
+func (m *NotificationManager) adoptable(phone string) bool {
+	val, ok := m.pending.Load(phone)
+	if !ok {
+		return false
+	}
+	p := val.(*PendingNotification)
+	return (p.Type == "confirmation" || p.Type == "reschedule") && time.Now().Before(p.ExpiresAt)
+}
+
+// sessionFreeForAdoption: la conversación no está con un agente. Es la señal que respeta el worker
+// (sesión escalada = el bot no procesa); con Néctar la toma de un agente también deja la sesión
+// escalada. Sin repositorio o con error no se puede saber: no se adopta.
+func (m *NotificationManager) sessionFreeForAdoption(sessionKey string) bool {
+	if m.sessionRepo == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess, err := m.sessionRepo.FindCurrentByPhone(ctx, sessionKey)
+	if err != nil {
+		slog.Warn("adopt phone pending: session lookup failed, not adopted", "session_key", sessionKey, "error", err)
+		return false
+	}
+	return sess == nil || sess.Status != session.StatusEscalated
 }
 
 // HandleInvalidInput is called when a patient sends free text while a notification is pending.

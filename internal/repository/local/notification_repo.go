@@ -45,6 +45,19 @@ func (r *NotificationRepo) UpdateCallID(ctx context.Context, phone, callID strin
 	return err
 }
 
+// Rekey pasa la fila de oldPhone a la clave newPhone con su conversación y su contacto (vacío se
+// guarda NULL): la adopción del pending de un recordatorio fallido por una conversación de Néctar.
+// expires_at se reasigna a sí mismo para que ningún ON UPDATE CURRENT_TIMESTAMP lo mueva. Si no hay
+// fila para oldPhone, es no-op.
+func (r *NotificationRepo) Rekey(ctx context.Context, oldPhone, newPhone, convID, contactPhone string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE notification_pending
+		 SET phone = ?, conversation_id = ?, contact_phone = NULLIF(?, ''), expires_at = expires_at
+		 WHERE phone = ?`,
+		newPhone, convID, contactPhone, oldPhone)
+	return err
+}
+
 // Resolve mueve la notificación pendiente a notification_history con su estado final (confirmed,
 // cancelled, rescheduled, expired, escalated_to_ivr, agent_resolved, ...) y la quita de la tabla
 // activa. Conserva conversation_id/bird_message_id para tener evidencia (en qué chat, qué desenlace).

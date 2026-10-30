@@ -257,3 +257,95 @@ func TestNectarInbound_Whitelist(t *testing.T) {
 		})
 	}
 }
+
+// Recordatorio que no salió (pending bajo el teléfono «+57…»): con Néctar, el mensaje del paciente
+// llega bajo "nectar:<id>" y adopta ese pending por el contacto de la conversación, para que su
+// respuesta cuente y el IVR no lo llame.
+
+func phonePendingHandler(t *testing.T, contact bird.NectarContact) (*WebhookHandler, *sinkRecorder, *memInbox, *fakeNectarNotifier) {
+	t.Helper()
+	sink := &sinkRecorder{}
+	inbox := newMemInbox()
+	h := newNectarContactHandler(inbox, sink, &fakenectar.Bridge{ContactValue: contact})
+	notify := newFakeNectarNotifier()
+	notify.phonePending = map[string]bool{"+573001112233": true}
+	h.SetNectarNotifier(notify)
+	return h, sink, inbox, notify
+}
+
+func TestNectarInbound_PhonePendingAdopted_ButtonGoesToHandleResponse(t *testing.T) {
+	h, sink, inbox, notify := phonePendingHandler(t, bird.NectarContact{Identifier: "573001112233"})
+
+	if rec := postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-ad-1", "Confirmar"))); rec.Code != http.StatusOK {
+		t.Fatalf("→ %d", rec.Code)
+	}
+	if got := notify.adoptCalls(); len(got) != 1 || got[0] != [3]string{"+573001112233", "nectar:77", "77"} {
+		t.Fatalf("AdoptPhonePending%v", got)
+	}
+	if got := notify.waitResponse(t); got != [3]string{"nectar:77", "confirm", "77"} {
+		t.Fatalf("HandleResponse%v", got)
+	}
+	if m, _ := sink.counts(); m != 0 {
+		t.Fatalf("el worker no recibe nada, got %d", m)
+	}
+	if !inbox.isDone("e-ad-1") {
+		t.Error("la fila del WAL se cierra")
+	}
+}
+
+func TestNectarInbound_PhonePendingAdopted_TextGoesToInvalidInput(t *testing.T) {
+	h, sink, _, notify := phonePendingHandler(t, bird.NectarContact{Identifier: "573001112233"})
+
+	postNotice(h, signedNotice(nectarTestSecret, inboundBodyConv("e-ad-2", 77)))
+	notify.mu.Lock()
+	invalid := append([][2]string(nil), notify.invalid...)
+	notify.mu.Unlock()
+	if len(invalid) != 1 || invalid[0] != [2]string{"nectar:77", "77"} {
+		t.Fatalf("HandleInvalidInput = %v", invalid)
+	}
+	if m, _ := sink.counts(); m != 0 {
+		t.Fatalf("el worker no recibe nada, got %d", m)
+	}
+}
+
+// La guarda del manager (conversación con agente) rechaza: el mensaje sigue al worker, sin traducir.
+func TestNectarInbound_PhonePendingRefused_GoesToWorker(t *testing.T) {
+	h, sink, _, notify := phonePendingHandler(t, bird.NectarContact{Identifier: "573001112233"})
+	notify.refuse = true
+
+	postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-ad-3", "Confirmar")))
+	if m, _ := sink.counts(); m != 1 || sink.messages[0].PostbackPayload != "Confirmar" {
+		t.Fatalf("sin adopción va al worker tal cual: %+v", sink.messages)
+	}
+	if len(notify.invalid) != 0 {
+		t.Fatalf("sin adopción no hay entrada inválida: %v", notify.invalid)
+	}
+}
+
+// Sin número de contacto (vacío o solo BSUID) no hay teléfono con qué buscar: no se intenta.
+func TestNectarInbound_UnknownContact_NoAdoption(t *testing.T) {
+	for _, c := range []bird.NectarContact{{}, {BSUID: "CO.ABC123"}} {
+		h, sink, _, notify := phonePendingHandler(t, c)
+		postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-ad-4", "Confirmar")))
+		if got := notify.adoptCalls(); len(got) != 0 {
+			t.Fatalf("contacto %+v: no se intenta adoptar, got %v", c, got)
+		}
+		if m, _ := sink.counts(); m != 1 {
+			t.Fatalf("contacto %+v: va al worker, got %d", c, m)
+		}
+	}
+}
+
+// Con pending bajo la conversación, el camino de hoy: ni se intenta adoptar.
+func TestNectarInbound_SessionPending_NoAdoption(t *testing.T) {
+	h, _, _, notify := phonePendingHandler(t, bird.NectarContact{Identifier: "573001112233"})
+	notify.pending["nectar:77"] = true
+
+	postNotice(h, signedNotice(nectarTestSecret, buttonBody("e-ad-5", "Confirmar")))
+	if got := notify.waitResponse(t); got != [3]string{"nectar:77", "confirm", "77"} {
+		t.Fatalf("HandleResponse%v", got)
+	}
+	if got := notify.adoptCalls(); len(got) != 0 {
+		t.Fatalf("no se intenta adoptar, got %v", got)
+	}
+}

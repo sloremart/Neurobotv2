@@ -987,6 +987,11 @@ type fakeNectarNotifier struct {
 	pending   map[string]bool
 	responses chan [3]string
 	invalid   [][2]string
+	// phonePending: teléfonos («+57…») con el pending de un recordatorio que no salió; refuse
+	// simula la guarda del manager (conversación con agente). adopted anota cada intento.
+	phonePending map[string]bool
+	refuse       bool
+	adopted      [][3]string
 }
 
 func newFakeNectarNotifier(pending ...string) *fakeNectarNotifier {
@@ -1012,6 +1017,24 @@ func (f *fakeNectarNotifier) HandleInvalidInput(phone, conversationID string) bo
 	defer f.mu.Unlock()
 	f.invalid = append(f.invalid, [2]string{phone, conversationID})
 	return true
+}
+
+func (f *fakeNectarNotifier) AdoptPhonePending(contactPhone, sessionKey, conversationID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adopted = append(f.adopted, [3]string{contactPhone, sessionKey, conversationID})
+	if f.refuse || !f.phonePending[contactPhone] || f.pending[sessionKey] {
+		return false
+	}
+	delete(f.phonePending, contactPhone)
+	f.pending[sessionKey] = true
+	return true
+}
+
+func (f *fakeNectarNotifier) adoptCalls() [][3]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][3]string(nil), f.adopted...)
 }
 
 func (f *fakeNectarNotifier) waitResponse(t *testing.T) [3]string {
