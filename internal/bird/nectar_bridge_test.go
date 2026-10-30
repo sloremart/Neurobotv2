@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // El desvío a Néctar dentro del cliente de Bird: las conversaciones nectar:* van al puente;
@@ -689,5 +690,123 @@ func TestEscalateToAgentWithSummary_BirdEmptyConversationIDUsesCachedForNote(t *
 	defer mu.Unlock()
 	if len(notes) != 1 {
 		t.Fatalf("la nota con el resumen va a la conversación resuelta: %v", notes)
+	}
+}
+
+// tripwireBridge es un puente que NO debe sonar: cualquier llamada falla la prueba en el acto.
+// Sirve para fijar la transición con dos líneas activas: con el puente encendido, una sesión de
+// Bird (clave = teléfono) se queda entera en Bird.
+type tripwireBridge struct{ t *testing.T }
+
+func (b tripwireBridge) trip(method string) {
+	b.t.Helper()
+	b.t.Errorf("una sesión de Bird llamó al puente de Néctar: %s", method)
+}
+
+func (b tripwireBridge) SendText(context.Context, int64, string) (string, error) {
+	b.trip("SendText")
+	return "", nil
+}
+
+func (b tripwireBridge) SendButtons(context.Context, int64, string, []Button) (string, error) {
+	b.trip("SendButtons")
+	return "", nil
+}
+
+func (b tripwireBridge) SendList(context.Context, int64, string, string, []ListSection) (string, error) {
+	b.trip("SendList")
+	return "", nil
+}
+
+func (b tripwireBridge) SendTemplate(context.Context, int64, TemplateConfig) (string, error) {
+	b.trip("SendTemplate")
+	return "", nil
+}
+
+func (b tripwireBridge) Available(context.Context, int64) (bool, string, error) {
+	b.trip("Available")
+	return false, "", nil
+}
+
+func (b tripwireBridge) Escalate(context.Context, int64, Escalation) error {
+	b.trip("Escalate")
+	return nil
+}
+
+func (b tripwireBridge) Close(context.Context, int64) error {
+	b.trip("Close")
+	return nil
+}
+
+func (b tripwireBridge) ConversationState(context.Context, int64) (string, error) {
+	b.trip("ConversationState")
+	return "", nil
+}
+
+func (b tripwireBridge) IsNotMine(error) bool {
+	b.trip("IsNotMine")
+	return false
+}
+
+func (b tripwireBridge) OpenWithTemplate(context.Context, string, TemplateConfig) (int64, string, error) {
+	b.trip("OpenWithTemplate")
+	return 0, "", nil
+}
+
+func (b tripwireBridge) Contact(context.Context, int64) (NectarContact, error) {
+	b.trip("Contact")
+	return NectarContact{}, nil
+}
+
+func (b tripwireBridge) WindowOpen(context.Context, int64) (bool, error) {
+	b.trip("WindowOpen")
+	return false, nil
+}
+
+// Con el puente ENCENDIDO, cada método de *Client que tiene rama Néctar (todos los que pasan por
+// nectarConversation) deja en Bird una llamada con la clave de Bird, con y sin conversation_id. La
+// lista sale de los llamadores de nectarConversation, no de memoria; SendProactiveTemplate NO está:
+// con el puente encendido abre SIEMPRE por Néctar a propósito (todo envío proactivo sale por la
+// línea nueva), y eso lo fijan sus propias pruebas.
+func TestBirdSessionNeverTouchesNectarWithBridgeOn(t *testing.T) {
+	const phone = "+573001112233"
+	for _, convID := range []string{"", "1a2b3c4d-uuid-de-bird"} {
+		srv, stub := newBirdStub(t)
+		c := NewClientForTest(srv.URL)
+		c.SetNectar(tripwireBridge{t: t})
+		ctx := context.Background()
+
+		_, _ = c.SendText(phone, convID, "hola")
+		_, _ = c.SendButtons(phone, convID, "elige", []Button{{Text: "Sí", Payload: "si"}})
+		_, _ = c.SendList(phone, convID, "b", "Ver", []ListSection{{Title: "s", Rows: []ListRow{{ID: "r", Title: "fila"}}}})
+		_, _ = c.SendInternalText(phone, convID, "nota")
+		_, _ = c.SendTemplate(phone, TemplateConfig{ProjectID: "p"})
+		// Plazo corto: el primer intento de asignar sí llega a Bird; los reintentos (1 s, 2 s, 3 s)
+		// no añaden nada a lo que se prueba.
+		escCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		_, _, _ = c.EscalateToAgentWithSummary(escCtx, convID, phone, "team", "Equipo", "Paciente", "fallback",
+			Escalation{Reason: "patient_asked_for_human", Summary: "RESUMEN", ResolveLock: "cita_pendiente"})
+		cancel()
+		_ = c.MarkConversationEscalated(phone, convID, "Equipo", "Paciente")
+		_ = c.UnassignFeedItem(phone, convID, false) // retorno al bot
+		_ = c.UnassignFeedItem(phone, convID, true)
+		_ = c.CloseFeedItems(phone, convID)
+		_ = c.TagConversation(phone, convID, "tag")
+		_ = c.HasAvailableAgentsFor(phone, convID)
+		_, _ = c.LookupConversationByPhone(phone)
+		_, _ = c.CreateConversationForPhone(ctx, phone)
+		_ = c.FetchMessageText("msg-1")
+		if _, err := c.ConversationState(ctx, phone, convID); !errors.Is(err, ErrNoConversationState) {
+			t.Errorf("conv=%q: una sesión de Bird no tiene estado en Néctar: %v", convID, err)
+		}
+		if _, ok := c.NectarWindowOpen(ctx, phone); ok {
+			t.Errorf("conv=%q: la ventana de una sesión de Bird no se le pregunta a Néctar", convID)
+		}
+		if _, ok, _ := c.NectarContact(ctx, phone); ok {
+			t.Errorf("conv=%q: el contacto de una sesión de Bird no se le pregunta a Néctar", convID)
+		}
+		if len(stub.requests()) == 0 {
+			t.Fatalf("conv=%q: el camino de Bird no se ejecutó: la prueba no prueba nada", convID)
+		}
 	}
 }
