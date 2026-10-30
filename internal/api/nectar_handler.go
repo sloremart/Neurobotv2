@@ -333,7 +333,7 @@ func (h *WebhookHandler) nectarNotifierOrNil() nectarNotifier {
 // (PARA-EL-EQUIPO-DEL-BOT.md §1, contrato §8.6).
 //
 // Orden, y por qué: (1) verificar la firma ANTES de leer nada del cuerpo; (1b) con el puente
-// apagado, acusar y descartar (ver abajo); (2) persistir con
+// apagado, acusar y descartar tras parsear (ver abajo); (2) persistir con
 // dedupe por event_id ANTES de contestar 2xx — si el bot cae después, el replay del WAL lo
 // recupera; si Néctar reintenta, el duplicado se reconoce y no se despacha; (3) 200;
 // (4) despachar. Cualquier no-2xx lo reintenta Néctar, así que solo se contesta 5xx cuando
@@ -363,21 +363,27 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// PUENTE APAGADO (vuelta a Bird): el aviso se acusa y se DESCARTA antes de interpretarlo y de
-	// persistir nada — ni WAL, ni pool, ni el cuarto aviso. Sin puente el bot no tiene cómo
-	// contestarle a esa conversación, y procesarla podría tocar SIESA (confirmar una cita) sin
-	// que el paciente reciba respuesta. 200 y no 503: Néctar reintenta todo no-2xx sin corte
-	// mientras dura la ventana de 24 h y, al volver el puente, entregaría el atraso entero (con
-	// mensajes viejos) en tandas de 100. Esos pacientes los rescata a mano un supervisor.
+	n, err := nectar.ParseNotice(body)
+
+	// PUENTE APAGADO (vuelta a Bird): el aviso se acusa y se DESCARTA sin persistir nada — ni WAL,
+	// ni dedupe, ni pool. Sin puente el bot no tiene cómo contestarle a esa conversación, y
+	// procesarla podría tocar SIESA (confirmar una cita) sin que el paciente reciba respuesta. 200
+	// y no 503 (ni 400 si no se pudo leer): Néctar reintenta todo no-2xx sin corte mientras dura
+	// la ventana de 24 h y, al volver el puente, entregaría el atraso entero (con mensajes viejos)
+	// en tandas de 100. Esos pacientes los rescata a mano un supervisor. El cuarto aviso recibe su
+	// respuesta de siempre («agent», la única de Neuro), porque Néctar la necesita para enrutar.
 	if !h.nectarBridgeOn {
 		slog.Warn("nectar: aviso descartado, el puente está apagado", "reason", "bridge_off")
+		if err == nil && n.Kind == nectar.KindConversationOpenedByAgent {
+			writeNectarReplyToAgent(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ignored","reason":"bridge_off"}`))
 		return
 	}
 
-	n, err := nectar.ParseNotice(body)
 	if err != nil {
 		// Firmado por Néctar pero inutilizable (sin event_id, sin conversación, JSON roto):
 		// es un defecto de contrato, no de transporte. 400 en vez de 200 a propósito: el

@@ -165,6 +165,7 @@ type mockMessageSender struct {
 	lookupConvID     string // returned by LookupConversationByPhone
 	lookupConvErr    error
 	lookupConvCalled bool
+	unassignErr      error // returned by UnassignFeedItem
 }
 
 type sentMsg struct {
@@ -214,7 +215,7 @@ func (m *mockMessageSender) SendInternalText(phone, _, text string) (string, err
 }
 
 func (m *mockMessageSender) UnassignFeedItem(_, _ string, _ bool) error {
-	return nil
+	return m.unassignErr
 }
 
 func (m *mockMessageSender) CloseFeedItems(_, conversationID string) error {

@@ -1415,8 +1415,9 @@ func (m *NotificationManager) handleTimeout(phone string) {
 // cuando el pending ya terminó SIN respuesta y sin escalar: se llama solo desde esas ramas, después
 // de que la lógica de siempre acabó con la cita o la entrada, y no cambia nada de ella. Solo para
 // claves "nectar:<id>" y solo si no hay sesión viva bajo la clave (activa o escalada); sin poder
-// comprobarlo, no se cierra. Con el puente apagado no sale nada (sin ConversationID, CloseFeedItems
-// no tiene a quién cerrar en Bird). «Ya no es mía» lo ignora CloseFeedItems: el objetivo está cumplido.
+// comprobarlo, no se cierra. Con el puente apagado no sale nada: CloseFeedItems devuelve
+// ErrNectarBridgeOff sin tocar Bird, y eso es «nada que cerrar», no una falla. «Ya no es mía» lo
+// ignora CloseFeedItems: el objetivo está cumplido.
 func (m *NotificationManager) closeIdleNectarConversation(p *PendingNotification) {
 	if p == nil || !session.IsNectarSession(p.Phone) || m.sessionRepo == nil || m.birdClient == nil {
 		return
@@ -1432,7 +1433,11 @@ func (m *NotificationManager) closeIdleNectarConversation(p *PendingNotification
 	if current != nil {
 		return // la conversación sigue en uso
 	}
-	if err := m.birdClient.CloseFeedItems(p.Phone, ""); err != nil {
+	err = m.birdClient.CloseFeedItems(p.Phone, "")
+	if errors.Is(err, bird.ErrNectarBridgeOff) {
+		return
+	}
+	if err != nil {
 		slog.Warn("nectar: cerrar la conversación sin respuesta falló",
 			"phone", utils.MaskPhone(p.Phone), "type", p.Type, "error", err)
 		return

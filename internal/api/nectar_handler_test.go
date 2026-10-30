@@ -1179,16 +1179,19 @@ func newBridgeOffHandler(inbox InboxPersister, sink *sinkRecorder) *WebhookHandl
 	return h
 }
 
-// Con el puente apagado, ningún aviso —tampoco el cuarto, que se resuelve en la respuesta— se
-// persiste en el WAL, llega al pool ni se procesa: se acusa con 200 y el cuerpo bridge_off.
+// Con el puente apagado, ningún aviso se persiste en el WAL, llega al pool ni se procesa: se acusa
+// con 200 y el cuerpo bridge_off, también si no se puede leer (nunca 400: Néctar lo reintentaría).
+// El cuarto aviso recibe su respuesta de siempre, «agent», sin dejar rastro.
 func TestHandleNectarNotice_BridgeOffAcksAndDiscards(t *testing.T) {
-	bodies := map[string]string{
-		"mensaje_entrante":                inboundBody("e-off-1"),
-		"conversacion_resuelta":           `{"event_id":"e-off-2","kind":"conversacion_resuelta","conversation_id":1234,"occurred_at":"2026-08-11T20:15:04Z"}`,
-		"conversacion_abierta_por_agente": openedBody,
+	cases := []struct{ name, eventID, body, want string }{
+		{"mensaje_entrante", "e-off-1", inboundBody("e-off-1"), nectarBridgeOffBody},
+		{"conversacion_resuelta", "e-off-2", `{"event_id":"e-off-2","kind":"conversacion_resuelta","conversation_id":1234,"occurred_at":"2026-08-11T20:15:04Z"}`, nectarBridgeOffBody},
+		{"conversacion_abierta_por_agente", "e-ap-1", openedBody, `{"respuesta_va_a":"agent"}`},
+		{"ilegible", "", `{"kind":"mensaje_entrante"`, nectarBridgeOffBody},
 	}
-	for kind, body := range bodies {
-		t.Run(kind, func(t *testing.T) {
+	for _, tc := range cases {
+		body := tc.body
+		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer
 			previous := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
@@ -1198,14 +1201,17 @@ func TestHandleNectarNotice_BridgeOffAcksAndDiscards(t *testing.T) {
 			sink := &sinkRecorder{}
 			h := newBridgeOffHandler(inbox, sink)
 			rec := postNotice(h, signedNotice(nectarTestSecret, body))
-			if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != nectarBridgeOffBody {
-				t.Fatalf("puente apagado → 200 %s, got %d %s", nectarBridgeOffBody, rec.Code, rec.Body.String())
+			if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != tc.want {
+				t.Fatalf("puente apagado → 200 %s, got %d %s", tc.want, rec.Code, rec.Body.String())
 			}
 			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 				t.Errorf("Content-Type = %q", ct)
 			}
 			if len(inbox.rows) != 0 {
 				t.Errorf("con el puente apagado nada se escribe en el WAL: %v", inbox.rows)
+			}
+			if tc.eventID != "" && !h.nectarSeenIDs.claim(tc.eventID, time.Now()) {
+				t.Errorf("con el puente apagado el aviso no pasa por la dedupe: %s", tc.eventID)
 			}
 			if m, c := sink.counts(); m+c != 0 {
 				t.Errorf("con el puente apagado nada llega al pool: mensajes=%d comandos=%d", m, c)

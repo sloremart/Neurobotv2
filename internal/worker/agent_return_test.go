@@ -569,6 +569,34 @@ func TestHandleAgentResume_NectarNotifPendingOptionRunsTheShortcut(t *testing.T)
 	}
 }
 
+// Vuelta a Bird: desasignar una conversación de Néctar sin puente devuelve ErrNectarBridgeOff. Es
+// esperado, así que no sale como Error (que iría a la alerta de Telegram); la acción se entrega igual.
+func TestHandleAgentResume_NectarNotifPendingBridgeOffIsNotAnError(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(previous)
+
+	pool, sess, spy, _, _ := notifPendingReturnSession(t)
+	asNectar(sess)
+	pool.birdClient.(*mockMessageSender).unassignErr = bird.ErrNectarBridgeOff
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: "confirm",
+	})
+
+	if len(spy.actions) != 1 {
+		t.Fatalf("la acción se entrega igual, got %v", spy.actions)
+	}
+	line := logged.String()
+	if strings.Contains(line, "level=ERROR") {
+		t.Errorf("sin puente no es un Error: %s", line)
+	}
+	if !strings.Contains(line, "level=WARN") {
+		t.Errorf("queda un Warn: %s", line)
+	}
+}
+
 // El comando de Bird no cambia: mismo resultado que antes de mover la traducción.
 func TestHandleAgentResume_BirdNotifPendingCommandUnchanged(t *testing.T) {
 	pool, sess, spy, completed, resumedTo := notifPendingReturnSession(t)

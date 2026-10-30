@@ -953,7 +953,11 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			}
 			// La marca de la cola no sobrevive a una sesión completada (igual que en handleAgentClose).
 			p.clearNextDayQueueMark(ctx, sess)
-			if err := p.birdClient.UnassignFeedItem(cmd.Phone, convID, false); err != nil {
+			if err := p.birdClient.UnassignFeedItem(cmd.Phone, convID, false); errors.Is(err, bird.ErrNectarBridgeOff) {
+				// Vuelta a Bird: la conversación de Néctar no tiene canal. Es esperado, no una falla
+				// (un Error iría a la alerta de Telegram).
+				slog.Warn("notif_pending: unassign sin puente de Néctar", "error", err, "phone", utils.MaskPhone(cmd.Phone), "conversation_id", convID)
+			} else if err != nil {
 				slog.Error("notif_pending: unassign feed item failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "conversation_id", convID)
 			}
 			p.notifyResponder.HandleNotifPendingCommand(sess.PhoneNumber, action, convID, appointmentID, notifType,

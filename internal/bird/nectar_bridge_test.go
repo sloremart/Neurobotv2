@@ -257,7 +257,7 @@ func TestANumericConversationIDAloneIsNotEnough(t *testing.T) {
 // Sin puente no hay desvío: una clave nectar:* tampoco cae al camino de Bird (antes hacía el PATCH
 // de BSUID con whatsappusername=nectar:42 y creaba conversaciones): no tiene canal y lo dice con
 // ErrNectarBridgeOff. Método por método lo fija TestNectarConversationNeverTouchesBirdWithBridgeOff.
-func TestWithoutBridgeNothingChanges(t *testing.T) {
+func TestWithoutBridgeNectarKeyHasNoChannel(t *testing.T) {
 	srv, stub := newBirdStub(t)
 	c := NewClientForTest(srv.URL) // c.nectar == nil
 	if _, ok := c.nectarConversation("nectar:42", "42"); ok {
@@ -956,6 +956,13 @@ func TestNectarConversationNeverTouchesBirdWithBridgeOff(t *testing.T) {
 		}
 		if sent != (ProactiveSend{}) {
 			t.Errorf("sin envío no hay resultado, got %+v", sent)
+		}
+	})
+
+	t.Run("HasAvailableAgentsFor", func(t *testing.T) {
+		c := NewClientForTest("http://unused")
+		if c.HasAvailableAgentsFor(key, "") {
+			t.Error("sin puente no hay a quién escalar una conversación de Néctar")
 		}
 	})
 

@@ -1,10 +1,13 @@
 package notifications
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -190,11 +193,20 @@ func TestPendingExpired_BirdKey_NoClose(t *testing.T) {
 	assertClosed(t, r, nil)
 }
 
-// Con el puente apagado, una clave "nectar:" no manda el cierre a Bird.
+// Con el puente apagado, una clave "nectar:" no manda el cierre a Bird, y no es una falla: no hay
+// nada que cerrar (sin Warn).
 func TestPendingExpired_NectarKeyBridgeOff_NothingToBird(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(previous)
+
 	r := newCloseRig(t, &config.Config{}, false)
 	r.expire(nectarPending("cancellation"))
 	assertClosed(t, r, nil)
+	if strings.Contains(logged.String(), "level=WARN") {
+		t.Errorf("sin puente no hay nada que cerrar, no es una falla: %s", logged.String())
+	}
 }
 
 // «Ya no es mía» al cerrar: la conversación ya no es del bot, se ignora. Se intentó una vez.
