@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 )
@@ -117,14 +118,17 @@ func (a *UrgentAlerter) deliver(ctx context.Context, m urgentMessage) {
 }
 
 // Fire encola el aviso del disparador salvo que ya haya salido uno dentro del enfriamiento. El
-// enfriamiento se marca al decidir, no al entregar: con Telegram caído no se martillea.
+// enfriamiento se marca al decidir, no al entregar: con Telegram caído no se martillea. Si la cola
+// está llena el aviso no sale y el enfriamiento se devuelve: el siguiente Fire del mismo disparador
+// lo intenta de nuevo, en vez de quedarse sin aviso todo el enfriamiento.
 func (a *UrgentAlerter) Fire(_ context.Context, trigger UrgentTrigger, detail string) {
 	if a == nil {
 		return
 	}
 	now := a.now()
 	a.mu.Lock()
-	if last, ok := a.lastFired[trigger]; ok && now.Sub(last) < a.cooldown {
+	previous, hadPrevious := a.lastFired[trigger]
+	if hadPrevious && now.Sub(previous) < a.cooldown {
 		a.mu.Unlock()
 		return
 	}
@@ -136,6 +140,16 @@ func (a *UrgentAlerter) Fire(_ context.Context, trigger UrgentTrigger, detail st
 	case a.queue <- urgentMessage{trigger: trigger, text: a.message(trigger, detail, now)}:
 	default:
 		slog.Warn("aviso urgente: cola llena, se descarta", "trigger", string(trigger))
+		a.mu.Lock()
+		// Solo si la marca sigue siendo la de este Fire: otro pudo marcar después.
+		if a.lastFired[trigger].Equal(now) {
+			if hadPrevious {
+				a.lastFired[trigger] = previous
+			} else {
+				delete(a.lastFired, trigger)
+			}
+		}
+		a.mu.Unlock()
 	}
 }
 
@@ -166,8 +180,19 @@ func (a *UrgentAlerter) Count(ctx context.Context, trigger UrgentTrigger, thresh
 	if count < threshold {
 		return
 	}
-	a.Fire(ctx, trigger, fmt.Sprintf("%d en menos de %s (desde las %s); %s",
-		count, window, since.Format("15:04:05"), detail))
+	// «al menos»: solo se guardan las últimas threshold ocurrencias, así que count no es el total.
+	a.Fire(ctx, trigger, fmt.Sprintf("al menos %d en menos de %s (desde las %s); %s",
+		count, wholeMinutes(window), since.Format("15:04:05"), detail))
+}
+
+// wholeMinutes dice la ventana en minutos enteros («5 minutos», «1 minuto») y no «5m0s»: la lee la
+// persona de turno. Las ventanas se configuran en minutos; una fracción se redondea hacia arriba.
+func wholeMinutes(d time.Duration) string {
+	m := max(int(math.Ceil(d.Minutes())), 1)
+	if m == 1 {
+		return "1 minuto"
+	}
+	return fmt.Sprintf("%d minutos", m)
 }
 
 // message arma el texto (HTML de Telegram; el detalle se escapa). Sin PII: los llamadores no ponen

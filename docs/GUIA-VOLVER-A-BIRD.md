@@ -66,8 +66,8 @@ advertencia y no salen ahí. Hacer igual las comprobaciones de abajo.
    ```
 3. Abrir el `.env` (`nano .env`) y cambiar SOLO esto:
    - `NECTAR_BASE_URL=` → dejarla **vacía** (el valor que tenía queda en `.env.antes-de-bird`).
-   - `NEW_LINE_ANNOUNCEMENT=` → dejarla **vacía**. Si no, el saludo de la línea de siempre seguiría
-     mandando a los pacientes a la línea nueva, que es justo la que falla.
+   - `NEW_LINE_ANNOUNCEMENT=` → recomendado dejarla **vacía**, pero no es obligatorio: sin
+     `NECTAR_BASE_URL` el bot ya no anuncia la línea nueva aunque el texto siga puesto.
    - Las demás variables `NECTAR_*` se dejan como están: sin `NECTAR_BASE_URL` no se usan, y así
      volver es solo poner la URL otra vez.
 4. Guardar y reiniciar el bot para que lea el `.env` nuevo:
@@ -137,9 +137,11 @@ Texto sugerido para que el agente le escriba al paciente rescatado:
   para el call center.
 - Los recordatorios del **mismo día** (los que salen cada hora) no tienen llamada: los que quedaron
   sin respuesta no se recuperan solos.
-- **Caso raro:** si al reiniciar quedaban mensajes de Néctar recibidos pero sin terminar de procesar,
-  el bot los procesa al arrancar (por ejemplo, un «Confirmar» puede dejar la cita confirmada). Su
-  respuesta al paciente no sale, igual que todo lo demás de Néctar.
+- **Mensajes de Néctar a medio procesar:** si al reiniciar quedaban mensajes de Néctar recibidos
+  pero sin terminar de procesar, el bot **ya no los procesa** (ni al arrancar ni después): los da
+  por cerrados sin tocar las citas, igual que lo que llegue de Néctar mientras esté en Bird. Un
+  «Confirmar» que quedó así no confirma la cita; esa cita sigue el camino de arriba (llamada de las
+  13:00 o call center).
 
 ---
 

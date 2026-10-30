@@ -159,6 +159,8 @@ func main() {
 	if nectarErr != nil {
 		slog.Error("el desvío a Néctar queda APAGADO", "error", nectarErr)
 	}
+	// Los handlers (el anuncio de la línea nueva) preguntan por el puente a la configuración.
+	cfg.NectarBridgeArmed = nectarBridge != nil
 	if nectarBridge != nil {
 		birdClient.SetNectar(nectarBridge)
 		slog.Info("Néctar activo", "host", nectar.HostOf(nectarClient.BaseURL()), "notice_secret", cfg.NectarNoticeSecret != "")
@@ -172,11 +174,11 @@ func main() {
 	if nectarBridge != nil {
 		scheduleClient = nectarClient
 	}
-	startNectarSchedule(ctx, cfg, scheduleClient, schedule)
 
 	// Aviso urgente de volver a Bird (Telegram directo, aparte de los errores comunes): solo con
 	// Telegram y el puente encendido; scheduleClient es el cliente del puente (nil si está apagado).
-	urgent := wireUrgentAlerter(cfg, tgClient, scheduleClient)
+	// wireNectarRuntime lo cablea ANTES de arrancar el horario (su primera petición a Néctar).
+	urgent := wireNectarRuntime(ctx, cfg, tgClient, scheduleClient, schedule)
 	if urgent != nil {
 		safeGo("urgent-alerts", func() { urgent.Start(ctx) })
 		slog.Info("aviso urgente de volver a Bird activo", "cooldown_min", cfg.UrgentAlertCooldownMin)

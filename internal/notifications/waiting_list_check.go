@@ -11,7 +11,6 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
-	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
@@ -312,10 +311,7 @@ func (m *NotificationManager) notifyWaitingEntries(ctx context.Context, entries 
 				slog.Warn("wl_check: update status tras fallo de envio", "entry_id", entry.ID, "status", status, "error", uerr)
 			}
 			if configErr {
-				bird.LogProactiveConfigStop("waiting_list", err, len(entries)-i)
-				if m.urgent != nil {
-					m.urgent.Fire(ctx, monitor.TriggerProactiveStopped, bird.ProactiveConfigStopDetail("waiting_list", err, len(entries)-i))
-				}
+				bird.ReportProactiveConfigStop(ctx, m.urgent, "waiting_list", err, len(entries)-i)
 				return notified, err
 			}
 			continue

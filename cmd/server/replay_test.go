@@ -364,3 +364,38 @@ func TestReplayNectarRow_LogsTheRedispatchAndKeepsEachPathsErrorString(t *testin
 		})
 	}
 }
+
+// Con el puente apagado, DispatchNectarNotice no despacha y devuelve bird.ErrNectarBridgeOff: las
+// dos rutas de replay cierran la fila (no se reintenta en cada corrida ni al volver el puente) y no
+// la registran como error (el Warn bridge_off ya lo dejó el despachador; un Error subiría a Telegram).
+func TestReplayNectarRow_BridgeOffClosesRowWithoutError(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		run  func(f *fakeReplay, row localrepo.InboxRow)
+	}{
+		{"startup replay", func(f *fakeReplay, row localrepo.InboxRow) {
+			replayPendingRows(context.Background(), []localrepo.InboxRow{row}, f.deps())
+		}},
+		{"stale replay", func(f *fakeReplay, row localrepo.InboxRow) {
+			src := inboxReplaySource{nectar: f, repo: staleRows{fakeReplay: f, rows: []localrepo.InboxRow{row}}}
+			if msgs, err := src.PendingOlderThan(context.Background(), 5); err != nil || len(msgs) != 0 {
+				t.Fatalf("msgs=%+v err=%v", msgs, err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fakeReplay{dispatchErr: bird.ErrNectarBridgeOff}
+			row := localrepo.InboxRow{ID: "e-off", RawBody: nectarInboundBody, MsgType: "nectar_notice"}
+			logged := captureLogs(t, func() { c.run(f, row) })
+			if len(f.done) != 1 || f.done[0] != "e-off" {
+				t.Fatalf("la fila se cierra: %v", f.done)
+			}
+			if len(f.enqueued) != 0 {
+				t.Fatalf("nada al pool: %+v", f.enqueued)
+			}
+			if strings.Contains(logged, "level=ERROR") || strings.Contains(logged, "ilegible") {
+				t.Errorf("puente apagado no es un aviso ilegible: %s", logged)
+			}
+		})
+	}
+}

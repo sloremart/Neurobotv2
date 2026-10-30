@@ -1,11 +1,13 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
@@ -14,7 +16,7 @@ import (
 
 // Aviso urgente de volver a Bird desde las corridas de recordatorios (Tasks.Urgent).
 
-// Corrida detenida por configuración: el llamador de LogProactiveConfigStop dispara el aviso, una
+// Corrida detenida por configuración: ReportProactiveConfigStop dispara el aviso, una
 // vez, con la corrida y cuántos quedaron. No se suma el aviso de «sin enviar»: los pacientes que
 // la detención dejó atrás ya van contados en este (config_stop no cuenta para el umbral).
 func TestUrgent_ConfigStopFiresProactiveStopped(t *testing.T) {
@@ -149,5 +151,22 @@ func TestUrgent_NilReporterNoChange(t *testing.T) {
 	rig.run(t, false)
 	if rig.nm.PendingCount() != 2 {
 		t.Fatalf("los 2 pending para el IVR siguen: %d", rig.nm.PendingCount())
+	}
+}
+
+// reportUnsent: una corrida sin no enviados nunca avisa. Config.Load garantiza un umbral ≥ 1
+// (parsePositiveInt), pero una Config armada a mano puede traer 0 y tampoco debe avisar por 0.
+func TestReportUnsent_ZeroUnsentNeverFires(t *testing.T) {
+	for _, threshold := range []int{0, 1} {
+		urgent := &fakeurgent.Recorder{}
+		tasks := &Tasks{Urgent: urgent, Cfg: &config.Config{UrgentUnsentThreshold: threshold}}
+		tasks.reportUnsent(context.Background(), "confirmation", 0, false)
+		if fires := urgent.Fires(); len(fires) != 0 {
+			t.Fatalf("umbral %d, 0 sin enviar: %+v", threshold, fires)
+		}
+		tasks.reportUnsent(context.Background(), "confirmation", 1, false)
+		if fires := urgent.Fires(); len(fires) != 1 || fires[0].Trigger != monitor.TriggerRemindersUnsent {
+			t.Fatalf("umbral %d, 1 sin enviar avisa: %+v", threshold, fires)
+		}
 	}
 }

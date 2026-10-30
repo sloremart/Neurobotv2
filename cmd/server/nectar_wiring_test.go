@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -101,4 +103,33 @@ func TestUrgentAlerter_OnlyWithTelegramAndBridge(t *testing.T) {
 	if a := wireUrgentAlerter(cfg, tgClient, client); a == nil {
 		t.Fatal("con Telegram y puente hay aviso")
 	}
+}
+
+// El aviso urgente se cablea en el cliente de Néctar ANTES de la primera petición: la goroutine del
+// horario lee al arrancar, y con Néctar caído ese primer 5xx tiene que contar (y sin carrera entre
+// SetUrgentReporter y la lectura de c.urgent; go test -race).
+func TestWireNectarRuntime_FirstScheduleFailureCounts(t *testing.T) {
+	logs := captureSlog(t)
+	f := newFakeScheduleServer(t, withSaturday)
+	f.mu.Lock()
+	f.code = http.StatusServiceUnavailable
+	f.mu.Unlock()
+	cfg := &config.Config{
+		NectarScheduleEnabled: true, NectarScheduleRefreshMin: 60,
+		UrgentAlertCooldownMin: 10, UrgentNectarDownCount: 1, UrgentNectarDownWindowMin: 5,
+		UrgentEscalationFailCount: 3, UrgentEscalationFailWindowMin: 10,
+	}
+	client := nectar.NewClient(f.srv.URL, "clave", "secreto")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Sin Start: el aviso queda en la cola y no sale a Telegram; Fire lo deja en el log.
+	if urgent := wireNectarRuntime(ctx, cfg, tg.NewClient("token-de-prueba", "chat-de-prueba"), client,
+		wireSchedule(cfg)); urgent == nil {
+		t.Fatal("con Telegram y puente hay aviso")
+	}
+	waitFor(t, "el primer fallo del horario cuenta para el aviso urgente", func() bool {
+		return strings.Contains(logs.String(), "aviso urgente: volver a Bird") &&
+			strings.Contains(logs.String(), "trigger=nectar_down")
+	})
 }

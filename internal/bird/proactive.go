@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -60,19 +61,26 @@ func IsProactiveConfigError(err error) bool {
 	return errors.Is(err, ErrProactiveConfig)
 }
 
-// LogProactiveConfigStop deja el ÚNICO error de una corrida de plantillas proactivas que se detuvo
-// por configuración (no uno por paciente): qué corrida, el error y cuántos quedaron sin enviar
-// (unsent cuenta al paciente en el que se detuvo).
-func LogProactiveConfigStop(run string, err error, unsent int) {
-	slog.Error("plantillas proactivas detenidas: error de configuración de Néctar, nada más sale en esta corrida",
-		"run", run, "error", err, "unsent", unsent)
+// ProactiveStopReporter es lo que ReportProactiveConfigStop necesita del aviso urgente de volver a
+// Bird (monitor.UrgentAlerter).
+type ProactiveStopReporter interface {
+	Fire(ctx context.Context, trigger monitor.UrgentTrigger, detail string)
 }
 
-// ProactiveConfigStopDetail es el detalle del aviso urgente de volver a Bird que el llamador de
-// LogProactiveConfigStop dispara (el aviso no vive aquí: este paquete no conoce al alerter). Sin
-// teléfonos: la corrida, cuántos quedaron y la clase del error de Néctar.
-func ProactiveConfigStopDetail(run string, err error, unsent int) string {
-	return fmt.Sprintf("corrida %s detenida por configuración de Néctar; unsent=%d; %v", run, unsent, err)
+// ReportProactiveConfigStop deja el ÚNICO error de una corrida de plantillas proactivas que se detuvo
+// por configuración (no uno por paciente): qué corrida, el error y cuántos quedaron sin enviar
+// (unsent cuenta al paciente en el que se detuvo); y dispara el aviso urgente de volver a Bird. La
+// comparten los tres lotes (avisos administrativos, recordatorios, lista de espera). urgent nil (sin
+// Telegram o con el puente apagado) deja solo el error. El detalle no lleva teléfonos: la corrida,
+// cuántos quedaron y la clase del error de Néctar.
+func ReportProactiveConfigStop(ctx context.Context, urgent ProactiveStopReporter, run string, err error, unsent int) {
+	slog.Error("plantillas proactivas detenidas: error de configuración de Néctar, nada más sale en esta corrida",
+		"run", run, "error", err, "unsent", unsent)
+	if urgent == nil {
+		return
+	}
+	urgent.Fire(ctx, monitor.TriggerProactiveStopped,
+		fmt.Sprintf("corrida %s detenida por configuración de Néctar; unsent=%d; %v", run, unsent, err))
 }
 
 // AlreadyOpenError es el 409 already_open de la apertura: el contacto ya tiene una conversación viva

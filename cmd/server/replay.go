@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 
 	"github.com/neuro-bot/neuro-bot/internal/api"
@@ -55,13 +56,19 @@ type replayDeps struct {
 // Un mensaje_entrante pasa por la misma clasificación que el camino HTTP (dispatchNectar →
 // routeNectarInbound): la respuesta a una notificación pendiente va al NotificationManager y su fila
 // se cierra allí, como en el replay de Bird de abajo; el resto entra al pool por Enqueue (que
-// deduplica por ID). Un aviso ilegible se cierra para no repetirlo en cada corrida.
+// deduplica por ID). Un aviso ilegible se cierra para no repetirlo en cada corrida. Con el puente
+// apagado (bird.ErrNectarBridgeOff) la fila también se cierra, sin Error: no se despachó nada, el
+// despachador ya dejó su Warn bridge_off, y al volver el puente no debe re-despacharse algo viejo.
 func replayNectarRow(ctx context.Context, logPrefix string, row localrepo.InboxRow, r nectarReplayer, c inboxCloser) {
 	slog.Info(logPrefix+": re-despachando aviso de Néctar", "id", row.ID)
-	if err := r.DispatchNectarNotice(ctx, row.RawBody); err != nil {
+	err := r.DispatchNectarNotice(ctx, row.RawBody)
+	switch {
+	case err == nil:
+		return
+	case !errors.Is(err, bird.ErrNectarBridgeOff):
 		slog.Error(logPrefix+": aviso de Néctar ilegible", "id", row.ID, "error", err)
-		_ = c.MarkDone(ctx, row.ID)
 	}
+	_ = c.MarkDone(ctx, row.ID)
 }
 
 // replayPendingRows reprocesa las filas 'pending' del WAL que quedaron sin terminar antes del

@@ -840,13 +840,25 @@ func TestHelpText_PublishedHours(t *testing.T) {
 
 // Mientras conviven las dos líneas, los saludos de la línea de Bird anuncian la nueva
 // (NEW_LINE_ANNOUNCEMENT) con un texto ANTES del menú; el coalescer lo fusiona al body si cabe.
+// Solo con el puente de Néctar armado: la vuelta a Bird apaga el anuncio sin tocar la variable.
 
 const testAnnouncement = "Pronto te atenderemos por nuestra nueva línea de WhatsApp."
 
+// announcementConfig es la configuración con el anuncio y el puente armado.
 func announcementConfig(text string) *config.Config {
 	cfg := sampleConfig()
 	cfg.NewLineAnnouncement = text
+	cfg.NectarBridgeArmed = true
 	return cfg
+}
+
+// Vuelta a Bird (NECTAR_BASE_URL vacía, puente sin armar) con NEW_LINE_ANNOUNCEMENT todavía puesta:
+// no hay línea nueva a la que mandar a nadie, el saludo es el de siempre.
+func TestNewLineAnnouncement_BridgeOffNoAnnouncement(t *testing.T) {
+	cfg := announcementConfig(testAnnouncement)
+	cfg.NectarBridgeArmed = false
+	assertOnlyList(t, runGreetingState(t, cfg, sm.StateGreeting, "+573001112233"))
+	assertOnlyList(t, runGreetingState(t, cfg, sm.StateOutOfHours, "+573001112233"))
 }
 
 // runGreetingState corre GREETING u OUT_OF_HOURS con la sesión dada y devuelve sus mensajes.

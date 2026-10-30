@@ -649,10 +649,7 @@ func logInDoubtSummary(notifType string, apptIDs []string) {
 // proactiveConfigStop deja el único error de la corrida detenida por configuración de Néctar y
 // dispara el aviso urgente de volver a Bird (sin aviso cableado, solo el error de siempre).
 func (t *Tasks) proactiveConfigStop(ctx context.Context, run string, err error, unsent int) {
-	bird.LogProactiveConfigStop(run, err, unsent)
-	if t.Urgent != nil {
-		t.Urgent.Fire(ctx, monitor.TriggerProactiveStopped, bird.ProactiveConfigStopDetail(run, err, unsent))
-	}
+	bird.ReportProactiveConfigStop(ctx, t.Urgent, run, err, unsent)
 }
 
 // lineSendFailure dice si un envío fallido es falla de la línea y cuenta para el aviso urgente. No
@@ -666,9 +663,10 @@ func lineSendFailure(err error) bool {
 // reportUnsent dispara el aviso urgente si la corrida dejó URGENT_UNSENT_THRESHOLD o más
 // recordatorios en duda o con falla de la línea (no los suprimidos ni los de un agente). Una
 // corrida detenida por configuración ya avisó con TriggerProactiveStopped y cuántos quedaron: no se
-// avisa dos veces por la misma causa. Sin teléfonos.
+// avisa dos veces por la misma causa. Sin teléfonos. Config.Load garantiza un umbral ≥ 1
+// (parsePositiveInt); el max cubre una Config armada a mano con 0, para que 0 sin enviar no avise.
 func (t *Tasks) reportUnsent(ctx context.Context, run string, unsent int, configStopped bool) {
-	if t.Urgent == nil || t.Cfg == nil || configStopped || unsent == 0 || unsent < t.Cfg.UrgentUnsentThreshold {
+	if t.Urgent == nil || t.Cfg == nil || configStopped || unsent < max(t.Cfg.UrgentUnsentThreshold, 1) {
 		return
 	}
 	t.Urgent.Fire(ctx, monitor.TriggerRemindersUnsent, fmt.Sprintf(

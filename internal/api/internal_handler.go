@@ -1690,10 +1690,7 @@ func (h *InternalHandler) stopOnProactiveConfig(ctx context.Context, run string,
 	if !bird.IsProactiveConfigError(err) {
 		return false
 	}
-	bird.LogProactiveConfigStop(run, err, unsent)
-	if h.urgent != nil {
-		h.urgent.Fire(ctx, monitor.TriggerProactiveStopped, bird.ProactiveConfigStopDetail(run, err, unsent))
-	}
+	bird.ReportProactiveConfigStop(ctx, h.urgent, run, err, unsent)
 	return true
 }
 

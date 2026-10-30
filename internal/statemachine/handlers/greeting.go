@@ -311,10 +311,11 @@ func buildLocationsText(ctx context.Context, locationRepo LocationReader) string
 }
 
 // announcementFor es el anuncio de la línea nueva para el saludo de esta sesión: solo en la línea
-// de Bird (en la de Néctar el paciente ya está en la línea nueva) y solo con NEW_LINE_ANNOUNCEMENT
-// puesta. Va como texto ANTES del menú; CoalesceMessages lo antepone al body si cabe.
+// de Bird (en la de Néctar el paciente ya está en la línea nueva), solo con NEW_LINE_ANNOUNCEMENT
+// puesta y solo con el puente de Néctar armado: volver a Bird (NECTAR_BASE_URL vacía) lo apaga sin
+// tocar la variable. Va como texto ANTES del menú; CoalesceMessages lo antepone al body si cabe.
 func announcementFor(cfg *config.Config, sess *session.Session) string {
-	if cfg.NewLineAnnouncement == "" || session.IsNectarSession(sess.PhoneNumber) {
+	if cfg.NewLineAnnouncement == "" || !cfg.NectarBridgeArmed || session.IsNectarSession(sess.PhoneNumber) {
 		return ""
 	}
 	return cfg.NewLineAnnouncement

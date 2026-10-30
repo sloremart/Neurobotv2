@@ -1244,21 +1244,59 @@ func TestHandleNectarNotice_BridgeOffStillVerifiesSignature(t *testing.T) {
 	}
 }
 
-// Sin NECTAR_NOTICE_SECRET y con el puente apagado no hay firma que verificar: el aviso se acusa y
-// se descarta igual (el 200 no depende del secreto).
-func TestHandleNectarNotice_BridgeOffWithoutSecretAcks(t *testing.T) {
+// Sin NECTAR_NOTICE_SECRET y con el puente apagado (el default de un bot que nunca tuvo Néctar) la
+// respuesta es la de antes de la transición: 401, sin delatar el puente. Solo un aviso con firma
+// válida recibe el 200 bridge_off.
+func TestHandleNectarNotice_BridgeOffWithoutSecretKeeps401(t *testing.T) {
 	inbox := newMemInbox()
 	sink := &sinkRecorder{}
 	h := newBridgeOffHandler(inbox, sink)
 	h.cfg = &config.Config{}
 	rec := postNotice(h, newNoticeRequest(inboundBody("e-off-4")))
-	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != nectarBridgeOffBody {
-		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), "bridge_off") {
+		t.Fatalf("sin secreto → 401 como antes, got %d %s", rec.Code, rec.Body.String())
 	}
 	if len(inbox.rows) != 0 {
 		t.Errorf("nada en el WAL: %v", inbox.rows)
 	}
 	if m, c := sink.counts(); m+c != 0 {
 		t.Errorf("nada al pool: mensajes=%d comandos=%d", m, c)
+	}
+}
+
+// El replay del WAL (arranque y atascados) con el puente apagado: ninguna fila de Néctar se despacha
+// —procesarla podría mover SIESA sin que el paciente reciba respuesta—. Devuelve
+// bird.ErrNectarBridgeOff para que el replay cierre la fila, con un Warn bridge_off sin PII.
+func TestDispatchNectarNotice_BridgeOffDoesNotDispatch(t *testing.T) {
+	for _, body := range []string{
+		inboundBody("e-off-wal-1"),
+		`{"event_id":"e-off-wal-2","kind":"conversacion_resuelta","conversation_id":1234,"occurred_at":"2026-08-11T20:15:04Z"}`,
+		`no es json`,
+	} {
+		var logged bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+
+		inbox := newMemInbox()
+		sink := &sinkRecorder{}
+		h := newBridgeOffHandler(inbox, sink)
+		err := h.DispatchNectarNotice(context.Background(), body)
+		slog.SetDefault(previous)
+
+		if !errors.Is(err, bird.ErrNectarBridgeOff) {
+			t.Fatalf("puente apagado → ErrNectarBridgeOff, got %v", err)
+		}
+		if m, c := sink.counts(); m+c != 0 {
+			t.Fatalf("nada llega al pool: mensajes=%d comandos=%d", m, c)
+		}
+		line := logged.String()
+		if strings.Count(line, "level=WARN") != 1 || !strings.Contains(line, "bridge_off") {
+			t.Errorf("un Warn bridge_off: %s", line)
+		}
+		for _, pii := range []string{"+570000000000", "Paciente Prueba", "hola"} {
+			if strings.Contains(line, pii) {
+				t.Errorf("el registro trae datos del aviso (%q): %s", pii, line)
+			}
+		}
 	}
 }

@@ -1,13 +1,20 @@
 package bird
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
+	"github.com/neuro-bot/neuro-bot/internal/testutil/fakeurgent"
 )
 
 // SendProactiveTemplate es la puerta de las plantillas que INICIAN la conversación (recordatorios,
@@ -194,5 +201,33 @@ func TestSendProactiveTemplate_NonE164NeverOpens(t *testing.T) {
 	}
 	if !fb.untouched() || len(stub.requests()) != 0 {
 		t.Fatalf("ninguna llamada: puente=%+v bird=%v", fb, stub.requests())
+	}
+}
+
+// ReportProactiveConfigStop es la ÚNICA secuencia de una corrida detenida por configuración que
+// comparten los tres lotes (avisos administrativos, recordatorios, lista de espera): un Error con la
+// corrida y cuántos quedaron, y el aviso urgente de volver a Bird. Sin aviso cableado, solo el Error.
+func TestReportProactiveConfigStop_LogsOnceAndFires(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(previous)
+
+	cause := fmt.Errorf("%w: 409 template_other_account", ErrProactiveConfig)
+	urgent := &fakeurgent.Recorder{}
+	ReportProactiveConfigStop(context.Background(), urgent, "waiting_list", cause, 3)
+	fires := urgent.Fires()
+	if len(fires) != 1 || fires[0].Trigger != monitor.TriggerProactiveStopped ||
+		!strings.Contains(fires[0].Detail, "waiting_list") || !strings.Contains(fires[0].Detail, "unsent=3") {
+		t.Fatalf("un aviso con la corrida y cuántos quedaron: %+v", fires)
+	}
+	if strings.Count(logged.String(), "level=ERROR") != 1 {
+		t.Fatalf("un único Error por corrida: %s", logged.String())
+	}
+
+	logged.Reset()
+	ReportProactiveConfigStop(context.Background(), nil, "confirmation", cause, 1)
+	if strings.Count(logged.String(), "level=ERROR") != 1 {
+		t.Fatalf("sin aviso cableado sigue el Error: %s", logged.String())
 	}
 }

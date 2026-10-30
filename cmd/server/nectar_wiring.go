@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"time"
@@ -64,5 +65,20 @@ func wireUrgentAlerter(cfg *config.Config, tgClient *tg.Client, bridgeClient *ne
 		EscalationFailCount:  cfg.UrgentEscalationFailCount,
 		EscalationFailWindow: time.Duration(cfg.UrgentEscalationFailWindowMin) * time.Minute,
 	})
+	return urgent
+}
+
+// wireNectarRuntime cablea lo que corre contra Néctar al arrancar y devuelve el aviso urgente (nil
+// sin Telegram o sin puente; main corre su Start). bridgeClient es el cliente del puente (nil si
+// está apagado).
+//
+// EL ORDEN IMPORTA: el aviso urgente se cablea en el cliente ANTES de arrancar el horario, cuya
+// goroutine pide a Néctar de inmediato. Al revés, SetUrgentReporter escribiría c.urgent mientras
+// esa petición lo lee (carrera) y el primer fallo del horario no contaría para el aviso.
+func wireNectarRuntime(ctx context.Context, cfg *config.Config, tgClient *tg.Client, bridgeClient *nectar.Client,
+	schedule *config.CachedSchedule,
+) *monitor.UrgentAlerter {
+	urgent := wireUrgentAlerter(cfg, tgClient, bridgeClient)
+	startNectarSchedule(ctx, cfg, bridgeClient, schedule)
 	return urgent
 }

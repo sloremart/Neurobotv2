@@ -110,7 +110,7 @@ func TestUrgentCount_ThresholdInWindow(t *testing.T) {
 	r.advance(time.Minute)
 	r.a.Count(ctx, TriggerNectarDown, 3, 5*time.Minute, "último: HTTP 502")
 	r.expectSent(t, 1, "3 de 3")
-	if text := r.text(0); !strings.Contains(text, "último: HTTP 502") || !strings.Contains(text, "3 en menos de 5m0s (desde las 09:00:00)") {
+	if text := r.text(0); !strings.Contains(text, "último: HTTP 502") || !strings.Contains(text, "al menos 3 en menos de 5 minutos (desde las 09:00:00)") {
 		t.Errorf("el aviso dice cuántos, en qué ventana, desde cuándo y el detalle: %s", text)
 	}
 }
@@ -195,4 +195,55 @@ func TestUrgentAlerter_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 	r.expectSent(t, 2, "un aviso por disparador dentro del enfriamiento")
+}
+
+// El texto de Count no promete un conteo exacto (solo se guardan las últimas threshold ocurrencias)
+// y da la ventana en minutos enteros, para quien no programa.
+func TestUrgentCount_TextSaysAtLeastAndWholeMinutes(t *testing.T) {
+	for _, tc := range []struct {
+		window time.Duration
+		want   string
+	}{
+		{5 * time.Minute, "al menos 2 en menos de 5 minutos (desde las 09:00:00)"},
+		{time.Minute, "al menos 2 en menos de 1 minuto (desde las 09:00:00)"},
+		{time.Hour, "al menos 2 en menos de 60 minutos (desde las 09:00:00)"},
+	} {
+		r := newUrgentRig(t, time.Hour)
+		for i := 0; i < 5; i++ { // más ocurrencias que el umbral: el número es un mínimo
+			r.a.Count(context.Background(), TriggerNectarDown, 2, tc.window, "último: HTTP 503")
+		}
+		r.expectSent(t, 1, "un aviso")
+		if text := r.text(0); !strings.Contains(text, tc.want) || strings.Contains(text, "m0s") {
+			t.Errorf("ventana %s: el aviso debe decir %q: %s", tc.window, tc.want, text)
+		}
+	}
+}
+
+// Si la cola está llena el aviso se descarta, pero sin gastar el enfriamiento: el siguiente Fire
+// del mismo disparador sale en cuanto haya sitio, no al cabo de cooldown.
+func TestUrgentFire_QueueFullDoesNotSpendCooldown(t *testing.T) {
+	clock := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	a := NewUrgentAlerter(func(context.Context, string) error { return nil },
+		"docs/GUIA-VOLVER-A-BIRD.md", time.Hour, func() time.Time { return clock })
+	// Sin Start: la cola se llena con avisos de otro disparador, uno por enfriamiento.
+	for i := 0; i < urgentQueueSize; i++ {
+		a.Fire(context.Background(), TriggerNectarDown, "x")
+		clock = clock.Add(time.Hour)
+	}
+	a.Fire(context.Background(), TriggerProactiveStopped, "descartado")
+	if n := len(a.queue); n != urgentQueueSize {
+		t.Fatalf("la cola debía estar llena: %d", n)
+	}
+	<-a.queue // se libera un sitio, dentro del mismo enfriamiento
+	a.Fire(context.Background(), TriggerProactiveStopped, "reintento")
+	if n := len(a.queue); n != urgentQueueSize {
+		t.Fatalf("el aviso descartado no debe gastar el enfriamiento: cola=%d", n)
+	}
+	var last urgentMessage
+	for len(a.queue) > 0 {
+		last = <-a.queue
+	}
+	if last.trigger != TriggerProactiveStopped || !strings.Contains(last.text, "reintento") {
+		t.Fatalf("el último encolado debe ser el reintento: %+v", last)
+	}
 }

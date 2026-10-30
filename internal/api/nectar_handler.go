@@ -347,20 +347,19 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Con el puente apagado y sin secreto no hay firma que verificar; con secreto se verifica igual,
-	// para que quien no firma no pueda sondear si el puente está apagado.
-	if h.nectarBridgeOn || h.cfg.NectarNoticeSecret != "" {
-		requestURL := reconstructFullURL(r)
-		if verr := nectar.VerifyNotice(h.cfg.NectarNoticeSecret,
-			r.Header.Get(nectar.SignatureHeader), r.Header.Get(nectar.TimestampHeader),
-			requestURL, body); verr != nil {
-			sum := sha256.Sum256(body)
-			//nolint:gosec // G706: la URL sale del Host/X-Forwarded-* de una conexión HTTP que Go ya valida y slog cita los valores; es justo el dato que hay que cotejar con Néctar.
-			slog.Warn("nectar: aviso rechazado", "reason", verr.Error(), "url", requestURL,
-				"body_len", len(body), "body_sha256", hex.EncodeToString(sum[:])[:16])
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
-			return
-		}
+	// La firma se verifica SIEMPRE, también con el puente apagado: quien no firma no puede sondear si
+	// el puente está apagado. Sin NECTAR_NOTICE_SECRET no hay firma válida posible → 401, igual que
+	// antes de la transición (un bot que nunca tuvo Néctar no contesta otra cosa).
+	requestURL := reconstructFullURL(r)
+	if verr := nectar.VerifyNotice(h.cfg.NectarNoticeSecret,
+		r.Header.Get(nectar.SignatureHeader), r.Header.Get(nectar.TimestampHeader),
+		requestURL, body); verr != nil {
+		sum := sha256.Sum256(body)
+		//nolint:gosec // G706: la URL sale del Host/X-Forwarded-* de una conexión HTTP que Go ya valida y slog cita los valores; es justo el dato que hay que cotejar con Néctar.
+		slog.Warn("nectar: aviso rechazado", "reason", verr.Error(), "url", requestURL,
+			"body_len", len(body), "body_sha256", hex.EncodeToString(sum[:])[:16])
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
 	}
 
 	n, err := nectar.ParseNotice(body)
@@ -663,7 +662,15 @@ func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage, contact bir
 
 // DispatchNectarNotice es la entrada del replay del WAL para filas con msg_type =
 // nectar_notice: vuelve a parsear el aviso y lo despacha como si acabara de llegar.
+//
+// Con el puente apagado (vuelta a Bird) NO despacha nada, igual que HandleNectarNotice: procesar
+// una fila vieja podría tocar SIESA sin que el paciente reciba respuesta. Devuelve
+// bird.ErrNectarBridgeOff y el replay cierra la fila sin registrarla como error.
 func (h *WebhookHandler) DispatchNectarNotice(ctx context.Context, rawBody string) error {
+	if !h.nectarBridgeOn {
+		slog.Warn("nectar: fila del WAL descartada, el puente está apagado", "reason", "bridge_off")
+		return bird.ErrNectarBridgeOff
+	}
 	n, err := nectar.ParseNotice([]byte(rawBody))
 	if err != nil {
 		return err

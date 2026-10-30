@@ -248,7 +248,12 @@ type Config struct {
 
 	// NewLineAnnouncement (NEW_LINE_ANNOUNCEMENT): mientras conviven las dos líneas, el texto con
 	// el que los saludos de la línea de Bird anuncian la nueva. Vacía = apagado (saludo de siempre).
+	// Solo se anuncia con NectarBridgeArmed: sin puente no hay línea nueva a la que mandar a nadie.
 	NewLineAnnouncement string
+	// NectarBridgeArmed dice si el puente de Néctar quedó armado al arrancar. NO sale de una variable
+	// de entorno: cmd/server lo pone cuando nectarBridgeFromConfig arma el puente (como Schedule).
+	// La vuelta a Bird (NECTAR_BASE_URL vacía) lo deja en false y apaga con él el anuncio.
+	NectarBridgeArmed bool
 	// AgentsSource (AGENTS_SOURCE) dice dónde viven los agentes que lista el informe del
 	// dashboard: "bird" (default) o "nectar". NO se deduce del puente: en la transición el puente
 	// está encendido y la mayoría de agentes sigue en Bird. Se lee con AgentsInNectar().
