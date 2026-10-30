@@ -105,6 +105,7 @@ func newNectarHandler(inbox InboxPersister, sink *sinkRecorder) *WebhookHandler 
 		h.SetInboxRepo(inbox)
 	}
 	h.SetNectarSink(sink)
+	h.SetNectarBridgeOn(true)
 	return h
 }
 
@@ -1161,5 +1162,97 @@ func TestNectarInbound_ReplayPendingButton_GoesToHandleResponse(t *testing.T) {
 	}
 	if !inbox.isDone("e-btn-4") {
 		t.Error("el replay cierra la fila como en el camino de Bird")
+	}
+}
+
+// --- PUENTE APAGADO (vuelta a Bird): el aviso se acusa y se descarta ---
+
+// nectarBridgeOffBody es la respuesta con el puente apagado. Es 200 y no un 5xx a propósito:
+// Néctar reintenta todo no-2xx sin corte mientras dure la ventana de 24 h y, al volver el puente,
+// entregaría el atraso entero (mensajes viejos incluidos) en tandas de 100.
+const nectarBridgeOffBody = `{"status":"ignored","reason":"bridge_off"}`
+
+// newBridgeOffHandler es newNectarHandler con el puente apagado (NECTAR_BASE_URL vacía).
+func newBridgeOffHandler(inbox InboxPersister, sink *sinkRecorder) *WebhookHandler {
+	h := newNectarHandler(inbox, sink)
+	h.SetNectarBridgeOn(false)
+	return h
+}
+
+// Con el puente apagado, ningún aviso —tampoco el cuarto, que se resuelve en la respuesta— se
+// persiste en el WAL, llega al pool ni se procesa: se acusa con 200 y el cuerpo bridge_off.
+func TestHandleNectarNotice_BridgeOffAcksAndDiscards(t *testing.T) {
+	bodies := map[string]string{
+		"mensaje_entrante":                inboundBody("e-off-1"),
+		"conversacion_resuelta":           `{"event_id":"e-off-2","kind":"conversacion_resuelta","conversation_id":1234,"occurred_at":"2026-08-11T20:15:04Z"}`,
+		"conversacion_abierta_por_agente": openedBody,
+	}
+	for kind, body := range bodies {
+		t.Run(kind, func(t *testing.T) {
+			var logged bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+			defer slog.SetDefault(previous)
+
+			inbox := newMemInbox()
+			sink := &sinkRecorder{}
+			h := newBridgeOffHandler(inbox, sink)
+			rec := postNotice(h, signedNotice(nectarTestSecret, body))
+			if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != nectarBridgeOffBody {
+				t.Fatalf("puente apagado → 200 %s, got %d %s", nectarBridgeOffBody, rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q", ct)
+			}
+			if len(inbox.rows) != 0 {
+				t.Errorf("con el puente apagado nada se escribe en el WAL: %v", inbox.rows)
+			}
+			if m, c := sink.counts(); m+c != 0 {
+				t.Errorf("con el puente apagado nada llega al pool: mensajes=%d comandos=%d", m, c)
+			}
+			line := logged.String()
+			if strings.Count(line, "level=WARN") != 1 || !strings.Contains(line, "bridge_off") {
+				t.Errorf("un Warn por aviso: %s", line)
+			}
+			for _, pii := range []string{"+570000000000", "Paciente Prueba", "hola"} {
+				if strings.Contains(line, pii) {
+					t.Errorf("el registro trae datos del aviso (%q): %s", pii, line)
+				}
+			}
+		})
+	}
+}
+
+// Con el secreto configurado la firma se verifica ANTES: quien no firma no puede sondear si el
+// puente está apagado.
+func TestHandleNectarNotice_BridgeOffStillVerifiesSignature(t *testing.T) {
+	inbox := newMemInbox()
+	sink := &sinkRecorder{}
+	h := newBridgeOffHandler(inbox, sink)
+	rec := postNotice(h, signedNotice("otro-secreto", inboundBody("e-off-3")))
+	if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), "bridge_off") {
+		t.Fatalf("firma ajena → 401 sin delatar el puente, got %d %s", rec.Code, rec.Body.String())
+	}
+	if len(inbox.rows) != 0 {
+		t.Errorf("nada en el WAL: %v", inbox.rows)
+	}
+}
+
+// Sin NECTAR_NOTICE_SECRET y con el puente apagado no hay firma que verificar: el aviso se acusa y
+// se descarta igual (el 200 no depende del secreto).
+func TestHandleNectarNotice_BridgeOffWithoutSecretAcks(t *testing.T) {
+	inbox := newMemInbox()
+	sink := &sinkRecorder{}
+	h := newBridgeOffHandler(inbox, sink)
+	h.cfg = &config.Config{}
+	rec := postNotice(h, newNoticeRequest(inboundBody("e-off-4")))
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != nectarBridgeOffBody {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+	if len(inbox.rows) != 0 {
+		t.Errorf("nada en el WAL: %v", inbox.rows)
+	}
+	if m, c := sink.counts(); m+c != 0 {
+		t.Errorf("nada al pool: mensajes=%d comandos=%d", m, c)
 	}
 }

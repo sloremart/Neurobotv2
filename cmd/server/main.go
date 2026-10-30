@@ -410,6 +410,8 @@ func main() {
 	// través de él.
 	webhookHandler := api.NewWebhookHandler(birdClient, workerPool, notifyManager, cfg)
 	webhookHandler.SetInboxRepo(inboxRepo)
+	// Sin puente (vuelta a Bird), los avisos de Néctar se acusan y se descartan.
+	webhookHandler.SetNectarBridgeOn(nectarBridge != nil)
 
 	// WAL replay: re-process messages that weren't completed before last shutdown/crash.
 	//

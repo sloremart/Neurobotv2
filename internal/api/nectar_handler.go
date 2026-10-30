@@ -305,6 +305,11 @@ func (h *WebhookHandler) SetNectarSink(sink nectarDispatcher) {
 	h.nectarSink = sink
 }
 
+// SetNectarBridgeOn marca que el puente de Néctar está armado: main lo enciende solo si el puente
+// se armó (NECTAR_BASE_URL y lo demás completos). Apagado —la vuelta a Bird—, HandleNectarNotice
+// acusa y descarta cada aviso.
+func (h *WebhookHandler) SetNectarBridgeOn(v bool) { h.nectarBridgeOn = v }
+
 // SetNectarNotifier sustituye el NotificationManager del camino de Néctar (por defecto,
 // notifyManager). Existe para las pruebas.
 func (h *WebhookHandler) SetNectarNotifier(n nectarNotifier) {
@@ -327,7 +332,8 @@ func (h *WebhookHandler) nectarNotifierOrNil() nectarNotifier {
 // HandleNectarNotice atiende POST /api/webhooks/nectar: los cuatro avisos de Néctar
 // (PARA-EL-EQUIPO-DEL-BOT.md §1, contrato §8.6).
 //
-// Orden, y por qué: (1) verificar la firma ANTES de leer nada del cuerpo; (2) persistir con
+// Orden, y por qué: (1) verificar la firma ANTES de leer nada del cuerpo; (1b) con el puente
+// apagado, acusar y descartar (ver abajo); (2) persistir con
 // dedupe por event_id ANTES de contestar 2xx — si el bot cae después, el replay del WAL lo
 // recupera; si Néctar reintenta, el duplicado se reconoce y no se despacha; (3) 200;
 // (4) despachar. Cualquier no-2xx lo reintenta Néctar, así que solo se contesta 5xx cuando
@@ -341,15 +347,33 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	requestURL := reconstructFullURL(r)
-	if verr := nectar.VerifyNotice(h.cfg.NectarNoticeSecret,
-		r.Header.Get(nectar.SignatureHeader), r.Header.Get(nectar.TimestampHeader),
-		requestURL, body); verr != nil {
-		sum := sha256.Sum256(body)
-		//nolint:gosec // G706: la URL sale del Host/X-Forwarded-* de una conexión HTTP que Go ya valida y slog cita los valores; es justo el dato que hay que cotejar con Néctar.
-		slog.Warn("nectar: aviso rechazado", "reason", verr.Error(), "url", requestURL,
-			"body_len", len(body), "body_sha256", hex.EncodeToString(sum[:])[:16])
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
+	// Con el puente apagado y sin secreto no hay firma que verificar; con secreto se verifica igual,
+	// para que quien no firma no pueda sondear si el puente está apagado.
+	if h.nectarBridgeOn || h.cfg.NectarNoticeSecret != "" {
+		requestURL := reconstructFullURL(r)
+		if verr := nectar.VerifyNotice(h.cfg.NectarNoticeSecret,
+			r.Header.Get(nectar.SignatureHeader), r.Header.Get(nectar.TimestampHeader),
+			requestURL, body); verr != nil {
+			sum := sha256.Sum256(body)
+			//nolint:gosec // G706: la URL sale del Host/X-Forwarded-* de una conexión HTTP que Go ya valida y slog cita los valores; es justo el dato que hay que cotejar con Néctar.
+			slog.Warn("nectar: aviso rechazado", "reason", verr.Error(), "url", requestURL,
+				"body_len", len(body), "body_sha256", hex.EncodeToString(sum[:])[:16])
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// PUENTE APAGADO (vuelta a Bird): el aviso se acusa y se DESCARTA antes de interpretarlo y de
+	// persistir nada — ni WAL, ni pool, ni el cuarto aviso. Sin puente el bot no tiene cómo
+	// contestarle a esa conversación, y procesarla podría tocar SIESA (confirmar una cita) sin
+	// que el paciente reciba respuesta. 200 y no 503: Néctar reintenta todo no-2xx sin corte
+	// mientras dura la ventana de 24 h y, al volver el puente, entregaría el atraso entero (con
+	// mensajes viejos) en tandas de 100. Esos pacientes los rescata a mano un supervisor.
+	if !h.nectarBridgeOn {
+		slog.Warn("nectar: aviso descartado, el puente está apagado", "reason", "bridge_off")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ignored","reason":"bridge_off"}`))
 		return
 	}
 

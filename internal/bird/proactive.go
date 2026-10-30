@@ -96,7 +96,8 @@ func (e *AlreadyOpenError) Unwrap() error { return ErrPermanentSend }
 
 // SendProactiveTemplate manda una plantilla que inicia la conversación con el paciente.
 //
-//   - Sin puente: es SendTemplate tal cual (la petición a Bird no cambia) y Key es el teléfono.
+//   - Sin puente: es SendTemplate tal cual (la petición a Bird no cambia) y Key es el teléfono. Una
+//     clave "nectar:<id>" sin puente no tiene canal: SendTemplate devuelve ErrNectarBridgeOff.
 //   - Con puente: abre la conversación en Néctar con la plantilla (una sola llamada: la plantilla
 //     viaja DENTRO de la apertura) y Key es "nectar:<id>". Si el contacto ya tiene conversación del
 //     bot (409 mine:true), la plantilla va a esa; si es de un agente, ErrConversationWithAgent.

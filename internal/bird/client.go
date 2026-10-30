@@ -352,6 +352,9 @@ func (c *Client) conversationsBase() string {
 // MarkConversationEscalated updates the conversation name/description in Bird Inbox
 // to signal escalation to agents. This is visible to agents in the inbox.
 func (c *Client) MarkConversationEscalated(phone, conversationID, teamName, patientName string) error {
+	if c.nectarKeyWithoutBridge(phone) {
+		return ErrNectarBridgeOff
+	}
 	if _, ok := c.nectarConversation(phone, conversationID); ok {
 		return nil // Néctar: el estado lo lleva el escalate
 	}
@@ -629,6 +632,9 @@ func truncateForLog(s string, n int) string {
 // a la caché, así que TODAS las capas de resolución fallan y el handoff caía a PICKUP MANUAL aunque el
 // mensaje sí llegó al paciente. Crear la conversación garantiza un canal asignable al agente.
 func (c *Client) CreateConversationForPhone(ctx context.Context, phone string) (string, error) {
+	if c.nectarKeyWithoutBridge(phone) {
+		return "", ErrNectarBridgeOff
+	}
 	if id, ok := c.nectarConversation(phone, ""); ok {
 		return strconv.FormatInt(id, 10), nil
 	}
@@ -798,6 +804,9 @@ func whatsAppContentError(err error) (string, bool) {
 // If conversationID is provided, routes via Conversations API (WhatsApp + Inbox).
 // Falls back to Channels API (WhatsApp only) if conversationID is empty or Conversations API fails.
 func (c *Client) SendText(to, conversationID, text string) (string, error) {
+	if c.nectarKeyWithoutBridge(to) {
+		return "", ErrNectarBridgeOff
+	}
 	if !c.allowSend(to) {
 		return "", ErrSendRateLimited
 	}
@@ -839,6 +848,9 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 // SendButtons envía un mensaje con botones postback (máx 3).
 // Routes via Conversations API when conversationID is available.
 func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) (string, error) {
+	if c.nectarKeyWithoutBridge(to) {
+		return "", ErrNectarBridgeOff
+	}
 	if !c.allowSend(to) {
 		return "", ErrSendRateLimited
 	}
@@ -900,6 +912,9 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 // SendList envía un mensaje con lista interactiva.
 // Routes via Conversations API when conversationID is available.
 func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections []ListSection) (string, error) {
+	if c.nectarKeyWithoutBridge(to) {
+		return "", ErrNectarBridgeOff
+	}
 	if !c.allowSend(to) {
 		return "", ErrSendRateLimited
 	}
@@ -1004,6 +1019,9 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 // SendInternalText sends a text message visible only in Bird Inbox (not delivered to WhatsApp).
 // Uses Conversations API with draft:true. Returns ("", nil) if no conversationID.
 func (c *Client) SendInternalText(phone, conversationID, text string) (string, error) {
+	if c.nectarKeyWithoutBridge(phone) {
+		return "", ErrNectarBridgeOff
+	}
 	if conversationID == "" {
 		return "", nil
 	}
@@ -1029,6 +1047,9 @@ func (c *Client) SendTemplate(to string, tmpl TemplateConfig) (string, error) {
 	if c.notifWADisabled {
 		slog.Info("whatsapp notifications disabled — skipping template", "to", utils.MaskPhone(to))
 		return "", ErrWhatsAppNotificationsDisabled
+	}
+	if c.nectarKeyWithoutBridge(to) {
+		return "", ErrNectarBridgeOff
 	}
 	if !c.allowSend(to) {
 		return "", ErrSendRateLimited
@@ -1742,6 +1763,9 @@ func (c *Client) doPatchFeedItem(url string, jsonBody []byte) (int, error) {
 // If closed=true, also closes the item (removes from agent's queue permanently).
 // Non-blocking: logs errors but does not fail.
 func (c *Client) UnassignFeedItem(phone, conversationID string, closed bool) error {
+	if c.nectarKeyWithoutBridge(phone) {
+		return ErrNectarBridgeOff
+	}
 	if _, ok := c.nectarConversation(phone, conversationID); ok {
 		return nil
 	}
@@ -1789,6 +1813,9 @@ func (c *Client) UnassignFeedItem(phone, conversationID string, closed bool) err
 // It finds items across ALL feeds (channel, team, agent) so it works regardless
 // of which feed the agents are viewing.
 func (c *Client) CloseFeedItems(phone, conversationID string) error {
+	if c.nectarKeyWithoutBridge(phone) {
+		return ErrNectarBridgeOff
+	}
 	if id, ok := c.nectarConversation(phone, conversationID); ok {
 		// POST …/close. Un 404 significa que ya no era nuestra (la cerró alguien o ya está
 		// cerrada): el objetivo está cumplido, no es un error.
@@ -1990,6 +2017,9 @@ func (c *Client) sweepConvMissLocked() {
 // and matches by featuredParticipants contact identifierValue.
 // Returns the conversation ID or "" if not found.
 func (c *Client) LookupConversationByPhone(phone string) (string, error) {
+	if c.nectarKeyWithoutBridge(phone) {
+		return "", ErrNectarBridgeOff
+	}
 	if id, ok := c.nectarConversation(phone, ""); ok {
 		return strconv.FormatInt(id, 10), nil // la clave de sesión YA es la conversación
 	}
@@ -2273,6 +2303,9 @@ func (c *Client) UpdateFeedItem(conversationID, messageID string, closed bool, t
 
 // TagConversation adds a tag/label to a conversation in Bird for categorization.
 func (c *Client) TagConversation(phone, conversationID, tag string) error {
+	if c.nectarKeyWithoutBridge(phone) {
+		return ErrNectarBridgeOff
+	}
 	if _, ok := c.nectarConversation(phone, conversationID); ok {
 		return nil
 	}

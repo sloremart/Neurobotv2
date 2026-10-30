@@ -254,27 +254,26 @@ func TestANumericConversationIDAloneIsNotEnough(t *testing.T) {
 	}
 }
 
+// Sin puente no hay desvío: una clave nectar:* tampoco cae al camino de Bird (antes hacía el PATCH
+// de BSUID con whatsappusername=nectar:42 y creaba conversaciones): no tiene canal y lo dice con
+// ErrNectarBridgeOff. Método por método lo fija TestNectarConversationNeverTouchesBirdWithBridgeOff.
 func TestWithoutBridgeNothingChanges(t *testing.T) {
 	srv, stub := newBirdStub(t)
 	c := NewClientForTest(srv.URL) // c.nectar == nil
 	if _, ok := c.nectarConversation("nectar:42", "42"); ok {
 		t.Fatal("sin puente no hay desvío")
 	}
-	// «nectar:42» no es E.164: sin puente sigue el camino de Bird para contactos sin teléfono
-	// (resolver el BSUID por PATCH), que aquí contesta 404 → no contactable.
-	_, err := c.SendText("nectar:42", "", "hola")
-	if !errors.Is(err, ErrNonContactable) {
-		t.Fatalf("sin puente SendText sigue el camino de Bird (BSUID, sin contacto): %v", err)
+	if _, err := c.SendText("nectar:42", "", "hola"); !errors.Is(err, ErrNectarBridgeOff) {
+		t.Fatalf("sin puente una conversación de Néctar no tiene canal: %v", err)
 	}
-	reqs := stub.requests()
-	if len(reqs) == 0 || !strings.HasPrefix(reqs[0], "PATCH ") || !strings.Contains(reqs[0], "/contacts/identifiers/") {
-		t.Fatalf("esperaba el PATCH de resolución de BSUID de Bird, got %v", reqs)
-	}
-	if id, err := c.CreateConversationForPhone(context.Background(), "nectar:77"); err == nil && id == "77" {
+	if id, err := c.CreateConversationForPhone(context.Background(), "nectar:77"); err == nil || id == "77" {
 		t.Fatal("sin puente CreateConversationForPhone no devuelve la clave como conversación")
 	}
 	if id, _ := c.LookupConversationByPhone("nectar:77"); id == "77" {
 		t.Fatal("sin puente LookupConversationByPhone no devuelve la clave como conversación")
+	}
+	if reqs := stub.requests(); len(reqs) != 0 {
+		t.Fatalf("nada de esto llega a Bird: %v", reqs)
 	}
 }
 
@@ -748,6 +747,99 @@ func (b tripwireBridge) WindowOpen(context.Context, int64) (bool, error) {
 	return false, nil
 }
 
+// keyRoutedCase es un método de *Client con rama Néctar, llamado con una clave de sesión dada. La
+// tabla la comparten la prueba de la sesión de Bird (puente encendido y apagado) y la de la
+// conversación de Néctar con el puente apagado: la lista de métodos es UNA.
+type keyRoutedCase struct {
+	name string
+	call func(c *Client, convID string) error
+	// route es la petición de Bird que el método hace con una clave de Bird, por conversation_id
+	// ("" = ninguna).
+	route map[string]string
+	// returnsErr: el método devuelve error (el que no, se llama igual y se ignora su cero).
+	returnsErr bool
+	// keyless: el método no recibe la clave (FetchMessageText va por id de mensaje de Bird).
+	keyless bool
+}
+
+// birdTestConvUUID es un conversation_id de Bird para las tablas de rutas.
+const birdTestConvUUID = "1a2b3c4d-uuid-de-bird"
+
+// keyRoutedCases arma la tabla para la clave dada.
+func keyRoutedCases(key string) []keyRoutedCase {
+	const (
+		uuid = birdTestConvUUID
+		ws   = "/workspaces/ws-test"
+	)
+	channelMsg := "POST " + ws + "/channels/ch-test/messages"
+	convMsg := "POST " + ws + "/conversations/" + uuid + "/messages"
+	feedSearch := "POST " + ws + "/search/feed-items"
+	return []keyRoutedCase{
+		{name: "SendText", returnsErr: true, call: func(c *Client, id string) error {
+			_, err := c.SendText(key, id, "hola")
+			return err
+		}, route: map[string]string{"": channelMsg, uuid: convMsg}},
+		{name: "SendButtons", returnsErr: true, call: func(c *Client, id string) error {
+			_, err := c.SendButtons(key, id, "elige", []Button{{Text: "Sí", Payload: "si"}})
+			return err
+		}, route: map[string]string{"": channelMsg, uuid: convMsg}},
+		{name: "SendList", returnsErr: true, call: func(c *Client, id string) error {
+			_, err := c.SendList(key, id, "b", "Ver", []ListSection{{Title: "s", Rows: []ListRow{{ID: "r", Title: "fila"}}}})
+			return err
+		}, route: map[string]string{"": channelMsg, uuid: convMsg}},
+		{name: "SendInternalText", returnsErr: true, call: func(c *Client, id string) error {
+			_, err := c.SendInternalText(key, id, "nota")
+			return err
+		}, route: map[string]string{uuid: convMsg}},
+		{name: "SendTemplate", returnsErr: true, call: func(c *Client, _ string) error {
+			_, err := c.SendTemplate(key, TemplateConfig{ProjectID: "p"})
+			return err
+		}, route: map[string]string{"": channelMsg, uuid: channelMsg}},
+		{name: "EscalateToAgentWithSummary", returnsErr: true, call: func(c *Client, id string) error {
+			// Plazo corto: el primer intento de asignar sí llega a Bird; los reintentos (1 s, 2 s, 3 s)
+			// no añaden nada a lo que se prueba.
+			escCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_, _, err := c.EscalateToAgentWithSummary(escCtx, id, key, "team", "Equipo", "Paciente", "fallback",
+				Escalation{Reason: "patient_asked_for_human", Summary: "RESUMEN", ResolveLock: "cita_pendiente"})
+			return err
+		}, route: map[string]string{"": "GET " + ws + "/conversations", uuid: "PATCH " + ws + "/conversations/" + uuid}},
+		{name: "MarkConversationEscalated", returnsErr: true, call: func(c *Client, id string) error {
+			return c.MarkConversationEscalated(key, id, "Equipo", "Paciente")
+		}, route: map[string]string{uuid: "PATCH " + ws + "/conversations/" + uuid}},
+		{name: "UnassignFeedItem (retorno al bot)", returnsErr: true, call: func(c *Client, id string) error {
+			return c.UnassignFeedItem(key, id, false)
+		}, route: map[string]string{uuid: feedSearch}},
+		{name: "UnassignFeedItem cerrando", returnsErr: true, call: func(c *Client, id string) error {
+			return c.UnassignFeedItem(key, id, true)
+		}, route: map[string]string{uuid: feedSearch}},
+		{name: "CloseFeedItems", returnsErr: true, call: func(c *Client, id string) error {
+			return c.CloseFeedItems(key, id)
+		}, route: map[string]string{uuid: feedSearch}},
+		{name: "TagConversation", returnsErr: true, call: func(c *Client, id string) error {
+			return c.TagConversation(key, id, "tag")
+		}, route: map[string]string{uuid: "POST " + ws + "/conversations/" + uuid + "/tags"}},
+		{name: "HasAvailableAgentsFor", call: func(c *Client, id string) error {
+			_ = c.HasAvailableAgentsFor(key, id)
+			return nil
+		}, route: map[string]string{"": "GET " + ws + "/agents", uuid: "GET " + ws + "/agents"}},
+		{name: "LookupConversationByPhone", returnsErr: true, call: func(c *Client, _ string) error {
+			_, err := c.LookupConversationByPhone(key)
+			return err
+		}, route: map[string]string{"": "GET " + ws + "/conversations", uuid: "GET " + ws + "/conversations"}},
+		{name: "CreateConversationForPhone", returnsErr: true, call: func(c *Client, _ string) error {
+			_, err := c.CreateConversationForPhone(context.Background(), key)
+			return err
+		}, route: map[string]string{"": "POST " + ws + "/conversations", uuid: "POST " + ws + "/conversations"}},
+		{name: "FetchMessageText", keyless: true, call: func(c *Client, _ string) error {
+			_ = c.FetchMessageText("msg-1")
+			return nil
+		}, route: map[string]string{
+			"": "GET " + ws + "/channels/ch-test/messages/msg-1", uuid: "GET " + ws + "/channels/ch-test/messages/msg-1",
+		}},
+	}
+}
+
 // Con el puente ENCENDIDO, cada método de *Client que tiene rama Néctar (todos los que pasan por
 // nectarConversation; la lista sale de sus llamadores, no de memoria) deja una llamada con la clave de
 // Bird en Bird, y se afirma por método con dos hechos: el puente no suena (tripwireBridge) y el Bird
@@ -759,105 +851,37 @@ func (b tripwireBridge) WindowOpen(context.Context, int64) (bool, error) {
 // a nada en Bird (salen antes por falta de id), así que en esa vuelta solo los guarda el tripwire;
 // la vuelta con el UUID de Bird es la que los fija por su ruta.
 //
+// Con el puente APAGADO la clave de Bird sigue exactamente el mismo camino (vuelta puente=false): la
+// guarda de la vuelta a Bird solo mira claves nectar:*.
+//
 // SendProactiveTemplate NO está: con el puente encendido abre SIEMPRE por Néctar a propósito (todo
 // envío proactivo sale por la línea nueva), y eso lo fijan sus propias pruebas.
 func TestBirdSessionNeverTouchesNectarWithBridgeOn(t *testing.T) {
-	const (
-		phone = "+573001112233"
-		uuid  = "1a2b3c4d-uuid-de-bird"
-		ws    = "/workspaces/ws-test"
-	)
-	channelMsg := "POST " + ws + "/channels/ch-test/messages"
-	convMsg := "POST " + ws + "/conversations/" + uuid + "/messages"
-	feedSearch := "POST " + ws + "/search/feed-items"
-	cases := []struct {
-		name string
-		call func(c *Client, convID string)
-		// route es la petición de Bird que el método tiene que hacer, por conversation_id ("" = ninguna).
-		route map[string]string
-	}{
-		{
-			"SendText", func(c *Client, id string) { _, _ = c.SendText(phone, id, "hola") },
-			map[string]string{"": channelMsg, uuid: convMsg},
-		},
-		{"SendButtons", func(c *Client, id string) {
-			_, _ = c.SendButtons(phone, id, "elige", []Button{{Text: "Sí", Payload: "si"}})
-		}, map[string]string{"": channelMsg, uuid: convMsg}},
-		{"SendList", func(c *Client, id string) {
-			_, _ = c.SendList(phone, id, "b", "Ver", []ListSection{{Title: "s", Rows: []ListRow{{ID: "r", Title: "fila"}}}})
-		}, map[string]string{"": channelMsg, uuid: convMsg}},
-		{
-			"SendInternalText", func(c *Client, id string) { _, _ = c.SendInternalText(phone, id, "nota") },
-			map[string]string{uuid: convMsg},
-		},
-		{
-			"SendTemplate", func(c *Client, _ string) { _, _ = c.SendTemplate(phone, TemplateConfig{ProjectID: "p"}) },
-			map[string]string{"": channelMsg, uuid: channelMsg},
-		},
-		{"EscalateToAgentWithSummary", func(c *Client, id string) {
-			// Plazo corto: el primer intento de asignar sí llega a Bird; los reintentos (1 s, 2 s, 3 s)
-			// no añaden nada a lo que se prueba.
-			escCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
-			_, _, _ = c.EscalateToAgentWithSummary(escCtx, id, phone, "team", "Equipo", "Paciente", "fallback",
-				Escalation{Reason: "patient_asked_for_human", Summary: "RESUMEN", ResolveLock: "cita_pendiente"})
-		}, map[string]string{"": "GET " + ws + "/conversations", uuid: "PATCH " + ws + "/conversations/" + uuid}},
-		{"MarkConversationEscalated", func(c *Client, id string) {
-			_ = c.MarkConversationEscalated(phone, id, "Equipo", "Paciente")
-		}, map[string]string{uuid: "PATCH " + ws + "/conversations/" + uuid}},
-		{
-			"UnassignFeedItem (retorno al bot)", func(c *Client, id string) { _ = c.UnassignFeedItem(phone, id, false) },
-			map[string]string{uuid: feedSearch},
-		},
-		{
-			"UnassignFeedItem cerrando", func(c *Client, id string) { _ = c.UnassignFeedItem(phone, id, true) },
-			map[string]string{uuid: feedSearch},
-		},
-		{
-			"CloseFeedItems", func(c *Client, id string) { _ = c.CloseFeedItems(phone, id) },
-			map[string]string{uuid: feedSearch},
-		},
-		{
-			"TagConversation", func(c *Client, id string) { _ = c.TagConversation(phone, id, "tag") },
-			map[string]string{uuid: "POST " + ws + "/conversations/" + uuid + "/tags"},
-		},
-		{
-			"HasAvailableAgentsFor", func(c *Client, id string) { _ = c.HasAvailableAgentsFor(phone, id) },
-			map[string]string{"": "GET " + ws + "/agents", uuid: "GET " + ws + "/agents"},
-		},
-		{
-			"LookupConversationByPhone", func(c *Client, _ string) { _, _ = c.LookupConversationByPhone(phone) },
-			map[string]string{"": "GET " + ws + "/conversations", uuid: "GET " + ws + "/conversations"},
-		},
-		{
-			"CreateConversationForPhone", func(c *Client, _ string) { _, _ = c.CreateConversationForPhone(context.Background(), phone) },
-			map[string]string{"": "POST " + ws + "/conversations", uuid: "POST " + ws + "/conversations"},
-		},
-		{
-			"FetchMessageText", func(c *Client, _ string) { _ = c.FetchMessageText("msg-1") },
-			map[string]string{"": "GET " + ws + "/channels/ch-test/messages/msg-1", uuid: "GET " + ws + "/channels/ch-test/messages/msg-1"},
-		},
-	}
-	for _, convID := range []string{"", uuid} {
-		for _, tc := range cases {
-			t.Run(fmt.Sprintf("%s/conv=%q", tc.name, convID), func(t *testing.T) {
-				srv, stub := newBirdStub(t)
-				c := NewClientForTest(srv.URL)
-				c.SetNectar(tripwireBridge{t: t})
-				tc.call(c, convID)
-				reqs := stub.requests()
-				want, ok := tc.route[convID]
-				if !ok {
-					// Sin id, el camino de Bird sale antes de llamar a nada; el tripwire es la guarda.
-					if len(reqs) != 0 {
-						t.Errorf("sin conversation_id no esperaba peticiones a Bird: %v", reqs)
+	const phone = "+573001112233"
+	for _, bridgeOn := range []bool{true, false} {
+		for _, convID := range []string{"", birdTestConvUUID} {
+			for _, tc := range keyRoutedCases(phone) {
+				t.Run(fmt.Sprintf("%s/conv=%q/puente=%v", tc.name, convID, bridgeOn), func(t *testing.T) {
+					srv, stub := newBirdStub(t)
+					c := NewClientForTest(srv.URL)
+					if bridgeOn {
+						c.SetNectar(tripwireBridge{t: t})
 					}
-					return
-				}
-				if !slices.Contains(reqs, want) {
-					t.Errorf("la clave de Bird tenía que llegar a %q en Bird; llegó %v", want, reqs)
-				}
-			})
+					_ = tc.call(c, convID)
+					reqs := stub.requests()
+					want, ok := tc.route[convID]
+					if !ok {
+						// Sin id, el camino de Bird sale antes de llamar a nada; el tripwire es la guarda.
+						if len(reqs) != 0 {
+							t.Errorf("sin conversation_id no esperaba peticiones a Bird: %v", reqs)
+						}
+						return
+					}
+					if !slices.Contains(reqs, want) {
+						t.Errorf("la clave de Bird tenía que llegar a %q en Bird; llegó %v", want, reqs)
+					}
+				})
+			}
 		}
 	}
 
@@ -866,7 +890,7 @@ func TestBirdSessionNeverTouchesNectarWithBridgeOn(t *testing.T) {
 	c := NewClientForTest("http://unused")
 	c.SetNectar(tripwireBridge{t: t})
 	ctx := context.Background()
-	if _, err := c.ConversationState(ctx, phone, uuid); !errors.Is(err, ErrNoConversationState) {
+	if _, err := c.ConversationState(ctx, phone, birdTestConvUUID); !errors.Is(err, ErrNoConversationState) {
 		t.Errorf("una sesión de Bird no tiene estado en Néctar: %v", err)
 	}
 	if _, ok := c.NectarWindowOpen(ctx, phone); ok {
@@ -875,4 +899,70 @@ func TestBirdSessionNeverTouchesNectarWithBridgeOn(t *testing.T) {
 	if _, ok, _ := c.NectarContact(ctx, phone); ok {
 		t.Error("el contacto de una sesión de Bird no se le pregunta a Néctar")
 	}
+}
+
+// Con el puente APAGADO (vuelta a Bird: NECTAR_BASE_URL vacía), una conversación de Néctar ya no
+// tiene canal: cada método de la misma tabla, con la clave "nectar:55", hace CERO peticiones a Bird
+// —ni el upsert de contacto con whatsappusername=nectar:55, ni crear o asignar una conversación—, y
+// los que devuelven error devuelven ErrNectarBridgeOff, que es permanente (nadie lo reintenta). El
+// conversation_id se prueba vacío, con el id de Néctar y con un UUID de Bird: ninguno lo cambia.
+//
+// FetchMessageText no recibe la clave (va por id de mensaje de Bird, que un mensaje de Néctar no
+// tiene): para él se prueba que un mensaje sin id no llega a Bird.
+func TestNectarConversationNeverTouchesBirdWithBridgeOff(t *testing.T) {
+	const key = "nectar:55"
+	for _, convID := range []string{"", "55", birdTestConvUUID} {
+		for _, tc := range keyRoutedCases(key) {
+			if tc.keyless {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/conv=%q", tc.name, convID), func(t *testing.T) {
+				srv, stub := newBirdStub(t)
+				c := NewClientForTest(srv.URL)
+				err := tc.call(c, convID)
+				if reqs := stub.requests(); len(reqs) != 0 {
+					t.Errorf("sin puente, una conversación de Néctar no puede tocar Bird: %v", reqs)
+				}
+				if !tc.returnsErr {
+					return
+				}
+				if !errors.Is(err, ErrNectarBridgeOff) || !IsPermanentSendError(err) {
+					t.Errorf("esperaba ErrNectarBridgeOff permanente, got %v", err)
+				}
+			})
+		}
+	}
+
+	t.Run("FetchMessageText sin id", func(t *testing.T) {
+		srv, stub := newBirdStub(t)
+		c := NewClientForTest(srv.URL)
+		if got := c.FetchMessageText(""); got != "" {
+			t.Errorf("sin id no hay texto, got %q", got)
+		}
+		if reqs := stub.requests(); len(reqs) != 0 {
+			t.Errorf("un mensaje sin id no llega a Bird: %v", reqs)
+		}
+	})
+
+	t.Run("SendProactiveTemplate", func(t *testing.T) {
+		srv, stub := newBirdStub(t)
+		c := NewClientForTest(srv.URL)
+		sent, err := c.SendProactiveTemplate(context.Background(), key, TemplateConfig{ProjectID: "p"})
+		if reqs := stub.requests(); len(reqs) != 0 {
+			t.Errorf("sin puente, la plantilla a una conversación de Néctar no puede tocar Bird: %v", reqs)
+		}
+		if !errors.Is(err, ErrNectarBridgeOff) || !IsPermanentSendError(err) {
+			t.Errorf("esperaba ErrNectarBridgeOff permanente, got %v", err)
+		}
+		if sent != (ProactiveSend{}) {
+			t.Errorf("sin envío no hay resultado, got %+v", sent)
+		}
+	})
+
+	t.Run("ConversationState", func(t *testing.T) {
+		c := NewClientForTest("http://unused")
+		if _, err := c.ConversationState(context.Background(), key, ""); !errors.Is(err, ErrNectarBridgeOff) {
+			t.Errorf("esperaba ErrNectarBridgeOff, got %v", err)
+		}
+	})
 }

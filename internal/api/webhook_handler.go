@@ -96,6 +96,9 @@ type WebhookHandler struct {
 	nectarOrder    nectarConvOrder
 	// nectarNotify sustituye a notifyManager en el camino de Néctar (pruebas); nil → notifyManager.
 	nectarNotify nectarNotifier
+	// nectarBridgeOn: el puente de Néctar está armado (main lo marca). Apagado, los avisos se
+	// acusan y se descartan (HandleNectarNotice).
+	nectarBridgeOn bool
 }
 
 // DeliveryTracker registra el resultado de ENTREGA de los envíos salientes (webhook outbound).

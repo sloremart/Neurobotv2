@@ -3,6 +3,7 @@ package bird
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -147,6 +148,11 @@ type Rejection struct {
 // quién preguntar—, pero quien pregunta se queda igual de a ciegas, y por eso también es error.
 var ErrNoConversationState = errors.New("bird: el estado de la conversación solo lo publica Néctar")
 
+// ErrNectarBridgeOff es «esta conversación es de Néctar y el puente está apagado» (vuelta a Bird:
+// NECTAR_BASE_URL vacía). No hay por dónde contestarle y Bird no es su canal. Envuelve
+// ErrPermanentSend: reintentar no cambia nada mientras el puente siga apagado.
+var ErrNectarBridgeOff = fmt.Errorf("bird: conversación de Néctar con el puente apagado: %w", ErrPermanentSend)
+
 // SetNectar activa el desvío. nil lo desactiva (comportamiento previo al puente).
 func (c *Client) SetNectar(b NectarBridge) { c.nectar = b }
 
@@ -178,11 +184,24 @@ func (c *Client) nectarConversation(phone, conversationID string) (int64, bool) 
 	return id, true
 }
 
+// nectarKeyWithoutBridge dice si la clave es de una conversación de Néctar con el puente APAGADO
+// (vuelta a Bird: NECTAR_BASE_URL vacía). Es el par de nectarConversation y, como ella, decide solo
+// por la clave. Esa conversación no tiene canal: Bird no la conoce (su «teléfono» es nectar:<id>, y
+// el camino de Bird lo trataría como username: upsert de contacto, crear y asignar conversación) y
+// Néctar no está. Cada método con rama Néctar la consulta ANTES de cualquier petición y devuelve
+// ErrNectarBridgeOff (o su cero), sin tocar Bird.
+func (c *Client) nectarKeyWithoutBridge(phone string) bool {
+	return c != nil && c.nectar == nil && strings.HasPrefix(phone, nectarPhonePrefix)
+}
+
 // HasAvailableAgentsFor es HasAvailableAgents con contexto de conversación: en Néctar la
 // disponibilidad es por conversación (GET …/availability), no global. Un fallo de
 // transporte o un 404 cuentan como «no hay» — la misma política que Bird (ListActiveAgents
 // con error → false): nunca se crea una escalación destinada a no-show.
 func (c *Client) HasAvailableAgentsFor(phone, conversationID string) bool {
+	if c.nectarKeyWithoutBridge(phone) {
+		return false
+	}
 	id, ok := c.nectarConversation(phone, conversationID)
 	if !ok {
 		return c.HasAvailableAgents()
@@ -202,6 +221,9 @@ func (c *Client) HasAvailableAgentsFor(phone, conversationID string) bool {
 // (GET …/state); una conversación de Bird devuelve ErrNoConversationState, y quien pregunta trata
 // ese error como cualquier otro: no sabe, así que no decide.
 func (c *Client) ConversationState(ctx context.Context, phone, conversationID string) (string, error) {
+	if c.nectarKeyWithoutBridge(phone) {
+		return "", ErrNectarBridgeOff
+	}
 	id, ok := c.nectarConversation(phone, conversationID)
 	if !ok {
 		return "", ErrNoConversationState
@@ -248,6 +270,9 @@ func (c *Client) NectarContact(ctx context.Context, phone string) (contact Necta
 func (c *Client) EscalateToAgentWithSummary(ctx context.Context, conversationID, phone, teamID, teamName,
 	patientName, fallbackTeamID string, esc Escalation,
 ) (agentID, agentName string, err error) {
+	if c.nectarKeyWithoutBridge(phone) {
+		return "", "", ErrNectarBridgeOff
+	}
 	if id, ok := c.nectarConversation(phone, conversationID); ok {
 		return "", "", c.nectar.Escalate(ctx, id, esc)
 	}
