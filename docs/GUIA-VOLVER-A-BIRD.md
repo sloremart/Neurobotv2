@@ -40,6 +40,9 @@ curl -s http://localhost:8085/health
 docker compose logs bot --since 15m | grep -i '"level":"ERROR"\|aviso urgente'
 ```
 
+Si ese comando no muestra nada, eso NO prueba que Néctar esté bien: algunos fallos se registran como
+advertencia y no salen ahí. Hacer igual las comprobaciones de abajo.
+
 - Abrir el panel web de Néctar: ¿carga?, ¿los agentes ven y contestan conversaciones? Si NO carga,
   es real.
 - Preguntar a un agente de Néctar si le están llegando pacientes del bot.

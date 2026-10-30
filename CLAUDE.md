@@ -368,6 +368,6 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Aviso «🚨 URGENTE — volver a Bird» (`internal/monitor/urgent.go`): solo con Telegram y puente encendido; disparadores
   `nectar_down`, `proactive_stopped`, `reminders_unsent`, `escalation_failing`; umbrales `URGENT_*`. La persona de turno
   sigue `docs/GUIA-VOLVER-A-BIRD.md` (vaciar `NECTAR_BASE_URL` y `NEW_LINE_ANNOUNCEMENT`, `docker compose up -d bot`).
-- Sin puente, lo de Néctar se acusa con 200 y se descarta (la alerta `bot_unreachable` de Néctar no salta): un supervisor
+- Sin puente, lo de Néctar con firma válida se acusa con 200 y se descarta (la alerta `bot_unreachable` de Néctar no salta): un supervisor
   de Néctar rescata una por una las conversaciones del bot («escalar», motivo `bot_down`). Requisito antes del arranque:
   `escalation_enabled` encendida para Neuro en Néctar (si no, 403).
