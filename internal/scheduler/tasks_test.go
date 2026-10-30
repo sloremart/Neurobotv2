@@ -540,9 +540,19 @@ func TestSendWhatsAppReminders_BirdError_Continues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error (errors logged, not returned), got %v", err)
 	}
-	// No pending notifications should be registered since all sends failed
-	if nm.PendingCount() != 0 {
-		t.Errorf("expected 0 pending notifications after all fails, got %d", nm.PendingCount())
+	// Ningún envío salió, pero cada paciente queda con pending bajo su teléfono (sin mensaje) para
+	// que el IVR de las 13:00 lo llame.
+	targets := nm.GetPendingForIVR()
+	for _, p := range targets {
+		if lp, ok := nm.LoadPendingForTest(p.Phone); ok && lp.Timer != nil {
+			lp.Timer.Stop()
+		}
+		if p.BirdMessageID != "" || p.Type != "confirmation" {
+			t.Errorf("pending sin mensaje esperado: %+v", p)
+		}
+	}
+	if nm.PendingCount() != 2 || len(targets) != 2 {
+		t.Errorf("expected 2 pending IVR targets after all fails, got %d (ivr %d)", nm.PendingCount(), len(targets))
 	}
 }
 

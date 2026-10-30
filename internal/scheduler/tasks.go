@@ -189,6 +189,9 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 	sent := 0
 	skipped := 0
 	visited := 0
+	// configStopped: un error de configuración de Néctar detuvo los ENVÍOS; el recorrido sigue
+	// solo para dejar pending (y llamada IVR) a los pacientes que faltaban, sin ninguna apertura.
+	configStopped := false
 	var inDoubt []string
 	defer func() { logInDoubtSummary("confirmation", inDoubt) }()
 
@@ -226,8 +229,14 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			continue
 		}
 
+		if configStopped {
+			skipped++
+			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
+			continue
+		}
+
 		// Supresión por fallos de entrega (>=2 consecutivos confirmados por el webhook): el
-		// template a un número sin WhatsApp se cobra y jamás llega. El call center debe llamarlo.
+		// template a un número sin WhatsApp se cobra y jamás llega. El IVR de las 13:00 lo llama.
 		if t.NotifyManager != nil && !t.NotifyManager.Deliverable(ctx, phone) {
 			skipped++
 			slog.Warn("skip reminder - entregas de WhatsApp fallando (llamar al paciente)",
@@ -238,6 +247,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			}
 			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
 				observability.EmitOpts{Phone: phone})
+			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "no_whatsapp")
 			continue
 		}
 
@@ -265,23 +275,31 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 		// Plantilla proactiva: con Néctar abre la conversación y proactive.Key es la clave de la
 		// sesión que contestará ("nectar:<id>"); en Bird, el teléfono de siempre.
+		// Si el envío falla, la plantilla NO se reintenta (en duda = posible doble envío): se deja el
+		// pending bajo el teléfono para que el IVR de las 13:00 llame al paciente.
 		proactive, err := t.BirdClient.SendProactiveTemplate(ctx, phone, tmpl)
 		if err != nil {
 			if errors.Is(err, bird.ErrConversationWithAgent) {
 				skipped++
 				t.skipAgentOwned(ctx, phone, "confirmation", firstAppt.ID)
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "agent_owned")
 				continue
 			}
 			if errors.Is(err, nectar.ErrOpenInDoubt) {
 				t.logInDoubt(ctx, phone, "confirmation", firstAppt.ID, err)
 				inDoubt = append(inDoubt, firstAppt.ID)
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "in_doubt")
 				continue
 			}
-			// Configuración de Néctar (clave, plantilla, canal): falla igual con todos. Se detiene
-			// la corrida con UN solo error en vez de una apertura condenada por paciente.
+			// Configuración de Néctar (clave, plantilla, canal): falla igual con todos. Se dejan de
+			// ENVIAR con UN solo error en vez de una apertura condenada por paciente; este paciente y
+			// los que faltan quedan con pending para el IVR (configStopped).
 			if bird.IsProactiveConfigError(err) {
 				bird.LogProactiveConfigStop("confirmation", err, len(patientGroups)-visited+1)
-				break
+				configStopped = true
+				skipped++
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
+				continue
 			}
 			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
 			// En WARN para no disparar una alerta Telegram por cada paciente username en la
@@ -289,8 +307,10 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			if errors.Is(err, bird.ErrNonContactable) {
 				slog.Warn("recordatorio suprimido: contacto no alcanzable (sin costo)",
 					"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "non_contactable")
 			} else {
 				slog.Error("send reminder failed", "phone", utils.MaskPhone(phone), "error", err)
+				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "send_error")
 			}
 			continue
 		}
@@ -564,7 +584,8 @@ func prepTextForGroup(ctx context.Context, group []domain.Appointment, procRepo 
 }
 
 // skipAgentOwned deja constancia de una plantilla proactiva NO enviada porque el paciente ya conversa
-// con un agente en Néctar (409 already_open, mine:false): no se le escribe encima ni hay pending.
+// con un agente en Néctar (409 already_open, mine:false): no se le escribe encima. El pending lo
+// decide quien llama (el recordatorio de día-antes lo deja para el IVR; el del mismo día, no).
 func (t *Tasks) skipAgentOwned(ctx context.Context, phone, notifType, apptID string) {
 	slog.Info("notificación omitida: el paciente conversa con un agente en Néctar",
 		"phone", utils.MaskPhone(phone), "type", notifType, "appointment_id", apptID)
@@ -575,7 +596,8 @@ func (t *Tasks) skipAgentOwned(ctx context.Context, phone, notifType, apptID str
 }
 
 // logInDoubt deja constancia de una apertura en Néctar EN DUDA: la plantilla pudo haber salido. No hay
-// clave de sesión, así que no se registra pending, y no se reintenta (otra clave = plantilla doble).
+// clave de sesión y no se reintenta (otra clave = plantilla doble). El pending lo decide quien llama
+// (el recordatorio de día-antes lo deja bajo el teléfono para el IVR; el del mismo día, no).
 func (t *Tasks) logInDoubt(ctx context.Context, phone, notifType, apptID string, err error) {
 	slog.Warn("notificación en duda: la plantilla pudo haber salido, no se reintenta",
 		"phone", utils.MaskPhone(phone), "type", notifType, "appointment_id", apptID, "error", err)
@@ -585,15 +607,39 @@ func (t *Tasks) logInDoubt(ctx context.Context, phone, notifType, apptID string,
 	}
 }
 
-// logInDoubtSummary deja UN error por corrida de recordatorios con las aperturas en duda: esas citas
-// no tienen pending, así que tampoco tendrán la llamada IVR de las 13:00; el call center debe saber
-// cuáles son. Solo cuántas y qué citas: ningún teléfono.
+// logInDoubtSummary deja UN error por corrida de recordatorios con las aperturas en duda: la plantilla
+// pudo no haber llegado y el call center debe saber cuáles son. En el de día-antes esas citas quedan
+// con pending bajo el teléfono y el IVR de las 13:00 las llama; el del mismo día no tiene IVR. Solo
+// cuántas y qué citas: ningún teléfono.
 func logInDoubtSummary(notifType string, apptIDs []string) {
 	if len(apptIDs) == 0 {
 		return
 	}
-	slog.Error("recordatorios en duda: sin pending ni IVR para estas citas, revisar en el call center",
+	slog.Error("recordatorios en duda: la plantilla pudo no haber llegado, revisar en el call center",
 		"type", notifType, "count", len(apptIDs), "appointment_ids", strings.Join(apptIDs, ","))
+}
+
+// registerUnsentReminder deja el pending de confirmación de un recordatorio de día-antes que NO salió
+// (o quedó en duda), bajo el teléfono del paciente y sin mensaje ni conversación: así el IVR de las
+// 13:00 lo llama (el cruce con SIESA en sendVoiceReminders descarta a quien ya confirmó o canceló).
+// reason: in_doubt, agent_owned, no_whatsapp, non_contactable, config_stop o send_error.
+func (t *Tasks) registerUnsentReminder(ctx context.Context, phone, apptID, reason string) {
+	if t.NotifyManager == nil {
+		return
+	}
+	//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado; mismo patrón que waiting_list_check)
+	if !t.NotifyManager.RegisterPending(notifications.PendingNotification{
+		Type:          "confirmation",
+		Phone:         phone,
+		AppointmentID: apptID,
+	}) {
+		slog.Error("recordatorio no enviado sin pending: el IVR no llamará a esta cita",
+			"appointment_id", apptID, "reason", reason)
+	}
+	if t.Tracker != nil {
+		t.Tracker.LogEvent(ctx, "", phone, "notification_send_failed",
+			map[string]interface{}{"type": "confirmation", "appointment_id": apptID, "reason": reason})
+	}
 }
 
 // sendReminderPrep envia la preparacion como texto aparte tras la plantilla (la plantilla es fija).

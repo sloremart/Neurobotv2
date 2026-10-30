@@ -213,19 +213,21 @@ func TestReminder_IdempotentByContactPhone(t *testing.T) {
 	}
 }
 
-// Si el contacto ya conversa con un agente en Néctar, no se le escribe ni se registra pending.
+// Si el contacto ya conversa con un agente en Néctar, no se le escribe. El del mismo día no deja
+// pending; el de día-antes lo deja bajo el teléfono para el IVR (TestReminder_UnsentRegistersPendingForIVR).
 func TestReminder_AgentOwnedSkipped(t *testing.T) {
 	for _, sameDay := range []bool{false, true} {
 		rig := newNectarReminderRig(t,
 			&fakenectar.Bridge{OpenErr: &bird.AlreadyOpenError{ConversationID: 55, Mine: false}}, sameDay)
+		stopRigTimers(t, rig.nm, 1)
 		rig.run(t, sameDay)
 
 		ev, ok := rig.tracker.find("notification_skipped_agent_owned")
 		if !ok || ev.data["appointment_id"] != "apt-n1" {
 			t.Fatalf("sameDay=%v: falta el evento del salto: %+v", sameDay, rig.tracker.events)
 		}
-		if rig.nm.PendingCount() != 0 {
-			t.Errorf("sameDay=%v: sin pending", sameDay)
+		if want := map[bool]int{false: 1, true: 0}[sameDay]; rig.nm.PendingCount() != want {
+			t.Errorf("sameDay=%v: %d pending, se esperaba %d", sameDay, rig.nm.PendingCount(), want)
 		}
 		if _, sent := rig.tracker.find("notification_sent"); sent {
 			t.Errorf("sameDay=%v: no hubo envío", sameDay)
@@ -318,19 +320,20 @@ func TestMorningReengage_NectarKeyWithoutBridgeSkipped(t *testing.T) {
 	}
 }
 
-// Apertura en duda: la plantilla pudo salir. Evento notification_in_doubt, sin pending y sin
-// reintento (una sola apertura).
+// Apertura en duda: la plantilla pudo salir. Evento notification_in_doubt y sin reintento (una sola
+// apertura). Sin pending en el del mismo día; el de día-antes lo deja bajo el teléfono para el IVR.
 func TestReminder_InDoubtNoPendingNoRetry(t *testing.T) {
 	for _, sameDay := range []bool{false, true} {
 		rig := newNectarReminderRig(t, &fakenectar.Bridge{OpenErr: nectar.ErrOpenInDoubt}, sameDay)
+		stopRigTimers(t, rig.nm, 1)
 		rig.run(t, sameDay)
 
 		ev, ok := rig.tracker.find("notification_in_doubt")
 		if !ok || ev.data["appointment_id"] != "apt-n1" || ev.phone != reminderPhone {
 			t.Fatalf("sameDay=%v: falta el evento en duda: %+v", sameDay, rig.tracker.events)
 		}
-		if rig.nm.PendingCount() != 0 {
-			t.Errorf("sameDay=%v: sin pending", sameDay)
+		if want := map[bool]int{false: 1, true: 0}[sameDay]; rig.nm.PendingCount() != want {
+			t.Errorf("sameDay=%v: %d pending, se esperaba %d", sameDay, rig.nm.PendingCount(), want)
 		}
 		if got := rig.bridge.Opens(); len(got) != 1 {
 			t.Errorf("sameDay=%v: una sola apertura, sin reintento: %v", sameDay, got)
@@ -371,8 +374,9 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 }
 
 // Un error de CONFIGURACIÓN de Néctar (aquí la plantilla rechazada) falla igual con cualquier
-// paciente: la corrida se detiene en el primero —una sola apertura—, deja UN solo error con cuántos
-// quedaron sin enviar y ningún pending.
+// paciente: los envíos se detienen en el primero —una sola apertura— y queda UN solo error con cuántos
+// quedaron sin enviar. Sin pending en el del mismo día; en el de día-antes los 3 quedan con pending
+// para el IVR (TestReminder_ConfigStopRegistersPendingForAll).
 func TestReminder_ConfigErrorStopsRun(t *testing.T) {
 	for _, sameDay := range []bool{false, true} {
 		name := map[bool]string{false: "día antes", true: "mismo día"}[sameDay]
@@ -381,6 +385,7 @@ func TestReminder_ConfigErrorStopsRun(t *testing.T) {
 			rig := newNectarReminderRigN(t, &fakenectar.Bridge{
 				OpenErr: fmt.Errorf("%w (409 template_other_account)", nectar.ErrTemplateRejected),
 			}, sameDay, 3)
+			stopRigTimers(t, rig.nm, 3)
 			rig.run(t, sameDay)
 
 			if got := rig.bridge.Opens(); len(got) != 1 {
@@ -396,8 +401,8 @@ func TestReminder_ConfigErrorStopsRun(t *testing.T) {
 			if strings.Contains(logged[0], "300123") {
 				t.Fatalf("sin teléfonos en el log: %s", logged[0])
 			}
-			if rig.nm.PendingCount() != 0 {
-				t.Error("sin pending")
+			if want := map[bool]int{false: 3, true: 0}[sameDay]; rig.nm.PendingCount() != want {
+				t.Errorf("%d pending, se esperaba %d", rig.nm.PendingCount(), want)
 			}
 		})
 	}
@@ -439,4 +444,171 @@ func TestReminder_NoInDoubtNoSummary(t *testing.T) {
 	if logged := errorsLogged(); len(logged) != 0 {
 		t.Fatalf("sin errores: %v", logged)
 	}
+}
+
+// === Recordatorio que no salió: pending para la llamada IVR de las 13:00 ===
+
+// rigPhone es el teléfono (+57…) del paciente i del armado (newNectarReminderRigN).
+func rigPhone(i int) string {
+	if i == 1 {
+		return reminderPhone
+	}
+	return fmt.Sprintf("+57300123450%d", i)
+}
+
+// stopRigTimers detiene los timers de los pending bajo el teléfono de los n pacientes del armado.
+func stopRigTimers(t *testing.T, nm *notifications.NotificationManager, n int) {
+	t.Helper()
+	t.Cleanup(func() {
+		for i := 1; i <= n; i++ {
+			stopPendingTimers(nm, rigPhone(i))
+		}
+	})
+}
+
+// assertUnsentPending exige el pending de confirmación bajo el teléfono, sin rastro de envío, listo
+// para el IVR, y el evento notification_send_failed con la razón.
+func assertUnsentPending(t *testing.T, rig *nectarReminderRig, phone, apptID, reason string) {
+	t.Helper()
+	p, ok := rig.nm.LoadPendingForTest(phone)
+	if !ok {
+		t.Fatalf("falta el pending bajo %s (razón %s)", phone, reason)
+	}
+	if p.Type != "confirmation" || p.AppointmentID != apptID || p.BirdMessageID != "" ||
+		p.ConversationID != "" || p.ContactPhone != "" || p.RetryCount != 0 {
+		t.Fatalf("pending = %+v", p)
+	}
+	inIVR := false
+	for _, target := range rig.nm.GetPendingForIVR() {
+		if target.Phone == phone && target.AppointmentID == apptID {
+			inIVR = true
+		}
+	}
+	if !inIVR {
+		t.Fatalf("el pending de %s debe ser objetivo del IVR", phone)
+	}
+	found := false
+	rig.tracker.mu.Lock()
+	for _, e := range rig.tracker.events {
+		if e.eventType == "notification_send_failed" && e.phone == phone &&
+			e.data["appointment_id"] == apptID && e.data["reason"] == reason && e.data["type"] == "confirmation" {
+			found = true
+		}
+	}
+	rig.tracker.mu.Unlock()
+	if !found {
+		t.Fatalf("falta notification_send_failed(%s, %s): %+v", apptID, reason, rig.tracker.events)
+	}
+}
+
+// Cada falla de envío del recordatorio de día-antes deja el pending para que el IVR llame.
+func TestReminder_UnsentRegistersPendingForIVR(t *testing.T) {
+	cases := []struct {
+		name, reason string
+		openErr      error
+	}{
+		{"agente", "agent_owned", &bird.AlreadyOpenError{ConversationID: 55, Mine: false}},
+		{"en duda", "in_doubt", nectar.ErrOpenInDoubt},
+		{"no contactable", "non_contactable", bird.ErrNonContactable},
+		{"error de envío", "send_error", fmt.Errorf("nectar: 500 boom")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newNectarReminderRig(t, &fakenectar.Bridge{OpenErr: tc.openErr}, false)
+			stopRigTimers(t, rig.nm, 1)
+			rig.run(t, false)
+
+			assertUnsentPending(t, rig, reminderPhone, "apt-n1", tc.reason)
+			if got := rig.bridge.Opens(); len(got) != 1 {
+				t.Fatalf("una sola apertura, sin reintento: %v", got)
+			}
+			if rig.nm.PendingCount() != 1 {
+				t.Fatalf("un solo pending: %d", rig.nm.PendingCount())
+			}
+		})
+	}
+}
+
+// Número con entregas de WhatsApp fallando: no se le envía, pero el IVR sí lo llama.
+func TestReminder_NoWhatsAppRegistersPendingForIVR(t *testing.T) {
+	rig := newNectarReminderRig(t, &fakenectar.Bridge{OpenID: 77}, false)
+	stopRigTimers(t, rig.nm, 1)
+	rig.nm.SetDeliverability(&failingDeliverability{failures: 2})
+	rig.run(t, false)
+
+	if got := rig.bridge.Opens(); len(got) != 0 {
+		t.Fatalf("sin apertura: %v", got)
+	}
+	if _, ok := rig.tracker.find("reminder_suppressed_no_whatsapp"); !ok {
+		t.Fatal("sigue el evento de supresión")
+	}
+	assertUnsentPending(t, rig, reminderPhone, "apt-n1", "no_whatsapp")
+}
+
+// Error de configuración en el primero de 3: se deja de enviar (una sola apertura, un solo error)
+// y los 3 quedan con pending para el IVR.
+func TestReminder_ConfigStopRegistersPendingForAll(t *testing.T) {
+	errorsLogged := captureErrors(t)
+	rig := newNectarReminderRigN(t, &fakenectar.Bridge{
+		OpenErr: fmt.Errorf("%w (409 template_other_account)", nectar.ErrTemplateRejected),
+	}, false, 3)
+	stopRigTimers(t, rig.nm, 3)
+	rig.run(t, false)
+
+	if got := rig.bridge.Opens(); len(got) != 1 {
+		t.Fatalf("una sola apertura: %v", got)
+	}
+	if logged := errorsLogged(); len(logged) != 1 || !strings.Contains(logged[0], "unsent=3") {
+		t.Fatalf("un solo error con unsent=3: %v", logged)
+	}
+	for i := 1; i <= 3; i++ {
+		assertUnsentPending(t, rig, rigPhone(i), fmt.Sprintf("apt-n%d", i), "config_stop")
+	}
+	if rig.nm.PendingCount() != 3 {
+		t.Fatalf("3 pending: %d", rig.nm.PendingCount())
+	}
+}
+
+// Contexto cancelado (apagado): no se registra nada; el catch-up re-corre.
+func TestReminder_CanceledContextNoPending(t *testing.T) {
+	rig := newNectarReminderRig(t, &fakenectar.Bridge{OpenErr: fmt.Errorf("boom")}, false)
+	stopRigTimers(t, rig.nm, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := rig.tasks.sendWhatsAppReminders(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rig.nm.PendingCount() != 0 {
+		t.Fatalf("sin pending: %d", rig.nm.PendingCount())
+	}
+}
+
+// Teléfono inválido y fuera de la lista blanca: no hay a quién llamar (o es modo prueba), sin pending.
+func TestReminder_GuardsStillNoPending(t *testing.T) {
+	t.Run("teléfono inválido", func(t *testing.T) {
+		rig := newNectarReminderRig(t, &fakenectar.Bridge{OpenErr: fmt.Errorf("boom")}, false)
+		stopRigTimers(t, rig.nm, 1)
+		repo := rig.tasks.AppointmentRepo.(*testutil.MockAppointmentRepo)
+		inner := repo.FindPendingByDateFn
+		repo.FindPendingByDateFn = func(ctx context.Context, d string) ([]domain.Appointment, error) {
+			appts, err := inner(ctx, d)
+			for i := range appts {
+				appts[i].PatientPhone = "123"
+			}
+			return appts, err
+		}
+		rig.run(t, false)
+		if rig.nm.PendingCount() != 0 {
+			t.Fatalf("sin pending: %d", rig.nm.PendingCount())
+		}
+	})
+	t.Run("fuera de lista blanca", func(t *testing.T) {
+		rig := newNectarReminderRig(t, &fakenectar.Bridge{OpenErr: fmt.Errorf("boom")}, false)
+		stopRigTimers(t, rig.nm, 1)
+		rig.tasks.Cfg.TestingWhitelistPhones = []string{"+573009999999"}
+		rig.run(t, false)
+		if rig.nm.PendingCount() != 0 || len(rig.bridge.Opens()) != 0 {
+			t.Fatalf("sin pending ni apertura: %d", rig.nm.PendingCount())
+		}
+	})
 }
