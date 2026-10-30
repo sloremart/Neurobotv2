@@ -360,3 +360,11 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Lo que Neuro pide a Néctar es aditivo: no debe romper a hdg-bot.
 - Menús del agente por paso: cada paso escalable registra sus opciones/campos (`sm.RegisterReturnMenu` y afines, llamado
   donde se registra el estado), más las universales `bot_reanudar`/`bot_reiniciar`/`bot_cerrar`; no hay lista de pasos aplazados.
+- Transición (dos líneas): `NEW_LINE_ANNOUNCEMENT` (vacía = apagado) antepone el anuncio de la línea nueva al saludo
+  (`GREETING` y `OUT_OF_HOURS`) solo en conversaciones de Bird; nunca en `nectar:*` ni con `post_confirmed`.
+- `AGENTS_SOURCE=bird|nectar` (por defecto `bird`; otro valor tumba el arranque): fuente del informe de agentes. Con puente y
+  `bird`, `/api/internal/agents/bird` da el roster de Bird; con `nectar`, 409 `agents_in_nectar`. Sin puente siempre Bird.
+  Un despliegue con todos los agentes en Néctar debe poner `nectar`.
+- Aviso «🚨 URGENTE — volver a Bird» (`internal/monitor/urgent.go`): solo con Telegram y puente encendido; disparadores
+  `nectar_down`, `proactive_stopped`, `reminders_unsent`, `escalation_failing`; umbrales `URGENT_*`. La persona de turno
+  sigue `docs/GUIA-VOLVER-A-BIRD.md` (vaciar `NECTAR_BASE_URL` y `NEW_LINE_ANNOUNCEMENT`, `docker compose up -d bot`).
