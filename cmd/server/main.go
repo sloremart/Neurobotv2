@@ -515,7 +515,9 @@ func main() {
 		if schedulerTasks != nil {
 			internalHandler.SetReminderRunner(schedulerTasks)
 		}
-		internalHandler.SetAgentsInNectar(nectarBridge != nil) // agentes en Néctar solo con puente real
+		// Agentes en Néctar solo con puente real Y AGENTS_SOURCE=nectar: en la transición el puente
+		// está encendido pero la mayoría de agentes sigue en Bird.
+		internalHandler.SetAgentsInNectar(nectarBridge != nil && cfg.AgentsInNectar())
 		internalHandler.SetSessionReader(sessionRepo)
 		internalHandler.SetFlowReader(flowRepo)
 		if repos.Patient != nil {

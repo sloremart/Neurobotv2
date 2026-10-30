@@ -408,3 +408,41 @@ func TestParseNectarCloseMin(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAgentsSource(t *testing.T) {
+	valid := []struct {
+		raw  string
+		want string
+	}{
+		{"", AgentsSourceBird},    // vacía = Bird, donde siguen los agentes en la transición
+		{"   ", AgentsSourceBird}, // solo espacios cuenta como vacía
+		{"bird", AgentsSourceBird},
+		{"nectar", AgentsSourceNectar},
+		{"NECTAR", AgentsSourceNectar}, // el .env no distingue mayúsculas
+		{" Nectar ", AgentsSourceNectar},
+	}
+	for _, tt := range valid {
+		got, err := parseAgentsSource(tt.raw)
+		if err != nil || got != tt.want {
+			t.Fatalf("%q = (%q, %v), want (%q, nil)", tt.raw, got, err, tt.want)
+		}
+	}
+	// Un valor que no se entendió tumba el arranque: nunca cae a Bird en silencio.
+	for _, raw := range []string{"foo", "néctar", "nectar,bird", "1"} {
+		if got, err := parseAgentsSource(raw); err == nil {
+			t.Fatalf("%q debia fallar, devolvio %q", raw, got)
+		}
+	}
+}
+
+func TestAgentsInNectar(t *testing.T) {
+	if (&Config{}).AgentsInNectar() {
+		t.Fatal("Config vacia: los agentes no estan en Nectar")
+	}
+	if (&Config{AgentsSource: AgentsSourceBird}).AgentsInNectar() {
+		t.Fatal("AgentsSource=bird no esta en Nectar")
+	}
+	if !(&Config{AgentsSource: AgentsSourceNectar}).AgentsInNectar() {
+		t.Fatal("AgentsSource=nectar debe estar en Nectar")
+	}
+}

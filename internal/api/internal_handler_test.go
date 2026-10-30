@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
@@ -1201,6 +1202,43 @@ func TestHandleBirdAgents_409WhenNectar(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("Content-Type = %q", ct)
+	}
+}
+
+// Con el puente encendido pero AGENTS_SOURCE=bird (la transición: la mayoría de agentes sigue en
+// Bird), main no marca agentsInNectar y el informe lee Bird: 200 con sus agentes, nunca 409.
+func TestHandleBirdAgents_BridgeOnAgentsInBirdListsBird(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/agents") {
+			t.Errorf("ruta inesperada %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"id":"ag-1","name":"Agente Uno","teams":[{"id":"t1","name":"Citas"}],` +
+			`"availability":{"status":"active","activity":"available"},"rootItemAssignedCount":2}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	cfg := &config.Config{NectarBaseURL: "https://nectar.example.com", AgentsSource: config.AgentsSourceBird}
+	h := &InternalHandler{cfg: cfg, birdClient: bird.NewClientForTest(srv.URL)}
+	bridgeOn := true
+	h.SetAgentsInNectar(bridgeOn && cfg.AgentsInNectar()) // la misma conjunción que main
+	w := httptest.NewRecorder()
+	h.HandleBirdAgents(w, httptest.NewRequest(http.MethodGet, "/api/internal/agents/bird", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, esperaba 200 (cuerpo %q)", w.Code, w.Body.String())
+	}
+	var body struct {
+		Agents []struct {
+			ID        string   `json:"id"`
+			OpenItems int      `json:"open_items"`
+			Teams     []string `json:"teams"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("cuerpo = %q: %v", w.Body.String(), err)
+	}
+	if len(body.Agents) != 1 || body.Agents[0].ID != "ag-1" || body.Agents[0].OpenItems != 2 ||
+		len(body.Agents[0].Teams) != 1 || body.Agents[0].Teams[0] != "Citas" {
+		t.Errorf("agentes = %+v", body.Agents)
 	}
 }
 

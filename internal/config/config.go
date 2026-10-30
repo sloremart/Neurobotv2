@@ -240,6 +240,10 @@ type Config struct {
 	// NewLineAnnouncement (NEW_LINE_ANNOUNCEMENT): mientras conviven las dos líneas, el texto con
 	// el que los saludos de la línea de Bird anuncian la nueva. Vacía = apagado (saludo de siempre).
 	NewLineAnnouncement string
+	// AgentsSource (AGENTS_SOURCE) dice dónde viven los agentes que lista el informe del
+	// dashboard: "bird" (default) o "nectar". NO se deduce del puente: en la transición el puente
+	// está encendido y la mayoría de agentes sigue en Bird. Se lee con AgentsInNectar().
+	AgentsSource string
 
 	// Scaling — configurable pool sizes and DB connections for load profiles
 	ScalingProfile    string // "normal" or "high-load" (informational, for monitoring alerts)
@@ -441,6 +445,12 @@ func Load() *Config {
 		log.Fatalf("PROTOCOL_ESCALADO_VERSION inválida: %v", err)
 	}
 	cfg.ProtocolEscaladoVersion = protoVer
+
+	agentsSource, err := parseAgentsSource(os.Getenv("AGENTS_SOURCE"))
+	if err != nil {
+		log.Fatalf("AGENTS_SOURCE inválida: %v", err)
+	}
+	cfg.AgentsSource = agentsSource
 
 	teams, err := parseNectarTeamByGroup(os.Getenv("NECTAR_TEAM_BY_GROUP"))
 	if err != nil {
@@ -733,6 +743,30 @@ func validateCloseMarginMin(minutes int) error {
 		return fmt.Errorf("margen de cierre %d fuera de rango (0..%d)", minutes, MaxCloseMarginMin)
 	}
 	return nil
+}
+
+// Valores de AGENTS_SOURCE.
+const (
+	AgentsSourceBird   = "bird"
+	AgentsSourceNectar = "nectar"
+)
+
+// AgentsInNectar dice si el informe de agentes debe leerse en Néctar. main lo combina con el
+// puente: sin puente armado los agentes siguen en Bird diga lo que diga AGENTS_SOURCE.
+func (c *Config) AgentsInNectar() bool { return c.AgentsSource == AgentsSourceNectar }
+
+// parseAgentsSource lee AGENTS_SOURCE: vacía = Bird, sin distinguir mayúsculas, y cualquier
+// otro valor tumba el arranque — un typo no puede dejar el informe en la fuente equivocada en
+// silencio.
+func parseAgentsSource(raw string) (string, error) {
+	switch v := strings.ToLower(strings.TrimSpace(raw)); v {
+	case "":
+		return AgentsSourceBird, nil
+	case AgentsSourceBird, AgentsSourceNectar:
+		return v, nil
+	default:
+		return "", fmt.Errorf("fuente %q desconocida (valores: bird, nectar)", raw)
+	}
 }
 
 // parseCloseMarginMin lee BUSINESS_HOURS_CLOSE_MARGIN_MIN: vacío = el default, y cualquier otra
