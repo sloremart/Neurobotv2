@@ -263,7 +263,7 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 		if m.persister != nil {
 			if err := m.persister.Upsert(context.Background(), pending.Phone, pending.Type,
 				pending.AppointmentID, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID, pending.ContactPhone,
-				pending.RetryCount, pending.ExpiresAt); err != nil {
+				pending.Unsent, pending.RetryCount, pending.ExpiresAt); err != nil {
 				slog.Error("persist followup1", "phone", utils.MaskPhone(pending.Phone), "error", err)
 			}
 		}
@@ -283,7 +283,7 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 		if m.persister != nil {
 			if err := m.persister.Upsert(context.Background(), pending.Phone, pending.Type,
 				pending.AppointmentID, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID, pending.ContactPhone,
-				pending.RetryCount, pending.ExpiresAt); err != nil {
+				pending.Unsent, pending.RetryCount, pending.ExpiresAt); err != nil {
 				slog.Error("persist followup2", "phone", utils.MaskPhone(pending.Phone), "error", err)
 			}
 		}

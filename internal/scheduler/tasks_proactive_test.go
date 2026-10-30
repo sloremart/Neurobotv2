@@ -163,7 +163,7 @@ func TestReminder_NectarRegistersPendingUnderSessionKey(t *testing.T) {
 			if !ok {
 				t.Fatal("el pending queda bajo la clave de la sesión de Néctar")
 			}
-			if p.ContactPhone != reminderPhone || p.ConversationID != "77" || p.BirdMessageID != "901" {
+			if p.ContactPhone != reminderPhone || p.ConversationID != "77" || p.BirdMessageID != "901" || p.Unsent {
 				t.Fatalf("pending = %+v", p)
 			}
 			if rig.nm.HasPending(reminderPhone) {
@@ -476,7 +476,7 @@ func assertUnsentPending(t *testing.T, rig *nectarReminderRig, phone, apptID, re
 		t.Fatalf("falta el pending bajo %s (razón %s)", phone, reason)
 	}
 	if p.Type != "confirmation" || p.AppointmentID != apptID || p.BirdMessageID != "" ||
-		p.ConversationID != "" || p.ContactPhone != "" || p.RetryCount != 0 {
+		p.ConversationID != "" || p.ContactPhone != "" || p.RetryCount != 0 || !p.Unsent {
 		t.Fatalf("pending = %+v", p)
 	}
 	inIVR := false

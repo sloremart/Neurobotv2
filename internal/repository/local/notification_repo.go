@@ -19,10 +19,11 @@ func NewNotificationRepo(db *sql.DB) *NotificationRepo {
 
 // Upsert inserts or updates a pending notification (keyed by phone).
 // call_id is NOT updated here — use UpdateCallID for that. contactPhone vacío (Bird) se guarda NULL.
-func (r *NotificationRepo) Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, retryCount int, expiresAt time.Time) error {
+// unsent marca el pending de un recordatorio que no salió (migración 045).
+func (r *NotificationRepo) Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO notification_pending (phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, retry_count, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
+		`INSERT INTO notification_pending (phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, retry_count, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
 		   type = VALUES(type),
 		   appointment_id = VALUES(appointment_id),
@@ -30,9 +31,10 @@ func (r *NotificationRepo) Upsert(ctx context.Context, phone, nType, apptID, wlI
 		   bird_message_id = VALUES(bird_message_id),
 		   conversation_id = VALUES(conversation_id),
 		   contact_phone = VALUES(contact_phone),
+		   unsent = VALUES(unsent),
 		   retry_count = VALUES(retry_count),
 		   expires_at = VALUES(expires_at)`,
-		phone, nType, apptID, wlID, birdMsgID, convID, contactPhone, retryCount, expiresAt)
+		phone, nType, apptID, wlID, birdMsgID, convID, contactPhone, unsent, retryCount, expiresAt)
 	return err
 }
 
@@ -70,8 +72,8 @@ func (r *NotificationRepo) Resolve(ctx context.Context, phone, status string) er
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO notification_history
-		   (phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, status, created_at, resolved_at)
-		 SELECT phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, ?, created_at, NOW()
+		   (phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, status, created_at, resolved_at)
+		 SELECT phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, ?, created_at, NOW()
 		 FROM notification_pending WHERE phone = ?`, status, phone); err != nil {
 		return err
 	}
@@ -97,7 +99,7 @@ func (r *NotificationRepo) FindExpired(ctx context.Context) ([]notifications.Pen
 	return r.queryRows(ctx,
 		`SELECT phone, type, COALESCE(appointment_id, ''), COALESCE(waiting_list_id, ''),
 		        COALESCE(bird_message_id, ''), COALESCE(conversation_id, ''),
-		        COALESCE(contact_phone, ''), COALESCE(call_id, ''),
+		        COALESCE(contact_phone, ''), unsent, COALESCE(call_id, ''),
 		        retry_count, expires_at, created_at
 		 FROM notification_pending
 		 WHERE expires_at < NOW()
@@ -109,7 +111,7 @@ func (r *NotificationRepo) FindAll(ctx context.Context) ([]notifications.Pending
 	return r.queryRows(ctx,
 		`SELECT phone, type, COALESCE(appointment_id, ''), COALESCE(waiting_list_id, ''),
 		        COALESCE(bird_message_id, ''), COALESCE(conversation_id, ''),
-		        COALESCE(contact_phone, ''), COALESCE(call_id, ''),
+		        COALESCE(contact_phone, ''), unsent, COALESCE(call_id, ''),
 		        retry_count, expires_at, created_at
 		 FROM notification_pending
 		 ORDER BY created_at ASC`)
@@ -127,7 +129,7 @@ func (r *NotificationRepo) queryRows(ctx context.Context, query string) ([]notif
 		var row notifications.PendingRow
 		if err := rows.Scan(
 			&row.Phone, &row.Type, &row.AppointmentID, &row.WaitingListID,
-			&row.BirdMessageID, &row.ConversationID, &row.ContactPhone, &row.CallID,
+			&row.BirdMessageID, &row.ConversationID, &row.ContactPhone, &row.Unsent, &row.CallID,
 			&row.RetryCount, &row.ExpiresAt, &row.CreatedAt,
 		); err != nil {
 			return nil, err

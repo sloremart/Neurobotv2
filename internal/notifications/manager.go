@@ -28,7 +28,11 @@ type PendingNotification struct {
 	Phone string // clave del pending: el teléfono (Bird) o la clave de sesión "nectar:<id>" (Néctar)
 	// ContactPhone: teléfono E.164 del paciente cuando Phone es una clave de sesión de Néctar.
 	// Vacío = Phone ya es el teléfono (Bird). Lo usan la idempotencia por teléfono y el IVR.
-	ContactPhone  string
+	ContactPhone string
+	// Unsent: el recordatorio NO salió (se registró igual para que el IVR de las 13:00 llame). Con
+	// esta marca solo el botón de la plantilla cuenta como respuesta; cualquier otro mensaje sigue
+	// el flujo normal del bot (HandleInvalidInput no lo consume). Se persiste.
+	Unsent        bool
 	AppointmentID string
 	WaitingListID string // only for waiting_list type
 	// WLTrigger: origen de la notificación WL (WLTriggerSlotRelease | WLTriggerDailyCheck) — viaja
@@ -121,7 +125,7 @@ type PreparationFinder interface {
 
 // NotificationPersister persists pending notifications to the database.
 type NotificationPersister interface {
-	Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, retryCount int, expiresAt time.Time) error
+	Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error
 	UpdateCallID(ctx context.Context, phone, callID string) error
 	// Rekey cambia la clave de la fila de oldPhone a newPhone, con su conversación y su contacto
 	// (adopción del pending de un recordatorio fallido por una conversación de Néctar).
@@ -147,6 +151,7 @@ type PendingRow struct {
 	BirdMessageID  string
 	ConversationID string
 	ContactPhone   string
+	Unsent         bool
 	CallID         string
 	RetryCount     int
 	ExpiresAt      time.Time
@@ -453,7 +458,7 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) bool {
 		defer cancel()
 		if err := m.persister.Upsert(ctx, notif.Phone, notif.Type,
 			notif.AppointmentID, notif.WaitingListID, notif.BirdMessageID, notif.ConversationID, notif.ContactPhone,
-			notif.RetryCount, expiresAt); err != nil {
+			notif.Unsent, notif.RetryCount, expiresAt); err != nil {
 			slog.Error("persist pending notification", "phone", utils.MaskPhone(notif.Phone), "error", err)
 		}
 	}
@@ -696,6 +701,12 @@ func (m *NotificationManager) HandleInvalidInput(phone, conversationID string) b
 	}
 	defer m.unlockPhone(phone)
 
+	// Recordatorio que no salió: el paciente no tiene botones que repetirle; su mensaje sigue el
+	// flujo normal y el pending queda intacto para el IVR (regla del dueño).
+	if val, ok := m.pending.Load(phone); ok && val.(*PendingNotification).Unsent {
+		return false
+	}
+
 	p, ok := m.takePending(phone) // atomic claim
 	if !ok {
 		return false
@@ -840,7 +851,7 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 			defer cancel()
 			if err := m.persister.Upsert(ctx, p.Phone, p.Type,
 				p.AppointmentID, p.WaitingListID, p.BirdMessageID, p.ConversationID, p.ContactPhone,
-				p.RetryCount, p.ExpiresAt); err != nil {
+				p.Unsent, p.RetryCount, p.ExpiresAt); err != nil {
 				slog.Error("persist IVR sent (followup disabled)", "phone", utils.MaskPhone(phone), "error", err)
 			}
 		}
@@ -861,7 +872,7 @@ func (m *NotificationManager) MarkIVRSent(phone string) {
 		defer cancel()
 		if err := m.persister.Upsert(ctx, p.Phone, p.Type,
 			p.AppointmentID, p.WaitingListID, p.BirdMessageID, p.ConversationID, p.ContactPhone,
-			p.RetryCount, expiresAt); err != nil {
+			p.Unsent, p.RetryCount, expiresAt); err != nil {
 			slog.Error("persist IVR sent notification", "phone", utils.MaskPhone(phone), "error", err)
 		}
 	}
@@ -1181,6 +1192,7 @@ func (m *NotificationManager) RestorePending(ctx context.Context) {
 			BirdMessageID:  row.BirdMessageID,
 			ConversationID: row.ConversationID,
 			ContactPhone:   row.ContactPhone,
+			Unsent:         row.Unsent,
 			CallID:         row.CallID,
 			RetryCount:     row.RetryCount,
 			CreatedAt:      row.CreatedAt,

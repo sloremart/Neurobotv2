@@ -591,33 +591,39 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 // pulsación de plantilla que llega vacía (kind button sin interactive_reply_id, lo de hoy antes
 // del arreglo de Néctar) no es postback y cae en HandleInvalidInput, como un texto libre.
 //
-// Sin pending bajo la conversación, el del teléfono del contacto («+57…», el que deja un
-// recordatorio que no salió) se adopta para esta conversación y sigue el mismo camino. El contacto
-// es el que ya resolvió dispatchNectar (sin otra pregunta a Néctar); sin número (vacío o solo BSUID)
-// no hay teléfono con qué buscar. La guarda de conversación con agente vive en AdoptPhonePending.
+// Sin pending bajo la conversación, la pulsación de un botón de la plantilla adopta el pending del
+// teléfono del contacto («+57…», el que deja un recordatorio que no salió: la plantilla en duda sí
+// llegó) y sigue el mismo camino. Cualquier otro mensaje no adopta: sigue el flujo normal y el
+// pending queda para el IVR (regla del dueño). El contacto es el que ya resolvió dispatchNectar (sin
+// otra pregunta a Néctar); sin número (vacío o solo BSUID) no hay teléfono con qué buscar. La guarda
+// de conversación con agente vive en AdoptPhonePending. Con un pending de recordatorio fallido bajo
+// la conversación, HandleInvalidInput tampoco consume el mensaje (false = al worker).
 func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage, contact bird.NectarContact) bool {
 	notify := h.nectarNotifierOrNil()
 	if notify == nil {
 		return false
 	}
-	if !notify.HasPending(msg.Phone) &&
-		(contact.Identifier == "" || !notify.AdoptPhonePending("+"+contact.Identifier, msg.Phone, msg.ConversationID)) {
-		return false
-	}
+	payload, notifPostback := "", false
 	if msg.IsPostback {
-		payload := msg.PostbackPayload
+		payload = msg.PostbackPayload
 		if p, ok := notifications.TemplateButtonPayload(payload); ok {
 			payload = p
 		}
-		if IsNotificationPostback(payload) {
-			slog.Info("nectar: notification postback received",
-				"phone", utils.MaskPhone(msg.Phone), "payload", payload)
-			go func() {
-				defer recoverLog("notification-response")
-				notify.HandleResponse(msg.Phone, payload, msg.ConversationID)
-			}()
-			return true
-		}
+		notifPostback = IsNotificationPostback(payload)
+	}
+	if !notify.HasPending(msg.Phone) &&
+		(!notifPostback || contact.Identifier == "" ||
+			!notify.AdoptPhonePending("+"+contact.Identifier, msg.Phone, msg.ConversationID)) {
+		return false
+	}
+	if notifPostback {
+		slog.Info("nectar: notification postback received",
+			"phone", utils.MaskPhone(msg.Phone), "payload", payload)
+		go func() {
+			defer recoverLog("notification-response")
+			notify.HandleResponse(msg.Phone, payload, msg.ConversationID)
+		}()
+		return true
 	}
 	return notify.HandleInvalidInput(msg.Phone, msg.ConversationID)
 }

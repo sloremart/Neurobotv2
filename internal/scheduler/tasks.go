@@ -632,6 +632,7 @@ func (t *Tasks) registerUnsentReminder(ctx context.Context, phone, apptID, reaso
 		Type:          "confirmation",
 		Phone:         phone,
 		AppointmentID: apptID,
+		Unsent:        true, // el mensaje del paciente sigue el flujo normal; solo el botón cuenta
 	}) {
 		slog.Error("recordatorio no enviado sin pending: el IVR no llamará a esta cita",
 			"appointment_id", apptID, "reason", reason)

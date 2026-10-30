@@ -248,7 +248,8 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 			}()
 			return
 		}
-		// Patient sent free text instead of pressing a button — retry the prompt
+		// Patient sent free text instead of pressing a button — retry the prompt. Con un recordatorio
+		// que no salió (pending Unsent) no lo consume: el mensaje sigue al worker.
 		if h.notifyManager.HandleInvalidInput(msg.Phone, msg.ConversationID) {
 			return
 		}

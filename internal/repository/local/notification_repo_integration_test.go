@@ -1,7 +1,7 @@
 //go:build integration
 
 // Rekey contra MySQL real: la fila del pending de un recordatorio fallido pasa de la clave del
-// teléfono a la de la conversación de Néctar, sin mover su vencimiento.
+// teléfono a la de la conversación de Néctar, sin mover su vencimiento y con su marca unsent (045).
 // Correr con: make test-integration (requiere LOCAL_TEST_DSN).
 package local
 
@@ -26,7 +26,7 @@ func TestNotificationRepo_Rekey(t *testing.T) {
 	})
 
 	expiresAt := time.Now().Add(3 * time.Hour).Truncate(time.Second)
-	if err := repo.Upsert(ctx, oldKey, "confirmation", "APT-ITEST", "", "", "", "", 0, expiresAt); err != nil {
+	if err := repo.Upsert(ctx, oldKey, "confirmation", "APT-ITEST", "", "", "", "", true, 0, expiresAt); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if err := repo.Rekey(ctx, oldKey, newKey, "55", oldKey); err != nil {
@@ -46,7 +46,7 @@ func TestNotificationRepo_Rekey(t *testing.T) {
 			continue
 		}
 		found = true
-		if r.ConversationID != "55" || r.ContactPhone != oldKey || r.AppointmentID != "APT-ITEST" {
+		if r.ConversationID != "55" || r.ContactPhone != oldKey || r.AppointmentID != "APT-ITEST" || !r.Unsent {
 			t.Fatalf("fila re-clave = %+v", r)
 		}
 		if !r.ExpiresAt.Equal(expiresAt) {

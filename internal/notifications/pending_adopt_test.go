@@ -33,7 +33,7 @@ func seedAdopt(t *testing.T, mgr *NotificationManager) (*NotificationManager, *m
 	mgr.SetPersister(pers)
 	sessRepo := &mockSessionCreator{}
 	mgr.SetWaitingListDeps(nil, sessRepo, &mockVirtualEnqueuer{})
-	if !mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: adoptPhone, AppointmentID: "APT001"}) {
+	if !mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: adoptPhone, AppointmentID: "APT001", Unsent: true}) {
 		t.Fatal("register")
 	}
 	pers.findAllRows = append(pers.findAllRows, pers.upserted...)
@@ -63,7 +63,7 @@ func TestAdoptPhonePending_MovesPendingToSessionKey(t *testing.T) {
 	if !ok {
 		t.Fatal("el pending queda bajo la clave de la conversación")
 	}
-	if p.Phone != adoptKey || p.ConversationID != "55" || p.ContactPhone != adoptPhone || p.AppointmentID != "APT001" {
+	if p.Phone != adoptKey || p.ConversationID != "55" || p.ContactPhone != adoptPhone || p.AppointmentID != "APT001" || !p.Unsent {
 		t.Fatalf("pending adoptado = %+v", p)
 	}
 	// (f) el vencimiento es el que ya tenía, con un timer nuevo; el viejo quedó parado.
@@ -262,4 +262,87 @@ func assertPhonePendingKept(t *testing.T, mgr *NotificationManager, pers *mockPe
 	if len(pers.rekeyCalls) != 0 {
 		t.Fatalf("no hubo Rekey: %v", pers.rekeyCalls)
 	}
+}
+
+// Con recordatorio fallido el mensaje del paciente sigue el flujo normal (regla del dueño): un texto
+// libre NO se consume —no se reenvían botones ni se cuenta como inválido— y el pending queda para el
+// IVR. birdClient nil: cualquier envío haría panic.
+func TestHandleInvalidInput_UnsentNotConsumed(t *testing.T) {
+	mgr, _, _ := adoptManager(t)
+	if mgr.HandleInvalidInput(adoptPhone, "conv-1") {
+		t.Fatal("con recordatorio fallido el texto libre va al flujo normal")
+	}
+	p, ok := mgr.LoadPendingForTest(adoptPhone)
+	if !ok || p.InvalidInputs != 0 || !p.Unsent {
+		t.Fatalf("el pending sigue intacto: %+v %v", p, ok)
+	}
+	if ivr := mgr.GetPendingForIVR(); len(ivr) != 1 || ivr[0].Phone != adoptPhone {
+		t.Fatalf("y el IVR lo sigue viendo: %+v", ivr)
+	}
+	// Lo mismo tras adoptarlo bajo la conversación de Néctar.
+	if !mgr.AdoptPhonePending(adoptPhone, adoptKey, "55") {
+		t.Fatal("adopt")
+	}
+	if mgr.HandleInvalidInput(adoptKey, "55") {
+		t.Fatal("adoptado sigue sin consumir el texto libre")
+	}
+	if !mgr.HasPending(adoptKey) {
+		t.Fatal("el pending adoptado sigue")
+	}
+}
+
+// Un pending normal (la plantilla salió) sigue consumiendo el texto libre como siempre.
+func TestHandleInvalidInput_SentPendingStillConsumed(t *testing.T) {
+	birdClient, srv := newTestBirdClient()
+	t.Cleanup(srv.Close)
+	mgr := NewNotificationManager(birdClient, nil, &config.Config{})
+	mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: adoptPhone, AppointmentID: "APT001", BirdMessageID: "m1"})
+	t.Cleanup(func() {
+		if p, ok := mgr.LoadPendingForTest(adoptPhone); ok {
+			p.Timer.Stop()
+		}
+	})
+	if !mgr.HandleInvalidInput(adoptPhone, "conv-1") {
+		t.Fatal("con la plantilla enviada el texto libre se consume (reenvía los botones)")
+	}
+	if p, _ := mgr.LoadPendingForTest(adoptPhone); p.InvalidInputs != 1 {
+		t.Fatalf("cuenta el intento: %+v", p)
+	}
+}
+
+// El botón de la plantilla (llegó la que estaba en duda) sí cuenta con recordatorio fallido.
+func TestHandleResponse_UnsentConfirms(t *testing.T) {
+	base, _ := confirmManager(t)
+	mgr, pers, _ := seedAdopt(t, base)
+	mgr.HandleResponse(adoptPhone, "confirm", "conv-1")
+	if mgr.HasPending(adoptPhone) || len(mgr.GetPendingForIVR()) != 0 {
+		t.Fatal("confirmado: el IVR ya no lo llama")
+	}
+	if pers.resolvedStatus != "confirmed" {
+		t.Fatalf("resuelto como confirmado, got %q", pers.resolvedStatus)
+	}
+}
+
+// Unsent sobrevive al reinicio: se persiste al registrar y al marcar el IVR, y RestorePending lo trae.
+func TestUnsent_PersistedAndRestored(t *testing.T) {
+	mgr, pers, _ := adoptManager(t)
+	if len(pers.upserted) != 1 || !pers.upserted[0].Unsent {
+		t.Fatalf("RegisterPending persiste Unsent: %+v", pers.upserted)
+	}
+	mgr.MarkIVRSent(adoptPhone)
+	if last := pers.upserted[len(pers.upserted)-1]; !last.Unsent || last.RetryCount != 3 {
+		t.Fatalf("MarkIVRSent persiste Unsent: %+v", last)
+	}
+
+	restarted := NewNotificationManager(nil, nil, &config.Config{})
+	restarted.SetPersister(&mockPersister{findAllRows: []PendingRow{{
+		Phone: adoptPhone, Type: "confirmation", AppointmentID: "APT001", Unsent: true,
+		ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+	}}})
+	restarted.RestorePending(context.Background())
+	p, ok := restarted.LoadPendingForTest(adoptPhone)
+	if !ok || !p.Unsent {
+		t.Fatalf("restaurado con Unsent: %+v %v", p, ok)
+	}
+	p.Timer.Stop()
 }

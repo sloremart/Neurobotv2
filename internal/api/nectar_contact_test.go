@@ -293,18 +293,35 @@ func TestNectarInbound_PhonePendingAdopted_ButtonGoesToHandleResponse(t *testing
 	}
 }
 
-func TestNectarInbound_PhonePendingAdopted_TextGoesToInvalidInput(t *testing.T) {
+// Recordatorio fallido: un texto libre sigue el flujo normal (regla del dueño). No se adopta el
+// pending del teléfono —queda para el IVR— y el mensaje va al worker.
+func TestNectarInbound_PhonePending_TextGoesToWorkerWithoutAdoption(t *testing.T) {
 	h, sink, _, notify := phonePendingHandler(t, bird.NectarContact{Identifier: "573001112233"})
 
 	postNotice(h, signedNotice(nectarTestSecret, inboundBodyConv("e-ad-2", 77)))
-	notify.mu.Lock()
-	invalid := append([][2]string(nil), notify.invalid...)
-	notify.mu.Unlock()
-	if len(invalid) != 1 || invalid[0] != [2]string{"nectar:77", "77"} {
-		t.Fatalf("HandleInvalidInput = %v", invalid)
+	if got := notify.adoptCalls(); len(got) != 0 {
+		t.Fatalf("un texto libre no adopta, got %v", got)
 	}
-	if m, _ := sink.counts(); m != 0 {
-		t.Fatalf("el worker no recibe nada, got %d", m)
+	if !notify.phonePending["+573001112233"] {
+		t.Fatal("el pending sigue bajo el teléfono para el IVR")
+	}
+	if m, _ := sink.counts(); m != 1 {
+		t.Fatalf("va al worker, got %d", m)
+	}
+}
+
+// Un pending de recordatorio fallido ya adoptado bajo la conversación: el texto libre tampoco se
+// consume (HandleInvalidInput devuelve false) y sigue al worker.
+func TestNectarInbound_AdoptedUnsentPending_TextGoesToWorker(t *testing.T) {
+	sink := &sinkRecorder{}
+	h := newNectarContactHandler(newMemInbox(), sink, &fakenectar.Bridge{ContactValue: bird.NectarContact{Identifier: "573001112233"}})
+	notify := newFakeNectarNotifier("nectar:77")
+	notify.unsent = map[string]bool{"nectar:77": true}
+	h.SetNectarNotifier(notify)
+
+	postNotice(h, signedNotice(nectarTestSecret, inboundBodyConv("e-ad-6", 77)))
+	if m, _ := sink.counts(); m != 1 {
+		t.Fatalf("el texto libre va al worker, got %d", m)
 	}
 }
 

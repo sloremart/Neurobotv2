@@ -2340,11 +2340,11 @@ type mockPersister struct {
 	rekeyErr       error
 }
 
-func (m *mockPersister) Upsert(_ context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, retryCount int, expiresAt time.Time) error {
+func (m *mockPersister) Upsert(_ context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error {
 	m.upserted = append(m.upserted, PendingRow{
 		Phone: phone, Type: nType, AppointmentID: apptID, WaitingListID: wlID,
 		BirdMessageID: birdMsgID, ConversationID: convID, ContactPhone: contactPhone,
-		RetryCount: retryCount, ExpiresAt: expiresAt,
+		Unsent: unsent, RetryCount: retryCount, ExpiresAt: expiresAt,
 	})
 	return nil
 }
