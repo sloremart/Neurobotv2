@@ -357,6 +357,10 @@ func TestNotifPendingReturnOptions_ByTypeAndDetail(t *testing.T) {
 			{"Entendido, sin reprogramar", "understood", np, "understood", false},
 			{"Reprogramar", "reschedule", np, "reschedule", false},
 		}},
+		{"reprogramar sin procedimiento", view(sm.CtxNotifEscalationDetail, sm.EscalationReasonRescheduleNoProcedure, "notif_type", "cancellation"), []want{
+			{"Ya la reprogramé a mano en SIESA", "reprogramada_manual", "", "", true},
+			{"Entendido, sin reprogramar", "understood", np, "understood", false},
+		}},
 		{"confirmación", view("notif_type", "confirmation", sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifNoResponse), []want{
 			{"Confirmar la cita", "confirm", np, "confirm", false},
 			{"Reprogramar la cita", "reschedule", np, "reschedule", false},

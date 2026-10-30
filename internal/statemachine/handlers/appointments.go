@@ -1416,6 +1416,8 @@ const (
 	notifKindWaitingList
 	// notifKindCancellation: la clínica canceló la cita.
 	notifKindCancellation
+	// notifKindNoProcedure: el paciente pidió reprogramar y la cita no tiene procedimiento en SIESA.
+	notifKindNoProcedure
 )
 
 // classifyNotifPending lee la clase de notificación de la sesión (nil = la de una cita).
@@ -1423,8 +1425,11 @@ func classifyNotifPending(sess *session.Session) notifPendingKind {
 	if sess == nil {
 		return notifKindAppointment
 	}
-	if sess.GetContext(sm.CtxNotifEscalationDetail) == sm.EscalationReasonNotifSystemFailure {
+	switch sess.GetContext(sm.CtxNotifEscalationDetail) {
+	case sm.EscalationReasonNotifSystemFailure:
 		return notifKindSystemFailure
+	case sm.EscalationReasonRescheduleNoProcedure:
+		return notifKindNoProcedure
 	}
 	switch sess.GetContext("notif_type") {
 	case "waiting_list":
@@ -1458,6 +1463,12 @@ func notifPendingReturnOptions(sess *session.Session) []sm.ReturnOption {
 		return []sm.ReturnOption{
 			action("Reintentar la confirmación en SIESA", "confirm"),
 			{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
+		}
+	case notifKindNoProcedure:
+		// «Reprogramar» del bot no sirve sin procedimiento: el agente la reprograma en SIESA y cierra.
+		return []sm.ReturnOption{
+			{Label: "Ya la reprogramé a mano en SIESA", Value: "reprogramada_manual", Close: true},
+			action("Entendido, sin reprogramar", "understood"),
 		}
 	case notifKindWaitingList:
 		return []sm.ReturnOption{action("Agendar ahora", "wl_schedule"), action("No le interesa", "wl_decline")}

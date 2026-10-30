@@ -17,6 +17,9 @@ const (
 	EscalationReasonNotifSystemFailure = "notificacion_fallo_sistema"
 	// EscalationReasonNotifFreeText: el paciente respondió la notificación con texto libre repetido.
 	EscalationReasonNotifFreeText = "confirmacion_texto_libre"
+	// EscalationReasonRescheduleNoProcedure: el paciente pidió reprogramar desde la notificación,
+	// pero la cita no tiene procedimiento (CUPS) en SIESA; la reprograma un agente a mano.
+	EscalationReasonRescheduleNoProcedure = "reprogramar_sin_procedimiento"
 )
 
 // Motivos de las escalaciones del flujo del paciente. Cada sitio que manda a ESCALATE_TO_AGENT
@@ -72,7 +75,7 @@ const (
 func EscalationReasons() []string {
 	return []string{
 		EscalationReasonNotifNoResponse, EscalationReasonNotifSystemFailure, EscalationReasonNotifFreeText,
-		EscalationReasonPatientAsked, EscalationReasonMaxRetries, EscalationReasonAIRecoveryExhausted,
+		EscalationReasonRescheduleNoProcedure, EscalationReasonPatientAsked, EscalationReasonMaxRetries, EscalationReasonAIRecoveryExhausted,
 		EscalationReasonParticularNoOrder, EscalationReasonOCRAskedForAgent, EscalationReasonOCRNoCode,
 		EscalationReasonOCRInvalidJSON, EscalationReasonSanitasBlock, EscalationReasonNoValidCups,
 		EscalationReasonEmptyGrouping, EscalationReasonNoCoverage, EscalationReasonSleepStudy,

@@ -93,6 +93,11 @@ func registerNotifPendingMenu(t *testing.T) {
 				{Label: "Reintentar la confirmación en SIESA", Value: "confirm", Target: np, Data: "confirm"},
 				{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
 			}
+		case sess != nil && sess.GetContext(sm.CtxNotifEscalationDetail) == sm.EscalationReasonRescheduleNoProcedure:
+			return []sm.ReturnOption{
+				{Label: "Ya la reprogramé a mano en SIESA", Value: "reprogramada_manual", Close: true},
+				{Label: "Entendido, sin reprogramar", Value: "understood", Target: np, Data: "understood"},
+			}
 		case sess != nil && sess.GetContext("notif_type") == "waiting_list":
 			return []sm.ReturnOption{
 				{Label: "Agendar ahora", Value: "wl_schedule", Target: np, Data: "wl_schedule"},

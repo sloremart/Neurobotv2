@@ -2,12 +2,16 @@ package notifications
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
+	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -49,7 +53,9 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		slog.Error("self_reschedule: no procedure on appointment", "appointment_id", pending.AppointmentID)
 		m.birdClient.SendText(phone, pending.ConversationID,
 			"No pudimos identificar el procedimiento de tu cita. Un agente te ayudará.")
-		if pending.ConversationID != "" {
+		if session.IsNectarSession(phone) {
+			m.escalateNoProcedure(ctx, phone, pending, appt)
+		} else if pending.ConversationID != "" {
 			m.birdClient.UpdateFeedItem(pending.ConversationID, pending.BirdMessageID,
 				false, m.cfg.BirdTeamFallback, "")
 		}
@@ -116,4 +122,35 @@ func (m *NotificationManager) startSelfReschedule(phone string, pending *Pending
 		"skip_cancel", skipCancel,
 		"espacios", sessionCtx["espacios"],
 		"block_size", len(block))
+}
+
+// escalateNoProcedure entrega a un agente de Néctar el «Reprogramar» que el bot no puede atender
+// porque la cita no tiene procedimiento en SIESA. En Bird el traspaso es UpdateFeedItem; en Néctar
+// ese PATCH iría a Bird con un id de Néctar y el paciente esperaría a un agente que nunca llega.
+// La sesión escalada (retorno del agente) se persiste solo si la escalación salió.
+func (m *NotificationManager) escalateNoProcedure(ctx context.Context, phone string, pending *PendingNotification, appt *domain.Appointment) {
+	apptDate := utils.FormatFriendlyDate(appt.Date)
+	apptTime := services.FormatTimeSlot(appt.TimeSlot)
+	sessCtx := map[string]string{
+		"notif_appointment_id":      pending.AppointmentID,
+		"notif_type":                pending.Type,
+		"notif_appt_date":           apptDate,
+		"notif_appt_time":           apptTime,
+		"notif_conv_id":             pending.ConversationID,
+		"patient_name":              appt.PatientName,
+		"pre_escalation_state":      sm.StateNotifPending,
+		sm.CtxNotifEscalationDetail: sm.EscalationReasonRescheduleNoProcedure,
+	}
+	note := fmt.Sprintf("El paciente pidió reprogramar su cita, pero la cita no tiene procedimiento (CUPS) en SIESA.\n"+
+		"Reprogramarla a mano.\nPaciente: %s\nFecha: %s | Hora: %s\nCita ID: %s",
+		appt.PatientName, apptDate, apptTime, pending.AppointmentID)
+
+	esc := notifEscalation(m.cfg, phone, &session.Session{Context: sessCtx}, sm.EscalationReasonRescheduleNoProcedure, note)
+	if _, _, err := m.birdClient.EscalateToAgentWithSummary(ctx, pending.ConversationID, phone,
+		m.cfg.BirdTeamFallback, "Call Center", appt.PatientName, m.cfg.BirdTeamFallback, esc); err != nil {
+		slog.Error("self_reschedule: escalate no-procedure", "phone", utils.MaskPhone(phone),
+			"appointment_id", pending.AppointmentID, "error", err)
+		return
+	}
+	m.registerNectarNotifEscalation(ctx, phone, pending.ConversationID, pending.sessionContact(), sessCtx)
 }
