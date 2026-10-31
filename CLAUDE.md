@@ -358,6 +358,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Horario: `NECTAR_SCHEDULE_ENABLED` (por defecto false) hace que el horario y festivos de Néctar manden en atención y escalación; encenderlo
   solo cuando los tres equipos tengan horario en Néctar (si no, publica «cerrado toda la semana» y las escalaciones se desvían).
 - Lo que Neuro pide a Néctar es aditivo: no debe romper a hdg-bot.
+- Informes de asesores (D5, `internal/nectarreports`): con puente, cada `NECTAR_REPORTS_SYNC_MIN` (5) el bot copia tramos
+  (`waiting-cycles`, receta §3(a), desde `DataFloor`) y roster (`agents`) a las tablas de la migración 046 y completa las
+  escalaciones `nectar:*` (`agent_id` = `nectar:<id>`, primera respuesta, mensajes, `expired`→`agent_no_show`); exige la
+  clave de CUENTA: con la global (403) se detiene con un solo error en el log.
 - Menús del agente por paso: cada paso escalable registra sus opciones/campos (`sm.RegisterReturnMenu` y afines, llamado
   donde se registra el estado), más las universales `bot_reanudar`/`bot_reiniciar`/`bot_cerrar`; no hay lista de pasos aplazados.
 - Transición (dos líneas): `NEW_LINE_ANNOUNCEMENT` (vacía = apagado) antepone el anuncio de la línea nueva al saludo

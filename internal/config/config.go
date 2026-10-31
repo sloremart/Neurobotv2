@@ -122,6 +122,10 @@ type Config struct {
 	NectarScheduleEnabled    bool
 	NectarScheduleChannelID  int64
 	NectarScheduleRefreshMin int
+	// NectarReportsSyncMin (NECTAR_REPORTS_SYNC_MIN) es cada cuántos minutos se sincronizan los
+	// tramos de espera y el roster de Néctar para los informes de asesores (D5). Solo corre con el
+	// puente encendido; 0 o negativo cae a DefaultNectarReportsSyncMin.
+	NectarReportsSyncMin int
 	// Schedule es el PROVEEDOR del horario vigente (cmd/server lo cablea con un CachedSchedule).
 	// Nadie lo lee directo: se pregunta por Hours() — schedule.go.
 	Schedule ScheduleSource
@@ -480,6 +484,11 @@ func Load() *Config {
 
 	cfg.NectarScheduleEnabled = getEnvBool("NECTAR_SCHEDULE_ENABLED", false)
 	cfg.NectarScheduleRefreshMin = getEnvInt("NECTAR_SCHEDULE_REFRESH_MIN", DefaultScheduleRefreshMin)
+	cfg.NectarReportsSyncMin = getEnvInt("NECTAR_REPORTS_SYNC_MIN", DefaultNectarReportsSyncMin)
+	if cfg.NectarReportsSyncMin <= 0 {
+		// 0 no es «no sincronizar»: sería un bucle sin pausa contra Néctar.
+		cfg.NectarReportsSyncMin = DefaultNectarReportsSyncMin
+	}
 	scheduleChannelID, err := parseNectarChannelID(os.Getenv("NECTAR_SCHEDULE_CHANNEL_ID"))
 	if err != nil {
 		log.Fatalf("NECTAR_SCHEDULE_CHANNEL_ID inválida: %v", err)
@@ -840,6 +849,10 @@ func parseQueueMaxWaitMin(raw string) (int, error) {
 	}
 	return minutes, validateQueueMaxWaitMin(minutes)
 }
+
+// DefaultNectarReportsSyncMin es cada cuántos minutos se sincronizan los informes de Néctar sin
+// NECTAR_REPORTS_SYNC_MIN en el entorno.
+const DefaultNectarReportsSyncMin = 5
 
 // DefaultNectarCloseMin es el cierre por silencio de una escalación de Néctar (8 h). Es mucho
 // más largo que el de Bird porque Néctar NO manda mensaje_entrante mientras el agente es dueño

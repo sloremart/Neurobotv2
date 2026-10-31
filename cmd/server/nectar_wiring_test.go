@@ -133,3 +133,21 @@ func TestWireNectarRuntime_FirstScheduleFailureCounts(t *testing.T) {
 			strings.Contains(logs.String(), "trigger=nectar_down")
 	})
 }
+
+// La sincronización de los informes de Néctar existe solo con el puente encendido: con el puente
+// apagado (cliente nil) o un cliente sin configurar ni se crea, y no se llama a Néctar.
+func TestNectarReportsSyncer_OnlyWithBridge(t *testing.T) {
+	cfg := &config.Config{NectarReportsSyncMin: 5}
+	if s := newNectarReportsSyncer(cfg, nil, nil, nil); s != nil {
+		t.Fatal("con el puente apagado no hay sincronización")
+	}
+	if s := newNectarReportsSyncer(cfg, nectar.NewClient("https://nectar.example", "", ""), nil, nil); s != nil {
+		t.Fatal("con un cliente sin configurar no hay sincronización")
+	}
+	if s := newNectarReportsSyncer(cfg, nectar.NewClient("https://nectar.example", "k", "s"), nil, nil); s == nil {
+		t.Fatal("con el puente encendido hay sincronización")
+	}
+	if started := startNectarReports(context.Background(), cfg, nil, nil, nil); started {
+		t.Fatal("con el puente apagado no arranca nada")
+	}
+}

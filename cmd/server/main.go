@@ -183,6 +183,9 @@ func main() {
 		safeGo("urgent-alerts", func() { urgent.Start(ctx) })
 		slog.Info("aviso urgente de volver a Bird activo", "cooldown_min", cfg.UrgentAlertCooldownMin)
 	}
+	// Informes de asesores (D5): sincroniza tramos y roster de Néctar. Solo con el puente
+	// encendido, y después de wireNectarRuntime (el aviso urgente ya cableado en el cliente).
+	startNectarReports(ctx, cfg, scheduleClient, localrepo.NewNectarReportsRepo(localDB), escalationRepo)
 
 	// Services (dependen de repos)
 	var patientSvc *services.PatientService

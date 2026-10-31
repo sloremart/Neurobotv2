@@ -1779,3 +1779,62 @@ func TestProcessMessage_AttachesNectarContact(t *testing.T) {
 		})
 	}
 }
+
+// D5 §5.2: la sincronización de Néctar llena first_agent_msg_at de las escalaciones nectar:*. Si un
+// mensaje del paciente llega a una sesión nectar:* escalada (Néctar solo avisa mensaje_entrante con
+// la conversación en `bot`, así que pasa en los bordes: un mensaje encolado antes del traspaso),
+// el ÚNICO efecto de esa columna es no mandar el acuse cuando el asesor ya respondió; sin respuesta
+// el acuse sale como siempre, y en ningún caso el mensaje entra a la máquina de estados.
+func TestProcessMessage_NectarEscalated_AckOnlyWhileAgentHasNotResponded(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		responded bool
+		wantAck   bool
+	}{
+		{"asesor sin responder → acuse", false, true},
+		{"asesor ya respondió (sincronización) → silencio", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sm := newMockSessionMgmt()
+			sm.findOrCreateFn = func(_ context.Context, phone string) (*session.Session, bool, error) {
+				return &session.Session{
+					ID: "sess-nectar-esc", PhoneNumber: phone, CurrentState: "ESCALATED",
+					ConversationID: "4410", Status: session.StatusEscalated, Context: map[string]string{},
+				}, false, nil
+			}
+			sender := &mockMessageSender{}
+			processed := false
+			processor := &mockMessageProcessor{
+				processFn: func(context.Context, *session.Session, bird.InboundMessage) (*statemachine.StateResult, error) {
+					processed = true
+					return &statemachine.StateResult{}, nil
+				},
+			}
+			pool := NewMessageWorkerPool(1, 10)
+			pool.SetDependencies(sm, sender, processor)
+			pool.SetAgentActivityChecker(&fakeAgentChecker{responded: tc.responded})
+
+			pool.processMessage(context.Background(), bird.InboundMessage{
+				ID: "evt-1", Phone: "nectar:4410", MessageType: "text", Text: "hola?", ReceivedAt: time.Now(),
+			})
+
+			sender.mu.Lock()
+			defer sender.mu.Unlock()
+			acks := 0
+			for _, s := range sender.sent {
+				if strings.Contains(s.text, "Seguimos aquí") {
+					acks++
+				}
+			}
+			if tc.wantAck && (acks != 1 || len(sender.sent) != 1) {
+				t.Fatalf("enviados = %+v, want solo el acuse", sender.sent)
+			}
+			if !tc.wantAck && len(sender.sent) != 0 {
+				t.Fatalf("enviados = %+v, want nada", sender.sent)
+			}
+			if processed {
+				t.Fatal("un mensaje durante la escalación no entra a la máquina de estados")
+			}
+		})
+	}
+}

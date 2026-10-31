@@ -446,3 +446,17 @@ func TestAgentsInNectar(t *testing.T) {
 		t.Fatal("AgentsSource=nectar debe estar en Nectar")
 	}
 }
+
+// NECTAR_REPORTS_SYNC_MIN: por defecto 5; 0 o negativo cae al defecto (no es «sin pausa»).
+func TestLoad_NectarReportsSyncMin(t *testing.T) {
+	setRequiredEnv(t)
+	for raw, want := range map[string]int{"": DefaultNectarReportsSyncMin, "15": 15, "0": 5, "-3": 5} {
+		t.Setenv("NECTAR_REPORTS_SYNC_MIN", raw)
+		if got := Load().NectarReportsSyncMin; got != want {
+			t.Errorf("NECTAR_REPORTS_SYNC_MIN=%q → %d, want %d", raw, got, want)
+		}
+	}
+	if DefaultNectarReportsSyncMin != 5 {
+		t.Fatalf("DefaultNectarReportsSyncMin = %d, want 5", DefaultNectarReportsSyncMin)
+	}
+}

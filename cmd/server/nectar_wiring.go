@@ -10,6 +10,8 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	"github.com/neuro-bot/neuro-bot/internal/nectarreports"
+	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
 	tg "github.com/neuro-bot/neuro-bot/internal/telegram"
 )
 
@@ -81,4 +83,36 @@ func wireNectarRuntime(ctx context.Context, cfg *config.Config, tgClient *tg.Cli
 	urgent := wireUrgentAlerter(cfg, tgClient, bridgeClient)
 	startNectarSchedule(ctx, cfg, bridgeClient, schedule)
 	return urgent
+}
+
+// newNectarReportsSyncer arma la sincronización de los informes de asesores (D5): tramos de espera
+// y roster de Néctar a las tablas locales, y las escalaciones nectar:* completadas. Solo con el
+// puente encendido (bridgeClient nil = apagado): sin puente devuelve nil y no se llama a Néctar.
+func newNectarReportsSyncer(cfg *config.Config, bridgeClient *nectar.Client, reports *localrepo.NectarReportsRepo,
+	escalations *localrepo.EscalationRepo,
+) *nectarreports.Syncer {
+	if bridgeClient == nil || !bridgeClient.Configured() {
+		return nil
+	}
+	every := time.Duration(cfg.NectarReportsSyncMin) * time.Minute
+	if cfg.NectarReportsSyncMin <= 0 {
+		every = config.DefaultNectarReportsSyncMin * time.Minute
+	}
+	return nectarreports.NewSyncer(bridgeClient, reports, escalations, every, nectarreports.DataFloor)
+}
+
+// startNectarReports arranca la sincronización de los informes si el puente está encendido y
+// dice si arrancó. main la llama DESPUÉS de wireNectarRuntime: el aviso urgente ya está cableado
+// en el cliente cuando sale la primera lectura (sin carrera con SetUrgentReporter).
+func startNectarReports(ctx context.Context, cfg *config.Config, bridgeClient *nectar.Client,
+	reports *localrepo.NectarReportsRepo, escalations *localrepo.EscalationRepo,
+) bool {
+	s := newNectarReportsSyncer(cfg, bridgeClient, reports, escalations)
+	if s == nil {
+		return false
+	}
+	slog.Info("informes de Néctar: sincronización de tramos y asesores activa",
+		"cada_min", cfg.NectarReportsSyncMin, "desde", nectarreports.DataFloor.Format(time.RFC3339))
+	safeGo("nectar-reports", func() { s.Run(ctx) })
+	return true
 }
