@@ -76,6 +76,7 @@ type SessionManagement interface {
 	ResumeFromEscalation(ctx context.Context, sess *session.Session, targetState string) error
 	ResumeFromEscalationNoShow(ctx context.Context, sess *session.Session, targetState string) error
 	Complete(ctx context.Context, sess *session.Session) error
+	CompleteAsNoShow(ctx context.Context, sess *session.Session) error
 	UpdateConversationID(ctx context.Context, phone, conversationID string) error
 	SetContext(ctx context.Context, sess *session.Session, key, value string) error
 }

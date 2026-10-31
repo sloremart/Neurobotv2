@@ -337,6 +337,20 @@ func (m *SessionManager) Complete(ctx context.Context, s *Session) error {
 	return m.repo.UpdateStatus(ctx, s.ID, StatusCompleted)
 }
 
+// CompleteAsNoShow completa la sesión como Complete, pero si estaba escalada deja la escalación en
+// 'agent_no_show' (y sella resumed_at, igual que el no-show de Bird) en vez de 'completed'. Lo usa
+// la cola vencida de Néctar: ningún asesor tomó el caso. No llama a Close: la escalación ya
+// quedó marcada y Close solo buscaría otra abierta del mismo teléfono.
+func (m *SessionManager) CompleteAsNoShow(ctx context.Context, s *Session) error {
+	if s.Status == StatusEscalated && m.escalations != nil {
+		if err := m.escalations.NoShow(ctx, s.ID); err != nil {
+			slog.Warn("escalation no-show mark failed", "error", err)
+		}
+	}
+	s.Status = StatusCompleted
+	return m.repo.UpdateStatus(ctx, s.ID, StatusCompleted)
+}
+
 // Escalate marca la sesión como escalada a agente con tracking de equipo.
 func (m *SessionManager) Escalate(ctx context.Context, s *Session, teamID string) error {
 	s.Status = StatusEscalated

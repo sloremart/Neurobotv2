@@ -1119,6 +1119,40 @@ func TestComplete_EscalatedRecordsClose(t *testing.T) {
 	}
 }
 
+// CompleteAsNoShow: la cola vencida de Néctar deja la escalación en agent_no_show (NoShow, no Close)
+// y completa la sesión igual que Complete.
+func TestCompleteAsNoShow_EscalatedMarksNoShowNotClose(t *testing.T) {
+	var statusSet string
+	mgr := NewSessionManager(&mockRepo{
+		updateStatusFn: func(_ context.Context, _ string, st string) error { statusSet = st; return nil },
+	}, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	sess := newTestSession()
+	sess.Status = StatusEscalated
+	if err := mgr.CompleteAsNoShow(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if rec.noShow != 1 || rec.closeN != 0 {
+		t.Errorf("esperaba NoShow=1 y Close=0, got noShow=%d close=%d", rec.noShow, rec.closeN)
+	}
+	if sess.Status != StatusCompleted || statusSet != StatusCompleted {
+		t.Errorf("la sesión debe quedar completada, got %q / %q", sess.Status, statusSet)
+	}
+}
+
+func TestCompleteAsNoShow_NonEscalatedNoMark(t *testing.T) {
+	mgr := NewSessionManager(&mockRepo{}, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	if err := mgr.CompleteAsNoShow(context.Background(), newTestSession()); err != nil {
+		t.Fatal(err)
+	}
+	if rec.noShow != 0 || rec.closeN != 0 {
+		t.Errorf("sin escalación no se marca nada, got noShow=%d close=%d", rec.noShow, rec.closeN)
+	}
+}
+
 func TestComplete_NonEscalatedNoClose(t *testing.T) {
 	mgr := NewSessionManager(&mockRepo{}, 120)
 	rec := &mockEscalationRecorder{}

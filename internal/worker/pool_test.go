@@ -21,20 +21,22 @@ import (
 // --- Mock SessionManagement ---
 
 type mockSessionMgmt struct {
-	mutex             *session.PhoneMutex
-	findOrCreateFn    func(ctx context.Context, phone string) (*session.Session, bool, error)
-	findForAgentCmdFn func(ctx context.Context, phone string) (*session.Session, error)
-	renewFn           func(ctx context.Context, sess *session.Session) error
-	touchPatientFn    func(ctx context.Context, sess *session.Session) error
-	touchAgentFn      func(ctx context.Context, phone string) error
-	saveFn            func(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error
-	clearAllFn        func(ctx context.Context, sess *session.Session) error
-	escalateFn        func(ctx context.Context, sess *session.Session, teamID string) error
-	resumeFn          func(ctx context.Context, sess *session.Session, targetState string) error
-	resumeNoShowFn    func(ctx context.Context, sess *session.Session, targetState string) error
-	completeFn        func(ctx context.Context, sess *session.Session) error
-	extendExpiryFn    func(ctx context.Context, sess *session.Session, until time.Time) error
-	attachContactFn   func(ctx context.Context, sess *session.Session, contact string) error
+	mutex               *session.PhoneMutex
+	findOrCreateFn      func(ctx context.Context, phone string) (*session.Session, bool, error)
+	findForAgentCmdFn   func(ctx context.Context, phone string) (*session.Session, error)
+	renewFn             func(ctx context.Context, sess *session.Session) error
+	touchPatientFn      func(ctx context.Context, sess *session.Session) error
+	touchAgentFn        func(ctx context.Context, phone string) error
+	saveFn              func(ctx context.Context, sess *session.Session, state string, updateCtx map[string]string, clearCtx []string) error
+	clearAllFn          func(ctx context.Context, sess *session.Session) error
+	escalateFn          func(ctx context.Context, sess *session.Session, teamID string) error
+	resumeFn            func(ctx context.Context, sess *session.Session, targetState string) error
+	resumeNoShowFn      func(ctx context.Context, sess *session.Session, targetState string) error
+	completeFn          func(ctx context.Context, sess *session.Session) error
+	completeCalls       int
+	completeNoShowCalls int
+	extendExpiryFn      func(ctx context.Context, sess *session.Session, until time.Time) error
+	attachContactFn     func(ctx context.Context, sess *session.Session, contact string) error
 }
 
 func (m *mockSessionMgmt) AttachContact(ctx context.Context, sess *session.Session, contact string) error {
@@ -135,7 +137,19 @@ func (m *mockSessionMgmt) ResumeFromEscalationNoShow(ctx context.Context, sess *
 	return nil
 }
 
+// CompleteAsNoShow cuenta la llamada y se comporta como Complete (mismos stubs), de modo que las
+// pruebas del cierre por cola vencida que stubean completeFn siguen valiendo.
+func (m *mockSessionMgmt) CompleteAsNoShow(ctx context.Context, sess *session.Session) error {
+	m.completeNoShowCalls++
+	if m.completeFn != nil {
+		return m.completeFn(ctx, sess)
+	}
+	sess.Status = session.StatusCompleted
+	return nil
+}
+
 func (m *mockSessionMgmt) Complete(ctx context.Context, sess *session.Session) error {
+	m.completeCalls++
 	if m.completeFn != nil {
 		return m.completeFn(ctx, sess)
 	}

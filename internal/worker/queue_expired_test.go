@@ -146,6 +146,26 @@ func TestHandleAgentResume_QueueExpired(t *testing.T) {
 	}
 }
 
+// La cola vencida completa la sesión como «el asesor no contestó» (agent_no_show), no como un
+// cierre normal; el aviso y el cierre de la conversación no cambian.
+func TestHandleQueueExpired_CompletesAsNoShow(t *testing.T) {
+	pool, sm, sender, sess := queueExpiredPool(t)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnValueQueueExpired,
+	})
+
+	if sm.completeNoShowCalls != 1 {
+		t.Errorf("esperaba CompleteAsNoShow una vez, got %d", sm.completeNoShowCalls)
+	}
+	if sm.completeCalls != 0 {
+		t.Errorf("no debe usar Complete (dejaría la escalación en completed), got %d", sm.completeCalls)
+	}
+	if got := sentTexts(sender); len(got) != 1 {
+		t.Errorf("el aviso al paciente sigue saliendo una vez, got %v", got)
+	}
+}
+
 // Fuera de la ventana de 24 h de WhatsApp el texto libre no sale (409 window_closed) y solo
 // queda la plantilla aprobada. El cierre ocurre igual.
 func TestNotifyQueueExpired_WindowClosedUsesTemplate(t *testing.T) {

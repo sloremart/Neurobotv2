@@ -78,7 +78,8 @@ func (p *MessageWorkerPool) handleQueueExpired(ctx context.Context, sess *sessio
 
 	p.notifyQueueExpired(sess, p.businessHoursTextValue())
 
-	completeErr := p.sessionManager.Complete(ctx, sess)
+	// Nadie tomó el caso: la escalación queda en agent_no_show (no en completed) para los informes.
+	completeErr := p.sessionManager.CompleteAsNoShow(ctx, sess)
 	if completeErr != nil {
 		slog.Error("cola vencida: no se pudo completar la sesión", "error", completeErr,
 			"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber))
