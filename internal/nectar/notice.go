@@ -189,6 +189,30 @@ type NoticeActor struct {
 	AgentID int64  `json:"agent_id,omitempty"`
 }
 
+// UnmarshalJSON nunca falla (mismo criterio que NoticeID): `agent_id` acepta número o cadena
+// numérica, y cualquier otra forma —un `actor` que no es objeto, una clase que no es texto, un id
+// ilegible— queda «no consta» (Label ""). La autoría es un dato de informe: un error aquí tumbaría
+// el aviso de resuelta ENTERO (400, Néctar reintenta sin fin y la sesión queda escalada).
+func (a *NoticeActor) UnmarshalJSON(b []byte) error {
+	*a = NoticeActor{}
+	var raw struct {
+		Class   json.RawMessage `json:"clase"`
+		AgentID NoticeID        `json:"agent_id"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		slog.Warn("nectar: actor ilegible; no consta y el aviso se procesa igual",
+			"valor", truncateForLog(string(b), occurredAtLogMaxRunes), "len", len(b))
+		return nil //nolint:nilerr // tolerancia deliberada: el actor ilegible NO tumba el aviso (ver arriba)
+	}
+	if err := json.Unmarshal(raw.Class, &a.Class); err != nil {
+		a.Class = "" // clase ausente o que no es texto: no consta
+	}
+	if id, err := strconv.ParseInt(raw.AgentID.String(), 10, 64); err == nil {
+		a.AgentID = id
+	}
+	return nil
+}
+
 // Label es la etiqueta con que el bot guarda al actor en `escalations`: "agente:8", "bot",
 // "sistema". nil, clase vacía o un agente sin id legible dan "" (no consta): mejor no atribuir que
 // atribuir mal.

@@ -365,9 +365,9 @@ func TestRunOnce_UnknownAgentLeavesNameEmpty(t *testing.T) {
 	}
 }
 
-// NoShow solo con atención cerrada, sin respuesta y la escalación en expired o completed (la cola
-// vencida que Néctar resuelve sola); returned y NULL no.
-func TestRunOnce_NoShowOnlyWhenExpiredOrCompletedAndUnanswered(t *testing.T) {
+// NoShow solo con atención cerrada, sin respuesta y la escalación en expired; completed (un
+// agente pulsó «Resolver»), returned y NULL no.
+func TestRunOnce_NoShowOnlyWhenExpiredAndUnanswered(t *testing.T) {
 	escAt := DataFloor.Add(time.Hour)
 	closed := escAt.Add(8 * time.Hour)
 	cases := []struct {
@@ -380,7 +380,7 @@ func TestRunOnce_NoShowOnlyWhenExpiredOrCompletedAndUnanswered(t *testing.T) {
 		{"expired, cerrada sin respuesta → no-show", ptrS("expired"), nil, &closed, true},
 		{"expired, con respuesta → no", ptrS("expired"), ptrT(escAt.Add(time.Minute)), &closed, false},
 		{"expired, atención abierta → no", ptrS("expired"), nil, nil, false},
-		{"completed (cola vencida), cerrada sin respuesta → no-show", ptrS("completed"), nil, &closed, true},
+		{"completed, cerrada sin respuesta → no", ptrS("completed"), nil, &closed, false},
 		{"completed, con respuesta → no", ptrS("completed"), ptrT(escAt.Add(time.Minute)), &closed, false},
 		{"returned, cerrada sin respuesta → no", ptrS("returned"), nil, &closed, false},
 		{"abierta (NULL), cerrada sin respuesta → no", nil, nil, &closed, false},

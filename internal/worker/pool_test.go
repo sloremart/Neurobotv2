@@ -144,6 +144,7 @@ func (m *mockSessionMgmt) ResumeFromEscalationNoShow(ctx context.Context, sess *
 // CompleteAsNoShow cuenta la llamada y se comporta como Complete (mismos stubs), de modo que las
 // pruebas del cierre por cola vencida que stubean completeFn siguen valiendo.
 func (m *mockSessionMgmt) CompleteAsNoShow(ctx context.Context, sess *session.Session) error {
+	m.calls = append(m.calls, "complete_no_show")
 	m.completeNoShowCalls++
 	if m.completeFn != nil {
 		return m.completeFn(ctx, sess)

@@ -352,3 +352,33 @@ func TestAgentCommand_Close_WithoutResolvedNoticeDoesNotSaveResolution(t *testin
 		t.Fatalf("no debe guardar autoría: %v %v", sm.resolutionCalls, sm2.resolutionCalls)
 	}
 }
+
+// I3: si algún día Néctar emite motivo=cola_vencida en conversacion_resuelta, el cierre marca
+// «el asesor no contestó» (CompleteAsNoShow) y no un cierre normal; la autoría se guarda antes.
+func TestAgentCommand_CloseResolved_QueueExpiredCompletesAsNoShow(t *testing.T) {
+	pool, sm, _, _ := escalatedPool(t)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "close", Phone: "+573001234567", Reason: CloseReasonQueueExpired, ResolvedBy: "sistema",
+	})
+
+	if sm.completeNoShowCalls != 1 || sm.completeCalls != 0 {
+		t.Fatalf("esperaba CompleteAsNoShow=1 y Complete=0, got %d / %d", sm.completeNoShowCalls, sm.completeCalls)
+	}
+	if len(sm.calls) != 2 || sm.calls[0] != "resolution" || sm.calls[1] != "complete_no_show" {
+		t.Fatalf("SetResolution debe ir antes de CompleteAsNoShow, got %v", sm.calls)
+	}
+}
+
+// Un «Resolver» del agente (motivo centinela) sigue siendo un cierre normal.
+func TestAgentCommand_CloseResolved_WithoutQueueExpiredUsesComplete(t *testing.T) {
+	pool, sm, _, _ := escalatedPool(t)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "close", Phone: "+573001234567", Reason: CloseReasonResolved,
+	})
+
+	if sm.completeCalls != 1 || sm.completeNoShowCalls != 0 {
+		t.Fatalf("esperaba Complete=1 y CompleteAsNoShow=0, got %d / %d", sm.completeCalls, sm.completeNoShowCalls)
+	}
+}

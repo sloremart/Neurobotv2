@@ -71,6 +71,7 @@ func placeholders(n int) string {
 
 // UpsertCycles inserta los tramos o los actualiza si ya existen (mismo id de Néctar). Pisa todo lo
 // que Néctar publica y NUNCA toca escalation_id: ese lo pone el emparejamiento con las atenciones.
+// synced_at se fija a mano: si la fila queda igual MySQL no la toca y el ON UPDATE no avanzaría.
 func (r *NectarReportsRepo) UpsertCycles(ctx context.Context, cycles []nectar.WaitingCycle) error {
 	for start := 0; start < len(cycles); start += reportsBatch {
 		end := start + reportsBatch
@@ -99,7 +100,8 @@ func (r *NectarReportsRepo) UpsertCycles(ctx context.Context, cycles []nectar.Wa
 			  assigned_at = VALUES(assigned_at), first_response_at = VALUES(first_response_at),
 			  closed_at = VALUES(closed_at), close_reason = VALUES(close_reason),
 			  backfilled = VALUES(backfilled),
-			  contact_msgs_before_response = VALUES(contact_msgs_before_response)`, args...)
+			  contact_msgs_before_response = VALUES(contact_msgs_before_response),
+			  synced_at = CURRENT_TIMESTAMP`, args...)
 		if err != nil {
 			return fmt.Errorf("upsert nectar cycles: %w", err)
 		}
@@ -198,7 +200,8 @@ func (r *NectarReportsRepo) SetCycleEscalation(ctx context.Context, cycleIDs []i
 }
 
 // ReplaceAgents guarda el roster (upsert por id). No borra a nadie: Néctar ya devuelve también a
-// los inactivos, y un tramo viejo puede nombrarlos.
+// los inactivos, y un tramo viejo puede nombrarlos. synced_at se fija a mano (como en UpsertCycles):
+// el dashboard lo usa para saber si el roster está al día, y una fila sin cambios no lo movería.
 func (r *NectarReportsRepo) ReplaceAgents(ctx context.Context, agents []nectar.ReportAgent) error {
 	for _, a := range agents {
 		teams := a.Teams
@@ -214,7 +217,7 @@ func (r *NectarReportsRepo) ReplaceAgents(ctx context.Context, agents []nectar.R
 			 VALUES (?, ?, ?, ?, ?, ?)
 			 ON DUPLICATE KEY UPDATE name = VALUES(name), active = VALUES(active),
 			  presence = VALUES(presence), teams = VALUES(teams),
-			  open_conversations = VALUES(open_conversations)`,
+			  open_conversations = VALUES(open_conversations), synced_at = CURRENT_TIMESTAMP`,
 			a.ID, a.Name, a.Active, a.Presence, string(teamsJSON), a.OpenConversations); err != nil {
 			return fmt.Errorf("upsert nectar agent: %w", err)
 		}

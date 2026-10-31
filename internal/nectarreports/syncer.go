@@ -327,11 +327,12 @@ func attentionUpdate(a Attention, names map[int64]string, outcome string) local.
 	return u
 }
 
-// noShowCandidate: los cierres que pueden ser en realidad «el asesor no contestó». expired es el
-// cierre por silencio; completed, la cola vencida que Néctar resuelve sola (conversacion_resuelta
-// con motivo cola_vencida → Close). returned y la escalación abierta no se tocan.
+// noShowCandidate: el único cierre que puede ser en realidad «el asesor no contestó» es expired
+// (cierre por silencio). completed es un agente que pulsó «Resolver» (mismo significado que en
+// Bird); la cola vencida llega como devuelta y la marca el worker. returned y la escalación
+// abierta no se tocan.
 func noShowCandidate(outcome string) bool {
-	return outcome == "expired" || outcome == "completed"
+	return outcome == "expired"
 }
 
 // stateTime lee una hora guardada en RFC3339; vacío = nil.

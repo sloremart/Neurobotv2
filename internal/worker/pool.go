@@ -1152,7 +1152,13 @@ func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.
 				"session_id", sess.ID, "phone", utils.MaskPhone(cmd.Phone), "error", err)
 		}
 	}
-	if err := p.sessionManager.Complete(ctx, sess); err != nil {
+	// Una resuelta con motivo cola_vencida (declarado en el contrato, hoy no se emite) es «el asesor
+	// no contestó»: misma marca que la cola vencida devuelta. Todo otro cierre es un cierre normal.
+	complete := p.sessionManager.Complete
+	if cmd.Reason == CloseReasonQueueExpired {
+		complete = p.sessionManager.CompleteAsNoShow
+	}
+	if err := complete(ctx, sess); err != nil {
 		slog.Error("agent close failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 		return
 	}

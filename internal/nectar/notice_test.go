@@ -680,3 +680,37 @@ func TestTheResolvedNoticeWithoutEscalatedByHasNoLabel(t *testing.T) {
 		t.Errorf("sin escalada_por no consta, got %+v", n.EscalatedBy)
 	}
 }
+
+// I4: un actor con forma inesperada no vuelve ilegible el aviso de resuelta (Néctar lo
+// reintentaría sin fin y la sesión quedaría escalada): agent_id en cadena numérica se lee y
+// cualquier otra forma queda «no consta».
+func TestNoticeActor_ToleratesUnexpectedShapes(t *testing.T) {
+	cases := []struct {
+		name, actor, want string
+	}{
+		{"agent_id en cadena", `{"clase":"agente","agent_id":"8"}`, "agente:8"},
+		{"agent_id número", `{"clase":"agente","agent_id":8}`, "agente:8"},
+		{"agent_id cadena no numérica", `{"clase":"agente","agent_id":"x"}`, ""},
+		{"agent_id objeto", `{"clase":"agente","agent_id":{}}`, ""},
+		{"clase no es texto", `{"clase":3}`, ""},
+		{"actor cadena", `"x"`, ""},
+		{"actor arreglo", `[1]`, ""},
+		{"actor número", `7`, ""},
+		{"actor null", `null`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			n, err := ParseNotice([]byte(`{"event_id":"e1","kind":"conversacion_resuelta","conversation_id":73,
+				"actor":` + c.actor + `,"escalada_por":` + c.actor + `}`))
+			if err != nil {
+				t.Fatalf("el aviso debe ser legible, got %v", err)
+			}
+			if got := n.Actor.Label(); got != c.want {
+				t.Errorf("actor: got %q, want %q", got, c.want)
+			}
+			if got := n.EscalatedBy.Label(); got != c.want {
+				t.Errorf("escalada_por: got %q, want %q", got, c.want)
+			}
+		})
+	}
+}

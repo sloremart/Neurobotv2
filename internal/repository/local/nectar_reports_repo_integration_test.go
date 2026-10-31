@@ -296,9 +296,9 @@ func TestEscalationRepo_ApplyNectarAttention(t *testing.T) {
 	}
 }
 
-// NoShow solo cambia expired y completed (la cola vencida que Néctar resuelve sola); returned y
-// NULL quedan intactos.
-func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpiredOrCompleted(t *testing.T) {
+// NoShow solo cambia expired; completed (un agente pulsó «Resolver»), returned y NULL quedan
+// intactos.
+func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpired(t *testing.T) {
 	db := openLocalTestDB(t)
 	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
@@ -323,8 +323,8 @@ func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpiredOrCompleted(t *tes
 	if o := outcome(expired); o.String != "agent_no_show" {
 		t.Fatalf("expired -> agent_no_show, got %v", o)
 	}
-	if o := outcome(completed); o.String != "agent_no_show" {
-		t.Fatalf("completed -> agent_no_show, got %v", o)
+	if o := outcome(completed); o.String != "completed" {
+		t.Fatalf("completed intacto, got %v", o)
 	}
 	if o := outcome(returned); o.String != "returned" {
 		t.Fatalf("returned intacto, got %v", o)
@@ -403,5 +403,59 @@ func TestEscalationRepo_SetResolution(t *testing.T) {
 	}
 	if r, e := get(open); r.Valid || e.Valid {
 		t.Fatalf("vacío = NULL: %v %v", r, e)
+	}
+}
+
+// syncedAt lee synced_at de una fila de la tabla dada.
+func syncedAt(t *testing.T, db *sql.DB, table string, id int64) time.Time {
+	t.Helper()
+	var at time.Time
+	//nolint:gosec // G201: table es una constante de la prueba.
+	if err := db.QueryRow("SELECT synced_at FROM "+table+" WHERE id = ?", id).Scan(&at); err != nil {
+		t.Fatalf("leer synced_at de %s: %v", table, err)
+	}
+	return at
+}
+
+// I1: un upsert que deja la fila IGUAL también mueve synced_at. Sin eso MySQL no toca la fila, el
+// TIMESTAMP ON UPDATE no avanza y el dashboard toma por vencido un roster que sí se sincroniza.
+func TestNectarReportsRepo_IdenticalUpsertAdvancesSyncedAt(t *testing.T) {
+	db := openLocalTestDB(t)
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
+	ctx := context.Background()
+	repo := NewNectarReportsRepo(db)
+	base := cycleFixture(t, db)
+	agentID := base % 1000000000
+	t.Cleanup(func() { _, _ = db.Exec("DELETE FROM nectar_agents WHERE id = ?", agentID) })
+
+	c := nectar.WaitingCycle{
+		ID: base, ConversationID: base + 1000, TeamID: ptrI64(7),
+		OpenedAt: time.Date(2026, 10, 30, 23, 0, 0, 0, time.UTC),
+	}
+	a := nectar.ReportAgent{
+		ID: agentID, Name: "Ana", Active: true, Presence: "online",
+		Teams: []nectar.ReportTeam{{ID: 1, Name: "Neuro"}}, OpenConversations: 1,
+	}
+	if err := repo.UpsertCycles(ctx, []nectar.WaitingCycle{c}); err != nil {
+		t.Fatalf("upsert tramo 1: %v", err)
+	}
+	if err := repo.ReplaceAgents(ctx, []nectar.ReportAgent{a}); err != nil {
+		t.Fatalf("upsert agente 1: %v", err)
+	}
+	cycleBefore := syncedAt(t, db, "nectar_waiting_cycles", base)
+	agentBefore := syncedAt(t, db, "nectar_agents", agentID)
+
+	time.Sleep(1100 * time.Millisecond) // TIMESTAMP sin fracción: hace falta ≥1 s para verlo moverse
+	if err := repo.UpsertCycles(ctx, []nectar.WaitingCycle{c}); err != nil {
+		t.Fatalf("upsert tramo 2: %v", err)
+	}
+	if err := repo.ReplaceAgents(ctx, []nectar.ReportAgent{a}); err != nil {
+		t.Fatalf("upsert agente 2: %v", err)
+	}
+	if got := syncedAt(t, db, "nectar_waiting_cycles", base); !got.After(cycleBefore) {
+		t.Errorf("synced_at del tramo debe avanzar: antes %v, después %v", cycleBefore, got)
+	}
+	if got := syncedAt(t, db, "nectar_agents", agentID); !got.After(agentBefore) {
+		t.Errorf("synced_at del agente debe avanzar: antes %v, después %v", agentBefore, got)
 	}
 }

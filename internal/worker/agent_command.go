@@ -121,3 +121,8 @@ func ParseAgentCommand(text string) AgentCommand {
 // despide ni cierra (los dos envíos morirían en 404). Reason vacío queda solo para el «cerrar»
 // del menú de retornos, donde la conversación volvió al bot y la despedida sí le toca a él.
 const CloseReasonResolved = "resuelta"
+
+// CloseReasonQueueExpired es el motivo de conversacion_resuelta para la cola vencida
+// (Plan 43: declarado, hoy no se emite; la cola vencida real llega como devuelta). Si llega, el
+// cierre cuenta como «el asesor no contestó» (CompleteAsNoShow).
+const CloseReasonQueueExpired = "cola_vencida"
