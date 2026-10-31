@@ -32,7 +32,7 @@ func cycleFixture(t *testing.T, db *sql.DB) (base int64) {
 
 func TestNectarReportsRepo_UpsertKeepsEscalationID(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
 	repo := NewNectarReportsRepo(db)
 	base := cycleFixture(t, db)
@@ -81,7 +81,7 @@ func TestNectarReportsRepo_UpsertKeepsEscalationID(t *testing.T) {
 
 func TestNectarReportsRepo_OldestOpenCycle(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
 	repo := NewNectarReportsRepo(db)
 	base := cycleFixture(t, db)
@@ -113,10 +113,15 @@ func TestNectarReportsRepo_OldestOpenCycle(t *testing.T) {
 
 func TestNectarReportsRepo_OldestOpenCycle_None(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	repo := NewNectarReportsRepo(db)
-	if _, err := db.Exec("DELETE FROM nectar_waiting_cycles"); err != nil {
-		t.Fatalf("limpiar: %v", err)
+	// No se borra nada: en una base con tramos sincronizados la prueba no aplica.
+	var open int
+	if err := db.QueryRow("SELECT COUNT(*) FROM nectar_waiting_cycles WHERE closed_at IS NULL").Scan(&open); err != nil {
+		t.Fatalf("contar abiertos: %v", err)
+	}
+	if open > 0 {
+		t.Skipf("hay %d tramos abiertos ajenos al fixture", open)
 	}
 	got, err := repo.OldestOpenCycleOpenedAt(context.Background())
 	if err != nil || got != nil {
@@ -126,7 +131,7 @@ func TestNectarReportsRepo_OldestOpenCycle_None(t *testing.T) {
 
 func TestNectarReportsRepo_AgentsAndState(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
 	repo := NewNectarReportsRepo(db)
 	id := time.Now().UnixNano() % 1000000000
@@ -202,7 +207,7 @@ func escFixture(t *testing.T, db *sql.DB, phone, outcome string, escalatedAt tim
 
 func TestEscalationRepo_ApplyNectarAttention(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
 	repo := NewEscalationRepo(db)
 	phone := fmt.Sprintf("nectar:%d", time.Now().UnixNano()%1000000000)
@@ -239,6 +244,38 @@ func TestEscalationRepo_ApplyNectarAttention(t *testing.T) {
 		t.Fatalf("segundo apply no debe pisar: %+v %v %v %v", fa, ag, nm, cm)
 	}
 
+	// last_agent_msg_at se llena con la primera respuesta y tampoco se pisa.
+	var last sql.NullTime
+	_ = db.QueryRow("SELECT last_agent_msg_at FROM escalations WHERE id = ?", id).Scan(&last)
+	if !last.Valid || !last.Time.Equal(r1) {
+		t.Fatalf("last_agent_msg_at = primera respuesta, got %+v", last)
+	}
+
+	// Un valor previo de last_agent_msg_at no se pisa; un update vacío no cambia nada.
+	prev := at.Add(30 * time.Minute)
+	id3 := escFixture(t, db, phone+"c", "", at, nil, "")
+	if _, err := db.Exec("UPDATE escalations SET last_agent_msg_at = ? WHERE id = ?", prev, id3); err != nil {
+		t.Fatalf("sembrar last: %v", err)
+	}
+	if err := repo.ApplyNectarAttention(ctx, id3, NectarAttentionUpdate{FirstResponseAt: &r2}); err != nil {
+		t.Fatalf("apply 4: %v", err)
+	}
+	if err := repo.ApplyNectarAttention(ctx, id3, NectarAttentionUpdate{}); err != nil {
+		t.Fatalf("apply vacío 2: %v", err)
+	}
+	_ = db.QueryRow("SELECT last_agent_msg_at FROM escalations WHERE id = ?", id3).Scan(&last)
+	if !last.Valid || !last.Time.Equal(prev) {
+		t.Fatalf("last_agent_msg_at previo intacto, got %+v", last)
+	}
+	id4 := escFixture(t, db, phone+"d", "", at, nil, "")
+	if err := repo.ApplyNectarAttention(ctx, id4, NectarAttentionUpdate{}); err != nil {
+		t.Fatalf("apply vacío 3: %v", err)
+	}
+	_ = db.QueryRow("SELECT last_agent_msg_at FROM escalations WHERE id = ?", id4).Scan(&last)
+	if last.Valid {
+		t.Fatalf("update vacío deja last_agent_msg_at NULL, got %+v", last)
+	}
+
 	// Sin primera respuesta el agente SÍ se puede sobrescribir (ruling del controlador).
 	id2 := escFixture(t, db, phone+"b", "", at, nil, "nectar:1")
 	if err := repo.ApplyNectarAttention(ctx, id2, NectarAttentionUpdate{AgentID: "nectar:2", AgentName: "Caro"}); err != nil {
@@ -261,7 +298,7 @@ func TestEscalationRepo_ApplyNectarAttention(t *testing.T) {
 
 func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpired(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
 	repo := NewEscalationRepo(db)
 	phone := fmt.Sprintf("nectar:%d", time.Now().UnixNano()%1000000000)
@@ -293,7 +330,7 @@ func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpired(t *testing.T) {
 
 func TestEscalationRepo_ListNectarEscalationsSince(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
 	repo := NewEscalationRepo(db)
 	n := time.Now().UnixNano() % 1000000000
@@ -333,7 +370,7 @@ func TestEscalationRepo_ListNectarEscalationsSince(t *testing.T) {
 
 func TestEscalationRepo_SetResolution(t *testing.T) {
 	db := openLocalTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
 	repo := NewEscalationRepo(db)
 	phone := fmt.Sprintf("nectar:%d", time.Now().UnixNano()%1000000000)

@@ -192,10 +192,11 @@ func (r *EscalationRepo) ApplyNectarAttention(ctx context.Context, id uint64, a 
 		 SET agent_id = IF(first_agent_msg_at IS NULL, COALESCE(NULLIF(?, ''), agent_id), agent_id),
 		     agent_name = IF(first_agent_msg_at IS NULL, COALESCE(NULLIF(?, ''), agent_name), agent_name),
 		     first_agent_msg_at = COALESCE(first_agent_msg_at, ?),
+		     last_agent_msg_at = COALESCE(last_agent_msg_at, ?),
 		     contact_msgs_before_response = COALESCE(contact_msgs_before_response, ?),
 		     outcome = IF(? AND outcome = 'expired', 'agent_no_show', outcome)
 		 WHERE id = ?`,
-		a.AgentID, a.AgentName, first, msgs, a.NoShow, id); err != nil {
+		a.AgentID, a.AgentName, first, first, msgs, a.NoShow, id); err != nil {
 		return fmt.Errorf("apply nectar attention: %w", err)
 	}
 	return nil
