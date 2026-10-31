@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // EscalationRepo registra una fila por ESCALACIÓN (no por sesión): una conversación puede escalar
@@ -113,6 +114,102 @@ func (r *EscalationRepo) NoShow(ctx context.Context, sessionID string) error {
 		 ORDER BY escalated_at DESC LIMIT 1`, sessionID)
 	if err != nil {
 		return fmt.Errorf("escalation no-show: %w", err)
+	}
+	return nil
+}
+
+// NectarEscalation es una atención escalada por Néctar (teléfono "nectar:<id>") tal como la lee la
+// sincronización para emparejarla con los tramos de espera.
+type NectarEscalation struct {
+	ID              uint64
+	SessionID       string
+	Phone           string
+	EscalatedAt     time.Time
+	Outcome         *string
+	FirstAgentMsgAt *time.Time
+	AgentID         *string
+}
+
+// ListNectarEscalationsSince lista las escalaciones de Néctar desde since (de la más vieja a la nueva).
+func (r *EscalationRepo) ListNectarEscalationsSince(ctx context.Context, since time.Time) ([]NectarEscalation, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, session_id, phone_number, escalated_at, outcome, first_agent_msg_at, agent_id
+		 FROM escalations
+		 WHERE phone_number LIKE 'nectar:%' AND escalated_at >= ?
+		 ORDER BY escalated_at, id`, since)
+	if err != nil {
+		return nil, fmt.Errorf("list nectar escalations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []NectarEscalation
+	for rows.Next() {
+		var e NectarEscalation
+		var outcome, agent sql.NullString
+		var first sql.NullTime
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Phone, &e.EscalatedAt, &outcome, &first, &agent); err != nil {
+			return nil, fmt.Errorf("scan nectar escalation: %w", err)
+		}
+		if outcome.Valid {
+			e.Outcome = &outcome.String
+		}
+		if first.Valid {
+			e.FirstAgentMsgAt = &first.Time
+		}
+		if agent.Valid {
+			e.AgentID = &agent.String
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// NectarAttentionUpdate es lo que la sincronización aprendió de Néctar sobre una atención.
+type NectarAttentionUpdate struct {
+	FirstResponseAt *time.Time
+	AgentID         string
+	AgentName       string
+	ContactMsgs     *int
+	NoShow          bool
+}
+
+// ApplyNectarAttention completa la atención con los datos de Néctar, solo de nulo a valor
+// (COALESCE): nunca pisa lo ya guardado. Única excepción: agent_id y agent_name se pueden
+// sobrescribir mientras first_agent_msg_at sea NULL (cuenta quien respondió); guardada la primera
+// respuesta quedan fijos. NoShow cambia outcome de 'expired' a 'agent_no_show' y nada más.
+//
+// Orden de las asignaciones: MySQL las evalúa de izquierda a derecha, así que agent_id y
+// agent_name van ANTES que first_agent_msg_at para ver si todavía era NULL.
+func (r *EscalationRepo) ApplyNectarAttention(ctx context.Context, id uint64, a NectarAttentionUpdate) error {
+	var first, msgs interface{}
+	if a.FirstResponseAt != nil {
+		first = *a.FirstResponseAt
+	}
+	if a.ContactMsgs != nil {
+		msgs = *a.ContactMsgs
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE escalations
+		 SET agent_id = IF(first_agent_msg_at IS NULL, COALESCE(NULLIF(?, ''), agent_id), agent_id),
+		     agent_name = IF(first_agent_msg_at IS NULL, COALESCE(NULLIF(?, ''), agent_name), agent_name),
+		     first_agent_msg_at = COALESCE(first_agent_msg_at, ?),
+		     contact_msgs_before_response = COALESCE(contact_msgs_before_response, ?),
+		     outcome = IF(? AND outcome = 'expired', 'agent_no_show', outcome)
+		 WHERE id = ?`,
+		a.AgentID, a.AgentName, first, msgs, a.NoShow, id); err != nil {
+		return fmt.Errorf("apply nectar attention: %w", err)
+	}
+	return nil
+}
+
+// SetResolution guarda quién resolvió y quién escaló en la escalación abierta más reciente del
+// teléfono (mismo patrón que Close); vacío se guarda NULL.
+func (r *EscalationRepo) SetResolution(ctx context.Context, phone, resolvedBy, escalatedBy string) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE escalations SET resolved_by = ?, escalated_by = ?
+		 WHERE phone_number = ? AND outcome IS NULL
+		 ORDER BY escalated_at DESC LIMIT 1`,
+		nullString(resolvedBy), nullString(escalatedBy), phone); err != nil {
+		return fmt.Errorf("escalation set resolution: %w", err)
 	}
 	return nil
 }
