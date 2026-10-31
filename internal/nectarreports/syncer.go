@@ -312,7 +312,7 @@ func markedWith(mark *int64, id uint64) bool {
 func attentionUpdate(a Attention, names map[int64]string, outcome string) local.NectarAttentionUpdate {
 	u := local.NectarAttentionUpdate{
 		FirstResponseAt: a.FirstResponseAt,
-		NoShow:          a.Closed && a.FirstResponseAt == nil && outcome == "expired",
+		NoShow:          a.Closed && a.FirstResponseAt == nil && noShowCandidate(outcome),
 	}
 	if a.AgentID != nil {
 		u.AgentID = "nectar:" + strconv.FormatInt(*a.AgentID, 10)
@@ -325,6 +325,13 @@ func attentionUpdate(a Attention, names map[int64]string, outcome string) local.
 		u.ContactMsgs = &n
 	}
 	return u
+}
+
+// noShowCandidate: los cierres que pueden ser en realidad «el asesor no contestó». expired es el
+// cierre por silencio; completed, la cola vencida que Néctar resuelve sola (conversacion_resuelta
+// con motivo cola_vencida → Close). returned y la escalación abierta no se tocan.
+func noShowCandidate(outcome string) bool {
+	return outcome == "expired" || outcome == "completed"
 }
 
 // stateTime lee una hora guardada en RFC3339; vacío = nil.

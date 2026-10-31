@@ -175,7 +175,8 @@ type NectarAttentionUpdate struct {
 // ApplyNectarAttention completa la atención con los datos de Néctar, solo de nulo a valor
 // (COALESCE): nunca pisa lo ya guardado. Única excepción: agent_id y agent_name se pueden
 // sobrescribir mientras first_agent_msg_at sea NULL (cuenta quien respondió); guardada la primera
-// respuesta quedan fijos. NoShow cambia outcome de 'expired' a 'agent_no_show' y nada más.
+// respuesta quedan fijos. NoShow cambia outcome de 'expired' o 'completed' a 'agent_no_show' y nada
+// más ('completed' es la cola que Néctar resuelve sola: conversacion_resuelta con cola_vencida → Close).
 //
 // Orden de las asignaciones: MySQL las evalúa de izquierda a derecha, así que agent_id y
 // agent_name van ANTES que first_agent_msg_at para ver si todavía era NULL.
@@ -194,7 +195,7 @@ func (r *EscalationRepo) ApplyNectarAttention(ctx context.Context, id uint64, a 
 		     first_agent_msg_at = COALESCE(first_agent_msg_at, ?),
 		     last_agent_msg_at = COALESCE(last_agent_msg_at, ?),
 		     contact_msgs_before_response = COALESCE(contact_msgs_before_response, ?),
-		     outcome = IF(? AND outcome = 'expired', 'agent_no_show', outcome)
+		     outcome = IF(? AND outcome IN ('expired', 'completed'), 'agent_no_show', outcome)
 		 WHERE id = ?`,
 		a.AgentID, a.AgentName, first, first, msgs, a.NoShow, id); err != nil {
 		return fmt.Errorf("apply nectar attention: %w", err)

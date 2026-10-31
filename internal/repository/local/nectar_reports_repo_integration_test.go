@@ -296,7 +296,9 @@ func TestEscalationRepo_ApplyNectarAttention(t *testing.T) {
 	}
 }
 
-func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpired(t *testing.T) {
+// NoShow solo cambia expired y completed (la cola vencida que Néctar resuelve sola); returned y
+// NULL quedan intactos.
+func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpiredOrCompleted(t *testing.T) {
 	db := openLocalTestDB(t)
 	t.Cleanup(func() { _ = db.Close() }) // antes que los cleanups de los fixtures: corre al final
 	ctx := context.Background()
@@ -306,8 +308,9 @@ func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpired(t *testing.T) {
 
 	expired := escFixture(t, db, phone+"e", "expired", at, nil, "")
 	completed := escFixture(t, db, phone+"c", "completed", at, nil, "")
+	returned := escFixture(t, db, phone+"r", "returned", at, nil, "")
 	open := escFixture(t, db, phone+"o", "", at, nil, "")
-	for _, id := range []uint64{expired, completed, open} {
+	for _, id := range []uint64{expired, completed, returned, open} {
 		if err := repo.ApplyNectarAttention(ctx, id, NectarAttentionUpdate{NoShow: true}); err != nil {
 			t.Fatalf("apply: %v", err)
 		}
@@ -320,8 +323,11 @@ func TestEscalationRepo_ApplyNectarAttention_NoShowOnlyExpired(t *testing.T) {
 	if o := outcome(expired); o.String != "agent_no_show" {
 		t.Fatalf("expired -> agent_no_show, got %v", o)
 	}
-	if o := outcome(completed); o.String != "completed" {
-		t.Fatalf("completed intacto, got %v", o)
+	if o := outcome(completed); o.String != "agent_no_show" {
+		t.Fatalf("completed -> agent_no_show, got %v", o)
+	}
+	if o := outcome(returned); o.String != "returned" {
+		t.Fatalf("returned intacto, got %v", o)
 	}
 	if o := outcome(open); o.Valid {
 		t.Fatalf("NULL intacto, got %v", o)
