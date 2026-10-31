@@ -24,6 +24,12 @@ type AgentCommand struct {
 	// vacío = el cierre lo decidió el agente desde el menú de retornos (o un comando de Bird).
 	Reason string
 
+	// ResolvedBy y EscalatedBy son las etiquetas de quién cerró y quién escaló la atención
+	// (conversacion_resuelta.actor / escalada_por, Plan 43: "agente:8", "bot", "sistema"; vacío = no
+	// consta). Solo viajan con Action "close" de una resuelta.
+	ResolvedBy  string
+	EscalatedBy string
+
 	Action string // "resume", "close", "info", "reset", "orden", "cups"
 	State  string // Target state (optional, for resume)
 	Data   string // Corrected data (optional, for resume with data / orden description)

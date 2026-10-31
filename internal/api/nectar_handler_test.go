@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1297,6 +1298,32 @@ func TestDispatchNectarNotice_BridgeOffDoesNotDispatch(t *testing.T) {
 			if strings.Contains(line, pii) {
 				t.Errorf("el registro trae datos del aviso (%q): %s", pii, line)
 			}
+		}
+	}
+}
+
+// Plan 43: quién cerró y quién escaló viajan en el comando de cierre como etiquetas.
+func TestHandleNectarNotice_ResolvedCarriesWhoClosedAndEscalated(t *testing.T) {
+	cases := []struct {
+		name, extra, wantBy, wantEsc string
+	}{
+		{"agente y bot", `,"actor":{"clase":"agente","agent_id":8},"escalada_por":{"clase":"bot"}`, "agente:8", "bot"},
+		{"sin escalada_por", `,"actor":{"clase":"agente","agent_id":8}`, "agente:8", ""},
+		{"sin ninguno", ``, "", ""},
+	}
+	for i, c := range cases {
+		sink := &sinkRecorder{}
+		h := newNectarHandler(newMemInbox(), sink)
+		body := fmt.Sprintf(`{"event_id":"e-who-%d","kind":"conversacion_resuelta","conversation_id":81,"occurred_at":"2026-10-30T20:15:04Z"%s}`, i, c.extra)
+		if rec := postNotice(h, signedNotice(nectarTestSecret, body)); rec.Code != http.StatusOK {
+			t.Fatalf("%s: got %d", c.name, rec.Code)
+		}
+		if _, n := sink.counts(); n != 1 {
+			t.Fatalf("%s: esperaba 1 comando, got %d", c.name, n)
+		}
+		got := sink.commands[0]
+		if got.Action != "close" || got.ResolvedBy != c.wantBy || got.EscalatedBy != c.wantEsc {
+			t.Errorf("%s: got %+v", c.name, got)
 		}
 	}
 }

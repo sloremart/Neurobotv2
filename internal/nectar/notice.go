@@ -169,10 +169,43 @@ type Notice struct {
 	// horario venció (8 horas hábiles en `waiting`) y Néctar avisó al paciente y resolvió
 	// (opción B, 2026-09-12). Vacío = resolución sin motivo.
 	Motivo string `json:"motivo,omitempty"`
+	// Actor es quién cerró la conversación (solo conversacion_resuelta, Plan 43). nil = no consta.
+	Actor *NoticeActor `json:"actor,omitempty"`
+	// EscalatedBy es quién escaló ESTA atención (solo conversacion_resuelta, Plan 43). nil = no
+	// consta: la clave falta cuando la atención no tiene asiento de escalado, entró por el ingreso
+	// sin bot, se reabrió o el aviso estaba encolado antes del despliegue de Néctar. Ausente nunca
+	// significa «nadie».
+	EscalatedBy *NoticeActor `json:"escalada_por,omitempty"`
 	// Opened es el cuerpo del CUARTO AVISO (kind=conversacion_abierta_por_agente): el agente
 	// abrió la conversación con una plantilla de Meta. Puntero porque solo viaja en ese kind;
 	// ver ValidOpening.
 	Opened *NoticeOpened `json:"opened,omitempty"`
+}
+
+// NoticeActor es quien hizo algo en una conversación de Néctar (`actor` y `escalada_por` de
+// conversacion_resuelta): una clase y, solo con la clase `agente`, su id. Sin nombre ni correo.
+type NoticeActor struct {
+	Class   string `json:"clase"` // agente | bot | sistema
+	AgentID int64  `json:"agent_id,omitempty"`
+}
+
+// Label es la etiqueta con que el bot guarda al actor en `escalations`: "agente:8", "bot",
+// "sistema". nil, clase vacía o un agente sin id legible dan "" (no consta): mejor no atribuir que
+// atribuir mal.
+func (a *NoticeActor) Label() string {
+	if a == nil {
+		return ""
+	}
+	switch a.Class {
+	case "agente":
+		if a.AgentID < 1 {
+			return ""
+		}
+		return "agente:" + strconv.FormatInt(a.AgentID, 10)
+	case "bot", "sistema":
+		return a.Class
+	}
+	return ""
 }
 
 // NoticeOpened es el cuerpo de conversacion_abierta_por_agente (esquema del aviso de Néctar).

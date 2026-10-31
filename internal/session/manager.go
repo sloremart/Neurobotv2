@@ -93,6 +93,9 @@ type EscalationRecorder interface {
 	Close(ctx context.Context, phone string) error
 	Expire(ctx context.Context, sessionID string) error
 	NoShow(ctx context.Context, sessionID string) error // agente nunca atendió → bot retoma
+	// SetResolution guarda quién resolvió y quién escaló en la escalación ABIERTA del teléfono;
+	// va antes de Close, que le pone el outcome.
+	SetResolution(ctx context.Context, phone, resolvedBy, escalatedBy string) error
 }
 
 // EscalationResumer devuelve al bot una escalación que el agente NUNCA atendió (no-show): reanuda la
@@ -323,6 +326,17 @@ func (m *SessionManager) ClearAllContext(ctx context.Context, s *Session) error 
 	}
 	s.Context = make(map[string]string)
 	return nil
+}
+
+// SetResolution deja en la escalación abierta de la sesión quién la resolvió y quién la escaló
+// (conversacion_resuelta de Néctar). Hay que llamarlo ANTES de Complete: Complete cierra la
+// escalación y después ya no hay fila abierta que encontrar. Sin registro de escalaciones no hace
+// nada.
+func (m *SessionManager) SetResolution(ctx context.Context, s *Session, resolvedBy, escalatedBy string) error {
+	if m.escalations == nil {
+		return nil
+	}
+	return m.escalations.SetResolution(ctx, s.PhoneNumber, resolvedBy, escalatedBy)
 }
 
 // Complete marca la sesión como completada

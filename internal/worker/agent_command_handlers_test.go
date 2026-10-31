@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -304,5 +305,50 @@ func TestAgentCommand_NotEscalated_NoOp(t *testing.T) {
 	}
 	if countSent(sender, "text") != 0 {
 		t.Error("expected no messages for a non-escalated session")
+	}
+}
+
+// Plan 43: el cierre por conversacion_resuelta guarda quién cerró y quién escaló ANTES de completar
+// la sesión (Complete cierra la escalación abierta y después SetResolution ya no la encontraría).
+func TestAgentCommand_CloseResolved_SavesResolutionBeforeComplete(t *testing.T) {
+	pool, sm, _, _ := escalatedPool(t)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "close", Phone: "+573001234567", Reason: CloseReasonResolved,
+		ResolvedBy: "agente:8", EscalatedBy: "bot",
+	})
+
+	if len(sm.resolutionCalls) != 1 || sm.resolutionCalls[0] != "agente:8|bot" {
+		t.Fatalf("SetResolution con las etiquetas, got %v", sm.resolutionCalls)
+	}
+	if len(sm.calls) != 2 || sm.calls[0] != "resolution" || sm.calls[1] != "complete" {
+		t.Fatalf("SetResolution debe ir antes de Complete, got %v", sm.calls)
+	}
+}
+
+func TestAgentCommand_CloseResolved_ResolutionFailureStillCloses(t *testing.T) {
+	pool, sm, _, _ := escalatedPool(t)
+	sm.resolutionFn = func(_, _ string) error { return errors.New("db caída") }
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "close", Phone: "+573001234567", Reason: CloseReasonResolved, ResolvedBy: "agente:8",
+	})
+
+	if sm.completeCalls != 1 {
+		t.Fatalf("el cierre sigue aunque falle guardar la autoría, completeCalls=%d", sm.completeCalls)
+	}
+}
+
+// Los cierres que no vienen de conversacion_resuelta (menú de retornos, comando de Bird) o que no
+// traen etiquetas no escriben nada.
+func TestAgentCommand_Close_WithoutResolvedNoticeDoesNotSaveResolution(t *testing.T) {
+	pool, sm, _, _ := escalatedPool(t)
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "close", Phone: "+573001234567"})
+	pool, sm2, _, _ := escalatedPool(t)
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "close", Phone: "+573001234567", Reason: CloseReasonResolved,
+	})
+	if len(sm.resolutionCalls) != 0 || len(sm2.resolutionCalls) != 0 {
+		t.Fatalf("no debe guardar autoría: %v %v", sm.resolutionCalls, sm2.resolutionCalls)
 	}
 }

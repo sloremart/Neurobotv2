@@ -971,6 +971,7 @@ func TestStartInactivityChecker_ContextCancellation(t *testing.T) {
 
 type mockEscalationRecorder struct {
 	touch, resume, closeN, expire, noShow int
+	resolution                            []string
 }
 
 func (m *mockEscalationRecorder) TouchAgent(_ context.Context, _ string) error { m.touch++; return nil }
@@ -982,6 +983,30 @@ func (m *mockEscalationRecorder) Close(_ context.Context, _ string) error { m.cl
 func (m *mockEscalationRecorder) Expire(_ context.Context, _ string) error { m.expire++; return nil }
 
 func (m *mockEscalationRecorder) NoShow(_ context.Context, _ string) error { m.noShow++; return nil }
+
+func (m *mockEscalationRecorder) SetResolution(_ context.Context, phone, resolvedBy, escalatedBy string) error {
+	m.resolution = append(m.resolution, phone+"|"+resolvedBy+"|"+escalatedBy)
+	return nil
+}
+
+// SetResolution delega en el registro de escalaciones con el teléfono de la sesión; sin registro
+// no hace nada.
+func TestSetResolution_DelegatesToTheRecorder(t *testing.T) {
+	mgr := NewSessionManager(&mockRepo{}, 120)
+	rec := &mockEscalationRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	sess := &Session{ID: "s1", PhoneNumber: "nectar:5", Status: StatusEscalated}
+
+	if err := mgr.SetResolution(context.Background(), sess, "agente:8", "bot"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.resolution) != 1 || rec.resolution[0] != "nectar:5|agente:8|bot" {
+		t.Fatalf("got %v", rec.resolution)
+	}
+	if err := NewSessionManager(&mockRepo{}, 120).SetResolution(context.Background(), sess, "x", "y"); err != nil {
+		t.Fatalf("sin registro no falla: %v", err)
+	}
+}
 
 type mockResumer struct{ phones []string }
 

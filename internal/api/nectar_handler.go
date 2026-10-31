@@ -561,7 +561,10 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 		} else {
 			slog.Info("nectar: resuelta con motivo", "conversation_id", n.ConversationID, "motivo", n.Motivo)
 		}
-		sink.EnqueueAgentCommand(worker.AgentCommand{Action: "close", Phone: key, Reason: reason})
+		sink.EnqueueAgentCommand(worker.AgentCommand{
+			Action: "close", Phone: key, Reason: reason,
+			ResolvedBy: n.Actor.Label(), EscalatedBy: n.EscalatedBy.Label(),
+		})
 	case nectar.KindConversationReturned:
 		// Vuelve a ser del bot. Si el agente eligió una salida de NUESTRO menú, viaja aquí y
 		// el worker ramifica por ella; ausente = devolución sin decisión, se retoma en

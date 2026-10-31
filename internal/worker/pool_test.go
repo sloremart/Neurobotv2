@@ -35,8 +35,12 @@ type mockSessionMgmt struct {
 	completeFn          func(ctx context.Context, sess *session.Session) error
 	completeCalls       int
 	completeNoShowCalls int
-	extendExpiryFn      func(ctx context.Context, sess *session.Session, until time.Time) error
-	attachContactFn     func(ctx context.Context, sess *session.Session, contact string) error
+	// calls registra el orden de SetResolution y Complete ("resolution", "complete").
+	calls           []string
+	resolutionFn    func(resolvedBy, escalatedBy string) error
+	resolutionCalls []string
+	extendExpiryFn  func(ctx context.Context, sess *session.Session, until time.Time) error
+	attachContactFn func(ctx context.Context, sess *session.Session, contact string) error
 }
 
 func (m *mockSessionMgmt) AttachContact(ctx context.Context, sess *session.Session, contact string) error {
@@ -148,7 +152,17 @@ func (m *mockSessionMgmt) CompleteAsNoShow(ctx context.Context, sess *session.Se
 	return nil
 }
 
+func (m *mockSessionMgmt) SetResolution(_ context.Context, _ *session.Session, resolvedBy, escalatedBy string) error {
+	m.calls = append(m.calls, "resolution")
+	m.resolutionCalls = append(m.resolutionCalls, resolvedBy+"|"+escalatedBy)
+	if m.resolutionFn != nil {
+		return m.resolutionFn(resolvedBy, escalatedBy)
+	}
+	return nil
+}
+
 func (m *mockSessionMgmt) Complete(ctx context.Context, sess *session.Session) error {
+	m.calls = append(m.calls, "complete")
 	m.completeCalls++
 	if m.completeFn != nil {
 		return m.completeFn(ctx, sess)

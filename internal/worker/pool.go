@@ -75,6 +75,8 @@ type SessionManagement interface {
 	Escalate(ctx context.Context, sess *session.Session, teamID string) error
 	ResumeFromEscalation(ctx context.Context, sess *session.Session, targetState string) error
 	ResumeFromEscalationNoShow(ctx context.Context, sess *session.Session, targetState string) error
+	// SetResolution guarda quién resolvió y quién escaló en la escalación abierta; va antes de Complete.
+	SetResolution(ctx context.Context, sess *session.Session, resolvedBy, escalatedBy string) error
 	Complete(ctx context.Context, sess *session.Session) error
 	CompleteAsNoShow(ctx context.Context, sess *session.Session) error
 	UpdateConversationID(ctx context.Context, phone, conversationID string) error
@@ -1141,6 +1143,15 @@ func (p *MessageWorkerPool) handleAgentReset(ctx context.Context, sess *session.
 
 // handleAgentClose closes the session (status=completed).
 func (p *MessageWorkerPool) handleAgentClose(ctx context.Context, sess *session.Session, cmd AgentCommand) {
+	// conversacion_resuelta (Reason no vacío) trae quién cerró y quién escaló: se guarda ANTES de
+	// completar, porque Complete cierra la escalación abierta y después SetResolution ya no la
+	// encuentra. Si falla, el cierre sigue: la autoría es un dato de informe, no del flujo.
+	if cmd.Reason != "" && (cmd.ResolvedBy != "" || cmd.EscalatedBy != "") {
+		if err := p.sessionManager.SetResolution(ctx, sess, cmd.ResolvedBy, cmd.EscalatedBy); err != nil {
+			slog.Warn("no se pudo guardar quién cerró y quién escaló",
+				"session_id", sess.ID, "phone", utils.MaskPhone(cmd.Phone), "error", err)
+		}
+	}
 	if err := p.sessionManager.Complete(ctx, sess); err != nil {
 		slog.Error("agent close failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 		return

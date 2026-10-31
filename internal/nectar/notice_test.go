@@ -630,3 +630,53 @@ func TestNoticeID_ToleraCualquierJSON(t *testing.T) {
 		})
 	}
 }
+
+// El aviso de resuelta del Plan 43 trae quién cerró (`actor`) y quién escaló (`escalada_por`).
+func TestTheResolvedNoticeCarriesWhoClosedAndWhoEscalated(t *testing.T) {
+	n, err := ParseNotice([]byte(`{"protocol":1,"event_id":"e1","kind":"conversacion_resuelta","conversation_id":73,
+		"occurred_at":"2026-10-07T20:42:29.642Z","actor":{"clase":"agente","agent_id":8},
+		"escalada_por":{"clase":"agente","agent_id":9},"clave_del_futuro":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Actor.Label(); got != "agente:8" {
+		t.Errorf("actor: got %q", got)
+	}
+	if got := n.EscalatedBy.Label(); got != "agente:9" {
+		t.Errorf("escalada_por: got %q", got)
+	}
+}
+
+func TestNoticeActorLabels(t *testing.T) {
+	cases := []struct {
+		name string
+		a    *NoticeActor
+		want string
+	}{
+		{"nil no consta", nil, ""},
+		{"bot sin agent_id", &NoticeActor{Class: "bot"}, "bot"},
+		{"sistema", &NoticeActor{Class: "sistema"}, "sistema"},
+		{"agente con id", &NoticeActor{Class: "agente", AgentID: 8}, "agente:8"},
+		{"agente sin id es ilegible", &NoticeActor{Class: "agente"}, ""},
+		{"clase vacía", &NoticeActor{}, ""},
+	}
+	for _, c := range cases {
+		if got := c.a.Label(); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestTheResolvedNoticeWithoutEscalatedByHasNoLabel(t *testing.T) {
+	n, err := ParseNotice([]byte(`{"event_id":"e2","kind":"conversacion_resuelta","conversation_id":73,
+		"actor":{"clase":"bot"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Actor.Label() != "bot" {
+		t.Errorf("actor bot sin agent_id: got %q", n.Actor.Label())
+	}
+	if n.EscalatedBy != nil || n.EscalatedBy.Label() != "" {
+		t.Errorf("sin escalada_por no consta, got %+v", n.EscalatedBy)
+	}
+}
