@@ -476,7 +476,9 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 	// Query sessions idle for at least the reminder threshold
 	sessions, err := m.repo.FindInactiveSessions(ctx, deps.ReminderMin)
 	if err != nil {
-		slog.Error("inactivity check error", "error", err)
+		if ctx.Err() == nil { // pasada vencida: el error ya lo deja RunPass
+			slog.Error("inactivity check error", "error", err)
+		}
 		return
 	}
 
@@ -484,50 +486,58 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 		if ctx.Err() != nil {
 			return // pasada vencida o apagado: las que faltan, en la pasada siguiente
 		}
-		elapsed := time.Since(s.LastActivity)
-		elapsedMin := int(elapsed.Minutes())
+		rowCtx, cancel := utils.RowContext(ctx)
+		m.checkInactiveSession(rowCtx, deps, s)
+		cancel()
+	}
+}
 
-		// Cierre: normalmente exige que el recordatorio ya se marcó (Reminders>=1). FALLBACK
-		// anti-sesión-inmortal (misma clase que el incidente 11/12-ago-2026): si la marca nunca se
-		// pudo persistir (SetContext fallando), sin este OR la sesión no cerraba NUNCA y se
-		// reevaluaba cada minuto; pasada una ventana extra de ReminderMin se cierra igual.
-		if elapsedMin >= deps.CloseMin && (s.Reminders >= 1 || elapsedMin >= deps.CloseMin+deps.ReminderMin) {
-			// Cierre por inactividad = ABANDONO (no "completada"): el paciente dejó de responder.
-			// Antes se marcaba 'completed', mezclando abandono con finalización real en sessions.status.
-			if err := m.repo.UpdateStatus(ctx, s.ID, StatusAbandoned); err != nil {
-				slog.Error("inactivity close failed", "session_id", s.ID, "error", err)
-				continue
-			}
-			if s.ConversationID != "" {
-				_ = deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID)
-			}
-			if deps.Tracker != nil {
-				deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "session_closed_inactivity", map[string]interface{}{
-					"idle_minutes": elapsedMin,
-				})
-			}
-			slog.Info("session closed by inactivity",
-				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber), "idle_min", elapsedMin)
-			observability.Emit(observability.TraceSession(s.ID), "infra", "session_abandoned",
-				observability.EmitOpts{
-					Phone: s.PhoneNumber,
-					Attrs: map[string]interface{}{"duration_ms": elapsed.Milliseconds()},
-				})
+// checkInactiveSession decide UNA sesión activa inactiva. ctx es el de la fila (utils.RowContext):
+// el cierre y su traza se completan aunque la pasada venza a mitad.
+func (m *SessionManager) checkInactiveSession(ctx context.Context, deps InactivityDeps, s InactiveSession) {
+	elapsed := time.Since(s.LastActivity)
+	elapsedMin := int(elapsed.Minutes())
 
-		} else if elapsedMin >= deps.ReminderMin && s.Reminders == 0 {
-			// El "¿Sigues ahí?" se ELIMINÓ (2026-08-31): no se envía en ningún estado. Buena parte de
-			// esos avisos ni siquiera se podían entregar —la ventana de servicio de 24 h del paciente
-			// ya había cerrado— y Bird los rechazaba con "no active session… use an approved template",
-			// cobrando el intento igual. Al que seguía dentro de la ventana tampoco le aportaba nada:
-			// si volvía, volvía solo.
-			//
-			// La MARCA se conserva aunque ya no se envíe nada: es la que mantiene el cierre en
-			// CloseMin. Sin ella, el fallback anti-sesión-inmortal de arriba retrasaría cada cierre
-			// hasta CloseMin+ReminderMin. El cierre sigue siendo SILENCIOSO: no hay ningún mensaje
-			// que le anuncie al paciente que su sesión se cerró, ni aquí ni después.
-			if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
-				slog.Error("set reminder mark failed", "session_id", s.ID, "error", err)
-			}
+	// Cierre: normalmente exige que el recordatorio ya se marcó (Reminders>=1). FALLBACK
+	// anti-sesión-inmortal (misma clase que el incidente 11/12-ago-2026): si la marca nunca se
+	// pudo persistir (SetContext fallando), sin este OR la sesión no cerraba NUNCA y se
+	// reevaluaba cada minuto; pasada una ventana extra de ReminderMin se cierra igual.
+	if elapsedMin >= deps.CloseMin && (s.Reminders >= 1 || elapsedMin >= deps.CloseMin+deps.ReminderMin) {
+		// Cierre por inactividad = ABANDONO (no "completada"): el paciente dejó de responder.
+		// Antes se marcaba 'completed', mezclando abandono con finalización real en sessions.status.
+		if err := m.repo.UpdateStatus(ctx, s.ID, StatusAbandoned); err != nil {
+			slog.Error("inactivity close failed", "session_id", s.ID, "error", err)
+			return
+		}
+		if s.ConversationID != "" {
+			_ = deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID)
+		}
+		if deps.Tracker != nil {
+			deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "session_closed_inactivity", map[string]interface{}{
+				"idle_minutes": elapsedMin,
+			})
+		}
+		slog.Info("session closed by inactivity",
+			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber), "idle_min", elapsedMin)
+		observability.Emit(observability.TraceSession(s.ID), "infra", "session_abandoned",
+			observability.EmitOpts{
+				Phone: s.PhoneNumber,
+				Attrs: map[string]interface{}{"duration_ms": elapsed.Milliseconds()},
+			})
+
+	} else if elapsedMin >= deps.ReminderMin && s.Reminders == 0 {
+		// El "¿Sigues ahí?" se ELIMINÓ (2026-08-31): no se envía en ningún estado. Buena parte de
+		// esos avisos ni siquiera se podían entregar —la ventana de servicio de 24 h del paciente
+		// ya había cerrado— y Bird los rechazaba con "no active session… use an approved template",
+		// cobrando el intento igual. Al que seguía dentro de la ventana tampoco le aportaba nada:
+		// si volvía, volvía solo.
+		//
+		// La MARCA se conserva aunque ya no se envíe nada: es la que mantiene el cierre en
+		// CloseMin. Sin ella, el fallback anti-sesión-inmortal de arriba retrasaría cada cierre
+		// hasta CloseMin+ReminderMin. El cierre sigue siendo SILENCIOSO: no hay ningún mensaje
+		// que le anuncie al paciente que su sesión se cerró, ni aquí ni después.
+		if err := m.repo.SetContext(ctx, s.ID, "inactivity_reminders", "1"); err != nil {
+			slog.Error("set reminder mark failed", "session_id", s.ID, "error", err)
 		}
 	}
 }
@@ -588,147 +598,157 @@ func nectarSilenceAnchor(s EscalatedSession, nextOpen func(time.Time) time.Time)
 func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps InactivityDeps) {
 	sessions, err := m.repo.FindEscalatedSessions(ctx)
 	if err != nil {
-		slog.Error("escalated sessions check error", "error", err)
+		if ctx.Err() == nil { // pasada vencida: el error ya lo deja RunPass
+			slog.Error("escalated sessions check error", "error", err)
+		}
 		return
 	}
 
 	now := time.Now()
 	for _, s := range sessions {
-		// Pasada vencida o apagado: las que faltan, en la pasada siguiente. Sin este corte, un
-		// recordatorio al agente saldría con su marca sin poder guardarse y se repetiría.
 		if ctx.Err() != nil {
+			return // pasada vencida o apagado: las que faltan, en la pasada siguiente
+		}
+		// La fila corre con su propio ctx: un recordatorio enviado queda con su marca y un cierre
+		// con su escalación expirada aunque la pasada venza a mitad.
+		rowCtx, cancel := utils.RowContext(ctx)
+		m.checkEscalatedSession(rowCtx, deps, s, now)
+		cancel()
+	}
+}
+
+// checkEscalatedSession decide UNA sesión escalada (ver checkEscalatedSessions). ctx es el de la
+// fila (utils.RowContext).
+func (m *SessionManager) checkEscalatedSession(ctx context.Context, deps InactivityDeps, s EscalatedSession, now time.Time) {
+	patientSilent := now.Sub(s.LastPatientMsg)
+	agentEverReplied := s.LastAgentMsg != nil
+
+	// Escalación encolada para el próximo día: ni cierre por silencio ni no-show mientras
+	// dure la espera (escalationExempt).
+	if escalationExempt(s, now, deps.NextOpen) {
+		slog.Debug("escalation exempt: encolada para el próximo día",
+			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
+		return
+	}
+
+	// Néctar: la cola es de Néctar, así que NO corren el no-show ni los recordatorios al
+	// agente. Lo único que el bot hace con la sesión es cerrarla por silencio del PACIENTE
+	// (aunque ningún agente haya respondido: no hay Resumer al que devolverla).
+	if IsNectarSession(s.PhoneNumber) {
+		silent := now.Sub(nectarSilenceAnchor(s, deps.NextOpen))
+		if deps.NectarEscalationCloseMin > 0 && silent >= time.Duration(deps.NectarEscalationCloseMin)*time.Minute {
+			m.closeEscalatedBySilence(ctx, deps, s, silent)
+		}
+		return
+	}
+
+	// (0) Agente NO-SHOW: el agente NUNCA respondió y ya pasó la ventana de recordatorios
+	// (AgentReminderMin*(Max+1); con 75 y Max=3 → 300 min = 5h, un intervalo tras el 3er
+	// recordatorio de los 225). NO es abandono del paciente
+	// (estaba esperando una respuesta que no llegó) → se DEVUELVE al bot en su paso (el worker
+	// re-promptea) y se marca 'agent_no_show' para la métrica del agente. Requiere el resumer.
+	//
+	// ANCLA DOBLE (incidente 11/12-ago-2026): la ventana debe haber pasado desde el último
+	// mensaje del paciente Y desde que ESTA escalación se creó (escalated_at). Con solo
+	// last_patient_msg, una re-escalación heredaba un silencio ya >300min y el no-show
+	// re-disparaba al MINUTO (tick del checker) → bucle no-show↔re-escalación, 1 WhatsApp/min
+	// por paciente toda la noche. MarkEscalated sella escalated_at=NOW() en cada escalación,
+	// así toda escalación nueva obtiene su ventana completa. Fallback a last_patient_msg si
+	// la fila es vieja y no tiene escalated_at.
+	noShowWindow := time.Duration(deps.AgentReminderMin*(deps.AgentReminderMax+1)) * time.Minute
+	escalationAnchor := s.EscalatedAt
+	if escalationAnchor.IsZero() {
+		escalationAnchor = s.LastPatientMsg
+	}
+	if !agentEverReplied && deps.Resumer != nil && deps.AgentReminderMin > 0 &&
+		patientSilent >= noShowWindow && now.Sub(escalationAnchor) >= noShowWindow {
+		deps.Resumer.ResumeEscalationNoShow(s.PhoneNumber)
+		slog.Info("escalation no-show: agente nunca atendió, devolviendo al bot",
+			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
+			"patient_silent_min", int(patientSilent.Minutes()), "reminders_sent", s.RemindersSent)
+		return
+	}
+
+	// (1) Cierre por silencio del PACIENTE — solo si el agente YA atendió al menos una vez. Si el
+	// agente nunca atendió, lo maneja (0) no-show; el fallback (sin resumer) cierra igual para no
+	// fugar la sesión.
+	if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute &&
+		(agentEverReplied || deps.Resumer == nil) {
+		m.closeEscalatedBySilence(ctx, deps, s, patientSilent)
+		return
+	}
+
+	// (2) Recordatorio al agente: el paciente espera y el agente no ha respondido a su último mensaje.
+	if deps.AgentReminderMin <= 0 || s.ConversationID == "" {
+		return
+	}
+	agentReplied := s.LastAgentMsg != nil && !s.LastAgentMsg.Before(s.LastPatientMsg)
+	if agentReplied || s.RemindersSent >= deps.AgentReminderMax {
+		return
+	}
+	// Próximo recordatorio en AgentReminderMin * (enviados + 1) tras el último mensaje del paciente.
+	dueAfter := time.Duration(deps.AgentReminderMin*(s.RemindersSent+1)) * time.Minute
+	if patientSilent < dueAfter {
+		return
+	}
+	reminder := fmt.Sprintf(
+		"Recordatorio interno: el paciente lleva %s esperando respuesta en este chat escalado. "+
+			"Por favor atiéndelo. (aviso %d de %d)",
+		formatMinutes(int(patientSilent.Minutes())), s.RemindersSent+1, deps.AgentReminderMax,
+	)
+	if _, err := deps.BirdClient.SendInternalText(s.PhoneNumber, s.ConversationID, reminder); err != nil {
+		// BUG-005: si Bird responde que la conversación ya NO está activa (el agente la cerró),
+		// el recordatorio nunca tendrá éxito. Sin esto, el checker reintentaba cada minuto
+		// indefinidamente (no incrementa RemindersSent en el error) hasta la expiración a las 6h.
+		// La conversación cerrada = el agente terminó el chat → cerrar la escalación, igual que el
+		// cierre por silencio del paciente.
+		if errors.Is(err, bird.ErrConversationNotActive) {
+			if cerr := m.repo.MarkAbandoned(ctx, s.ID); cerr != nil {
+				slog.Error("close escalated on inactive conversation failed", "session_id", s.ID, "error", cerr)
+				return
+			}
+			if m.escalations != nil {
+				if eerr := m.escalations.Expire(ctx, s.ID); eerr != nil {
+					slog.Warn("escalation expire failed", "session_id", s.ID, "error", eerr)
+				}
+			}
+			if deps.Tracker != nil {
+				deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_closed_conversation_inactive", nil)
+			}
+			observability.Emit(observability.TraceSession(s.ID), "escalacion", "agent_closed",
+				observability.EmitOpts{Phone: s.PhoneNumber, Reason: "conversation_inactive"})
+			slog.Info("escalated session closed: bird conversation inactive (agente la cerró)",
+				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
 			return
 		}
-		patientSilent := now.Sub(s.LastPatientMsg)
-		agentEverReplied := s.LastAgentMsg != nil
-
-		// Escalación encolada para el próximo día: ni cierre por silencio ni no-show mientras
-		// dure la espera (escalationExempt).
-		if escalationExempt(s, now, deps.NextOpen) {
-			slog.Debug("escalation exempt: encolada para el próximo día",
-				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
-			continue
+		slog.Error("agent reminder send failed", "session_id", s.ID, "conversation_id", s.ConversationID, "error", err)
+		// ENDURECIMIENTO anti-retry-1/min (cacería 12-ago-2026): un error GENÉRICO persistente
+		// (Bird caído, 403, conversación borrada…) reintentaba cada tick del checker sin avanzar
+		// el contador — hasta ~300 intentos por sesión. El fallo CONSUME el intento: el siguiente
+		// espera su ventana normal y el total queda acotado a AgentReminderMax, como los éxitos.
+		// (BUG-005 arriba maneja aparte el caso conversación-inactiva, que cierra la escalación.)
+		if ierr := m.repo.IncrementAgentReminders(ctx, s.ID); ierr != nil {
+			slog.Error("increment agent reminders (tras fallo de envío) failed", "session_id", s.ID, "error", ierr)
 		}
-
-		// Néctar: la cola es de Néctar, así que NO corren el no-show ni los recordatorios al
-		// agente. Lo único que el bot hace con la sesión es cerrarla por silencio del PACIENTE
-		// (aunque ningún agente haya respondido: no hay Resumer al que devolverla).
-		if IsNectarSession(s.PhoneNumber) {
-			silent := now.Sub(nectarSilenceAnchor(s, deps.NextOpen))
-			if deps.NectarEscalationCloseMin > 0 && silent >= time.Duration(deps.NectarEscalationCloseMin)*time.Minute {
-				m.closeEscalatedBySilence(ctx, deps, s, silent)
-			}
-			continue
-		}
-
-		// (0) Agente NO-SHOW: el agente NUNCA respondió y ya pasó la ventana de recordatorios
-		// (AgentReminderMin*(Max+1); con 75 y Max=3 → 300 min = 5h, un intervalo tras el 3er
-		// recordatorio de los 225). NO es abandono del paciente
-		// (estaba esperando una respuesta que no llegó) → se DEVUELVE al bot en su paso (el worker
-		// re-promptea) y se marca 'agent_no_show' para la métrica del agente. Requiere el resumer.
-		//
-		// ANCLA DOBLE (incidente 11/12-ago-2026): la ventana debe haber pasado desde el último
-		// mensaje del paciente Y desde que ESTA escalación se creó (escalated_at). Con solo
-		// last_patient_msg, una re-escalación heredaba un silencio ya >300min y el no-show
-		// re-disparaba al MINUTO (tick del checker) → bucle no-show↔re-escalación, 1 WhatsApp/min
-		// por paciente toda la noche. MarkEscalated sella escalated_at=NOW() en cada escalación,
-		// así toda escalación nueva obtiene su ventana completa. Fallback a last_patient_msg si
-		// la fila es vieja y no tiene escalated_at.
-		noShowWindow := time.Duration(deps.AgentReminderMin*(deps.AgentReminderMax+1)) * time.Minute
-		escalationAnchor := s.EscalatedAt
-		if escalationAnchor.IsZero() {
-			escalationAnchor = s.LastPatientMsg
-		}
-		if !agentEverReplied && deps.Resumer != nil && deps.AgentReminderMin > 0 &&
-			patientSilent >= noShowWindow && now.Sub(escalationAnchor) >= noShowWindow {
-			deps.Resumer.ResumeEscalationNoShow(s.PhoneNumber)
-			slog.Info("escalation no-show: agente nunca atendió, devolviendo al bot",
-				"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
-				"patient_silent_min", int(patientSilent.Minutes()), "reminders_sent", s.RemindersSent)
-			continue
-		}
-
-		// (1) Cierre por silencio del PACIENTE — solo si el agente YA atendió al menos una vez. Si el
-		// agente nunca atendió, lo maneja (0) no-show; el fallback (sin resumer) cierra igual para no
-		// fugar la sesión.
-		if deps.EscalationCloseMin > 0 && patientSilent >= time.Duration(deps.EscalationCloseMin)*time.Minute &&
-			(agentEverReplied || deps.Resumer == nil) {
-			m.closeEscalatedBySilence(ctx, deps, s, patientSilent)
-			continue
-		}
-
-		// (2) Recordatorio al agente: el paciente espera y el agente no ha respondido a su último mensaje.
-		if deps.AgentReminderMin <= 0 || s.ConversationID == "" {
-			continue
-		}
-		agentReplied := s.LastAgentMsg != nil && !s.LastAgentMsg.Before(s.LastPatientMsg)
-		if agentReplied || s.RemindersSent >= deps.AgentReminderMax {
-			continue
-		}
-		// Próximo recordatorio en AgentReminderMin * (enviados + 1) tras el último mensaje del paciente.
-		dueAfter := time.Duration(deps.AgentReminderMin*(s.RemindersSent+1)) * time.Minute
-		if patientSilent < dueAfter {
-			continue
-		}
-		reminder := fmt.Sprintf(
-			"Recordatorio interno: el paciente lleva %s esperando respuesta en este chat escalado. "+
-				"Por favor atiéndelo. (aviso %d de %d)",
-			formatMinutes(int(patientSilent.Minutes())), s.RemindersSent+1, deps.AgentReminderMax,
-		)
-		if _, err := deps.BirdClient.SendInternalText(s.PhoneNumber, s.ConversationID, reminder); err != nil {
-			// BUG-005: si Bird responde que la conversación ya NO está activa (el agente la cerró),
-			// el recordatorio nunca tendrá éxito. Sin esto, el checker reintentaba cada minuto
-			// indefinidamente (no incrementa RemindersSent en el error) hasta la expiración a las 6h.
-			// La conversación cerrada = el agente terminó el chat → cerrar la escalación, igual que el
-			// cierre por silencio del paciente.
-			if errors.Is(err, bird.ErrConversationNotActive) {
-				if cerr := m.repo.MarkAbandoned(ctx, s.ID); cerr != nil {
-					slog.Error("close escalated on inactive conversation failed", "session_id", s.ID, "error", cerr)
-					continue
-				}
-				if m.escalations != nil {
-					if eerr := m.escalations.Expire(ctx, s.ID); eerr != nil {
-						slog.Warn("escalation expire failed", "session_id", s.ID, "error", eerr)
-					}
-				}
-				if deps.Tracker != nil {
-					deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_closed_conversation_inactive", nil)
-				}
-				observability.Emit(observability.TraceSession(s.ID), "escalacion", "agent_closed",
-					observability.EmitOpts{Phone: s.PhoneNumber, Reason: "conversation_inactive"})
-				slog.Info("escalated session closed: bird conversation inactive (agente la cerró)",
-					"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber))
-				continue
-			}
-			slog.Error("agent reminder send failed", "session_id", s.ID, "conversation_id", s.ConversationID, "error", err)
-			// ENDURECIMIENTO anti-retry-1/min (cacería 12-ago-2026): un error GENÉRICO persistente
-			// (Bird caído, 403, conversación borrada…) reintentaba cada tick del checker sin avanzar
-			// el contador — hasta ~300 intentos por sesión. El fallo CONSUME el intento: el siguiente
-			// espera su ventana normal y el total queda acotado a AgentReminderMax, como los éxitos.
-			// (BUG-005 arriba maneja aparte el caso conversación-inactiva, que cierra la escalación.)
-			if ierr := m.repo.IncrementAgentReminders(ctx, s.ID); ierr != nil {
-				slog.Error("increment agent reminders (tras fallo de envío) failed", "session_id", s.ID, "error", ierr)
-			}
-			continue
-		}
-		if err := m.repo.IncrementAgentReminders(ctx, s.ID); err != nil {
-			slog.Error("increment agent reminders failed", "session_id", s.ID, "error", err)
-		}
-		if deps.Tracker != nil {
-			deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "agent_reminder_sent", map[string]interface{}{
-				"reminder_n":         s.RemindersSent + 1,
-				"patient_silent_min": int(patientSilent.Minutes()),
-			})
-		}
-		observability.Emit(observability.TraceSession(s.ID), "escalacion", "agent_reminder_sent",
-			observability.EmitOpts{
-				Phone: s.PhoneNumber,
-				Attrs: map[string]interface{}{"n": s.RemindersSent + 1, "duration_ms": patientSilent.Milliseconds()},
-			})
-		slog.Info("agent reminder sent",
-			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
-			"reminder_n", s.RemindersSent+1, "patient_silent_min", int(patientSilent.Minutes()))
+		return
 	}
+	if err := m.repo.IncrementAgentReminders(ctx, s.ID); err != nil {
+		slog.Error("increment agent reminders failed", "session_id", s.ID, "error", err)
+	}
+	if deps.Tracker != nil {
+		deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "agent_reminder_sent", map[string]interface{}{
+			"reminder_n":         s.RemindersSent + 1,
+			"patient_silent_min": int(patientSilent.Minutes()),
+		})
+	}
+	observability.Emit(observability.TraceSession(s.ID), "escalacion", "agent_reminder_sent",
+		observability.EmitOpts{
+			Phone: s.PhoneNumber,
+			Attrs: map[string]interface{}{"n": s.RemindersSent + 1, "duration_ms": patientSilent.Milliseconds()},
+		})
+	slog.Info("agent reminder sent",
+		"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber),
+		"reminder_n", s.RemindersSent+1, "patient_silent_min", int(patientSilent.Minutes()))
 }
 
 // formatMinutes convierte minutos a texto legible: "1 hora", "2 horas", "1 hora 30 minutos", etc.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // El replay del WAL (arranque y atascados) lee filas de message_inbox. Una fila de Néctar
@@ -398,4 +399,66 @@ func TestReplayNectarRow_BridgeOffClosesRowWithoutError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ctxReplay despacha despacio y registra con qué ctx se despachó y se cerró cada fila.
+type ctxReplay struct {
+	*fakeReplay
+	delay       time.Duration
+	dispatchCtx map[string]error // raw_body → ctx.Err() al despachar
+	doneCtx     map[string]error // id → ctx.Err() al cerrar
+}
+
+func (c *ctxReplay) DispatchNectarNotice(ctx context.Context, rawBody string) error {
+	time.Sleep(c.delay)
+	c.dispatchCtx[rawBody] = ctx.Err()
+	return errors.New("aviso ilegible") // fuerza el MarkDone de la fila
+}
+
+func (c *ctxReplay) MarkDone(ctx context.Context, id string) error {
+	c.doneCtx[id] = ctx.Err()
+	return nil
+}
+
+// D-07: en el replay de atascados, el despacho a Néctar que cruza el plazo de la pasada corre con
+// un ctx VIVO (el de la fila): un plazo de pasada vencido no llega a nectarContact, que lo leería
+// como «Néctar no responde» (isNectarUnreachable) y dejaría a todo el bot sin contactos. La fila
+// se cierra con ese mismo ctx y la siguiente no arranca.
+func TestStaleReplay_RowOutlivesPassDeadline(t *testing.T) {
+	c := &ctxReplay{
+		fakeReplay: &fakeReplay{}, delay: 60 * time.Millisecond,
+		dispatchCtx: map[string]error{}, doneCtx: map[string]error{},
+	}
+	src := inboxReplaySource{
+		nectar: c,
+		repo: staleRowsCtx{ctxReplay: c, rows: []localrepo.InboxRow{
+			{ID: "e-1", RawBody: "uno", MsgType: "nectar_notice"},
+			{ID: "e-2", RawBody: "dos", MsgType: "nectar_notice"},
+		}},
+	}
+
+	utils.RunPass(context.Background(), "stale-replay", 20*time.Millisecond, func(ctx context.Context) {
+		if _, err := src.PendingOlderThan(ctx, 5); err != nil {
+			t.Error(err)
+		}
+	})
+	if err, ok := c.dispatchCtx["uno"]; !ok || err != nil {
+		t.Fatalf("el despacho debía correr con ctx vivo (ok=%v, err=%v)", ok, err)
+	}
+	if err, ok := c.doneCtx["e-1"]; !ok || err != nil {
+		t.Fatalf("la fila debía cerrarse con ctx vivo (ok=%v, err=%v)", ok, err)
+	}
+	if _, ok := c.dispatchCtx["dos"]; ok {
+		t.Fatal("la fila 2 no debía arrancar tras vencer la pasada")
+	}
+}
+
+// staleRowsCtx hace de ctxReplay un staleInboxRepo.
+type staleRowsCtx struct {
+	*ctxReplay
+	rows []localrepo.InboxRow
+}
+
+func (s staleRowsCtx) FindPendingOlderThan(context.Context, int) ([]localrepo.InboxRow, error) {
+	return s.rows, nil
 }

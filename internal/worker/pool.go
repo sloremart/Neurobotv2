@@ -2081,7 +2081,9 @@ func (p *MessageWorkerPool) runStaleReplayPass(ctx context.Context, src StalePen
 func (p *MessageWorkerPool) replayStale(ctx context.Context, src StalePendingSource) {
 	msgs, err := src.PendingOlderThan(ctx, staleReplayMinutes)
 	if err != nil {
-		slog.Error("stale replay: query failed", "error", err)
+		if ctx.Err() == nil { // pasada vencida: el error ya lo deja RunPass
+			slog.Error("stale replay: query failed", "error", err)
+		}
 		return
 	}
 	if len(msgs) == 0 {

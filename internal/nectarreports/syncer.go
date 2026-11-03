@@ -33,6 +33,10 @@ const (
 	// syncPassTimeout acota UNA pasada (D-07). Más que el plazo de los otros bucles de fondo: la
 	// pasada pagina por HTTP (hasta 15 s por página) y el since solo avanza al terminarla, así que
 	// un rezago grande de tramos debe caber entero en una pasada o no avanzaría nunca.
+	// LÍMITE CONOCIDO: un rezago que no quepa en 10 min (unas 40 páginas a 15 s, miles a ritmo
+	// normal) no avanza nunca y deja un ERROR por pasada. Quitarlo exige guardar last_seen al
+	// cerrar cada ventana, que toca la receta §3(a): consultarlo antes. Las escrituras de una
+	// pasada cortada son idempotentes (upsert por id, marcas y atención se reaplican).
 	syncPassTimeout = 10 * time.Minute
 )
 

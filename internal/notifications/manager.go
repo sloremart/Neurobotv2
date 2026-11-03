@@ -1321,7 +1321,9 @@ func (m *NotificationManager) runExpirationPass(ctx context.Context) {
 func (m *NotificationManager) checkExpired(ctx context.Context) {
 	rows, err := m.persister.FindExpired(ctx)
 	if err != nil {
-		slog.Error("check expired notifications", "error", err)
+		if ctx.Err() == nil { // pasada vencida: el error ya lo deja RunPass
+			slog.Error("check expired notifications", "error", err)
+		}
 		return
 	}
 
@@ -1333,8 +1335,11 @@ func (m *NotificationManager) checkExpired(ctx context.Context) {
 		if _, ok := m.pending.Load(row.Phone); ok {
 			m.handleTimeout(row.Phone)
 		} else {
-			// Stale DB row — moverla a historial como expirada
-			_ = m.persister.Resolve(ctx, row.Phone, "expired")
+			// Stale DB row — moverla a historial como expirada. Con el ctx de la fila: el plazo de la
+			// pasada no la corta a mitad.
+			rowCtx, cancel := utils.RowContext(ctx)
+			_ = m.persister.Resolve(rowCtx, row.Phone, "expired")
+			cancel()
 		}
 	}
 }

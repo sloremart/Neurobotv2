@@ -868,19 +868,30 @@ func (s inboxReplaySource) PendingOlderThan(ctx context.Context, minutes int) ([
 		if ctx.Err() != nil {
 			break // pasada vencida o apagado (D-07): las filas que faltan siguen 'pending' para la siguiente
 		}
-		if api.IsNectarInboxRow(row.MsgType) {
-			replayNectarRow(ctx, "stale replay", row, s.nectar, s.repo)
-			continue
+		if msg, ok := s.replayRow(ctx, row); ok {
+			msgs = append(msgs, msg)
 		}
-		var event bird.WebhookEvent
-		if err := json.Unmarshal([]byte(row.RawBody), &event); err != nil {
-			slog.Error("stale replay: parse failed", "id", row.ID, "error", err)
-			_ = s.repo.MarkDone(ctx, row.ID)
-			continue
-		}
-		msgs = append(msgs, bird.ParseInboundMessage(event))
 	}
 	return msgs, nil
+}
+
+// replayRow re-despacha UNA fila atascada con el ctx de la fila (utils.RowContext): el plazo de la
+// pasada no corta un despacho a Néctar ni su MarkDone a mitad, ni se confunde con Néctar sin
+// responder. Devuelve el mensaje de Bird a re-encolar, si lo hay.
+func (s inboxReplaySource) replayRow(passCtx context.Context, row localrepo.InboxRow) (bird.InboundMessage, bool) {
+	ctx, cancel := utils.RowContext(passCtx)
+	defer cancel()
+	if api.IsNectarInboxRow(row.MsgType) {
+		replayNectarRow(ctx, "stale replay", row, s.nectar, s.repo)
+		return bird.InboundMessage{}, false
+	}
+	var event bird.WebhookEvent
+	if err := json.Unmarshal([]byte(row.RawBody), &event); err != nil {
+		slog.Error("stale replay: parse failed", "id", row.ID, "error", err)
+		_ = s.repo.MarkDone(ctx, row.ID)
+		return bird.InboundMessage{}, false
+	}
+	return bird.ParseInboundMessage(event), true
 }
 
 // safeGo runs f in a new goroutine with panic recovery.

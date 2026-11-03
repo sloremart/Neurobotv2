@@ -3,6 +3,7 @@ package utils
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -61,4 +62,28 @@ func TestRunPass_DefaultTimeout(t *testing.T) {
 			t.Errorf("plazo = %v, want ~%v", time.Until(dl), BackgroundPassTimeout)
 		}
 	})
+}
+
+// La fila no hereda el plazo de la pasada: con la pasada vencida su ctx sigue vivo, acotado a
+// RowTimeout, y se corta con el apagado de la app.
+func TestRowContext_OutlivesPassDeadlineButNotShutdown(t *testing.T) {
+	app, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+	var row context.Context
+	var cancelRow context.CancelFunc
+	RunPass(app, "rows", time.Millisecond, func(passCtx context.Context) {
+		<-passCtx.Done()
+		row, cancelRow = RowContext(passCtx)
+	})
+	defer cancelRow()
+	if row.Err() != nil {
+		t.Fatalf("la fila heredó el plazo vencido de la pasada: %v", row.Err())
+	}
+	if dl, ok := row.Deadline(); !ok || time.Until(dl) > RowTimeout {
+		t.Errorf("plazo de la fila = %v, want ≤ %v", time.Until(dl), RowTimeout)
+	}
+	shutdown()
+	if !errors.Is(row.Err(), context.Canceled) {
+		t.Errorf("la fila debe cortarse con el apagado: %v", row.Err())
+	}
 }
