@@ -77,7 +77,7 @@ type openRequest struct {
 
 const (
 	openPath = "/api/bot/conversations/open"
-	// openMaxRetries: como mucho 2 reintentos, y solo ante 503 con Retry-After.
+	// openMaxRetries: como mucho 2 reintentos, y solo ante 503 o 429 con Retry-After.
 	openMaxRetries = 2
 	// openDefaultRetryAfter es la espera si la cabecera viene pero no se entiende.
 	openDefaultRetryAfter = 2 * time.Second
@@ -135,11 +135,13 @@ func notSent(err error) bool {
 	return errors.As(err, &dns)
 }
 
-// openRetryAfter dice si la respuesta es el 503 reintentable y cuánto esperar. El 503 SIN
-// Retry-After es «Néctar arrancó sin cliente de Meta»: reintentar falla igual. Uno que pide más de
-// openMaxRetryAfter tampoco se reintenta: se devuelve el 503.
+// openRetryAfter dice si la respuesta es el 503 o el 429 reintentable y cuánto esperar. El 503 SIN
+// Retry-After es «Néctar arrancó sin cliente de Meta»: reintentar falla igual. El 429 (un límite de
+// peticiones de Néctar o de un proxy delante) rechaza antes de procesar: nada salió, y el reintento
+// lleva la misma clave igualmente. Sin Retry-After o con uno mayor que openMaxRetryAfter no se
+// reintenta aquí: se devuelve el código.
 func openRetryAfter(resp reply) (time.Duration, bool) {
-	if resp.status != http.StatusServiceUnavailable {
+	if resp.status != http.StatusServiceUnavailable && resp.status != http.StatusTooManyRequests {
 		return 0, false
 	}
 	h := strings.TrimSpace(resp.header.Get("Retry-After"))
@@ -206,7 +208,8 @@ func decodeOpen(resp reply) (Opened, error) {
 		return Opened{}, fmt.Errorf("%w (504)", ErrOpenInDoubt)
 	}
 	// 4xx con otro motivo (phone_invalid…) es un defecto del cuerpo o del destinatario: permanente. 5xx sin motivo conocido (503 agotado incluido) se deja transitorio.
-	if resp.status >= 400 && resp.status < 500 {
+	// El 429 tampoco es permanente: es «ahora no» (la lista de espera la reintenta en su próximo chequeo).
+	if resp.status >= 400 && resp.status < 500 && resp.status != http.StatusTooManyRequests {
 		return Opened{}, fmt.Errorf("nectar: POST %s: status %d reason %q: %w", openPath, resp.status, reason, bird.ErrPermanentSend)
 	}
 	return Opened{}, fmt.Errorf("nectar: POST %s: status %d reason %q", openPath, resp.status, reason)

@@ -625,3 +625,75 @@ func TestNotSent(t *testing.T) {
 		}
 	}
 }
+
+// Un 429 (Néctar o un proxy con límite de peticiones delante) rechaza la apertura ANTES de
+// procesarla: nada salió. Es transitorio, no permanente —la lista de espera no puede dar por
+// perdido al paciente— y, con Retry-After dentro del tope, se reintenta como el 503: con la MISMA
+// clave y como mucho 2 veces.
+func TestOpenConversation_429IsTransient(t *testing.T) {
+	t.Run("sin Retry-After no se reintenta y no es permanente", func(t *testing.T) {
+		f := newFakeOpen(t, scriptedReply{status: http.StatusTooManyRequests})
+		c, waits := newOpenClient(f)
+		_, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+		if err == nil || bird.IsPermanentSendError(err) || errors.Is(err, ErrOpenInDoubt) {
+			t.Fatalf("el 429 es transitorio: %v", err)
+		}
+		if f.calls() != 1 || len(*waits) != 0 {
+			t.Fatalf("llamadas=%d esperas=%v", f.calls(), *waits)
+		}
+	})
+
+	t.Run("con Retry-After se reintenta con la misma clave", func(t *testing.T) {
+		f := newFakeOpen(t,
+			scriptedReply{status: http.StatusTooManyRequests, retryAfter: "3"},
+			scriptedReply{status: http.StatusCreated, body: opened201},
+		)
+		c, waits := newOpenClient(f)
+		got, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+		if err != nil || got.ConversationID != 77 {
+			t.Fatalf("got=%+v err=%v", got, err)
+		}
+		if !reflect.DeepEqual(*waits, []time.Duration{3 * time.Second}) {
+			t.Fatalf("esperas = %v", *waits)
+		}
+		keys := map[string]bool{}
+		for _, b := range f.bodies {
+			var k struct {
+				Key string `json:"idempotency_key"`
+			}
+			_ = json.Unmarshal(b, &k)
+			keys[k.Key] = true
+		}
+		if len(keys) != 1 {
+			t.Fatalf("el reintento tiene que reusar la clave: %v", keys)
+		}
+	})
+
+	t.Run("tres 429 dan error transitorio", func(t *testing.T) {
+		f := newFakeOpen(t,
+			scriptedReply{status: http.StatusTooManyRequests, retryAfter: "0"},
+			scriptedReply{status: http.StatusTooManyRequests, retryAfter: "0"},
+			scriptedReply{status: http.StatusTooManyRequests, retryAfter: "0"},
+		)
+		c, _ := newOpenClient(f)
+		_, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+		if err == nil || bird.IsPermanentSendError(err) {
+			t.Fatalf("quiero un error transitorio, tengo %v", err)
+		}
+		if f.calls() != 3 {
+			t.Fatalf("como mucho 2 reintentos: %d llamadas", f.calls())
+		}
+	})
+
+	t.Run("Retry-After por encima del tope no se reintenta", func(t *testing.T) {
+		f := newFakeOpen(t, scriptedReply{status: http.StatusTooManyRequests, retryAfter: "3600"})
+		c, waits := newOpenClient(f)
+		_, err := c.OpenConversation(context.Background(), 7, OpenRecipient{Phone: "573001112233"}, openTmpl, "")
+		if err == nil || bird.IsPermanentSendError(err) || !strings.Contains(err.Error(), "429") {
+			t.Fatalf("quiero el 429 transitorio, tengo %v", err)
+		}
+		if f.calls() != 1 || len(*waits) != 0 {
+			t.Fatalf("llamadas=%d esperas=%v", f.calls(), *waits)
+		}
+	})
+}
