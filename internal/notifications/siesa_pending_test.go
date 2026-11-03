@@ -219,7 +219,9 @@ func newSiesaHarness(t *testing.T) *siesaHarness {
 
 // respond registra el recordatorio y entrega la respuesta del paciente.
 func (h *siesaHarness) respond(payload string) {
-	h.mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: siesaTestPhone, AppointmentID: "APT001"})
+	h.mgr.RegisterPending(PendingNotification{
+		Type: "confirmation", Phone: siesaTestPhone, AppointmentID: "APT001", AppointmentSlot: futureAppt().TimeSlot,
+	})
 	h.mgr.HandleResponse(siesaTestPhone, payload, "conv-1")
 }
 
@@ -246,7 +248,8 @@ func (h *siesaHarness) onlyPending(t *testing.T, action string) SiesaPendingRow 
 		t.Fatalf("esperaba 1 respuesta pendiente de SIESA, hay %d", len(rows))
 	}
 	r := rows[0]
-	if r.Action != action || r.Phone != siesaTestPhone || r.AppointmentID != "APT001" || r.ConversationID != "conv-1" || r.Type != "confirmation" {
+	if r.Action != action || r.Phone != siesaTestPhone || r.AppointmentID != "APT001" || r.ConversationID != "conv-1" ||
+		r.Type != "confirmation" || r.AppointmentSlot != futureAppt().TimeSlot {
 		t.Fatalf("fila pendiente = %+v", r)
 	}
 	return r
@@ -617,5 +620,118 @@ func TestSiesaPending_EscalationCarriesCase(t *testing.T) {
 		if esc := bridge.only(t); !strings.Contains(string(esc.Input), want) {
 			t.Errorf("reason %v: la vista no lleva %q: %s", reason, want, esc.Input)
 		}
+	}
+}
+
+// La cita movida con el mismo id (otra fecha u hora que la recordada) es una cita cambiada: no se
+// confirma ni se anuncia la fecha nueva; se escala una vez.
+func TestSiesaPending_MovedAppointment_NotConfirmedAndEscalated(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("confirm")
+	row := h.onlyPending(t, siesaActionConfirm)
+
+	h.siesa.set(func(f *siesaFake) {
+		f.readDown = false
+		moved := f.appt.Date.AddDate(0, 0, 2)
+		f.appt.Date = moved
+		f.appt.TimeSlot = moved.Format("20060102") + "1000"
+	})
+	h.pass(time.Now())
+	h.pass(time.Now())
+
+	if h.siesa.confirms != 0 || h.bird.count(confirmedDetailsPrefix) != 0 {
+		t.Fatalf("una cita movida no se confirma: confirms=%d envíos=%d", h.siesa.confirms, h.bird.count(confirmedDetailsPrefix))
+	}
+	if h.store.outcomes[row.ID] != siesaOutcomeNotApplicable || h.escalations() != 1 {
+		t.Fatalf("desenlace=%q escalaciones=%d, want not_applicable y 1", h.store.outcomes[row.ID], h.escalations())
+	}
+}
+
+// Una fila sin fecha y hora guardadas (anterior al dato) no compara el horario: se confirma.
+func TestSiesaPending_RowWithoutSlot_KeepsBehaviour(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: siesaTestPhone, AppointmentID: "APT001"})
+	h.mgr.HandleResponse(siesaTestPhone, "confirm", "conv-1")
+
+	h.siesa.set(func(f *siesaFake) { f.readDown = false; f.appt.TimeSlot = futureAppt().TimeSlot[:8] + "1130" })
+	h.pass(time.Now())
+
+	if h.siesa.confirms != 1 || h.bird.count(confirmedDetailsPrefix) != 1 {
+		t.Fatalf("confirms=%d envíos=%d, want 1 y 1", h.siesa.confirms, h.bird.count(confirmedDetailsPrefix))
+	}
+}
+
+// La escritura falla con el pending sin fecha y hora: la marca guarda las de la cita leída.
+func TestSiesaPending_WriteFailure_StoresReadSlot(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.writeDown = true })
+	h.mgr.RegisterPending(PendingNotification{Type: "confirmation", Phone: siesaTestPhone, AppointmentID: "APT001"})
+	h.mgr.HandleResponse(siesaTestPhone, "confirm", "conv-1")
+
+	if rows := h.store.pending(); len(rows) != 1 || rows[0].AppointmentSlot != futureAppt().TimeSlot {
+		t.Fatalf("fila = %+v, want la fecha y hora de la cita leída", rows)
+	}
+}
+
+// Si la fila no se pudo cerrar tras abrir la pregunta de cancelación, la pasada siguiente reconoce
+// esa sesión como propia: ni escalación falsa ni una segunda sesión.
+func TestSiesaPending_CancelPromptFinishFails_NoFalseEscalation(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("cancelar")
+	row := h.onlyPending(t, siesaActionCancel)
+
+	h.siesa.set(func(f *siesaFake) { f.readDown = false })
+	h.store.finishErr = errors.New("mysql down")
+	h.pass(time.Now())
+	opened := h.sess.createdSession
+	if opened == nil || len(h.wp.calls) != 1 {
+		t.Fatalf("pasada 1: sesión=%+v encoladas=%d", opened, len(h.wp.calls))
+	}
+
+	// La sesión abierta ocupa el teléfono (la lee FindCurrentByPhone, bajo el candado del mock).
+	h.sess.findCurrentFn = func(context.Context, string) (*session.Session, error) { return opened, nil }
+	h.store.finishErr = nil
+	h.pass(time.Now())
+	h.pass(time.Now())
+
+	if len(h.wp.calls) != 1 || h.sess.createdSession != opened {
+		t.Fatalf("se abrió otra pregunta: encoladas=%d", len(h.wp.calls))
+	}
+	if h.store.outcomes[row.ID] != siesaOutcomeCancelPrompted || h.escalations() != 0 {
+		t.Fatalf("desenlace=%q escalaciones=%d, want cancel_prompted y 0", h.store.outcomes[row.ID], h.escalations())
+	}
+}
+
+// Cancelar una cita que ya estaba confirmada pide la confirmación, como con SIESA arriba.
+func TestSiesaPending_CancelConfirmedAppointment_Prompts(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("cancelar")
+	row := h.onlyPending(t, siesaActionCancel)
+
+	h.siesa.set(func(f *siesaFake) { f.readDown = false; f.appt.Confirmed = true })
+	h.pass(time.Now())
+
+	if h.store.outcomes[row.ID] != siesaOutcomeCancelPrompted || h.escalations() != 0 || len(h.wp.calls) != 1 {
+		t.Fatalf("desenlace=%q escalaciones=%d encoladas=%d", h.store.outcomes[row.ID], h.escalations(), len(h.wp.calls))
+	}
+}
+
+// Pasado el tope de 6 h, una cita que ya quedó como pidió el paciente se cierra en silencio.
+func TestSiesaPending_MaxAgeAlreadyApplied_ClosesSilently(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("confirm")
+	row := h.onlyPending(t, siesaActionConfirm)
+	h.store.rows[row.ID].PendingFor = siesaPendingMaxAge + time.Minute
+
+	h.siesa.set(func(f *siesaFake) { f.readDown = false; f.appt.Confirmed = true })
+	h.pass(time.Now())
+
+	if h.store.outcomes[row.ID] != siesaOutcomeAlreadyApplied || h.escalations() != 0 {
+		t.Fatalf("desenlace=%q escalaciones=%d, want already_applied y 0", h.store.outcomes[row.ID], h.escalations())
 	}
 }

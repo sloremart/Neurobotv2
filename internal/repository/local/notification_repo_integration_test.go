@@ -28,7 +28,7 @@ func TestNotificationRepo_Rekey(t *testing.T) {
 	})
 
 	expiresAt := time.Now().Add(3 * time.Hour).Truncate(time.Second)
-	if err := repo.Upsert(ctx, oldKey, "confirmation", "APT-ITEST", "", "", "", "", true, 0, expiresAt); err != nil {
+	if err := repo.Upsert(ctx, oldKey, "confirmation", "APT-ITEST", "", "", "", "", "", true, 0, expiresAt); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if err := repo.Rekey(ctx, oldKey, newKey, "55", oldKey); err != nil {
@@ -76,7 +76,7 @@ func TestNotificationRepo_SiesaPendingLifecycle(t *testing.T) {
 		_, _ = db.ExecContext(ctx, "DELETE FROM notification_pending WHERE phone = ?", phone)
 	})
 
-	if err := repo.Upsert(ctx, phone, "confirmation", apptID, "", "msg-1", "", "", false, 0, time.Now().Add(time.Hour)); err != nil {
+	if err := repo.Upsert(ctx, phone, "confirmation", apptID, "202611041030", "", "msg-1", "", "", false, 0, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if err := repo.Resolve(ctx, phone, "confirmed"); err != nil {
@@ -102,7 +102,8 @@ func TestNotificationRepo_SiesaPendingLifecycle(t *testing.T) {
 		t.Fatalf("pendientes = %+v, want 1", got)
 	}
 	p := got[0]
-	if p.Action != "confirm" || p.ConversationID != "conv-webhook" || p.BirdMessageID != "msg-1" || p.Attempts != 0 || p.AppointmentID != apptID {
+	if p.Action != "confirm" || p.ConversationID != "conv-webhook" || p.BirdMessageID != "msg-1" || p.Attempts != 0 ||
+		p.AppointmentID != apptID || p.AppointmentSlot != "202611041030" {
 		t.Fatalf("fila pendiente = %+v", p)
 	}
 	if p.PendingFor < 0 || p.PendingFor > time.Minute {
@@ -146,12 +147,13 @@ func TestNotificationRepo_MarkSiesaPending_InsertsWithoutHistoryRow(t *testing.T
 	phone := fmt.Sprintf("nectar:%d", n%1000000000)
 	t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DELETE FROM notification_history WHERE phone = ?", phone) })
 
-	row := notifications.SiesaPendingRow{Phone: phone, Type: "confirmation", AppointmentID: "APT-SP-INS", ContactPhone: "+573001112233", Action: "cancel"}
+	row := notifications.SiesaPendingRow{Phone: phone, Type: "confirmation", AppointmentID: "APT-SP-INS", AppointmentSlot: "202611050800", ContactPhone: "+573001112233", Action: "cancel"}
 	if err := repo.MarkSiesaPending(ctx, row, "cancel_requested"); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	got := findSiesaPendingFor(t, repo, phone)
-	if len(got) != 1 || got[0].Action != "cancel" || got[0].ContactPhone != "+573001112233" || got[0].ConversationID != "" {
+	if len(got) != 1 || got[0].Action != "cancel" || got[0].ContactPhone != "+573001112233" || got[0].ConversationID != "" ||
+		got[0].AppointmentSlot != "202611050800" {
 		t.Fatalf("fila insertada = %+v", got)
 	}
 	var status string

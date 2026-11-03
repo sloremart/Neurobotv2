@@ -9,6 +9,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/session"
+	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -50,16 +51,18 @@ const (
 
 // SiesaPendingRow es una respuesta al recordatorio pendiente de aplicar en SIESA.
 type SiesaPendingRow struct {
-	ID             int64 // id de la fila de notification_history
-	Phone          string
-	Type           string
-	AppointmentID  string
-	BirdMessageID  string
-	ConversationID string
-	ContactPhone   string
-	Action         string        // "confirm" | "cancel"
-	Attempts       int           // intentos fallidos del proceso de fondo
-	PendingFor     time.Duration // tiempo desde que quedó pendiente (medido en la BD)
+	ID            int64 // id de la fila de notification_history
+	Phone         string
+	Type          string
+	AppointmentID string
+	// AppointmentSlot: fecha y hora (TimeSlot) de la cita recordada; vacía = no se compara el horario.
+	AppointmentSlot string
+	BirdMessageID   string
+	ConversationID  string
+	ContactPhone    string
+	Action          string        // "confirm" | "cancel"
+	Attempts        int           // intentos fallidos del proceso de fondo
+	PendingFor      time.Duration // tiempo desde que quedó pendiente (medido en la BD)
 }
 
 // SiesaPendingStore guarda las respuestas pendientes de SIESA (implementado por local.NotificationRepo).
@@ -85,7 +88,9 @@ func (m *NotificationManager) SetSiesaPendingStore(s SiesaPendingStore) {
 // deferToSiesa deja pendiente de SIESA la respuesta del paciente (action) a la que SIESA no
 // respondió (cause) y se lo dice al paciente. Devuelve false si no la pudo guardar (sin store o con
 // la BD local caída): entonces no se promete nada y el llamador sigue con el trato de antes.
-func (m *NotificationManager) deferToSiesa(ctx context.Context, phone, action string, pending *PendingNotification, cause error) bool {
+// appt es la cita si se alcanzó a leer (falló la escritura): da la fecha y hora cuando el pending no
+// las trae.
+func (m *NotificationManager) deferToSiesa(ctx context.Context, phone, action string, pending *PendingNotification, appt *domain.Appointment, cause error) bool {
 	if m.siesaPending == nil {
 		return false
 	}
@@ -93,8 +98,12 @@ func (m *NotificationManager) deferToSiesa(ctx context.Context, phone, action st
 	markCtx, cancel := utils.MarkContext(ctx)
 	defer cancel()
 	row := SiesaPendingRow{
-		Phone: phone, Type: pending.Type, AppointmentID: pending.AppointmentID, BirdMessageID: pending.BirdMessageID,
-		ConversationID: pending.ConversationID, ContactPhone: pending.ContactPhone, Action: action,
+		Phone: phone, Type: pending.Type, AppointmentID: pending.AppointmentID, AppointmentSlot: pending.AppointmentSlot,
+		BirdMessageID: pending.BirdMessageID, ConversationID: pending.ConversationID, ContactPhone: pending.ContactPhone,
+		Action: action,
+	}
+	if row.AppointmentSlot == "" && appt != nil {
+		row.AppointmentSlot = appt.TimeSlot
 	}
 	if err := m.siesaPending.MarkSiesaPending(markCtx, row, responseStatus(action)); err != nil {
 		slog.Error("respuesta al recordatorio: SIESA no respondió y la respuesta no quedó pendiente",
@@ -112,16 +121,6 @@ func (m *NotificationManager) deferToSiesa(ctx context.Context, phone, action st
 	slog.Warn("respuesta al recordatorio pendiente de SIESA",
 		"phone", utils.MaskPhone(phone), "appointment_id", pending.AppointmentID, "action", action, "error", cause)
 	return true
-}
-
-// patientDayAppointments son las citas del paciente ese día (pueden ser de varias agendas); si no
-// se pueden leer, solo appt.
-func (m *NotificationManager) patientDayAppointments(ctx context.Context, appt *domain.Appointment) []domain.Appointment {
-	all, err := m.apptSvc.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
-	if err != nil || len(all) == 0 {
-		return []domain.Appointment{*appt}
-	}
-	return all
 }
 
 // siesaPendingBatch acota las filas de una pasada: las que sobren van en la siguiente.
@@ -176,9 +175,11 @@ func (m *NotificationManager) retrySiesaPending(ctx context.Context, now time.Ti
 	}
 }
 
-// retrySiesaRow retoma UNA respuesta pendiente. Releer la cita antes de escribir hace de
-// SIESA la llave de idempotencia: si una pasada aplicó y envió pero no pudo cerrar la fila, la
-// siguiente encuentra la cita ya como pidió el paciente y la cierra sin reenviar nada.
+// retrySiesaRow retoma UNA respuesta pendiente. Releer la cita antes de escribir hace de SIESA la
+// llave de idempotencia: si una pasada aplicó y envió pero no pudo cerrar la fila, la siguiente
+// encuentra la cita ya como pidió el paciente y la cierra sin reenviar nada. Lo mismo vale si
+// ConfirmBlock escribió pero devolvió error (escritura en duda) o si la confirmó otro: se cierra como
+// already_applied y el paciente se queda con el aviso «la registraremos», sin el detalle de la cita.
 func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendingRow, now time.Time) {
 	if !m.lockPhone(row.Phone) { //nolint:contextcheck // el candado del manager acota su propia espera
 		return // la pasada siguiente la retoma
@@ -186,16 +187,18 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	defer m.unlockPhone(row.Phone)
 
 	pending := row.notification()
-	if row.PendingFor > siesaPendingMaxAge {
-		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp)
-		return
-	}
-	appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, row.AppointmentID)
+	expired := row.PendingFor > siesaPendingMaxAge
+	appt, block, err := m.apptSvc.FindBlockByAppointmentID(ctx, row.AppointmentID)
 	if err != nil {
+		if expired {
+			m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp)
+			return
+		}
 		m.recordSiesaFailure(ctx, row, err)
 		return
 	}
-	switch siesaCheck(row.Action, appt) {
+	// Con la cita leída, una ya resuelta se cierra en silencio aunque haya vencido el tope.
+	switch siesaCheck(row, appt) {
 	case siesaOutcomeAlreadyApplied:
 		m.finishSiesaRow(ctx, row, siesaOutcomeAlreadyApplied)
 		return
@@ -203,22 +206,21 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeNotApplicable)
 		return
 	}
-	if startsWithin(appt, now, siesaPendingMinLead) {
+	if expired || startsWithin(appt, now, siesaPendingMinLead) {
 		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp)
 		return
 	}
 
 	if row.Action == siesaActionCancel {
-		m.promptDeferredCancel(ctx, row, pending, appt, now)
+		m.promptDeferredCancel(ctx, row, pending, appt, block, now)
 		return
 	}
 
-	allAppts := m.patientDayAppointments(ctx, appt)
-	if err := m.apptSvc.ConfirmBlock(ctx, allAppts, "whatsapp_bot", row.ConversationID); err != nil {
+	if err := m.apptSvc.ConfirmBlock(ctx, block, "whatsapp_bot", row.ConversationID); err != nil {
 		m.recordSiesaFailure(ctx, row, err)
 		return
 	}
-	_, _ = m.birdClient.SendText(row.Phone, row.ConversationID, m.buildConfirmationMessage(ctx, appt, allAppts)) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)
+	_, _ = m.birdClient.SendText(row.Phone, row.ConversationID, m.buildConfirmationMessage(ctx, appt, block)) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)
 
 	markCtx, cancel := utils.MarkContext(ctx)
 	defer cancel()
@@ -226,7 +228,7 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	if m.tracker != nil {
 		m.tracker.LogEvent(markCtx, "", row.Phone, "notification_confirmed", map[string]interface{}{
 			"appointment_id":  row.AppointmentID,
-			"total_confirmed": len(allAppts),
+			"total_confirmed": len(block),
 			"conversation_id": row.ConversationID,
 			"siesa_deferred":  true,
 		})
@@ -235,14 +237,19 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 		observability.EmitOpts{Phone: row.Phone, Reason: "whatsapp_siesa_deferred"})
 	slog.Info("respuesta pendiente de SIESA aplicada",
 		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action,
-		"attempts", row.Attempts, "total", len(allAppts))
+		"attempts", row.Attempts, "total", len(block))
 }
 
 // promptDeferredCancel abre la confirmación de la cancelación, la misma que al pulsar «Cancelar»
 // con SIESA arriba: el bot NO cancela; la cancelación (y el aviso a la lista de espera) ocurre solo
 // si el paciente la confirma, por el camino de siempre. Si el paciente está en otra conversación con
-// el bot no se la interrumpe: pasa a un agente.
-func (m *NotificationManager) promptDeferredCancel(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, appt *domain.Appointment, now time.Time) {
+// el bot no se la interrumpe: pasa a un agente. SIESA ya se leyó (appt, block): entre la
+// comprobación de la sesión y su creación solo hay escrituras en la BD local.
+//
+// La fila se cierra al encolar el mensaje virtual que hace la pregunta: si el pool lo descarta por
+// contrapresión o se reinicia antes de enviarlo, queda el error en el log y la sesión abierta sin
+// pregunta, igual que en el camino inmediato.
+func (m *NotificationManager) promptDeferredCancel(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, appt *domain.Appointment, block []domain.Appointment, now time.Time) {
 	if m.sessionRepo == nil || m.workerPool == nil {
 		slog.Error("respuesta pendiente de SIESA: sin sesiones para pedir la confirmación de la cancelación")
 		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp)
@@ -253,11 +260,20 @@ func (m *NotificationManager) promptDeferredCancel(ctx context.Context, row Sies
 		m.recordSiesaFailure(ctx, row, err)
 		return
 	}
-	if sessionInUse(current, now) {
+	own, err := m.isOwnCancelSession(ctx, current, row.AppointmentID)
+	switch {
+	case err != nil:
+		m.recordSiesaFailure(ctx, row, err)
+		return
+	case own:
+		// Una pasada anterior ya abrió la pregunta y no pudo cerrar la fila: no se reabre ni se escala.
+		m.finishSiesaRow(ctx, row, siesaOutcomeCancelPrompted)
+		return
+	case sessionInUse(current, now):
 		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeSessionBusy)
 		return
 	}
-	if err := m.openConfirmCancelSession(ctx, row.Phone, pending, appt); err != nil {
+	if err := m.openConfirmCancelSession(ctx, row.Phone, pending, appt, block); err != nil {
 		m.recordSiesaFailure(ctx, row, err)
 		return
 	}
@@ -271,6 +287,16 @@ func (m *NotificationManager) promptDeferredCancel(ctx context.Context, row Sies
 		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "attempts", row.Attempts)
 }
 
+// isOwnCancelSession dice si s es la pregunta «¿Confirmas que deseas cancelar?» de ESTA cita
+// (CONFIRM_CANCEL_NOTIF con su notif_appt_id), abierta por una pasada anterior.
+func (m *NotificationManager) isOwnCancelSession(ctx context.Context, s *session.Session, apptID string) (bool, error) {
+	if s == nil || s.CurrentState != sm.StateConfirmCancelNotif {
+		return false, nil
+	}
+	id, err := m.sessionRepo.GetContext(ctx, s.ID, "notif_appt_id")
+	return id == apptID, err
+}
+
 // sessionInUse dice si la sesión que ocupa el teléfono es una conversación en curso: escalada, o
 // activa y sin vencer. Una activa ya vencida no es uso: openConfirmCancelSession la cierra.
 func sessionInUse(s *session.Session, now time.Time) bool {
@@ -280,13 +306,15 @@ func sessionInUse(s *session.Session, now time.Time) bool {
 	return s.Status == session.StatusEscalated || s.ExpiresAt.After(now)
 }
 
-// siesaCheck decide con la cita recién leída: "" = se puede aplicar la acción; already_applied = ya
-// está como pidió el paciente; not_applicable = cambió y ya no la admite (o no existe).
-func siesaCheck(action string, appt *domain.Appointment) string {
-	if appt == nil {
+// siesaCheck decide con la cita recién leída: "" = se puede aplicar la acción de la fila;
+// already_applied = ya está como pidió el paciente; not_applicable = cambió y ya no la admite: no
+// existe, cambió de fecha u hora respecto de la recordada (la movieron con el mismo id) o, para
+// confirmar, la cancelaron. Una fila sin fecha y hora guardadas no compara el horario.
+func siesaCheck(row SiesaPendingRow, appt *domain.Appointment) string {
+	if appt == nil || (row.AppointmentSlot != "" && appt.TimeSlot != row.AppointmentSlot) {
 		return siesaOutcomeNotApplicable
 	}
-	switch action {
+	switch row.Action {
 	case siesaActionConfirm:
 		if appt.Confirmed {
 			return siesaOutcomeAlreadyApplied
@@ -295,11 +323,9 @@ func siesaCheck(action string, appt *domain.Appointment) string {
 			return siesaOutcomeNotApplicable
 		}
 	case siesaActionCancel:
+		// Una cita ya confirmada se puede cancelar, como al pulsar «Cancelar» con SIESA arriba.
 		if appt.Canceled {
 			return siesaOutcomeAlreadyApplied
-		}
-		if appt.Confirmed { // la confirmaron después de que el paciente pidiera cancelar
-			return siesaOutcomeNotApplicable
 		}
 	default:
 		return siesaOutcomeNotApplicable
@@ -346,7 +372,8 @@ func (m *NotificationManager) finishSiesaRow(ctx context.Context, row SiesaPendi
 
 // handOverSiesaRow cierra la fila y escala a un agente. Se cierra ANTES de escalar: así la
 // escalación sale una sola vez aunque la pasada se repita (si la fila no se pudo cerrar, no se
-// escala y la pasada siguiente lo reintenta).
+// escala y la pasada siguiente lo reintenta). El precio: si la escalación misma falla (Bird o
+// Néctar caídos), solo queda el error en el log; el monitor escalation_failing lo cubre.
 func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, outcome string) {
 	if !m.finishSiesaRow(ctx, row, outcome) {
 		return
@@ -365,6 +392,6 @@ func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPen
 func (r SiesaPendingRow) notification() *PendingNotification {
 	return &PendingNotification{
 		Type: r.Type, Phone: r.Phone, ContactPhone: r.ContactPhone, AppointmentID: r.AppointmentID,
-		BirdMessageID: r.BirdMessageID, ConversationID: r.ConversationID,
+		AppointmentSlot: r.AppointmentSlot, BirdMessageID: r.BirdMessageID, ConversationID: r.ConversationID,
 	}
 }

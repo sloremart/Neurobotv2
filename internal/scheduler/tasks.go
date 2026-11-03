@@ -245,7 +245,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 		if configStopped {
 			skipped++
-			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
+			t.registerUnsentReminder(ctx, phone, firstAppt, "config_stop")
 			continue
 		}
 
@@ -261,7 +261,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			}
 			observability.Emit(observability.TraceNotif(firstAppt.ID), "notif_recordatorio", "suppressed_no_whatsapp",
 				observability.EmitOpts{Phone: phone})
-			t.registerUnsentReminder(ctx, phone, firstAppt.ID, "no_whatsapp")
+			t.registerUnsentReminder(ctx, phone, firstAppt, "no_whatsapp")
 			continue
 		}
 
@@ -296,13 +296,13 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			if errors.Is(err, bird.ErrConversationWithAgent) {
 				skipped++
 				t.skipAgentOwned(ctx, phone, "confirmation", firstAppt.ID)
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "agent_owned")
+				t.registerUnsentReminder(ctx, phone, firstAppt, "agent_owned")
 				continue
 			}
 			if errors.Is(err, nectar.ErrOpenInDoubt) {
 				t.logInDoubt(ctx, phone, "confirmation", firstAppt.ID, err)
 				inDoubt = append(inDoubt, firstAppt.ID)
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "in_doubt")
+				t.registerUnsentReminder(ctx, phone, firstAppt, "in_doubt")
 				continue
 			}
 			// Configuración de Néctar (clave, plantilla, canal): falla igual con todos. Se dejan de
@@ -312,7 +312,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 				t.proactiveConfigStop(ctx, "confirmation", err, len(patientGroups)-visited+1)
 				configStopped = true
 				skipped++
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "config_stop")
+				t.registerUnsentReminder(ctx, phone, firstAppt, "config_stop")
 				continue
 			}
 			// H148: contacto no alcanzable = resultado esperado del gate (no fallo del servidor).
@@ -321,7 +321,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 			if errors.Is(err, bird.ErrNonContactable) {
 				slog.Warn("recordatorio suprimido: contacto no alcanzable (sin costo)",
 					"phone", utils.MaskPhone(phone), "appointment_id", firstAppt.ID)
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "non_contactable")
+				t.registerUnsentReminder(ctx, phone, firstAppt, "non_contactable")
 			} else {
 				slog.Error("send reminder failed", "phone", utils.MaskPhone(phone), "error", err)
 				if lineSendFailure(err) {
@@ -330,7 +330,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 						rateLimited++
 					}
 				}
-				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "send_error")
+				t.registerUnsentReminder(ctx, phone, firstAppt, "send_error")
 			}
 			continue
 		}
@@ -342,12 +342,13 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 		// Register pending notification with 6h timer
 		t.NotifyManager.RegisterPending(notifications.PendingNotification{
-			Type:           "confirmation",
-			Phone:          proactive.Key,
-			ContactPhone:   proactive.ContactPhone(phone),
-			AppointmentID:  firstAppt.ID,
-			BirdMessageID:  msgID,
-			ConversationID: convID,
+			Type:            "confirmation",
+			Phone:           proactive.Key,
+			ContactPhone:    proactive.ContactPhone(phone),
+			AppointmentID:   firstAppt.ID,
+			AppointmentSlot: firstAppt.TimeSlot,
+			BirdMessageID:   msgID,
+			ConversationID:  convID,
 		})
 
 		// Log event (con la clave de la sesión que responderá)
@@ -547,13 +548,14 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 
 		//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado; mismo patrón que waiting_list_check)
 		t.NotifyManager.RegisterPending(notifications.PendingNotification{
-			Type:           "confirmation",
-			Phone:          proactive.Key,
-			ContactPhone:   proactive.ContactPhone(phone),
-			AppointmentID:  firstAppt.ID,
-			BirdMessageID:  msgID,
-			ConversationID: convID,
-			SameDay:        true,
+			Type:            "confirmation",
+			Phone:           proactive.Key,
+			ContactPhone:    proactive.ContactPhone(phone),
+			AppointmentID:   firstAppt.ID,
+			AppointmentSlot: firstAppt.TimeSlot,
+			BirdMessageID:   msgID,
+			ConversationID:  convID,
+			SameDay:         true,
 		})
 
 		if t.Tracker != nil {
@@ -689,23 +691,24 @@ func (t *Tasks) reportUnsent(ctx context.Context, run string, unsent, rateLimite
 // (o quedó en duda), bajo el teléfono del paciente y sin mensaje ni conversación: así el IVR de las
 // 13:00 lo llama (el cruce con SIESA en sendVoiceReminders descarta a quien ya confirmó o canceló).
 // reason: in_doubt, agent_owned, no_whatsapp, non_contactable, config_stop o send_error.
-func (t *Tasks) registerUnsentReminder(ctx context.Context, phone, apptID, reason string) {
+func (t *Tasks) registerUnsentReminder(ctx context.Context, phone string, appt domain.Appointment, reason string) {
 	if t.NotifyManager == nil {
 		return
 	}
 	//nolint:contextcheck // RegisterPending no toma ctx por diseño (crea su propio timeout acotado; mismo patrón que waiting_list_check)
 	if !t.NotifyManager.RegisterPending(notifications.PendingNotification{
-		Type:          "confirmation",
-		Phone:         phone,
-		AppointmentID: apptID,
-		Unsent:        true, // el mensaje del paciente sigue el flujo normal; solo el botón cuenta
+		Type:            "confirmation",
+		Phone:           phone,
+		AppointmentID:   appt.ID,
+		AppointmentSlot: appt.TimeSlot,
+		Unsent:          true, // el mensaje del paciente sigue el flujo normal; solo el botón cuenta
 	}) {
 		slog.Error("recordatorio no enviado sin pending: el IVR no llamará a esta cita",
-			"appointment_id", apptID, "reason", reason)
+			"appointment_id", appt.ID, "reason", reason)
 	}
 	if t.Tracker != nil {
 		t.Tracker.LogEvent(ctx, "", phone, "notification_send_failed",
-			map[string]interface{}{"type": "confirmation", "appointment_id": apptID, "reason": reason})
+			map[string]interface{}{"type": "confirmation", "appointment_id": appt.ID, "reason": reason})
 	}
 }
 

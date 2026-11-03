@@ -53,8 +53,8 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 
 	switch action {
 	case "confirm":
-		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
-		if err != nil && m.deferToSiesa(ctx, phone, siesaActionConfirm, pending, err) {
+		appt, allAppts, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
+		if err != nil && m.deferToSiesa(ctx, phone, siesaActionConfirm, pending, nil, err) {
 			return // D-04: SIESA no respondió; el proceso de fondo la confirma cuando vuelva
 		}
 		if err != nil || appt == nil {
@@ -62,10 +62,8 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 			return
 		}
 
-		allAppts := m.patientDayAppointments(ctx, appt)
-
 		if err := m.apptSvc.ConfirmBlock(ctx, allAppts, "whatsapp_bot", pending.ConversationID); err != nil {
-			if m.deferToSiesa(ctx, phone, siesaActionConfirm, pending, err) {
+			if m.deferToSiesa(ctx, phone, siesaActionConfirm, pending, appt, err) {
 				return // D-04: ídem con la escritura
 			}
 			// N-15: si el UPDATE a SIESA falló y la respuesta no pudo quedar pendiente, NO debemos
@@ -272,7 +270,7 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 
 		if m.persister != nil {
 			if err := m.persister.Upsert(context.Background(), pending.Phone, pending.Type,
-				pending.AppointmentID, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID, pending.ContactPhone,
+				pending.AppointmentID, pending.AppointmentSlot, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID, pending.ContactPhone,
 				pending.Unsent, pending.RetryCount, pending.ExpiresAt); err != nil {
 				slog.Error("persist followup1", "phone", utils.MaskPhone(pending.Phone), "error", err)
 			}
@@ -292,7 +290,7 @@ func (m *NotificationManager) handleConfirmationTimeout(pending *PendingNotifica
 
 		if m.persister != nil {
 			if err := m.persister.Upsert(context.Background(), pending.Phone, pending.Type,
-				pending.AppointmentID, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID, pending.ContactPhone,
+				pending.AppointmentID, pending.AppointmentSlot, pending.WaitingListID, pending.BirdMessageID, pending.ConversationID, pending.ContactPhone,
 				pending.Unsent, pending.RetryCount, pending.ExpiresAt); err != nil {
 				slog.Error("persist followup2", "phone", utils.MaskPhone(pending.Phone), "error", err)
 			}
@@ -591,8 +589,8 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
-	if err != nil && m.deferToSiesa(ctx, phone, siesaActionCancel, pending, err) {
+	appt, block, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
+	if err != nil && m.deferToSiesa(ctx, phone, siesaActionCancel, pending, nil, err) {
 		return // D-04: SIESA no respondió; el proceso de fondo le pide confirmarla cuando vuelva
 	}
 	if err != nil || appt == nil {
@@ -609,18 +607,17 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 		return
 	}
 
-	if err := m.openConfirmCancelSession(ctx, phone, pending, appt); err != nil {
+	if err := m.openConfirmCancelSession(ctx, phone, pending, appt, block); err != nil {
 		_, _ = m.birdClient.SendText(phone, pending.ConversationID, "Lo sentimos, ocurrió un problema. Por favor intenta más tarde.")
 	}
 }
 
-// openConfirmCancelSession abre la sesión en CONFIRM_CANCEL_NOTIF con las citas del día de appt y
-// encola el mensaje virtual que le pregunta al paciente si confirma la cancelación. La comparten
-// «Cancelar» y el proceso de fondo de las respuestas pendientes de SIESA (D-04). Exige
-// sessionRepo y workerPool; devuelve el error de la BD local sin avisar al paciente.
-func (m *NotificationManager) openConfirmCancelSession(ctx context.Context, phone string, pending *PendingNotification, appt *domain.Appointment) error {
-	allAppts := m.patientDayAppointments(ctx, appt)
-
+// openConfirmCancelSession abre la sesión en CONFIRM_CANCEL_NOTIF con appt y las citas del día
+// (allAppts, el bloque que devolvió FindBlockByAppointmentID: no vuelve a leer SIESA) y encola el
+// mensaje virtual que le pregunta al paciente si confirma la cancelación. La comparten «Cancelar» y
+// el proceso de fondo de las respuestas pendientes de SIESA (D-04). Exige sessionRepo y workerPool;
+// devuelve el error de la BD local sin avisar al paciente.
+func (m *NotificationManager) openConfirmCancelSession(ctx context.Context, phone string, pending *PendingNotification, appt *domain.Appointment, allAppts []domain.Appointment) error {
 	// Collect all appointment IDs, procedure names, and CUPS codes
 	allIDs := make([]string, len(allAppts))
 	seen := make(map[string]bool)

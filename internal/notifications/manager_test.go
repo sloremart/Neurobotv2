@@ -919,6 +919,16 @@ func (m *mockSessionCreator) SetContextBatch(ctx context.Context, sessionID stri
 	return nil
 }
 
+// GetContext lee del contexto que dejó el último SetContextBatch de esa sesión.
+func (m *mockSessionCreator) GetContext(_ context.Context, sessionID, key string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sessionID != m.batchSessionID {
+		return "", nil
+	}
+	return m.batchKVs[key], nil
+}
+
 func (m *mockSessionCreator) UpdateStatus(ctx context.Context, sessionID, status string) error {
 	return nil
 }
@@ -2340,9 +2350,9 @@ type mockPersister struct {
 	rekeyErr       error
 }
 
-func (m *mockPersister) Upsert(_ context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error {
+func (m *mockPersister) Upsert(_ context.Context, phone, nType, apptID, apptSlot, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error {
 	m.upserted = append(m.upserted, PendingRow{
-		Phone: phone, Type: nType, AppointmentID: apptID, WaitingListID: wlID,
+		Phone: phone, Type: nType, AppointmentID: apptID, AppointmentSlot: apptSlot, WaitingListID: wlID,
 		BirdMessageID: birdMsgID, ConversationID: convID, ContactPhone: contactPhone,
 		Unsent: unsent, RetryCount: retryCount, ExpiresAt: expiresAt,
 	})

@@ -37,6 +37,10 @@ type mockSessionCreatorWithLookup struct {
 	renewed      map[string]time.Time
 }
 
+func (m *mockSessionCreatorWithLookup) GetContext(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
 func (m *mockSessionCreatorWithLookup) RenewExpiry(_ context.Context, sessionID string, expiresAt time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -1448,29 +1448,44 @@ func classifyNotifPending(sess *session.Session) notifPendingKind {
 	return notifKindAppointment
 }
 
+// notifAction es una acción del menú de NOTIF_PENDING: vuelve al paso con value como dato.
+func notifAction(label, value string) sm.ReturnOption {
+	return sm.ReturnOption{Label: label, Value: value, Target: sm.StateNotifPending, Data: value}
+}
+
+// confirmRetryOptions: el paciente YA confirmó y SIESA no lo registró. Re-pedirle confirmación no
+// sirve: el agente reintenta, o la confirma a mano y cierra.
+func confirmRetryOptions() []sm.ReturnOption {
+	return []sm.ReturnOption{
+		notifAction("Reintentar la confirmación en SIESA", "confirm"),
+		{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
+	}
+}
+
+// appointmentOptions son las tres acciones de la cita (el menú de la confirmación de siempre).
+func appointmentOptions() []sm.ReturnOption {
+	return []sm.ReturnOption{
+		notifAction("Confirmar la cita", "confirm"),
+		notifAction("Reprogramar la cita", "reschedule"),
+		notifAction("Cancelar la cita", "cancel"),
+	}
+}
+
 // siesaPendingReturnOptions son las acciones de una respuesta pendiente de SIESA que pasó al agente,
-// según lo que quedó sin aplicar. Re-pedirle al paciente lo que ya respondió no sirve: el agente
-// reintenta por el bot o lo hace a mano y cierra.
-func siesaPendingReturnOptions(siesaCase string, action func(label, value string) sm.ReturnOption) []sm.ReturnOption {
+// según lo que quedó sin aplicar (sm.CtxNotifSiesaCase).
+func siesaPendingReturnOptions(siesaCase string) []sm.ReturnOption {
 	switch siesaCase {
 	case sm.NotifSiesaCaseConfirm:
-		return []sm.ReturnOption{
-			action("Reintentar la confirmación en SIESA", "confirm"),
-			{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
-		}
+		return confirmRetryOptions()
 	case sm.NotifSiesaCaseCancel:
 		return []sm.ReturnOption{
-			action("Pedirle confirmar la cancelación", "cancel"),
+			notifAction("Pedirle confirmar la cancelación", "cancel"),
 			{Label: "Ya la cancelé a mano en SIESA", Value: "cancelada_manual", Close: true},
 		}
 	}
 	// La cita cambió: el agente la revisa con el paciente y decide.
-	return []sm.ReturnOption{
-		{Label: "Ya la revisé con el paciente", Value: "revisada_manual", Close: true},
-		action("Confirmar la cita", "confirm"),
-		action("Reprogramar la cita", "reschedule"),
-		action("Cancelar la cita", "cancel"),
-	}
+	return append([]sm.ReturnOption{{Label: "Ya la revisé con el paciente", Value: "revisada_manual", Close: true}},
+		appointmentOptions()...)
 }
 
 // notifPendingButtonsDontApply dice si los 3 botones de NOTIF_PENDING NO corresponden a la
@@ -1486,33 +1501,21 @@ func notifPendingButtonsDontApply(sess *session.Session) bool {
 // NOTIF_PENDING del worker entrega a HandleNotifPendingCommand. Sin sesión sale el menú de la
 // confirmación, el de siempre.
 func notifPendingReturnOptions(sess *session.Session) []sm.ReturnOption {
-	np := sm.StateNotifPending
-	action := func(label, value string) sm.ReturnOption {
-		return sm.ReturnOption{Label: label, Value: value, Target: np, Data: value}
-	}
 	switch classifyNotifPending(sess) {
 	case notifKindSystemFailure:
-		// Re-pedirle confirmación no sirve: el agente reintenta, o la confirma a mano y cierra.
-		return []sm.ReturnOption{
-			action("Reintentar la confirmación en SIESA", "confirm"),
-			{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
-		}
+		return confirmRetryOptions()
 	case notifKindNoProcedure:
 		// «Reprogramar» del bot no sirve sin procedimiento: el agente la reprograma en SIESA y cierra.
 		return []sm.ReturnOption{
 			{Label: "Ya la reprogramé a mano en SIESA", Value: "reprogramada_manual", Close: true},
-			action("Entendido, sin reprogramar", "understood"),
+			notifAction("Entendido, sin reprogramar", "understood"),
 		}
 	case notifKindSiesaPending:
-		return siesaPendingReturnOptions(sess.GetContext(sm.CtxNotifSiesaCase), action)
+		return siesaPendingReturnOptions(sess.GetContext(sm.CtxNotifSiesaCase))
 	case notifKindWaitingList:
-		return []sm.ReturnOption{action("Agendar ahora", "wl_schedule"), action("No le interesa", "wl_decline")}
+		return []sm.ReturnOption{notifAction("Agendar ahora", "wl_schedule"), notifAction("No le interesa", "wl_decline")}
 	case notifKindCancellation:
-		return []sm.ReturnOption{action("Entendido, sin reprogramar", "understood"), action("Reprogramar", "reschedule")}
+		return []sm.ReturnOption{notifAction("Entendido, sin reprogramar", "understood"), notifAction("Reprogramar", "reschedule")}
 	}
-	return []sm.ReturnOption{
-		action("Confirmar la cita", "confirm"),
-		action("Reprogramar la cita", "reschedule"),
-		action("Cancelar la cita", "cancel"),
-	}
+	return appointmentOptions()
 }

@@ -20,14 +20,16 @@ func NewNotificationRepo(db *sql.DB) *NotificationRepo {
 
 // Upsert inserts or updates a pending notification (keyed by phone).
 // call_id is NOT updated here — use UpdateCallID for that. contactPhone vacío (Bird) se guarda NULL.
-// unsent marca el pending de un recordatorio que no salió (migración 045).
-func (r *NotificationRepo) Upsert(ctx context.Context, phone, nType, apptID, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error {
+// unsent marca el pending de un recordatorio que no salió (migración 045). apptSlot es la fecha y
+// hora de la cita recordada (migración 047; vacía se guarda NULL).
+func (r *NotificationRepo) Upsert(ctx context.Context, phone, nType, apptID, apptSlot, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO notification_pending (phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, retry_count, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?)
+		`INSERT INTO notification_pending (phone, type, appointment_id, appointment_slot, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, retry_count, expires_at)
+		 VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
 		   type = VALUES(type),
 		   appointment_id = VALUES(appointment_id),
+		   appointment_slot = VALUES(appointment_slot),
 		   waiting_list_id = VALUES(waiting_list_id),
 		   bird_message_id = VALUES(bird_message_id),
 		   conversation_id = VALUES(conversation_id),
@@ -35,7 +37,7 @@ func (r *NotificationRepo) Upsert(ctx context.Context, phone, nType, apptID, wlI
 		   unsent = VALUES(unsent),
 		   retry_count = VALUES(retry_count),
 		   expires_at = VALUES(expires_at)`,
-		phone, nType, apptID, wlID, birdMsgID, convID, contactPhone, unsent, retryCount, expiresAt)
+		phone, nType, apptID, apptSlot, wlID, birdMsgID, convID, contactPhone, unsent, retryCount, expiresAt)
 	return err
 }
 
@@ -73,8 +75,8 @@ func (r *NotificationRepo) Resolve(ctx context.Context, phone, status string) er
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO notification_history
-		   (phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, status, created_at, resolved_at)
-		 SELECT phone, type, appointment_id, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, ?, created_at, NOW()
+		   (phone, type, appointment_id, appointment_slot, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, status, created_at, resolved_at)
+		 SELECT phone, type, appointment_id, appointment_slot, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, ?, created_at, NOW()
 		 FROM notification_pending WHERE phone = ?`, status, phone); err != nil {
 		return err
 	}
@@ -98,7 +100,7 @@ func (r *NotificationRepo) DeleteHistoryOlderThan(ctx context.Context, days int)
 // FindExpired returns all pending notifications whose expires_at has passed.
 func (r *NotificationRepo) FindExpired(ctx context.Context) ([]notifications.PendingRow, error) {
 	return r.queryRows(ctx,
-		`SELECT phone, type, COALESCE(appointment_id, ''), COALESCE(waiting_list_id, ''),
+		`SELECT phone, type, COALESCE(appointment_id, ''), COALESCE(appointment_slot, ''), COALESCE(waiting_list_id, ''),
 		        COALESCE(bird_message_id, ''), COALESCE(conversation_id, ''),
 		        COALESCE(contact_phone, ''), unsent, COALESCE(call_id, ''),
 		        retry_count, expires_at, created_at
@@ -110,7 +112,7 @@ func (r *NotificationRepo) FindExpired(ctx context.Context) ([]notifications.Pen
 // FindAll returns all pending notifications (used for restore on startup).
 func (r *NotificationRepo) FindAll(ctx context.Context) ([]notifications.PendingRow, error) {
 	return r.queryRows(ctx,
-		`SELECT phone, type, COALESCE(appointment_id, ''), COALESCE(waiting_list_id, ''),
+		`SELECT phone, type, COALESCE(appointment_id, ''), COALESCE(appointment_slot, ''), COALESCE(waiting_list_id, ''),
 		        COALESCE(bird_message_id, ''), COALESCE(conversation_id, ''),
 		        COALESCE(contact_phone, ''), unsent, COALESCE(call_id, ''),
 		        retry_count, expires_at, created_at
@@ -129,7 +131,7 @@ func (r *NotificationRepo) queryRows(ctx context.Context, query string) ([]notif
 	for rows.Next() {
 		var row notifications.PendingRow
 		if err := rows.Scan(
-			&row.Phone, &row.Type, &row.AppointmentID, &row.WaitingListID,
+			&row.Phone, &row.Type, &row.AppointmentID, &row.AppointmentSlot, &row.WaitingListID,
 			&row.BirdMessageID, &row.ConversationID, &row.ContactPhone, &row.Unsent, &row.CallID,
 			&row.RetryCount, &row.ExpiresAt, &row.CreatedAt,
 		); err != nil {
@@ -141,9 +143,10 @@ func (r *NotificationRepo) queryRows(ctx context.Context, query string) ([]notif
 }
 
 // MarkSiesaPending deja la respuesta del paciente pendiente de SIESA (migración 047) en la última
-// fila del historial de ese teléfono y cita, que Resolve acaba de escribir, con la conversación si
-// llega (la del webhook puede no estar en la fila). Si no hay fila (Resolve falló) inserta una con
-// status, para que la respuesta no se pierda.
+// fila del historial de ese teléfono y cita, que Resolve acaba de escribir, con la conversación y la
+// fecha y hora de la cita si llegan (la fila puede no tenerlas). Si no hay fila (Resolve falló)
+// inserta una con status, para que la respuesta no se pierda. Volver a marcar una fila ya cerrada
+// (p. ej. el agente reintenta y SIESA vuelve a fallar) reabre la espera y borra su desenlace.
 func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notifications.SiesaPendingRow, status string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -158,18 +161,19 @@ func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notificatio
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO notification_history
-			   (phone, type, appointment_id, bird_message_id, conversation_id, contact_phone, status, created_at,
+			   (phone, type, appointment_id, appointment_slot, bird_message_id, conversation_id, contact_phone, status, created_at,
 			    siesa_pending, siesa_pending_since, siesa_last_error_at)
-			 VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, NOW(), ?, NOW(), NOW())`,
-			row.Phone, row.Type, row.AppointmentID, row.BirdMessageID, row.ConversationID, row.ContactPhone,
+			 VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, NOW(), ?, NOW(), NOW())`,
+			row.Phone, row.Type, row.AppointmentID, row.AppointmentSlot, row.BirdMessageID, row.ConversationID, row.ContactPhone,
 			status, row.Action)
 	case err == nil:
 		_, err = tx.ExecContext(ctx,
 			`UPDATE notification_history
 			 SET siesa_pending = ?, siesa_pending_since = NOW(), siesa_attempts = 0,
 			     siesa_last_error_at = NOW(), siesa_outcome = NULL,
-			     conversation_id = COALESCE(NULLIF(?, ''), conversation_id)
-			 WHERE id = ?`, row.Action, row.ConversationID, id)
+			     conversation_id = COALESCE(NULLIF(?, ''), conversation_id),
+			     appointment_slot = COALESCE(NULLIF(?, ''), appointment_slot)
+			 WHERE id = ?`, row.Action, row.ConversationID, row.AppointmentSlot, id)
 	}
 	if err != nil {
 		return err
@@ -181,7 +185,7 @@ func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notificatio
 // tiempo pendiente se mide en la BD (misma zona que siesa_pending_since).
 func (r *NotificationRepo) FindSiesaPending(ctx context.Context, limit int) ([]notifications.SiesaPendingRow, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, phone, type, COALESCE(appointment_id, ''), COALESCE(bird_message_id, ''),
+		`SELECT id, phone, type, COALESCE(appointment_id, ''), COALESCE(appointment_slot, ''), COALESCE(bird_message_id, ''),
 		        COALESCE(conversation_id, ''), COALESCE(contact_phone, ''), siesa_pending, siesa_attempts,
 		        TIMESTAMPDIFF(SECOND, siesa_pending_since, NOW())
 		 FROM notification_history
@@ -198,7 +202,7 @@ func (r *NotificationRepo) FindSiesaPending(ctx context.Context, limit int) ([]n
 		var row notifications.SiesaPendingRow
 		var pendingSec int64
 		if err := rows.Scan(
-			&row.ID, &row.Phone, &row.Type, &row.AppointmentID, &row.BirdMessageID,
+			&row.ID, &row.Phone, &row.Type, &row.AppointmentID, &row.AppointmentSlot, &row.BirdMessageID,
 			&row.ConversationID, &row.ContactPhone, &row.Action, &row.Attempts, &pendingSec,
 		); err != nil {
 			return nil, err
