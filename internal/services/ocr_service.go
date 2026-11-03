@@ -58,6 +58,8 @@ type OCRService struct {
 	// pdfToImages convierte hojas de un PDF a imágenes (Ghostscript en producción); inyectable para
 	// probar sin gs qué hojas van a Vision.
 	pdfToImages func(ctx context.Context, pdfPath string, first, last int) ([]string, error)
+	// pdfText extrae la capa de texto de un PDF (Ghostscript txtwrite en producción); inyectable.
+	pdfText func(ctx context.Context, pdfPath string) string
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
@@ -69,6 +71,7 @@ func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService
 		birdAccessKey:  birdAccessKey,
 		analyzeTimeout: defaultAnalyzeTimeout,
 		pdfToImages:    pdfPagesToDataURIs,
+		pdfText:        pdfTextLayer,
 	}
 	s.client = &http.Client{Timeout: 60 * time.Second, CheckRedirect: s.checkRedirect}
 	return s
@@ -81,6 +84,7 @@ func NewOCRServiceForTest(apiURL string) *OCRService {
 		model:          "test-model",
 		analyzeTimeout: defaultAnalyzeTimeout,
 		pdfToImages:    pdfPagesToDataURIs,
+		pdfText:        pdfTextLayer,
 	}
 	s.client = &http.Client{Timeout: 5 * time.Second, CheckRedirect: s.checkRedirect}
 	return s
@@ -620,7 +624,7 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 		return s.AnalyzeImage(ctx, dataURI)
 	}
 
-	// 3. Si es PDF: TODAS sus hojas a Vision en una sola llamada (ver analyzePages).
+	// 3. Si es PDF: su capa de texto si la trae y, si no, TODAS sus hojas a Vision en una sola llamada.
 	if mimeType != "application/pdf" {
 		return &OCRResult{Success: false, Error: "formato_no_soportado"}, nil
 	}
@@ -636,6 +640,19 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 		return nil, fmt.Errorf("write temp pdf: %w", err)
 	}
 	pdfFile.Close()
+
+	// Capa de texto primero: un PDF generado por un sistema trae el texto exacto, y leerlo sale más
+	// barato, más rápido y sin el riesgo de que un dígito se lea mal en la imagen. Salvaguarda: si del
+	// texto no sale ningún CUPS con código (o el análisis falla) se sigue con las imágenes, para que un
+	// escaneo con una capa de texto mala no lea peor que antes.
+	if text := s.pdfText(ctx, pdfFile.Name()); len(strings.Fields(text)) >= minPDFTextWords {
+		res, err := s.analyzeText(ctx, text)
+		if err == nil && hasValidCUP(res) {
+			return res, nil
+		}
+		slog.Info("ocr: la capa de texto del pdf no dio CUPS con código; se leen las imágenes",
+			"words", len(strings.Fields(text)), "error", err)
+	}
 
 	// Antes se leía la hoja 1 y solo si no traía CUP se miraban las demás. Un PDF cuya primera hoja
 	// trae procedimientos y cuyos demás siguen en las hojas 2, 3… se leía a medias, y el paciente
@@ -666,6 +683,53 @@ func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResul
 		return s.AnalyzeImage(ctx, uris[0])
 	}
 	return res, nil
+}
+
+// minPDFTextWords: por debajo de esto el PDF NO tiene una capa de texto útil (un escaneo trae cero o
+// unas pocas palabras sueltas del membrete) y hay que mirarlo como imagen. Una orden real ronda las 100.
+const minPDFTextWords = 40
+
+// pdfTextLayer extrae con Ghostscript (txtwrite, sin dependencias nuevas) el texto EMBEBIDO del PDF.
+// Vacío si no se pudo; el umbral de palabras lo aplica quien llama.
+func pdfTextLayer(ctx context.Context, pdfPath string) string {
+	outPath := pdfPath + ".txt"
+	defer func() { _ = os.Remove(outPath) }()
+	args := []string{"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=txtwrite", "-sOutputFile=" + outPath, pdfPath}
+	//nolint:gosec // G204: binario fijo (gs); los argumentos son rutas temporales propias, no input externo
+	if out, err := exec.CommandContext(ctx, "gs", args...).CombinedOutput(); err != nil {
+		slog.Warn("no se pudo extraer la capa de texto del pdf", "error", err, "output_len", len(out))
+		return ""
+	}
+	data, err := os.ReadFile(outPath) //nolint:gosec // archivo temporal propio (derivado de pdfPath), no input externo
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// analyzeText corre el OCR de la orden sobre la capa de texto de un PDF (sin visión).
+func (s *OCRService) analyzeText(ctx context.Context, text string) (*OCRResult, error) {
+	messages := []map[string]interface{}{
+		{"role": "system", "content": s.buildSystemPrompt()},
+		{"role": "user", "content": "Analiza esta orden médica y extrae los datos según las reglas indicadas.\n\n" +
+			"TEXTO DEL DOCUMENTO (extraído del propio PDF, es literal y fiable):\n" + text},
+	}
+	return s.callOpenAI(ctx, messages)
+}
+
+// hasValidCUP indica si el OCR extrajo al menos un CUP con código NO vacío (el código es la fuente
+// autoritativa para cobertura/tarifa). Decide si la lectura de la capa de texto basta o hay que mirar
+// las imágenes.
+func hasValidCUP(res *OCRResult) bool {
+	if res == nil {
+		return false
+	}
+	for _, c := range res.Cups {
+		if strings.TrimSpace(c.Code) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // pdfPagesToDataURIs convierte las páginas [first,last] del PDF a JPEG (300 DPI) con Ghostscript y las

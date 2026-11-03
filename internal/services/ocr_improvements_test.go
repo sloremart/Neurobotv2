@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -106,7 +107,7 @@ func pdfFileServer(t *testing.T) string {
 	return srv.URL + "/orden.pdf"
 }
 
-// fakePages simula a Ghostscript: n hojas convertidas.
+// fakePages simula a Ghostscript: n hojas convertidas, sin capa de texto.
 func fakePages(svc *OCRService, n int) {
 	svc.pdfToImages = func(_ context.Context, _ string, _, last int) ([]string, error) {
 		pages := n
@@ -119,6 +120,7 @@ func fakePages(svc *OCRService, n int) {
 		}
 		return uris, nil
 	}
+	svc.pdfText = func(context.Context, string) string { return "" }
 }
 
 const (
@@ -187,5 +189,114 @@ func TestAnalyzeDocument_SinglePagePDFUnchanged(t *testing.T) {
 	}
 	if len(rec.bodies) != 1 || len(imageParts(rec.bodies[0])) != 1 {
 		t.Fatalf("una hoja = una llamada con una imagen: %d llamadas", len(rec.bodies))
+	}
+}
+
+// userText devuelve el contenido del mensaje del usuario cuando es texto plano (sin imágenes).
+func userText(body map[string]interface{}) string {
+	msgs, _ := body["messages"].([]interface{})
+	for _, m := range msgs {
+		msg, _ := m.(map[string]interface{})
+		if msg["role"] == "user" {
+			text, _ := msg["content"].(string)
+			return text
+		}
+	}
+	return ""
+}
+
+// orderText es la capa de texto de una orden generada por un sistema (más de 40 palabras).
+var orderText = strings.Repeat("ORDEN MEDICA PACIENTE ", 15) + "890274 CONSULTA DE PRIMERA VEZ POR ESPECIALISTA EN NEUROLOGIA"
+
+// withTextLayer simula un PDF con capa de texto y cuenta cuántas veces se rasterizó.
+func withTextLayer(svc *OCRService, text string) *int {
+	rasterized := 0
+	fakePages(svc, 2)
+	images := svc.pdfToImages
+	svc.pdfToImages = func(ctx context.Context, path string, first, last int) ([]string, error) {
+		rasterized++
+		return images(ctx, path, first, last)
+	}
+	svc.pdfText = func(context.Context, string) string { return text }
+	return &rasterized
+}
+
+// H2: un PDF con capa de texto se lee del texto literal, sin visión y sin rasterizar.
+func TestAnalyzeDocument_PDFTextLayerReadWithoutVision(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t)
+	rec.respond = func(body map[string]interface{}) string {
+		if strings.Contains(userText(body), "890274") {
+			return cupsPage1
+		}
+		return `{"cups": []}`
+	}
+	rasterized := withTextLayer(svc, orderText)
+
+	res, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *rasterized != 0 {
+		t.Errorf("con capa de texto no se rasteriza: %d conversiones", *rasterized)
+	}
+	if len(rec.bodies) != 1 || len(imageParts(rec.bodies[0])) != 0 {
+		t.Fatalf("una sola llamada, sin imágenes: %d llamadas", len(rec.bodies))
+	}
+	if len(res.Cups) != 1 || res.Cups[0].Code != "890274" {
+		t.Fatalf("lo leído del texto: %+v", res.Cups)
+	}
+}
+
+// H2, salvaguarda del dueño: si del texto no sale ningún CUPS con código, se cae al camino de las
+// imágenes; un escaneo con una capa de texto mala no empeora.
+func TestAnalyzeDocument_PDFTextWithoutCupsFallsBackToImages(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t)
+	rec.respond = func(body map[string]interface{}) string {
+		if len(imageParts(body)) == 0 {
+			return `{"cups": [{"cups_code": "", "cups_name": "CONSULTA NEUROLOGIA", "quantity": 1}]}`
+		}
+		return byImageCount(body)
+	}
+	rasterized := withTextLayer(svc, orderText)
+
+	res, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *rasterized != 1 || len(rec.bodies) != 2 {
+		t.Fatalf("texto y luego imágenes: %d conversiones, %d llamadas", *rasterized, len(rec.bodies))
+	}
+	if len(res.Cups) != 2 {
+		t.Fatalf("se usa la lectura de las imágenes: %+v", res.Cups)
+	}
+}
+
+// H2: si el análisis del texto falla, también se cae a las imágenes.
+func TestAnalyzeDocument_PDFTextAnalysisErrorFallsBackToImages(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t)
+	rec.respond = byImageCount
+	rec.statuses = []int{http.StatusBadRequest}
+	withTextLayer(svc, orderText)
+
+	res, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.bodies) != 2 || len(res.Cups) != 2 {
+		t.Fatalf("texto fallido y luego imágenes: %d llamadas, %+v", len(rec.bodies), res.Cups)
+	}
+}
+
+// H2: menos de 40 palabras no es una capa de texto útil (el membrete de un escaneo): imágenes.
+func TestAnalyzeDocument_PDFShortTextGoesToImages(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t)
+	rec.respond = byImageCount
+	rasterized := withTextLayer(svc, "CLINICA NEURO 890274 CONSULTA NEUROLOGIA")
+
+	if _, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t)); err != nil {
+		t.Fatal(err)
+	}
+	if *rasterized != 1 || len(rec.bodies) != 1 || len(imageParts(rec.bodies[0])) != 2 {
+		t.Fatalf("directo a imágenes: %d conversiones, %d llamadas", *rasterized, len(rec.bodies))
 	}
 }
