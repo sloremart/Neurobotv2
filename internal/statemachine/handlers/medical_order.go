@@ -586,6 +586,16 @@ func uploadNonMedia(sess *session.Session, birdClient *bird.Client, msg bird.Inb
 	return sm.RetryOrEscalate(sess, "Estoy esperando una *foto o PDF* de tu orden médica. Por favor envía el archivo."), nil
 }
 
+// maxCupsQuantity es la cantidad máxima de un CUPS que el bot agenda solo. La cantidad la extrae
+// el LLM de la orden (el «(#N)» tal cual) y cada unidad suma espacios en la agenda: sin tope, una
+// orden manipulada o mal leída bloquearía media jornada de un técnico. Ninguna orden real se acerca
+// a 100; por encima la revisa un agente. EMG/NC conservan además su propio tope (applyFisiatriaRules).
+const maxCupsQuantity = 100
+
+// orderUnprocessableEscalationText es el aviso al paciente cuando VALIDATE_OCR pasa la orden a un
+// agente porque lo leído no se puede agendar tal cual.
+const orderUnprocessableEscalationText = "No pudimos procesar los procedimientos de tu orden médica. Te voy a comunicar con un agente para que pueda ayudarte."
+
 // VALIDATE_OCR (automático) — muestra resultados del OCR con verificación de documento
 func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
@@ -663,11 +673,32 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 			}
 		}
 
+		// Tope de cantidad (B-10): VALIDATE_OCR es el embudo de toda orden leída (foto, orden guardada,
+		// páginas añadidas, orden de EMG, comandos del agente), así que se mira aquí, antes del
+		// resumen y de agendar. No se recorta: el agente ve qué CUPS y qué cantidad trajo la orden.
+		var overQuantity []string
+		for _, cup := range cups {
+			if cup.Quantity > maxCupsQuantity {
+				overQuantity = append(overQuantity, fmt.Sprintf("%s (cantidad %d)", cup.Code, cup.Quantity))
+			}
+		}
+		if len(overQuantity) > 0 {
+			observability.Emit(observability.TraceSession(sess.ID), "agendar", "cups_quantity_out_of_range",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"cups": overQuantity}})
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText(orderUnprocessableEscalationText).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonQuantityOutOfRange).
+				WithContext("escalation_note", fmt.Sprintf(
+					"La orden trae una cantidad mayor que %d, que el bot no agenda: %s. Verifica la orden y devuelve los CUPS con la cantidad correcta.",
+					maxCupsQuantity, strings.Join(overQuantity, ", "))).
+				WithEvent("cups_quantity_out_of_range", map[string]interface{}{"cups": overQuantity}), nil
+		}
+
 		if len(cups) == 0 {
 			observability.Emit(observability.TraceSession(sess.ID), "agendar", "cups_none",
 				observability.EmitOpts{Phone: sess.PhoneNumber})
 			return sm.NewResult(sm.StateEscalateToAgent).
-				WithText("No pudimos procesar los procedimientos de tu orden médica. Te voy a comunicar con un agente para que pueda ayudarte.").
+				WithText(orderUnprocessableEscalationText).
 				WithContext(sm.CtxEscalationReason, sm.EscalationReasonNoValidCups).
 				WithEvent("ocr_no_valid_cups", map[string]interface{}{"skipped": skipped}), nil
 		}

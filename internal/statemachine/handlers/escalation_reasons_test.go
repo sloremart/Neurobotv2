@@ -80,6 +80,9 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 			sess.SetContext("ocr_cups_json", string(raw))
 			return must(validateOCRHandler(&mockProcedureRepo{})(ctx, sess, textM("")))(t)
 		}},
+		{"cantidad_fuera_de_rango", sm.EscalationReasonQuantityOutOfRange, false, func(t *testing.T) *sm.StateResult {
+			return validateCups(t, []services.CUPSEntry{{Code: "883141", Name: "RM", Quantity: maxCupsQuantity + 1}})
+		}},
 		{"sin_convenio", sm.EscalationReasonNoCoverage, true, func(t *testing.T) *sm.StateResult {
 			return must(coverageNoConvenioHandler()(ctx, testSess(sm.StateCoverageNoConvenio), postbackM("cov_agente")))(t)
 		}},

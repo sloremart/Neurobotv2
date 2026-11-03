@@ -107,6 +107,9 @@ var catalog = map[string]stepSpec{
 	"agendar/ocr_no_cups_code":          {LvOutcome, "escalated", ""}, // sin CUPS válidos → agente
 	"agendar/bloqueo_sanitas_escalated": {LvOutcome, "escalated", ""}, // CUP de bloqueo SANITAS → agente
 
+	// Auditoría de seguridad 2026-11-03: topes que pasan la orden a un agente.
+	"agendar/cups_quantity_out_of_range": {LvOutcome, "escalated", ""}, // cantidad por encima del tope → agente
+
 	// Recordatorio / IVR (§3.3 / §3A) — trace notif:<apptID>
 	"notif_recordatorio/reminder_sent": {LvMilestone, "ok", "bird_msg"},
 	"notif_recordatorio/ivr_placed":    {LvMilestone, "ok", "call"},

@@ -69,6 +69,9 @@ const (
 	// EscalationReasonRescheduleNoSlots: no hubo horarios para reprogramar y el paciente pidió
 	// reprogramar igual; lo hace un agente a mano (la cita original sigue vigente).
 	EscalationReasonRescheduleNoSlots = "reprogramar_sin_horarios"
+	// EscalationReasonQuantityOutOfRange: la orden trae un CUPS con una cantidad por encima del
+	// tope que el bot agenda solo; la nota para el agente dice cuál y cuánta.
+	EscalationReasonQuantityOutOfRange = "cantidad_fuera_de_rango"
 )
 
 // EscalationReasons lista TODOS los motivos de cable: las notificaciones y los del flujo.
@@ -82,7 +85,7 @@ func EscalationReasons() []string {
 		EscalationReasonNoEntities, EscalationReasonEntityUnresolved, EscalationReasonParticularLiga,
 		EscalationReasonMedicationError, EscalationReasonEmgConsolidationFailed,
 		EscalationReasonEmgAskedForAgent, EscalationReasonBotDisabled, EscalationReasonAgentInputRejected,
-		EscalationReasonRescheduleNoSlots,
+		EscalationReasonRescheduleNoSlots, EscalationReasonQuantityOutOfRange,
 	}
 }
 

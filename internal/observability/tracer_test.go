@@ -409,6 +409,7 @@ func TestCatalog_NewTerminalsAreTerminal(t *testing.T) {
 		"escalacion/escalation_no_agents":               "blocked",   // gate cierra el intento y devuelve al menú
 		"agendar/ocr_no_cups_code":                      "escalated", // sin CUPS válidos → agente
 		"agendar/bloqueo_sanitas_escalated":             "escalated", // CUP de bloqueo → agente
+		"agendar/cups_quantity_out_of_range":            "escalated", // cantidad por encima del tope → agente
 	}
 	for key, wantOutcome := range terminals {
 		spec, ok := catalog[key]
