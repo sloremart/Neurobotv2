@@ -110,6 +110,8 @@ type SessionManager struct {
 	mutex       *PhoneMutex
 	timeout     time.Duration
 	escalations EscalationRecorder
+	// passTimeout acota cada consulta del checker de inactividad (0 = utils.BackgroundPassTimeout).
+	passTimeout time.Duration
 }
 
 func NewSessionManager(repo SessionRepo, timeoutMinutes int) *SessionManager {
@@ -450,11 +452,22 @@ func (m *SessionManager) StartInactivityChecker(ctx context.Context, deps Inacti
 				slog.Debug("inactivity check skipped, previous still running")
 				continue
 			}
-			m.checkInactiveSessions(ctx, deps)
-			m.checkEscalatedSessions(ctx, deps)
+			m.runInactivityPass(ctx, deps)
 			checking.Store(false)
 		}
 	}
+}
+
+// runInactivityPass es UNA pasada del checker: sesiones activas inactivas y chats escalados. Cada
+// parte corre con su propio plazo (D-07): con MySQL colgado la pasada termina, `checking` se suelta
+// y el tick siguiente vuelve a intentar; y una parte colgada no deja sin pasada a la otra.
+func (m *SessionManager) runInactivityPass(ctx context.Context, deps InactivityDeps) {
+	utils.RunPass(ctx, "inactive-sessions", m.passTimeout, func(ctx context.Context) {
+		m.checkInactiveSessions(ctx, deps)
+	})
+	utils.RunPass(ctx, "escalated-sessions", m.passTimeout, func(ctx context.Context) {
+		m.checkEscalatedSessions(ctx, deps)
+	})
 }
 
 // checkInactiveSessions handles reminder sending and auto-close for active sessions.
@@ -468,6 +481,9 @@ func (m *SessionManager) checkInactiveSessions(ctx context.Context, deps Inactiv
 	}
 
 	for _, s := range sessions {
+		if ctx.Err() != nil {
+			return // pasada vencida o apagado: las que faltan, en la pasada siguiente
+		}
 		elapsed := time.Since(s.LastActivity)
 		elapsedMin := int(elapsed.Minutes())
 
@@ -578,6 +594,11 @@ func (m *SessionManager) checkEscalatedSessions(ctx context.Context, deps Inacti
 
 	now := time.Now()
 	for _, s := range sessions {
+		// Pasada vencida o apagado: las que faltan, en la pasada siguiente. Sin este corte, un
+		// recordatorio al agente saldría con su marca sin poder guardarse y se repetiría.
+		if ctx.Err() != nil {
+			return
+		}
 		patientSilent := now.Sub(s.LastPatientMsg)
 		agentEverReplied := s.LastAgentMsg != nil
 

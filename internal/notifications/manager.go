@@ -236,6 +236,9 @@ type NotificationManager struct {
 	// una instancia PROPIA (no la del worker pool): el worker no toca `pending`, así que un
 	// candado dedicado los protege al 100% y evita deadlocks al cruzar EnqueueVirtual.
 	phoneLock *session.PhoneMutex
+
+	// passTimeout acota cada pasada del checker de expiraciones (0 = utils.BackgroundPassTimeout).
+	passTimeout time.Duration
 }
 
 // notifLockTimeout acota la ESPERA por el candado de un teléfono (no cuánto se sostiene).
@@ -1304,9 +1307,15 @@ func (m *NotificationManager) StartExpirationChecker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.checkExpired(ctx)
+			m.runExpirationPass(ctx)
 		}
 	}
+}
+
+// runExpirationPass es UNA pasada del checker de expiraciones, con plazo propio (D-07): con MySQL
+// colgado la pasada termina y la siguiente vuelve a intentar.
+func (m *NotificationManager) runExpirationPass(ctx context.Context) {
+	utils.RunPass(ctx, "notification-expiry", m.passTimeout, m.checkExpired)
 }
 
 func (m *NotificationManager) checkExpired(ctx context.Context) {
@@ -1317,6 +1326,9 @@ func (m *NotificationManager) checkExpired(ctx context.Context) {
 	}
 
 	for _, row := range rows {
+		if ctx.Err() != nil {
+			return // pasada vencida o apagado: las que faltan, en la pasada siguiente
+		}
 		// Only process if still in sync.Map (LoadAndDelete atomicity prevents double-processing)
 		if _, ok := m.pending.Load(row.Phone); ok {
 			m.handleTimeout(row.Phone)

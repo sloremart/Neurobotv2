@@ -10,6 +10,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/repository/local"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // LA SINCRONIZACIÓN PERIÓDICA DE NÉCTAR (spec D5 §5.1-§5.3).
@@ -29,6 +30,10 @@ const (
 	maxWindow = 62 * 24 * time.Hour
 	// escalationLookback: las escalaciones se buscan desde un día antes del since de los tramos.
 	escalationLookback = 24 * time.Hour
+	// syncPassTimeout acota UNA pasada (D-07). Más que el plazo de los otros bucles de fondo: la
+	// pasada pagina por HTTP (hasta 15 s por página) y el since solo avanza al terminarla, así que
+	// un rezago grande de tramos debe caber entero en una pasada o no avanzaría nunca.
+	syncPassTimeout = 10 * time.Minute
 )
 
 // Nombres en nectar_sync_state. Los valores de hora van en RFC3339 UTC.
@@ -69,11 +74,15 @@ type Syncer struct {
 	every       time.Duration
 	floor       time.Time
 	now         func() time.Time
+	passTimeout time.Duration
 }
 
 // NewSyncer arma la sincronización; floor es el piso de lectura (DataFloor en producción).
 func NewSyncer(r reportsReader, cycles cyclesStore, esc escalationsStore, every time.Duration, floor time.Time) *Syncer {
-	return &Syncer{reader: r, cycles: cycles, escalations: esc, every: every, floor: floor.UTC(), now: time.Now}
+	return &Syncer{
+		reader: r, cycles: cycles, escalations: esc, every: every, floor: floor.UTC(), now: time.Now,
+		passTimeout: syncPassTimeout,
+	}
 }
 
 // Run hace una pasada al arrancar y luego una cada `every`, hasta que se cancele ctx. Con la
@@ -100,9 +109,10 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
-// pass corre una pasada y dice si hay que seguir.
+// pass corre una pasada con su plazo (D-07) y dice si hay que seguir.
 func (s *Syncer) pass(ctx context.Context) bool {
-	err := s.RunOnce(ctx)
+	var err error
+	expired := utils.RunPass(ctx, "nectar-reports", s.passTimeout, func(ctx context.Context) { err = s.RunOnce(ctx) })
 	switch {
 	case err == nil:
 		return true
@@ -112,6 +122,8 @@ func (s *Syncer) pass(ctx context.Context) bool {
 		return false
 	case ctx.Err() != nil:
 		return false
+	case expired:
+		return true // RunPass ya dejó el error; se reintenta en la vuelta siguiente
 	default:
 		slog.Warn("informes de Néctar: pasada fallida, se reintenta en la siguiente vuelta", "error", err)
 		return true

@@ -235,6 +235,8 @@ type MessageWorkerPool struct {
 
 	// retryDelay: espera antes del reintento de un envío fallido (solo errores transitorios).
 	retryDelay time.Duration
+	// passTimeout acota cada pasada del replay de atascados (0 = utils.BackgroundPassTimeout).
+	passTimeout time.Duration
 	// lockTimeout: espera máxima por el candado del teléfono (phoneLockTimeout; los tests lo acortan).
 	lockTimeout time.Duration
 	// lockRetryDelay: pausa antes de reencolar un mensaje cuyo teléfono ya tiene un worker esperando
@@ -2062,9 +2064,17 @@ func (p *MessageWorkerPool) StartStaleReplay(ctx context.Context, src StalePendi
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.replayStale(ctx, src)
+			p.runStaleReplayPass(ctx, src)
 		}
 	}
+}
+
+// runStaleReplayPass es UNA pasada del replay de atascados, con plazo propio (D-07): con MySQL
+// colgado la pasada termina y la siguiente vuelve a intentar.
+func (p *MessageWorkerPool) runStaleReplayPass(ctx context.Context, src StalePendingSource) {
+	utils.RunPass(ctx, "stale-replay", p.passTimeout, func(ctx context.Context) {
+		p.replayStale(ctx, src)
+	})
 }
 
 // replayStale recoge los mensajes 'pending' viejos y los re-encola. Separado para poder testearlo.

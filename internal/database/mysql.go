@@ -14,11 +14,21 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 )
 
-func NewLocalDB(cfg *config.Config) (*sql.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true&loc=America%%2FBogota&charset=utf8mb4&collation=utf8mb4_unicode_ci",
-		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBDatabase)
+// localDialTimeout acota la apertura de cada conexión a la BD local (D-07): un MySQL que no
+// acepta no deja colgado al que pide la conexión. Solo la apertura: sin readTimeout ni
+// writeTimeout globales, que cortarían consultas largas legítimas (KPIs); el plazo de cada
+// consulta lo pone su ctx.
+const localDialTimeout = 10 * time.Second
 
-	db, err := sql.Open("mysql", dsn)
+// localDSN arma el DSN de la BD local (neuro_bot).
+func localDSN(cfg *config.Config) string {
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true&loc=America%%2FBogota&charset=utf8mb4&collation=utf8mb4_unicode_ci&timeout=%s",
+		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBDatabase, localDialTimeout)
+}
+
+// NewLocalDB abre el pool de la BD local del bot (neuro_bot) y verifica que responda.
+func NewLocalDB(cfg *config.Config) (*sql.DB, error) {
+	db, err := sql.Open("mysql", localDSN(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("local db open: %w", err)
 	}

@@ -865,6 +865,9 @@ func (s inboxReplaySource) PendingOlderThan(ctx context.Context, minutes int) ([
 	}
 	msgs := make([]bird.InboundMessage, 0, len(rows))
 	for _, row := range rows {
+		if ctx.Err() != nil {
+			break // pasada vencida o apagado (D-07): las filas que faltan siguen 'pending' para la siguiente
+		}
 		if api.IsNectarInboxRow(row.MsgType) {
 			replayNectarRow(ctx, "stale replay", row, s.nectar, s.repo)
 			continue
