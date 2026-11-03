@@ -119,6 +119,11 @@ var catalog = map[string]stepSpec{
 	"notif_recordatorio/escalated":     {LvOutcome, "escalated", ""},
 	"notif_recordatorio/expired":       {LvOutcome, "info", ""},
 	"notif_recordatorio/error":         {LvError, "error", ""},
+	// D-04: el paciente respondió «Confirmar»/«Cancelar» y SIESA no respondió; la respuesta quedó
+	// pendiente (milestone: la traza sigue abierta hasta confirmed/cancelled/escalated) y cada
+	// reintento fallido del proceso de fondo deja siesa_retry_failed (detalle, attr n = intentos).
+	"notif_recordatorio/siesa_pending":      {LvMilestone, "retry", ""},
+	"notif_recordatorio/siesa_retry_failed": {LvFull, "retry", ""},
 	// H131-1. same_day_no_response es TERMINAL válido (GUIA §16): la cita es de hoy, se avisó y el
 	// paciente no contestó; no hay más que hacer. Como milestone, su trace quedaba "sin cerrar" para
 	// siempre y aparecía como estancado en cada ciclo de auditoría.

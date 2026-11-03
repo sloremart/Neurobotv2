@@ -339,6 +339,7 @@ func main() {
 	callRepo := localrepo.NewCallRepo(localDB)
 	if notifyManager != nil {
 		notifyManager.SetPersister(notifRepo)
+		notifyManager.SetSiesaPendingStore(notifRepo)
 		notifyManager.SetCallTracker(callRepo)
 		notifyManager.SetTracker(tracker)
 		notifyManager.SetEscalationRecorder(escalationRepo)
@@ -350,6 +351,7 @@ func main() {
 		}
 		notifyManager.RestorePending(ctx)
 		safeGo("notification-expiry", func() { notifyManager.StartExpirationChecker(ctx) })
+		safeGo("siesa-pending-retry", func() { notifyManager.StartSiesaPendingRetrier(ctx) })
 	}
 
 	// Message inbox (WAL for crash recovery)

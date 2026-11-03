@@ -447,6 +447,17 @@ func TestAgentsInNectar(t *testing.T) {
 	}
 }
 
+// SIESA_PENDING_RETRY_MIN: por defecto 5; 0 o negativo cae al defecto (no es «sin pausa»).
+func TestLoad_SiesaPendingRetryMin(t *testing.T) {
+	setRequiredEnv(t)
+	for raw, want := range map[string]int{"": DefaultSiesaPendingRetryMin, "10": 10, "0": 5, "-1": 5} {
+		t.Setenv("SIESA_PENDING_RETRY_MIN", raw)
+		if got := Load().SiesaPendingRetryMin; got != want {
+			t.Errorf("SIESA_PENDING_RETRY_MIN=%q → %d, want %d", raw, got, want)
+		}
+	}
+}
+
 // NECTAR_REPORTS_SYNC_MIN: por defecto 5; 0 o negativo cae al defecto (no es «sin pausa»).
 func TestLoad_NectarReportsSyncMin(t *testing.T) {
 	setRequiredEnv(t)

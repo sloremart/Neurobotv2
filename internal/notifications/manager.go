@@ -216,6 +216,7 @@ type NotificationManager struct {
 	procRepo        PreparationFinder
 	addrMapper      *services.AddressMapper
 	persister       NotificationPersister
+	siesaPending    SiesaPendingStore // respuestas al recordatorio pendientes de SIESA (nil = sin diferir)
 	callTracker     CallTracker
 	tracker         EventLogger
 	escalations     EscalationRecorder

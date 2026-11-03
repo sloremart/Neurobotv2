@@ -126,6 +126,10 @@ type Config struct {
 	// tramos de espera y el roster de Néctar para los informes de asesores (D5). Solo corre con el
 	// puente encendido; 0 o negativo cae a DefaultNectarReportsSyncMin.
 	NectarReportsSyncMin int
+	// SiesaPendingRetryMin (SIESA_PENDING_RETRY_MIN) es cada cuántos minutos se reintentan en SIESA
+	// las respuestas al recordatorio («Confirmar»/«Cancelar») que quedaron pendientes porque SIESA no
+	// respondió (D-04); 0 o negativo cae a DefaultSiesaPendingRetryMin.
+	SiesaPendingRetryMin int
 	// Schedule es el PROVEEDOR del horario vigente (cmd/server lo cablea con un CachedSchedule).
 	// Nadie lo lee directo: se pregunta por Hours() — schedule.go.
 	Schedule ScheduleSource
@@ -494,6 +498,10 @@ func Load() *Config {
 	if cfg.NectarReportsSyncMin <= 0 {
 		// 0 no es «no sincronizar»: sería un bucle sin pausa contra Néctar.
 		cfg.NectarReportsSyncMin = DefaultNectarReportsSyncMin
+	}
+	cfg.SiesaPendingRetryMin = getEnvInt("SIESA_PENDING_RETRY_MIN", DefaultSiesaPendingRetryMin)
+	if cfg.SiesaPendingRetryMin <= 0 {
+		cfg.SiesaPendingRetryMin = DefaultSiesaPendingRetryMin
 	}
 	scheduleChannelID, err := parseNectarChannelID(os.Getenv("NECTAR_SCHEDULE_CHANNEL_ID"))
 	if err != nil {
@@ -870,6 +878,10 @@ func parseQueueMaxWaitMin(raw string) (int, error) {
 // DefaultNectarReportsSyncMin es cada cuántos minutos se sincronizan los informes de Néctar sin
 // NECTAR_REPORTS_SYNC_MIN en el entorno.
 const DefaultNectarReportsSyncMin = 5
+
+// DefaultSiesaPendingRetryMin es cada cuántos minutos se reintentan las respuestas pendientes de
+// SIESA sin SIESA_PENDING_RETRY_MIN en el entorno.
+const DefaultSiesaPendingRetryMin = 5
 
 // DefaultNectarCloseMin es el cierre por silencio de una escalación de Néctar (8 h). Es mucho
 // más largo que el de Bird porque Néctar NO manda mensaje_entrante mientras el agente es dueño

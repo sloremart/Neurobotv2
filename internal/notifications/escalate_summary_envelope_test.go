@@ -286,6 +286,9 @@ func TestConfirmationEscalate_V1DetailPerReason(t *testing.T) {
 	for reason, want := range map[escalationReason]string{
 		escalationNoResponse:    "notificacion_sin_respuesta",
 		escalationSystemFailure: "notificacion_fallo_sistema",
+		// D-04: sin motivo de cable propio, viajan sin detalle (ausente, no inventado).
+		escalationSiesaCancelFailed: "",
+		escalationSiesaChanged:      "",
 	} {
 		mgr, bridge := nectarManager(t, &config.Config{
 			BirdTeamFallback: "team-fallback", ProtocolEscaladoVersion: config.ProtocolEscaladoV1,

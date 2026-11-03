@@ -54,20 +54,23 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 	switch action {
 	case "confirm":
 		appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
+		if err != nil && m.deferToSiesa(ctx, phone, siesaActionConfirm, pending, err) {
+			return // D-04: SIESA no respondió; el proceso de fondo la confirma cuando vuelva
+		}
 		if err != nil || appt == nil {
 			slog.Error("confirm: find appointment", "error", err, "appointment_id", pending.AppointmentID)
 			return
 		}
 
-		// Get ALL patient's appointments for this date (may span multiple agendas/doctors)
-		allAppts, err := m.apptSvc.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
-		if err != nil || len(allAppts) == 0 {
-			allAppts = []domain.Appointment{*appt} // Fallback to single appointment
-		}
+		allAppts := m.patientDayAppointments(ctx, appt)
 
 		if err := m.apptSvc.ConfirmBlock(ctx, allAppts, "whatsapp_bot", pending.ConversationID); err != nil {
-			// N-15: si el UPDATE a SIESA falló NO debemos decirle al paciente "cita confirmada"
-			// (quedaría con confirmación falsa y sin reintento). Avisar + escalar a agente.
+			if m.deferToSiesa(ctx, phone, siesaActionConfirm, pending, err) {
+				return // D-04: ídem con la escritura
+			}
+			// N-15: si el UPDATE a SIESA falló y la respuesta no pudo quedar pendiente, NO debemos
+			// decirle al paciente "cita confirmada" (quedaría con confirmación falsa y sin reintento).
+			// Avisar + escalar a agente.
 			slog.Error("confirm: confirm appointments failed, escalating", "error", err, "appointment_id", pending.AppointmentID)
 			_, _ = m.birdClient.SendText(phone, pending.ConversationID, "Tuvimos un inconveniente al confirmar tu cita. Un agente te ayudará en un momento.")
 			observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "error",
@@ -76,80 +79,7 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 			return
 		}
 
-		// Build procedure names from ALL appointments (deduplicated)
-		seen := make(map[string]bool)
-		var procNames []string
-		for _, a := range allAppts {
-			for _, p := range a.Procedures {
-				if p.CupName != "" && !seen[p.CupName] {
-					seen[p.CupName] = true
-					procNames = append(procNames, p.CupName)
-				}
-			}
-		}
-		proceduresText := strings.Join(procNames, " y ")
-		if proceduresText == "" {
-			proceduresText = "Procedimiento"
-		}
-
-		// Build confirmation message with details
-		msg := fmt.Sprintf(
-			"Tu cita ha sido confirmada!\n\n"+
-				"*Fecha:* %s\n"+
-				"*Hora:* %s\n"+
-				"*Procedimiento:* %s",
-			utils.FormatFriendlyDate(appt.Date),
-			services.FormatTimeSlot(appt.TimeSlot),
-			proceduresText,
-		)
-
-		// Look up address and preparations from ALL appointments' procedures
-		if m.procRepo != nil {
-			var prepText string
-			address := ""
-			mapsURL := ""
-			seenCup := make(map[string]bool)
-
-			for _, a := range allAppts {
-				for _, proc := range a.Procedures {
-					if proc.CupCode == "" || seenCup[proc.CupCode] {
-						continue
-					}
-					seenCup[proc.CupCode] = true
-					p, err := m.procRepo.FindByCode(ctx, proc.CupCode)
-					if err != nil || p == nil {
-						continue
-					}
-					if address == "" && p.Address != "" {
-						address = p.Address
-						mapsURL = p.MapsURL
-					}
-					if p.Preparation != "" {
-						prepText += fmt.Sprintf("\n- Para *%s*: %s", proc.CupName, p.Preparation)
-						if p.VideoURL != "" {
-							prepText += fmt.Sprintf("\n  📹 Video: %s", p.VideoURL)
-						}
-						if p.AudioURL != "" {
-							prepText += fmt.Sprintf("\n  🎵 Audio: %s", p.AudioURL)
-						}
-					}
-				}
-			}
-
-			if address != "" {
-				if m.addrMapper != nil {
-					msg += "\n" + m.addrMapper.FormatAddress(address, mapsURL)
-				} else {
-					msg += fmt.Sprintf("\n*Dirección:* %s", address)
-				}
-			}
-			if prepText != "" {
-				msg += "\n\n*Preparación:*" + prepText
-			}
-		}
-
-		msg += "\n\nRecuerda presentarte 30 minutos antes para realizar el proceso de facturación. Te esperamos!"
-
+		msg := m.buildConfirmationMessage(ctx, appt, allAppts)
 		m.birdClient.SendText(phone, pending.ConversationID, msg)
 
 		if pending.ConversationID != "" {
@@ -212,6 +142,86 @@ func (m *NotificationManager) handleConfirmation(phone, action string, pending *
 	case "cancel":
 		m.startConfirmCancelSession(phone, pending)
 	}
+}
+
+// buildConfirmationMessage arma el mensaje de «cita confirmada» con la fecha y hora de appt y los
+// procedimientos, la dirección y las preparaciones de todas las citas del día (allAppts). Lo usan la
+// confirmación inmediata y la que aplica el proceso de fondo cuando SIESA vuelve (D-04).
+func (m *NotificationManager) buildConfirmationMessage(ctx context.Context, appt *domain.Appointment, allAppts []domain.Appointment) string {
+	// Build procedure names from ALL appointments (deduplicated)
+	seen := make(map[string]bool)
+	var procNames []string
+	for _, a := range allAppts {
+		for _, p := range a.Procedures {
+			if p.CupName != "" && !seen[p.CupName] {
+				seen[p.CupName] = true
+				procNames = append(procNames, p.CupName)
+			}
+		}
+	}
+	proceduresText := strings.Join(procNames, " y ")
+	if proceduresText == "" {
+		proceduresText = "Procedimiento"
+	}
+
+	// Build confirmation message with details
+	msg := fmt.Sprintf(
+		"Tu cita ha sido confirmada!\n\n"+
+			"*Fecha:* %s\n"+
+			"*Hora:* %s\n"+
+			"*Procedimiento:* %s",
+		utils.FormatFriendlyDate(appt.Date),
+		services.FormatTimeSlot(appt.TimeSlot),
+		proceduresText,
+	)
+
+	// Look up address and preparations from ALL appointments' procedures
+	if m.procRepo != nil {
+		var prepText string
+		address := ""
+		mapsURL := ""
+		seenCup := make(map[string]bool)
+
+		for _, a := range allAppts {
+			for _, proc := range a.Procedures {
+				if proc.CupCode == "" || seenCup[proc.CupCode] {
+					continue
+				}
+				seenCup[proc.CupCode] = true
+				p, err := m.procRepo.FindByCode(ctx, proc.CupCode)
+				if err != nil || p == nil {
+					continue
+				}
+				if address == "" && p.Address != "" {
+					address = p.Address
+					mapsURL = p.MapsURL
+				}
+				if p.Preparation != "" {
+					prepText += fmt.Sprintf("\n- Para *%s*: %s", proc.CupName, p.Preparation)
+					if p.VideoURL != "" {
+						prepText += fmt.Sprintf("\n  📹 Video: %s", p.VideoURL)
+					}
+					if p.AudioURL != "" {
+						prepText += fmt.Sprintf("\n  🎵 Audio: %s", p.AudioURL)
+					}
+				}
+			}
+		}
+
+		if address != "" {
+			if m.addrMapper != nil {
+				msg += "\n" + m.addrMapper.FormatAddress(address, mapsURL)
+			} else {
+				msg += fmt.Sprintf("\n*Dirección:* %s", address)
+			}
+		}
+		if prepText != "" {
+			msg += "\n\n*Preparación:*" + prepText
+		}
+	}
+
+	msg += "\n\nRecuerda presentarte 30 minutos antes para realizar el proceso de facturación. Te esperamos!"
+	return msg
 }
 
 // handleConfirmationTimeout implements a 4-step escalation chain:
@@ -302,6 +312,12 @@ type escalationReason int
 const (
 	escalationNoResponse    escalationReason = iota // timeout: ni WhatsApp ni IVR
 	escalationSystemFailure                         // el paciente respondió, pero el UPDATE a SIESA falló
+	// escalationSiesaCancelFailed: el paciente pidió cancelar y la cancelación no llegó a SIESA a
+	// tiempo (D-04: venció un tope de la respuesta pendiente).
+	escalationSiesaCancelFailed
+	// escalationSiesaChanged: la respuesta pendiente de SIESA ya no se pudo aplicar porque la cita
+	// cambió entretanto (cancelada, movida, confirmada por otro o no encontrada).
+	escalationSiesaChanged
 )
 
 // escalateToAgent sends an internal note to Bird Inbox, optionally messages the patient,
@@ -363,8 +379,13 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 			pending.AppointmentID)
 	}
 
-	detail := sm.EscalationReasonNotifNoResponse
-	if reason == escalationSystemFailure {
+	// Las dos de D-04 no tienen motivo de cable propio: viajan sin detalle (el menú del agente es el
+	// de la cita: confirmar, reprogramar o cancelar) y la nota dice qué pasó.
+	var detail string
+	switch reason {
+	case escalationNoResponse:
+		detail = sm.EscalationReasonNotifNoResponse
+	case escalationSystemFailure:
 		detail = sm.EscalationReasonNotifSystemFailure
 	}
 	sessCtx := map[string]string{
@@ -385,6 +406,13 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 	case escalationSystemFailure:
 		note = "⚠️ El paciente CONFIRMÓ su cita vía WhatsApp, pero la persistencia en SIESA FALLÓ.\n" +
 			"Revisar y confirmar la cita manualmente en el sistema (NO re-pedir confirmación al paciente).\n" + apptInfo
+	case escalationSiesaCancelFailed:
+		note = "⚠️ El paciente pidió CANCELAR su cita vía WhatsApp, pero la cancelación no se pudo registrar en SIESA.\n" +
+			"Revisar y cancelar la cita manualmente en el sistema (al paciente se le dijo que se registraría).\n" + apptInfo
+	case escalationSiesaChanged:
+		note = "⚠️ El paciente respondió al recordatorio vía WhatsApp (su respuesta está en el chat), pero SIESA no " +
+			"estaba disponible y, cuando volvió, la cita ya había cambiado (cancelada, movida, confirmada o no encontrada). " +
+			"NO se aplicó nada.\nRevisar la cita con el paciente.\n" + apptInfo
 	default: // escalationNoResponse
 		// El teléfono a marcar (DialPhone): con Néctar la clave es "nectar:<id>", que no se puede llamar.
 		note = buildNoResponseNote(pending.SameDay, pending.DialPhone(), apptInfo)
@@ -401,7 +429,8 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 	}
 
 	// 3. Message to patient — solo en el caso de no-respuesta. En el fallo de sistema el paciente
-	// ya recibió "Tuvimos un inconveniente..." y NO se le debe pedir confirmar lo ya confirmado.
+	// ya recibió "Tuvimos un inconveniente..." (o el aviso de respuesta pendiente de SIESA, D-04) y NO
+	// se le debe pedir confirmar lo ya confirmado.
 	// Gate de ventana WA: el no-respondedor casi siempre la tiene cerrada — el texto se cobraría
 	// sin entregarse. La escalación (nota interna + asignación de agente) ocurre igual.
 	if reason == escalationNoResponse && m.WindowOpen(ctx, pending.Phone) {
@@ -439,8 +468,13 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 			})
 	}
 	escReason := "no_response"
-	if reason == escalationSystemFailure {
+	switch reason {
+	case escalationSystemFailure:
 		escReason = "system_failure"
+	case escalationSiesaCancelFailed:
+		escReason = "siesa_cancel_failed"
+	case escalationSiesaChanged:
+		escReason = "siesa_appointment_changed"
 	}
 	observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "escalated",
 		observability.EmitOpts{Phone: pending.Phone, Reason: escReason})
@@ -544,6 +578,9 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 	defer cancel()
 
 	appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
+	if err != nil && m.deferToSiesa(ctx, phone, siesaActionCancel, pending, err) {
+		return // D-04: SIESA no respondió; el proceso de fondo la cancela cuando vuelva
+	}
 	if err != nil || appt == nil {
 		slog.Error("startConfirmCancelSession: find appointment", "error", err, "appointment_id", pending.AppointmentID)
 		m.birdClient.SendText(phone, pending.ConversationID,
@@ -558,11 +595,7 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 		return
 	}
 
-	// Get ALL patient's appointments for this date (may span multiple agendas/doctors)
-	allAppts, err := m.apptSvc.GetPatientAppointmentsForDate(ctx, appt.PatientID, appt.Date)
-	if err != nil || len(allAppts) == 0 {
-		allAppts = []domain.Appointment{*appt}
-	}
+	allAppts := m.patientDayAppointments(ctx, appt)
 
 	// Collect all appointment IDs, procedure names, and CUPS codes
 	allIDs := make([]string, len(allAppts))
