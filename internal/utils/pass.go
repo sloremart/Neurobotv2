@@ -67,9 +67,10 @@ func RowContext(passCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, timeout) //nolint:gosec // G118: el cancel se devuelve; lo llama quien recibe la fila.
 }
 
-// MarkContext da un ctx NUEVO y corto (MarkTimeout) para registrar un envío que ya salió. Se crea
-// DESPUÉS del envío y no hereda ni el plazo ni la cancelación de ctx: un envío lento que salió queda
-// marcado igual, y no se repite en la pasada siguiente.
+// MarkContext da un ctx NUEVO y corto (MarkTimeout) para registrar un envío que ya salió, o el
+// cierre de la fila del WAL de un turno que ya terminó. Se crea DESPUÉS del trabajo y no hereda ni el
+// plazo ni la cancelación de ctx: un envío o un turno lento queda marcado igual, y no se repite en
+// la pasada siguiente ni en el replay.
 func MarkContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), MarkTimeout) //nolint:gosec // G118: el cancel se devuelve; lo llama quien marca.
 }

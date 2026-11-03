@@ -55,9 +55,6 @@ const (
 	// (sessions.escalated_at) al decidir si un aviso es anterior a la escalación vigente. Son
 	// servidores distintos; mismo margen que nectarreports.ClockTolerance (D-02).
 	noticeClockTolerance = 2 * time.Minute
-	// walMarkDoneTimeout acota el cierre de la fila del WAL de un comando de agente con contexto
-	// propio: el presupuesto del turno, ya gastado, no decide si la fila se cierra (D-02).
-	walMarkDoneTimeout = 5 * time.Second
 	// phoneLockRetryDelay: pausa antes de reencolar un mensaje cuyo teléfono ya tiene un worker
 	// esperando el candado; así una ráfaga de un teléfono ocupa a lo sumo un worker en espera (B-01).
 	phoneLockRetryDelay = 2 * time.Second
@@ -684,7 +681,11 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 			if keepPending {
 				return
 			}
-			if err := p.inboxRepo.MarkDone(parentCtx, msg.ID); err != nil {
+			// N-01: con ctx propio, como el comando de agente: un turno que agotó processMsgTimeout
+			// cierra igual su fila y el replay de atascados no lo reprocesa.
+			doneCtx, doneCancel := utils.MarkContext(parentCtx)
+			defer doneCancel()
+			if err := p.inboxRepo.MarkDone(doneCtx, msg.ID); err != nil {
 				slog.Error("inbox mark done failed", "id", msg.ID, "error", err)
 			}
 		}()
@@ -965,7 +966,8 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 			if keepPending {
 				return
 			}
-			doneCtx, doneCancel := context.WithTimeout(context.WithoutCancel(parentCtx), walMarkDoneTimeout)
+			// Con ctx propio: el presupuesto del turno, ya gastado, no decide si la fila se cierra.
+			doneCtx, doneCancel := utils.MarkContext(parentCtx)
 			defer doneCancel()
 			if err := p.inboxRepo.MarkDone(doneCtx, cmd.EventID); err != nil {
 				slog.Error("inbox mark done failed (agent cmd)", "id", cmd.EventID, "error", err)
