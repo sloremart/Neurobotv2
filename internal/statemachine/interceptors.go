@@ -14,9 +14,7 @@ import (
 // Gracias al auto-chain en Process(), el estado GREETING (automático) se ejecuta
 // de inmediato y el usuario ve el saludo + menú sin necesidad de enviar otro mensaje.
 func MenuResetInterceptor() Interceptor {
-	keywords := map[string]bool{
-		"menu": true, "menú": true, "inicio": true, "reiniciar": true, "0": true,
-	}
+	keywords := menuResetKeywords
 
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool) {
 		// No interceptar en estados terminales
@@ -47,6 +45,41 @@ func MenuResetInterceptor() Interceptor {
 
 		return result, true
 	}
+}
+
+// menuResetKeywords son las palabras que vuelven al inicio desde cualquier paso.
+var menuResetKeywords = map[string]bool{
+	"menu": true, "menú": true, "inicio": true, "reiniciar": true, "0": true,
+}
+
+// EscalationCapInterceptor deja en silencio la sesión cortada por el tope de escalaciones
+// (CtxEscalationCapped): en FALLBACK_MENU solo pasan las pulsaciones de los botones del corte y la
+// palabra de reinicio, con la conducta de siempre. Todo lo demás se ignora sin enviar nada (queda
+// un evento): un contestador automático que responde a cada mensaje no recibe nada más hasta que
+// tome la sesión un agente o venza. Va PRIMERO, antes de las palabras clave de escalación.
+func EscalationCapInterceptor() Interceptor {
+	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool) {
+		if sess.CurrentState != StateFallbackMenu || sess.GetContext(CtxEscalationCapped) == "" {
+			return nil, false
+		}
+		if msg.IsPostback && (msg.PostbackPayload == "action:restart" || msg.PostbackPayload == "action:end") {
+			return nil, false
+		}
+		if !msg.IsPostback && menuResetKeywords[strings.TrimSpace(strings.ToLower(msg.Text))] {
+			return nil, false
+		}
+		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_input_ignored",
+			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: msg.MessageType})
+		return NewResult(StateFallbackMenu).
+			WithEvent("escalation_cap_input_ignored", map[string]interface{}{"type": msg.MessageType}), true
+	}
+}
+
+// EscalationCapKeys son las claves del tope de escalaciones de la sesión. Las borra el retorno de
+// un agente que atendió el caso (fue una persona, no un lazo del bot); un no-show o una cola
+// vencida no las tocan.
+func EscalationCapKeys() []string {
+	return []string{CtxEscalationCount, CtxEscalationCapped}
 }
 
 // UnsupportedMessageInterceptor rechaza tipos de mensaje no soportados
@@ -313,6 +346,7 @@ func outOfHoursOrderText(hours string) string {
 
 // RegisterInterceptors registra todos los interceptores en la máquina
 func RegisterInterceptors(machine *Machine) {
+	machine.AddInterceptor(EscalationCapInterceptor()) // First: la sesión cortada no responde a nada más
 	machine.AddInterceptor(UnsupportedMessageInterceptor())
 	machine.AddInterceptor(imageOutOfContextInterceptor(machine))
 	machine.AddInterceptor(EscalationKeywordsInterceptor()) // Before menu reset

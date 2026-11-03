@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -65,6 +66,27 @@ func (p *MessageWorkerPool) clearNextDayQueueMark(ctx context.Context, sess *ses
 		[]string{statemachine.CtxEscalationNextDay}); err != nil {
 		slog.Warn("no se pudo borrar la marca de escalación encolada",
 			"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "error", err)
+	}
+}
+
+// clearEscalationCap reinicia el tope de escalaciones de la sesión (statemachine.EscalationCapKeys)
+// cuando un agente ATENDIÓ el caso y lo devolvió al bot: fue una persona, no un lazo del bot. El
+// no-show y la cola vencida NO lo llaman: ahí, sin nadie que atienda, es donde nace el bucle
+// (incidente 11/12-ago). Va antes del turno que retoma la sesión, que puede volver a escalar.
+//
+// Solo escribe si hay algo que borrar.
+func (p *MessageWorkerPool) clearEscalationCap(ctx context.Context, sess *session.Session) {
+	keys := statemachine.EscalationCapKeys()
+	if !slices.ContainsFunc(keys, func(k string) bool { return sess.GetContext(k) != "" }) {
+		return
+	}
+	if err := p.sessionManager.SaveState(ctx, sess, sess.CurrentState, nil, keys); err != nil {
+		slog.Warn("no se pudo reiniciar el tope de escalaciones",
+			"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "error", err)
+	}
+	// En memoria también: el turno de abajo no debe ver el tope de antes aunque no se persistiera.
+	for _, k := range keys {
+		delete(sess.Context, k)
 	}
 }
 
@@ -294,9 +316,10 @@ func (p *MessageWorkerPool) reescalateRejectedAgentInput(ctx context.Context, se
 	// La espera de esta escalación se acabó: un agente tomó el caso y escribió. La marca se borra
 	// en la MISMA escritura, antes del turno de abajo, que vuelve a escalar y decide de nuevo si
 	// corresponde.
-	var clearCtx []string
+	// El tope de escalaciones también se reinicia: un agente atendió (clearEscalationCap).
+	clearCtx := statemachine.EscalationCapKeys()
 	if sess.GetContext(statemachine.CtxEscalationNextDay) != "" {
-		clearCtx = []string{statemachine.CtxEscalationNextDay}
+		clearCtx = append(clearCtx, statemachine.CtxEscalationNextDay)
 	}
 	if err := p.sessionManager.SaveState(ctx, sess, statemachine.StateEscalateToAgent, updateCtx, clearCtx); err != nil {
 		// El turno sigue: la escalación de abajo usa la sesión en memoria. Lo que se pierde es el

@@ -1237,6 +1237,7 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 	// La espera de esta escalación se acabó: una persona tomó el caso. Va ANTES del turno de
 	// abajo, para que si ese turno vuelve a escalar no herede la marca.
 	p.clearNextDayQueueMark(ctx, sess)
+	p.clearEscalationCap(ctx, sess)
 
 	// Unassign agent from Bird Inbox (bot takes over, keep item open)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
@@ -1492,6 +1493,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		return agentCommandResumeProblem
 	}
 	p.clearNextDayQueueMark(ctx, sess)
+	p.clearEscalationCap(ctx, sess)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	// 4. Send confirmation to agent (internal only)
@@ -1601,6 +1603,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		}
 	}
 	p.clearNextDayQueueMark(ctx, sess)
+	p.clearEscalationCap(ctx, sess)
 	_ = p.birdClient.UnassignFeedItem(sess.PhoneNumber, sess.ConversationID, false)
 
 	// Internal summary for agent

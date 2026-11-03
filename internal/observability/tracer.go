@@ -110,6 +110,8 @@ var catalog = map[string]stepSpec{
 	// Auditoría de seguridad 2026-11-03: topes que pasan la orden a un agente.
 	"agendar/cups_quantity_out_of_range": {LvOutcome, "escalated", ""}, // cantidad por encima del tope → agente
 	"agendar/ocr_failed_reads_cap":       {LvOutcome, "escalated", ""}, // 3.ª lectura fallida seguida → agente
+	// Sesión cortada por el tope de escalaciones: cada entrada ignorada en silencio (detalle).
+	"escalacion/escalation_cap_input_ignored": {LvFull, "info", ""},
 
 	// Recordatorio / IVR (§3.3 / §3A) — trace notif:<apptID>
 	"notif_recordatorio/reminder_sent": {LvMilestone, "ok", "bird_msg"},
