@@ -454,6 +454,16 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 	}, nil
 }
 
+// visionImagePart es la parte image_url de un mensaje a Vision. Pide detail=high: sin él OpenAI elige el
+// detalle y con el bajo reduce la foto a 512 px, y los dígitos del código CUPS quedan ilegibles (medido
+// en hdg-bot, conv. 57). Cuesta más tokens por imagen; toda imagen que sale a Vision pasa por aquí.
+func visionImagePart(url string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":      "image_url",
+		"image_url": map[string]string{"url": url, "detail": "high"},
+	}
+}
+
 // AnalyzeImage envía una imagen a OpenAI Vision y extrae CUPS + documento
 func (s *OCRService) AnalyzeImage(ctx context.Context, imageURL string) (*OCRResult, error) {
 	ctx, cancel := s.withAnalyzeBudget(ctx)
@@ -466,7 +476,7 @@ func (s *OCRService) AnalyzeImage(ctx context.Context, imageURL string) (*OCRRes
 			"role": "user",
 			"content": []map[string]interface{}{
 				{"type": "text", "text": "Analiza esta orden médica y extrae los datos según las reglas indicadas."},
-				{"type": "image_url", "image_url": map[string]string{"url": imageURL}},
+				visionImagePart(imageURL),
 			},
 		},
 	}
@@ -724,10 +734,7 @@ func (s *OCRService) AnalyzeImages(ctx context.Context, imageURLs []string) (*OC
 		{"type": "text", "text": "Este documento tiene VARIAS páginas y puede incluir HISTORIA CLÍNICA además de la(s) hoja(s) de FORMULACIÓN/orden. Extrae los CUPS SOLO de las hojas de orden/formulación (las que traen la tabla de procedimientos con su código). IGNORA la historia clínica. Si hay órdenes en varias páginas, inclúyelas todas."},
 	}
 	for _, u := range imageURLs {
-		content = append(content, map[string]interface{}{
-			"type":      "image_url",
-			"image_url": map[string]string{"url": u},
-		})
+		content = append(content, visionImagePart(u))
 	}
 	messages := []map[string]interface{}{
 		{"role": "system", "content": s.buildSystemPrompt()},
