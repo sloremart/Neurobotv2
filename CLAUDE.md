@@ -378,3 +378,21 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   antes (la alerta `bot_unreachable` de Néctar no salta con el 200): un supervisor
   de Néctar rescata una por una las conversaciones del bot («escalar», motivo `bot_down`). Requisito antes del arranque:
   `escalation_enabled` encendida para Neuro en Néctar (si no, 403).
+
+## ROBUSTEZ (auditoría 2026-11-03)
+
+- Apagado: el contenedor `bot` tiene `stop_grace_period: 75s` (el apagado ordenado suma hasta 60 s); se aplica al
+  recrearlo (`docker compose up -d bot`).
+- Candado por teléfono (`internal/worker/pool.go`): un mensaje del WAL que no lo consigue no se pierde; se reencola
+  en memoria (un solo worker espera por teléfono, los demás se difieren 2 s) durante hasta 10 min, y el aviso
+  «Tu mensaje anterior…» sale una vez y solo tras 30 s de espera. `virtual-`/`agent-` siguen como antes.
+- Avisos resuelta/devuelta de Néctar: su fila del WAL se cierra al procesar el comando; un aviso anterior a la
+  escalación vigente (−2 min de tolerancia) se ignora.
+- Scheduler: una tarea que falla ANTES de enviar (`ErrNothingSent`) se reintenta cada 5 min, máx. 6 veces y nunca
+  después de la hora programada + 30 min; un fallo tras un envío no se reintenta (cada envío se cobra).
+- Bucles de fondo con MySQL: plazo por pasada (2 min) que solo impide empezar la fila siguiente; cada fila tiene su
+  propio ctx (2 min) y la marca de un envío ya hecho usa uno nuevo (`utils.MarkContext`).
+- Límite de la API interna: la IP del cliente sale de la última entrada de X-Forwarded-For solo si la conexión viene
+  del proxy de confianza, reconocido por nombre (`TRUSTED_PROXY_HOSTS`, por defecto `ngrok`; definida vacía = no
+  confiar en ninguno, con Warn al arrancar).
+- Logs: la clave `text` (mensaje del paciente) se registra como «[redactado: N caracteres]».
