@@ -183,7 +183,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 	appointments, err := t.AppointmentRepo.FindPendingByDate(ctx, tomorrow)
 	if err != nil {
-		return fmt.Errorf("fetch tomorrow appointments: %w", err)
+		return nothingSent(fmt.Errorf("fetch tomorrow appointments: %w", err))
 	}
 
 	// Group by patient
@@ -426,7 +426,7 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 
 	appointments, err := t.AppointmentRepo.FindPendingByDate(ctx, today)
 	if err != nil {
-		return fmt.Errorf("fetch today appointments: %w", err)
+		return nothingSent(fmt.Errorf("fetch today appointments: %w", err))
 	}
 
 	candidates := sameDayWindowCandidates(now, appointments)
@@ -722,7 +722,7 @@ func (t *Tasks) sendMorningReengagement(ctx context.Context) error {
 	}
 	phones, err := t.ReengageSource.PhonesForMorningReengage(ctx)
 	if err != nil {
-		return fmt.Errorf("reengage phones: %w", err)
+		return nothingSent(fmt.Errorf("reengage phones: %w", err))
 	}
 	sent := 0
 	for _, phone := range phones {
@@ -789,7 +789,7 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
 	appointments, err := t.AppointmentRepo.FindPendingByDate(ctx, tomorrow)
 	if err != nil {
-		return fmt.Errorf("fetch appointments for IVR: %w", err)
+		return nothingSent(fmt.Errorf("fetch appointments for IVR: %w", err))
 	}
 
 	// Build phone → appointment map for quick lookup
@@ -960,7 +960,7 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 	// 2. Obtener CUPS distintos con entries en estado "waiting"
 	cupsCodes, err := t.WaitingListRepo.GetDistinctWaitingCups(ctx)
 	if err != nil {
-		return fmt.Errorf("get waiting cups: %w", err)
+		return nothingSent(fmt.Errorf("get waiting cups: %w", err))
 	}
 
 	if len(cupsCodes) == 0 {
@@ -1000,6 +1000,12 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 }
 
 // === Helpers ===
+
+// nothingSent marca el error de una tarea que falló antes de su primer envío: el scheduler puede
+// reintentarla sin duplicar mensajes ni llamadas (D-03).
+func nothingSent(err error) error {
+	return fmt.Errorf("%w: %w", err, ErrNothingSent)
+}
 
 // sleepWithContext espera la duración indicada o retorna antes si el contexto se cancela.
 func sleepWithContext(ctx context.Context, d time.Duration) error {

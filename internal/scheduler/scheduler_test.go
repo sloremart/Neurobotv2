@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -350,5 +352,115 @@ func TestEvaluateTasks_ContextPassedToFn(t *testing.T) {
 
 	if gotValue != "test-value" {
 		t.Errorf("expected context value 'test-value', got %q", gotValue)
+	}
+}
+
+// --- reintento acotado de una tarea fallida (D-03) ---
+
+// failingUntil devuelve una tarea a las 07:00 cuyo Fn falla con ErrNothingSent las primeras `fails`
+// veces y luego tiene éxito; calls cuenta las ejecuciones.
+func failingUntil(fails int32, calls *atomic.Int32) ScheduledTask {
+	return ScheduledTask{
+		Name: "reminders", Hour: 7, Minute: 0,
+		Fn: func(_ context.Context) error {
+			if calls.Add(1) <= fails {
+				return fmt.Errorf("fetch tomorrow appointments: %w", ErrNothingSent)
+			}
+			return nil
+		},
+	}
+}
+
+// tickUntil evalúa minuto a minuto desde `from` hasta `to` (inclusive), drenando la tarea en vuelo
+// tras cada tick para que su resultado (y el reintento que programe) quede registrado.
+func tickUntil(ctx context.Context, t *testing.T, s *Scheduler, from, to time.Time) {
+	t.Helper()
+	lastRun := make(map[string]time.Time)
+	for now := from; !now.After(to); now = now.Add(time.Minute) {
+		s.evaluateTasks(ctx, now, lastRun)
+		if !s.Wait(2 * time.Second) {
+			t.Fatal("task did not drain")
+		}
+	}
+}
+
+func TestRetry_FailedTaskRetriesEvery5MinUntilSuccess(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(failingUntil(1, &calls))
+
+	at := func(h, m int) time.Time { return time.Date(2026, 3, 16, h, m, 0, 0, time.UTC) }
+	tickUntil(context.Background(), t, s, at(7, 0), at(7, 4))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("before 07:05: calls = %d, want 1", got)
+	}
+	tickUntil(context.Background(), t, s, at(7, 5), at(7, 5))
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("at 07:05: calls = %d, want 2 (retry)", got)
+	}
+	// Tuvo éxito en el reintento: no hay más corridas en el resto de la mañana.
+	tickUntil(context.Background(), t, s, at(7, 6), at(9, 0))
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("after success: calls = %d, want 2", got)
+	}
+}
+
+func TestRetry_GivesUpAfterMaxRetries(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(failingUntil(1000, &calls))
+
+	tickUntil(context.Background(), t, s,
+		time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC), time.Date(2026, 3, 16, 13, 0, 0, 0, time.UTC))
+	if got, want := calls.Load(), int32(1+taskMaxRetries); got != want {
+		t.Fatalf("calls = %d, want %d (1 run + %d retries)", got, want, taskMaxRetries)
+	}
+}
+
+// Un error SIN ErrNothingSent (p. ej. falló tras enviar a parte de la lista) no se reintenta:
+// el reintento volvería a cobrar los envíos ya hechos.
+func TestRetry_PartialFailureIsNotRetried(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(ScheduledTask{
+		Name: "partial", Hour: 7, Minute: 0,
+		Fn: func(_ context.Context) error {
+			calls.Add(1)
+			return errors.New("send failed after 40 reminders")
+		},
+	})
+
+	tickUntil(context.Background(), t, s,
+		time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC), time.Date(2026, 3, 16, 8, 0, 0, 0, time.UTC))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1 (no retry)", got)
+	}
+}
+
+func TestRetry_CancelledContextDoesNotRetry(t *testing.T) {
+	at := func(m int) time.Time { return time.Date(2026, 3, 16, 7, m, 0, 0, time.UTC) }
+
+	// Falla con el ctx ya cancelado (apagado): no se programa reintento.
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(failingUntil(1000, &calls))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tickUntil(ctx, t, s, at(0), at(0))
+	tickUntil(context.Background(), t, s, at(1), at(40))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("failed under cancelled ctx: calls = %d, want 1", got)
+	}
+
+	// Reintento ya programado y luego apagado: el tick con el ctx cancelado no lo lanza.
+	s2 := NewScheduler(time.UTC)
+	var calls2 atomic.Int32
+	s2.AddTask(failingUntil(1000, &calls2))
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	tickUntil(ctx2, t, s2, at(0), at(0))
+	cancel2()
+	tickUntil(ctx2, t, s2, at(1), at(40))
+	if got := calls2.Load(); got != 1 {
+		t.Fatalf("retry due after shutdown: calls = %d, want 1", got)
 	}
 }

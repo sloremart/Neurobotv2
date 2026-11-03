@@ -3,6 +3,7 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -612,4 +613,20 @@ func TestReminder_GuardsStillNoPending(t *testing.T) {
 			t.Fatalf("sin pending ni apertura: %d", rig.nm.PendingCount())
 		}
 	})
+}
+
+type reengageErrStub struct{}
+
+func (reengageErrStub) PhonesForMorningReengage(context.Context) ([]string, error) {
+	return nil, errors.New("db error")
+}
+
+// D-03: si la consulta de candidatos falla no salió ningún saludo: el error es reintentable.
+func TestMorningReengage_SourceError_MarkedNothingSent(t *testing.T) {
+	cfg := testConfig()
+	cfg.MorningReengageEnabled = true
+	tasks := &Tasks{Cfg: cfg, ReengageSource: reengageErrStub{}}
+	if err := tasks.sendMorningReengagement(context.Background()); !errors.Is(err, ErrNothingSent) {
+		t.Errorf("error = %v, want wrapping ErrNothingSent", err)
+	}
 }

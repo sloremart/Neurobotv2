@@ -449,6 +449,10 @@ func TestSendWhatsAppReminders_RepoError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from repo, got nil")
 	}
+	// Falló antes de enviar: el scheduler puede reintentarla (D-03).
+	if !errors.Is(err, ErrNothingSent) {
+		t.Errorf("error = %v, want wrapping ErrNothingSent", err)
+	}
 }
 
 func TestSendWhatsAppReminders_InvalidPhone_Skipped(t *testing.T) {
@@ -774,6 +778,10 @@ func TestSendVoiceReminders_RepoError(t *testing.T) {
 	err := tasks.sendVoiceReminders(context.Background())
 	if err == nil {
 		t.Fatal("expected error from repo, got nil")
+	}
+	// Falló antes de enviar: el scheduler puede reintentarla (D-03).
+	if !errors.Is(err, ErrNothingSent) {
+		t.Errorf("error = %v, want wrapping ErrNothingSent", err)
 	}
 }
 
@@ -1371,6 +1379,10 @@ func TestCheckWaitingList_GetDistinctCupsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from GetDistinctWaitingCups, got nil")
 	}
+	// Falló antes de enviar: el scheduler puede reintentarla (D-03).
+	if !errors.Is(err, ErrNothingSent) {
+		t.Errorf("error = %v, want wrapping ErrNothingSent", err)
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1684,5 +1696,22 @@ func TestSendSameDayReminders_SendsAndDedups(t *testing.T) {
 				t.Errorf("el dedup debe consultarse exactamente 1 vez, got %d", history.calls.Load())
 			}
 		})
+	}
+}
+
+// D-03: el corte de SIESA al leer las citas de hoy ocurre antes de cualquier envío, así que el
+// error queda marcado como reintentable.
+func TestSendSameDayReminders_RepoError_MarkedNothingSent(t *testing.T) {
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			return nil, errors.New("db error")
+		},
+	}
+	cfg := testConfig()
+	cfg.SameDayRemindersEnabled = true
+
+	tasks := &Tasks{AppointmentRepo: mockRepo, Cfg: cfg, NotifHistory: &mockNotifHistory{}}
+	if err := tasks.sendSameDayReminders(context.Background()); !errors.Is(err, ErrNothingSent) {
+		t.Errorf("error = %v, want wrapping ErrNothingSent", err)
 	}
 }

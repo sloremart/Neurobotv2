@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -14,6 +15,29 @@ import (
 // defaultTaskTimeout es el backstop por-ejecución (N-39): acota una tarea colgada sin matar las
 // corridas largas legítimas (los recordatorios diarios sobre volúmenes reales tardan minutos).
 const defaultTaskTimeout = 1 * time.Hour
+
+// ErrNothingSent marca el error de una tarea que falló ANTES de su primer envío (p. ej. SIESA no
+// respondió al leer las citas). Solo ese error se reintenta: un reintento tras un fallo parcial
+// volvería a cobrar los envíos ya hechos.
+var ErrNothingSent = errors.New("nothing sent")
+
+// Reintento acotado de una tarea que falló antes de enviar (D-03): cada taskRetryInterval y a lo
+// sumo taskMaxRetries veces tras la corrida de su hora.
+const (
+	taskRetryInterval = 5 * time.Minute
+	taskMaxRetries    = 6
+)
+
+// noRetry es el intento de una corrida que no se reintenta (el catch-up del arranque, que ya tiene
+// su propia política horaria L14).
+const noRetry = -1
+
+// pendingRetry es el próximo reintento programado de una tarea: attempt es su número (1..taskMaxRetries).
+type pendingRetry struct {
+	task    ScheduledTask
+	attempt int
+	due     time.Time
+}
 
 // RunRepo persists the last successful execution of scheduled tasks.
 type RunRepo interface {
@@ -66,6 +90,9 @@ type Scheduler struct {
 	runRepo     RunRepo // optional — persists run times for crash catch-up
 	wg          sync.WaitGroup
 	taskTimeout time.Duration
+
+	retryMu sync.Mutex
+	retries map[string]pendingRetry // por nombre de tarea (D-03)
 }
 
 // NewScheduler creates a new scheduler with the given timezone.
@@ -105,7 +132,8 @@ func (s *Scheduler) Wait(timeout time.Duration) bool {
 
 // runTask ejecuta una tarea en su propia goroutine, trackeada por el WaitGroup (N-37) y acotada
 // por un timeout por-ejecución (N-39). Persiste el last-run solo si la tarea terminó con éxito.
-func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.Time, label string) {
+// attempt es 0 en la corrida de su hora, 1..taskMaxRetries en un reintento y noRetry en el catch-up.
+func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.Time, label string, attempt int) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -134,10 +162,14 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 		if err := task.Fn(taskCtx); err != nil {
 			dur := time.Since(start).Milliseconds()
 			slog.Error(label+" failed", "task", task.Name, "error", err,
-				"duration_ms", dur)
+				"duration_ms", dur, "attempt", attempt)
+			attrs := map[string]interface{}{"duration_ms": dur, "attempt": attempt}
+			if s.scheduleRetry(ctx, task, runAt, attempt, err) {
+				attrs["retries_exhausted"] = true
+			}
 			observability.Emit(trace, "scheduler", "task_failed", observability.EmitOpts{
 				Reason: err.Error(),
-				Attrs:  map[string]interface{}{"duration_ms": dur},
+				Attrs:  attrs,
 			})
 			return
 		}
@@ -161,6 +193,51 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 			pcancel()
 		}
 	}()
+}
+
+// scheduleRetry programa el reintento de una tarea que falló (D-03) y devuelve true si se agotaron
+// los reintentos. Solo se reintenta un error marcado con ErrNothingSent (nada salió: reintentar no
+// duplica envíos), nunca en el apagado (ctx cancelado) ni en el catch-up. El reintento lo lanza
+// evaluateTasks en el tick que cumple `due`: no hay timers ni goroutines que drenar.
+func (s *Scheduler) scheduleRetry(ctx context.Context, task ScheduledTask, runAt time.Time, attempt int, err error) bool {
+	if attempt == noRetry || ctx.Err() != nil || !errors.Is(err, ErrNothingSent) {
+		return false
+	}
+	if attempt >= taskMaxRetries {
+		slog.Error("scheduler task retries exhausted", "task", task.Name,
+			"retries", taskMaxRetries, "error", err)
+		return true
+	}
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	if s.retries == nil {
+		s.retries = make(map[string]pendingRetry)
+	}
+	s.retries[task.Name] = pendingRetry{task: task, attempt: attempt + 1, due: runAt.Add(taskRetryInterval)}
+	slog.Warn("scheduler task retry scheduled", "task", task.Name,
+		"attempt", attempt+1, "due", runAt.Add(taskRetryInterval))
+	return false
+}
+
+// takeDueRetries saca los reintentos vencidos a `now`.
+func (s *Scheduler) takeDueRetries(now time.Time) []pendingRetry {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	var due []pendingRetry
+	for name, r := range s.retries {
+		if !now.Before(r.due) {
+			due = append(due, r)
+			delete(s.retries, name)
+		}
+	}
+	return due
+}
+
+// dropRetry descarta el reintento pendiente de una tarea (su corrida de hora lo reemplaza).
+func (s *Scheduler) dropRetry(name string) {
+	s.retryMu.Lock()
+	delete(s.retries, name)
+	s.retryMu.Unlock()
 }
 
 // AddTask registers a task to be executed at the configured time.
@@ -247,7 +324,7 @@ func (s *Scheduler) RunMissedTasks(ctx context.Context) {
 			"scheduled_at", scheduledToday,
 		)
 
-		s.runTask(ctx, task, time.Now(), "scheduler catch-up")
+		s.runTask(ctx, task, time.Now(), "scheduler catch-up", noRetry)
 	}
 }
 
@@ -255,6 +332,14 @@ func (s *Scheduler) RunMissedTasks(ctx context.Context) {
 // lastRun is updated in place to prevent double execution within the same minute.
 func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun map[string]time.Time) []string {
 	var executed []string
+
+	// D-03: reintentos vencidos de tareas que fallaron antes de enviar. En el apagado no se lanzan.
+	if ctx.Err() == nil {
+		for _, r := range s.takeDueRetries(now) {
+			executed = append(executed, r.task.Name)
+			s.runTask(ctx, r.task, now, "scheduler retry", r.attempt)
+		}
+	}
 
 	for _, task := range s.tasks {
 		if now.Hour() != task.Hour || now.Minute() != task.Minute {
@@ -283,7 +368,8 @@ func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun ma
 		lastRun[key] = now
 		executed = append(executed, task.Name)
 
-		s.runTask(ctx, task, now, "scheduler task")
+		s.dropRetry(task.Name)
+		s.runTask(ctx, task, now, "scheduler task", 0)
 	}
 
 	return executed
