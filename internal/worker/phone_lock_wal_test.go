@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -123,6 +124,14 @@ func assertNoLockEntry(t *testing.T, pool *MessageWorkerPool, id string) {
 	}
 }
 
+// assertLockEntry: el mensaje se fue al replay y conserva su plazo y el aviso ya dado (R2-2).
+func assertLockEntry(t *testing.T, pool *MessageWorkerPool, id string) {
+	t.Helper()
+	if _, ok := pool.lockMisses.Load(id); !ok {
+		t.Errorf("la entrada de %q en lockMisses debe conservarse para el replay", id)
+	}
+}
+
 // B-01 (a): el mensaje que venció el candado se reencola y se procesa apenas se libera, sin
 // esperar al replay de atascados; su fila se cierra una sola vez.
 func TestProcessMessage_PhoneLockTimeout_RequeuesAndProcessesOnRelease(t *testing.T) {
@@ -190,7 +199,7 @@ func TestProcessMessage_PhoneLockTimeout_QueueFullLeavesPending(t *testing.T) {
 	if got := (<-lc.pool.queue).ID; got != "filler" || len(lc.pool.queue) != 0 {
 		t.Fatalf("no debe reencolarse con la cola llena (cabeza %q, quedan %d)", got, len(lc.pool.queue))
 	}
-	assertNoLockEntry(t, lc.pool, "photo-4")
+	assertLockEntry(t, lc.pool, "photo-4")
 }
 
 // B-01 (apagado): con el ctx de la app cancelado no se reencola (Stop no espera por él) y la fila
@@ -206,7 +215,7 @@ func TestProcessMessage_PhoneLockTimeout_ShutdownLeavesPending(t *testing.T) {
 	if n := lc.inbox.doneCount(); n != 0 {
 		t.Fatalf("la fila debe quedar pending para el replay de arranque, got %d MarkDone", n)
 	}
-	assertNoLockEntry(t, lc.pool, "photo-5")
+	assertLockEntry(t, lc.pool, "photo-5")
 }
 
 // B-01 (drain de Stop): con el cierre ya marcado (el ctx del drain no está cancelado) tampoco se
@@ -223,7 +232,7 @@ func TestProcessMessage_PhoneLockTimeout_ClosingLeavesPending(t *testing.T) {
 	if n := lc.inbox.doneCount(); n != 0 {
 		t.Fatalf("la fila debe quedar pending para el replay de arranque, got %d MarkDone", n)
 	}
-	assertNoLockEntry(t, lc.pool, "photo-6")
+	assertLockEntry(t, lc.pool, "photo-6")
 }
 
 // B-01 (d): pasado maxPhoneLockWait desde el primer vencimiento se rinde: cierra la fila, no
@@ -283,4 +292,133 @@ func TestProcessMessage_PhoneLockTimeout_RenewsDedupClaim(t *testing.T) {
 	if n := lc.pool.dedupCount.Load(); n != 1 {
 		t.Errorf("renovar un claim existente no cambia dedupCount, got %d", n)
 	}
+}
+
+// burstPool arma un pool de `workers` workers con el teléfono A ya bloqueado. Los mensajes de otros
+// teléfonos se quedan dentro del procesador hasta que se cierre `hold`, para medir cuántos workers
+// quedan libres a la vez.
+type burstPool struct {
+	*lockContention
+	otherInside atomic.Int32
+	hold        chan struct{}
+}
+
+func newBurstPool(t *testing.T, workers int, lockTimeout, retryDelay time.Duration) *burstPool {
+	t.Helper()
+	bp := &burstPool{lockContention: newLockContention(t, 100, lockTimeout), hold: make(chan struct{})}
+	processor := &mockMessageProcessor{
+		processFn: func(_ context.Context, _ *session.Session, msg bird.InboundMessage) (*statemachine.StateResult, error) {
+			if msg.Phone != testPhone {
+				bp.otherInside.Add(1)
+				<-bp.hold
+			}
+			bp.processed.Add(1)
+			return &statemachine.StateResult{NextState: "GREETING"}, nil
+		},
+	}
+	bp.pool = NewMessageWorkerPool(workers, 100)
+	bp.pool.SetDependencies(bp.sm, bp.sender, processor)
+	bp.pool.SetInboxRepo(bp.inbox)
+	bp.pool.lockTimeout = lockTimeout
+	bp.pool.lockRetryDelay = retryDelay
+	return bp
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("plazo vencido esperando: %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// B-01 (R2-1): una ráfaga de 5 mensajes de un teléfono con el candado tomado ocupa a lo sumo un
+// worker en espera; los otros 4 atienden a la vez a otros teléfonos. Al liberar el candado se
+// procesan todos los de la ráfaga y cada fila se cierra una sola vez.
+func TestProcessMessage_PhoneLockBurst_OneWaiterAndAllProcessed(t *testing.T) {
+	bp := newBurstPool(t, 5, 5*time.Second, 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bp.pool.Start(ctx)
+
+	for i := 0; i < 5; i++ {
+		bp.pool.Enqueue(bird.InboundMessage{ID: fmt.Sprintf("burst-%d", i), Phone: testPhone, MessageType: "image"})
+	}
+	time.Sleep(200 * time.Millisecond) // la ráfaga ya pasó por los workers y se difirió
+	for i := 0; i < 4; i++ {
+		bp.pool.Enqueue(bird.InboundMessage{ID: fmt.Sprintf("other-%d", i), Phone: fmt.Sprintf("+57300000000%d", i), Text: "hola"})
+	}
+	// Los 4 de otros teléfonos dentro del procesador A LA VEZ = 4 workers libres de 5.
+	waitFor(t, "4 workers libres atendiendo otros teléfonos", func() bool { return bp.otherInside.Load() == 4 })
+	close(bp.hold)
+	// Un aviso por cada diferido, aunque se haya reencolado varias veces; el que espera aún no venció.
+	if n := bp.sender.countText(lockBusyNotice); n != 4 {
+		t.Errorf("un aviso por mensaje diferido de la ráfaga, got %d", n)
+	}
+
+	bp.sm.mutex.Unlock(testPhone)
+	waitFor(t, "las 9 filas cerradas", func() bool { return bp.inbox.doneCount() == 9 })
+	time.Sleep(200 * time.Millisecond) // margen para ver un cierre de más
+	bp.inbox.mu.Lock()
+	seen := map[string]int{}
+	for _, id := range bp.inbox.done {
+		seen[id]++
+	}
+	bp.inbox.mu.Unlock()
+	for id, n := range seen {
+		if n != 1 {
+			t.Errorf("la fila %q se cerró %d veces", id, n)
+		}
+	}
+	if len(seen) != 9 || bp.processed.Load() != 9 {
+		t.Errorf("esperaba 9 mensajes procesados y cerrados, got %d filas y %d procesados", len(seen), bp.processed.Load())
+	}
+}
+
+// B-01 (R2-1): Stop con reencolados diferidos pendientes no se cuelga, y los timers que disparan
+// después no meten nada en la cola: las filas quedan 'pending' para el replay de arranque.
+func TestProcessMessage_PhoneLockBurst_StopWithPendingTimers(t *testing.T) {
+	bp := newBurstPool(t, 3, 300*time.Millisecond, 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	bp.pool.Start(ctx)
+	for i := 0; i < 3; i++ {
+		bp.pool.Enqueue(bird.InboundMessage{ID: fmt.Sprintf("stop-%d", i), Phone: testPhone, MessageType: "image"})
+	}
+	time.Sleep(50 * time.Millisecond) // dos diferidos con su timer en marcha, uno esperando
+
+	cancel()
+	stopped := make(chan struct{})
+	go func() {
+		bp.pool.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop no debe quedarse esperando por los timers")
+	}
+	time.Sleep(400 * time.Millisecond) // los timers ya dispararon
+	if n := len(bp.pool.queue); n != 0 {
+		t.Fatalf("tras Stop un timer no debe encolar, got %d en cola", n)
+	}
+	if n := bp.inbox.doneCount(); n != 0 {
+		t.Fatalf("las filas deben quedar pending para el replay de arranque, got %d MarkDone", n)
+	}
+}
+
+// R2-2: la limpieza periódica purga la entrada de un mensaje que se fue al replay y no volvió, y no
+// toca la de uno todavía dentro del plazo.
+func TestPurgeStaleLockMisses(t *testing.T) {
+	pool := NewMessageWorkerPool(1, 1)
+	now := time.Now()
+	pool.lockMisses.Store("gone", now.Add(-2*maxPhoneLockWait-time.Minute))
+	pool.lockMisses.Store("live", now.Add(-maxPhoneLockWait))
+
+	pool.purgeStaleLockMisses(now)
+
+	assertNoLockEntry(t, pool, "gone")
+	assertLockEntry(t, pool, "live")
 }
