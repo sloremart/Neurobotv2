@@ -149,7 +149,8 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 	// 06:00–16:00 cada hora — recordatorio de CORTA ANTELACIÓN (§8.1 #2): citas de HOY agendadas
 	// después de la corrida de las 07:00 de ayer, que por diseño nunca reciben el recordatorio del
 	// día antes (25,6% de no-show medido en ese bucket). ADITIVO: no toca whatsapp_reminders.
-	// Cada corrida capta las citas cuya hora cae en [ahora+1h, ahora+2h) — una sola vez por cita.
+	// Cada corrida capta las citas cuya hora cae en [ahora+1h, ahora+2h) — una sola vez por cita; su
+	// reintento (D-03) cuenta «ahora» desde la hora de la corrida (taskNow).
 	// CatchupNever: una corrida perdida no se recupera (su ventana ya pasó); la siguiente cubre la suya.
 	// Lun–Sáb (la clínica no opera domingo).
 	for h := 6; h <= 16; h++ {
@@ -426,7 +427,9 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		return nil
 	}
 
-	now := time.Now()
+	// Un reintento calcula la franja desde la hora de su corrida: si no, las citas entre HH+1 y la
+	// hora del reintento + 1h no las capta ninguna corrida (M-7).
+	now := taskNow(ctx)
 	today := now.Format("2006-01-02")
 
 	appointments, err := t.AppointmentRepo.FindPendingByDate(ctx, today)

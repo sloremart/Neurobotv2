@@ -1715,3 +1715,83 @@ func TestSendSameDayReminders_RepoError_MarkedNothingSent(t *testing.T) {
 		t.Errorf("error = %v, want wrapping ErrNothingSent", err)
 	}
 }
+
+// M-7: el reintento calcula la franja desde la hora programada de su corrida, no desde la suya.
+// Una corrida de «las 10:00» que falla y sale bien en el reintento de «las 10:30» avisa a la cita
+// de «las 11:15» (su franja es [11:00, 12:00)); antes la franja salía desde las 10:30 y la perdía.
+// La deduplicación sigue mandando: una cita ya notificada no se reenvía en el reintento.
+func TestSendSameDayReminders_RetryUsesScheduledWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		alreadySent   bool
+		expectedSends int32
+	}{
+		{"cita en la franja de la corrida → avisa", false, 1},
+		{"ya notificada → dedup, no reenvía", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sendCount atomic.Int32
+			countSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					sendCount.Add(1)
+				}
+				w.WriteHeader(200)
+				_, _ = w.Write([]byte(`{"id":"msg-sd-retry"}`))
+			}))
+			defer countSrv.Close()
+
+			birdClient := bird.NewClientForTest(countSrv.URL)
+			cfg := testConfig()
+			cfg.SameDayRemindersEnabled = true
+
+			// La corrida es de hace 30 min («las 10:00») y el reintento corre ahora («las 10:30»).
+			scheduledAt := time.Now().Truncate(time.Minute).Add(-taskRetryWindow)
+			appt := domain.Appointment{
+				ID: "apt-retry", PatientID: "P011", PatientName: "Ana Ruiz",
+				PatientPhone: "3001112233", DoctorName: "Dr. Garcia",
+				Date: scheduledAt, TimeSlot: scheduledAt.Add(75 * time.Minute).Format("200601021504"),
+				Procedures: []domain.AppointmentProcedure{{CupCode: "890274", CupName: "Consulta Neurologia", Quantity: 1}},
+			}
+			var fetches atomic.Int32
+			mockRepo := &testutil.MockAppointmentRepo{
+				FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+					if fetches.Add(1) == 1 {
+						return nil, errors.New("siesa down") // la corrida de su hora no envía nada
+					}
+					return []domain.Appointment{appt}, nil
+				},
+			}
+			tasks := &Tasks{
+				AppointmentRepo: mockRepo,
+				BirdClient:      birdClient,
+				NotifyManager:   notifications.NewNotificationManager(birdClient, nil, cfg),
+				Cfg:             cfg,
+				NotifHistory:    &mockNotifHistory{notified: tc.alreadySent},
+			}
+
+			s := NewScheduler(time.Local)
+			task := ScheduledTask{
+				Name: "same_day_reminders_test", Hour: scheduledAt.Hour(), Minute: scheduledAt.Minute(),
+				Fn: tasks.sendSameDayReminders,
+			}
+			s.AddTask(task)
+			lastRun := map[string]time.Time{}
+			s.evaluateTasks(context.Background(), scheduledAt, lastRun)
+			if !s.Wait(5 * time.Second) {
+				t.Fatal("la corrida de su hora no terminó")
+			}
+			if got := s.evaluateTasks(context.Background(), scheduledAt.Add(taskRetryWindow), lastRun); len(got) != 1 {
+				t.Fatalf("el reintento debía lanzarse al final de su ventana, got %v", got)
+			}
+			if !s.Wait(10 * time.Second) {
+				t.Fatal("el reintento no terminó")
+			}
+			if fetches.Load() != 2 {
+				t.Fatalf("esperaba la corrida y un reintento, got %d lecturas", fetches.Load())
+			}
+			if sendCount.Load() != tc.expectedSends {
+				t.Errorf("envíos = %d, esperaba %d", sendCount.Load(), tc.expectedSends)
+			}
+		})
+	}
+}

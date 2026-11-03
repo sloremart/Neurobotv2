@@ -40,6 +40,19 @@ type retryChain struct {
 	attempt     int
 }
 
+// runAtKey guarda en el ctx de un reintento la hora programada de su corrida (M-7).
+type runAtKey struct{}
+
+// taskNow es el «ahora» desde el que una tarea calcula su franja: en un reintento, la hora
+// programada de la corrida que reintenta (M-7), para que la franja no se corra con el reintento; en
+// la corrida de su hora y en el catch-up, time.Now() como siempre.
+func taskNow(ctx context.Context) time.Time {
+	if at, ok := ctx.Value(runAtKey{}).(time.Time); ok {
+		return at.In(time.Local)
+	}
+	return time.Now()
+}
+
 // pendingRetry es el próximo reintento programado de una tarea.
 type pendingRetry struct {
 	task  ScheduledTask
@@ -164,6 +177,9 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 		}
 		taskCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
+		if chain != nil && chain.attempt > 0 {
+			taskCtx = context.WithValue(taskCtx, runAtKey{}, chain.scheduledAt)
+		}
 
 		slog.Info(label+" starting", "task", task.Name)
 		start := time.Now()

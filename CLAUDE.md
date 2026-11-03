@@ -389,7 +389,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Avisos resuelta/devuelta de Néctar: su fila del WAL se cierra al procesar el comando; un aviso anterior a la
   escalación vigente (−2 min de tolerancia) se ignora.
 - Scheduler: una tarea que falla ANTES de enviar (`ErrNothingSent`) se reintenta cada 5 min, máx. 6 veces y nunca
-  después de la hora programada + 30 min; un fallo tras un envío no se reintenta (cada envío se cobra).
+  después de la hora programada + 30 min; un fallo tras un envío no se reintenta (cada envío se cobra). El
+  reintento de `same_day_reminders_HH` calcula su franja desde la hora programada, no desde la suya.
 - Bucles de fondo con MySQL: plazo por pasada (2 min) que solo impide empezar la fila siguiente; cada fila tiene su
   propio ctx (2 min) y la marca de un envío ya hecho usa uno nuevo (`utils.MarkContext`).
 - Límite de la API interna: la IP del cliente sale de la última entrada de X-Forwarded-For solo si la conexión viene
