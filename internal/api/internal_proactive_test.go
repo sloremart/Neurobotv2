@@ -122,7 +122,9 @@ func (r *adminRig) assertNectarPending(t *testing.T, notifType string) {
 	if !ok {
 		t.Fatal("el pending queda bajo la clave de la sesión de Néctar")
 	}
-	if p.Type != notifType || p.ContactPhone != adminPhone || p.ConversationID != "77" || p.BirdMessageID != "901" {
+	// AppointmentSlot = el TimeSlot de la cita avisada (D-04: detecta la cita movida con el mismo id).
+	if p.Type != notifType || p.ContactPhone != adminPhone || p.ConversationID != "77" || p.BirdMessageID != "901" ||
+		p.AppointmentSlot != adminAppt("A1").TimeSlot {
 		t.Fatalf("pending = %+v", p)
 	}
 	if r.nm.HasPending(adminPhone) {

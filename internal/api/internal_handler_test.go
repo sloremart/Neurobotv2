@@ -30,6 +30,7 @@ type mockApptRepoAPI struct {
 	cancelBatchBlockFn      func(ctx context.Context, ids []string, reason, channel, channelID string) error
 	RescheduleDayOfAgendaFn func(ctx context.Context, in domain.RescheduleDayInput) (domain.RescheduleDayResult, error)
 	doctorAgendasOnDateFn   func(ctx context.Context, doctor, date string) ([]domain.DoctorAgendaOnDate, error)
+	confirmBatchFn          func(ctx context.Context, ids []string, channel, channelID string) error
 }
 
 func (m *mockApptRepoAPI) FindDoctorAgendasOnDate(ctx context.Context, doctor, date string) ([]domain.DoctorAgendaOnDate, error) {
@@ -95,6 +96,9 @@ func (m *mockApptRepoAPI) Cancel(ctx context.Context, id, reason, ch, chID strin
 }
 
 func (m *mockApptRepoAPI) ConfirmBatch(ctx context.Context, ids []string, channel, channelID string) error {
+	if m.confirmBatchFn != nil {
+		return m.confirmBatchFn(ctx, ids, channel, channelID)
+	}
 	return nil
 }
 

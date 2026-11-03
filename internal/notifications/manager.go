@@ -1207,6 +1207,12 @@ func (m *NotificationManager) LoadPendingForTest(phone string) (*PendingNotifica
 	return val.(*PendingNotification), true
 }
 
+// RetrySiesaPendingForTest corre UNA pasada de las respuestas pendientes de SIESA (D-04) con el
+// reloj dado. Do NOT use in production code.
+func (m *NotificationManager) RetrySiesaPendingForTest(ctx context.Context, now time.Time) {
+	m.retrySiesaPending(ctx, now)
+}
+
 // PendingCount returns the number of pending notifications.
 func (m *NotificationManager) PendingCount() int {
 	count := 0

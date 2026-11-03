@@ -1383,7 +1383,7 @@ func (h *InternalHandler) HandleSendAgendaConfirmations(w http.ResponseWriter, r
 				},
 			}
 
-			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", firstAppt.ID)
+			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", firstAppt.ID, firstAppt.TimeSlot)
 			if h.stopOnProactiveConfig(ctx, "agenda_confirmations", err, len(patients)-visited+1) {
 				break
 			}
@@ -1541,7 +1541,7 @@ func (h *InternalHandler) HandleCancelAgenda(w http.ResponseWriter, r *http.Requ
 					},
 				}
 
-				notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", firstAppt.ID)
+				notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", firstAppt.ID, firstAppt.TimeSlot)
 				if h.stopOnProactiveConfig(ctx, "agenda_cancellation", err, len(patients)-visited+1) {
 					break
 				}
@@ -1647,9 +1647,11 @@ type proactiveNotice struct {
 // Néctar devuelve bird.ErrConversationWithAgent tras dejar el evento notification_skipped_agent_owned,
 // sin pending. Una apertura EN DUDA (nectar.ErrOpenInDoubt: la plantilla pudo salir) deja el evento
 // notification_in_doubt, sin pending ni reintento. Cualquier otro error lo registra quien llama. RegisterPending no toma ctx → contextcheck.
+// apptSlot es el TimeSlot de la cita avisada: con él, una respuesta que quede pendiente de SIESA
+// (D-04) detecta la cita movida con el mismo id.
 //
 //nolint:contextcheck
-func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone string, tmpl bird.TemplateConfig, notifType, apptID string) (proactiveNotice, error) {
+func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone string, tmpl bird.TemplateConfig, notifType, apptID, apptSlot string) (proactiveNotice, error) {
 	// Sin cancelación: una apertura cortada a medias (cliente del dashboard que se va, timeout del
 	// lote) queda «en duda» y no se puede reintentar sin arriesgar una plantilla doble.
 	sent, err := h.birdClient.SendProactiveTemplate(context.WithoutCancel(ctx), phone, tmpl)
@@ -1677,7 +1679,7 @@ func (h *InternalHandler) sendTemplateAndRegister(ctx context.Context, phone str
 	convID := h.birdClient.ProactiveConversationID(phone, sent)
 	h.notifyManager.RegisterPending(notifications.PendingNotification{
 		Type: notifType, Phone: sent.Key, ContactPhone: sent.ContactPhone(phone),
-		AppointmentID: apptID, BirdMessageID: sent.MessageID, ConversationID: convID,
+		AppointmentID: apptID, AppointmentSlot: apptSlot, BirdMessageID: sent.MessageID, ConversationID: convID,
 	})
 	return proactiveNotice{MessageID: sent.MessageID, Key: sent.Key, ConversationID: convID}, nil
 }
@@ -1718,7 +1720,7 @@ func (h *InternalHandler) sendCancellationTemplate(ctx context.Context, appt *do
 			{Type: "string", Key: "reason", Value: reason},
 		},
 	}
-	if _, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", appt.ID); err != nil {
+	if _, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "cancellation", appt.ID, appt.TimeSlot); err != nil {
 		if !proactiveHandled(err) {
 			slog.Error("dashboard notif", "type", "cancellation", "phone", utils.MaskPhone(phone), "error", err) //nolint:gosec // G706: endpoint admin (X-API-Key); slog estructura los valores.
 		}
@@ -1846,7 +1848,7 @@ func (h *InternalHandler) HandleNotifyConfirmation(w http.ResponseWriter, r *htt
 			{Type: "string", Key: "procedures", Value: proceduresText(appt.Procedures)},
 		},
 	}
-	notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", appt.ID)
+	notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "confirmation", appt.ID, appt.TimeSlot)
 	if errors.Is(err, bird.ErrConversationWithAgent) {
 		http.Error(w, "el paciente está conversando con un asesor", http.StatusConflict)
 		return
@@ -2070,7 +2072,7 @@ func (h *InternalHandler) sendRescheduleNotifications(appointments []domain.Appo
 				},
 			}
 
-			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "reschedule", firstAppt.ID)
+			notice, err := h.sendTemplateAndRegister(ctx, phone, tmpl, "reschedule", firstAppt.ID, firstAppt.TimeSlot)
 			if h.stopOnProactiveConfig(ctx, "agenda_reschedule", err, len(patients)-visited+1) {
 				break
 			}
