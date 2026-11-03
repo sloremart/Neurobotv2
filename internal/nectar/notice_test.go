@@ -100,7 +100,7 @@ func TestSessionKeyIsStablePerConversation(t *testing.T) {
 
 func TestInboundMessageMapping(t *testing.T) {
 	n, _ := ParseNotice([]byte(inboundNotice))
-	msg := n.ToInboundMessage("")
+	msg := n.ToInboundMessage("https://nectar.colibrixa.com")
 	if msg.ID != n.EventID {
 		t.Fatalf("el ID del mensaje es el event_id (clave de dedupe del WAL y del pool): %q", msg.ID)
 	}
@@ -118,7 +118,7 @@ func TestInboundMessageMapping(t *testing.T) {
 func TestDocumentMappingUsesDocumentURL(t *testing.T) {
 	body := strings.Replace(inboundNotice, `"kind": "image"`, `"kind": "document"`, 1)
 	n, _ := ParseNotice([]byte(body))
-	msg := n.ToInboundMessage("")
+	msg := n.ToInboundMessage("https://nectar.colibrixa.com")
 	if msg.MessageType != "document" || msg.DocumentURL == "" || msg.ImageURL != "" {
 		t.Fatalf("documento mal mapeado: %+v", msg)
 	}

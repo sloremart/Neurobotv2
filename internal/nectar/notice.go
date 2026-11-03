@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -459,6 +460,38 @@ type NoticeAttachment struct {
 	URL string `json:"url,omitempty"`
 }
 
+// downloadURL es la URL de la que el bot baja el adjunto ("" = ninguna utilizable). El contrato
+// sirve TODO adjunto en GET /api/bot/attachments/{id} del propio Néctar —no hay CDN ni otro
+// anfitrión para medios—, así que la `url` del aviso solo se usa si es del mismo esquema y
+// anfitrión que baseURL (https en producción; http solo si la raíz local lo es). Cualquier otra
+// —otro anfitrión, otro esquema, file://— se descarta y la URL se compone desde el `id`: el
+// descargador no sale nunca hacia un destino que el aviso elija.
+func (a *NoticeAttachment) downloadURL(baseURL string) string {
+	if a == nil {
+		return ""
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Host == "" {
+		return ""
+	}
+	if a.URL != "" {
+		if u, err := url.Parse(a.URL); err == nil &&
+			strings.EqualFold(u.Scheme, base.Scheme) && strings.EqualFold(u.Host, base.Host) {
+			return a.URL
+		}
+		slog.Warn("nectar: url de adjunto fuera de la raíz de Néctar; se descarta")
+	}
+	if a.ID == "" {
+		return ""
+	}
+	return strings.TrimRight(baseURL, "/") + attachmentPath(a.ID)
+}
+
+// attachmentPath es la ruta de GET /api/bot/attachments/{id}. El id va escapado como segmento:
+// hoy es hexadecimal (nada que escapar), pero los de antes de 2026-09-09 eran base64 con «/», y un
+// id con «/» o «..» no puede salirse de la ruta (contrato: url.PathEscape es lo correcto).
+func attachmentPath(id string) string { return "/api/bot/attachments/" + url.PathEscape(id) }
+
 // ProtocolMax es la versión de protocolo MÁS ALTA que este binario sabe leer. Un aviso con una
 // mayor se procesa igual —el lector es tolerante a propósito— y deja una alerta.
 const ProtocolMax = 1
@@ -509,10 +542,10 @@ func SessionKey(conversationID int64) string {
 // lo que AnalyzeDocument lee hoy; la descarga con credencial de Néctar la resuelve
 // OCRService.downloadMedia (§2.2).
 //
-// baseURL es la raíz de Néctar (cfg.NectarBaseURL) y sirve para UNA cosa: componer la URL del
-// adjunto a partir de su `id` cuando el aviso no trae `url` (§5.3, cinturón y tirantes —
-// Attachment.ID se parseaba y no se usaba en ninguna parte). Vacía = no se compone nada, y un
-// adjunto que se quede sin URL utilizable NO se despacha como imagen.
+// baseURL es la raíz de Néctar (cfg.NectarBaseURL): la `url` del adjunto solo vale si es de ese
+// origen, y sin ella se compone desde el `id` (ver NoticeAttachment.downloadURL). Vacía = no hay
+// contra qué comprobar ni con qué componer, y un adjunto que se quede sin URL utilizable NO se
+// despacha como imagen.
 func (n Notice) ToInboundMessage(baseURL string) bird.InboundMessage {
 	msg := bird.InboundMessage{
 		ID:             n.EventID,
@@ -535,13 +568,7 @@ func (n Notice) ToInboundMessage(baseURL string) bird.InboundMessage {
 		msg.Text = *m.InteractiveReplyID
 		return msg
 	}
-	attachmentURL := ""
-	if m.Attachment != nil {
-		attachmentURL = m.Attachment.URL
-		if attachmentURL == "" && m.Attachment.ID != "" && baseURL != "" {
-			attachmentURL = strings.TrimRight(baseURL, "/") + "/api/bot/attachments/" + m.Attachment.ID
-		}
-	}
+	attachmentURL := m.Attachment.downloadURL(baseURL)
 	switch m.Kind {
 	case "", "text":
 		msg.MessageType = "text"

@@ -509,7 +509,7 @@ func escalateBody(esc Escalation, suggestedTeamID *int64) escalateRequest {
 }
 
 // AttachmentURL es la URL absoluta de GET /api/bot/attachments/{id}.
-func (c *Client) AttachmentURL(id string) string { return c.baseURL + "/api/bot/attachments/" + id }
+func (c *Client) AttachmentURL(id string) string { return c.baseURL + attachmentPath(id) }
 
 // --- transporte ---
 
