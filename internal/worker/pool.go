@@ -47,9 +47,10 @@ const (
 	staleReplayMinutes  = 10
 	staleReplayInterval = 5 * time.Minute
 
-	// maxPhoneLockMisses: cuántas veces puede vencer el candado del teléfono para un mismo mensaje
-	// (primer intento + replays de atascados) antes de cerrar su fila del WAL sin procesarlo (B-01).
-	maxPhoneLockMisses = 3
+	// maxPhoneLockWait: cuánto se sigue reencolando un mensaje que no consigue el candado de su
+	// teléfono, contado desde su primer vencimiento, antes de cerrar su fila del WAL sin procesarlo
+	// (B-01). Mismo margen que staleReplayMinutes: cubre una ráfaga de ~8 hojas con OCR de 75 s.
+	maxPhoneLockWait = staleReplayMinutes * time.Minute
 )
 
 // StalePendingSource entrega mensajes inbound que quedaron 'pending' hace más de `minutes` minutos.
@@ -205,7 +206,7 @@ type MessageWorkerPool struct {
 	queue          chan bird.InboundMessage
 	agentCmds      chan AgentCommand
 	recentMessages sync.Map     // messageID -> time.Time (dedup)
-	lockMisses     sync.Map     // messageID -> int: vencimientos del candado del teléfono (B-01)
+	lockMisses     sync.Map     // messageID -> time.Time: primer vencimiento del candado del teléfono (B-01)
 	dedupCount     atomic.Int64 // approximate count for safety cap
 	workers        int
 	activeOverflow atomic.Int32
@@ -509,50 +510,67 @@ func recoverLog(name string) {
 }
 
 // handleLockMiss atiende un mensaje que no consiguió el candado de su teléfono (B-01) y dice si su
-// fila del WAL debe quedar 'pending'. El mensaje se reencola de inmediato al final de la cola (sin
-// pasar por el dedup de Enqueue: su claim sigue vigente), así se reprocesa apenas se libere el
-// candado y en el mismo estado de la sesión. Con la cola llena o el pool apagándose no se reencola:
-// la fila queda 'pending' para el replay de atascados o el de arranque. Al llegar a
-// maxPhoneLockMisses se rinde, cierra la fila y alerta, porque el mensaje se pierde. El aviso al
-// paciente sale solo en el primer vencimiento de cada mensaje.
-func (p *MessageWorkerPool) handleLockMiss(appCtx context.Context, msg bird.InboundMessage) bool {
-	// Sin carrera por el mismo id: el dedup de Enqueue no deja dos copias en vuelo a la vez.
-	misses := 1
-	if prev, ok := p.lockMisses.Load(msg.ID); ok {
-		misses = prev.(int) + 1
-	}
-	if misses == 1 {
+// fila del WAL debe quedar 'pending'. Un mensaje del WAL se reencola de inmediato al final de la
+// cola (sin pasar por el dedup de Enqueue), así se reprocesa apenas se libere el candado y en el
+// mismo estado de la sesión; no conserva su lugar en la ráfaga (el candado no es FIFO). Con la
+// cola llena o el pool apagándose no se reencola: la fila queda 'pending' para el replay de
+// atascados o el de arranque. Pasado maxPhoneLockWait desde el primer vencimiento se rinde, cierra
+// la fila y alerta, porque el mensaje se pierde. El aviso al paciente sale solo en el primer
+// vencimiento. Lo que no rastrea el WAL (virtual-, agent-, sin id) se descarta tras el aviso,
+// como siempre.
+func (p *MessageWorkerPool) handleLockMiss(appCtx context.Context, msg bird.InboundMessage, walTracked bool) bool {
+	// Sin carrera por el mismo id: el claim de dedup (renovado al reencolar) no deja dos copias en vuelo.
+	first, retried := p.lockMisses.Load(msg.ID)
+	if !walTracked || !retried {
 		// Notify patient so they know their message was received but delayed
 		if _, err := p.birdClient.SendText(msg.Phone, "",
 			"Tu mensaje anterior está siendo procesado. Por favor espera un momento antes de enviar otro mensaje."); err != nil {
 			slog.Warn("phone lock notice send failed", "phone", utils.MaskPhone(msg.Phone), "error", err)
 		}
 	}
-	if msg.ID == "" {
-		return false // sin id no hay fila ni cuenta posible
-	}
-	if misses >= maxPhoneLockMisses {
-		p.lockMisses.Delete(msg.ID)
-		slog.Error("phone lock timeout: mensaje descartado tras agotar los reintentos",
-			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+	if !walTracked {
 		return false
 	}
-	p.lockMisses.Store(msg.ID, misses)
+	if !retried {
+		first = time.Now()
+	}
+	waited := time.Since(first.(time.Time))
+	if waited >= maxPhoneLockWait {
+		p.lockMisses.Delete(msg.ID)
+		slog.Error("phone lock timeout: mensaje descartado tras agotar la espera",
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "waited", waited.Round(time.Second))
+		return false
+	}
 
 	if appCtx.Err() != nil || p.isClosing() {
+		p.lockMisses.Delete(msg.ID)
 		slog.Warn("phone lock timeout: pool apagándose, mensaje pendiente para el replay",
-			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone))
 		return true
 	}
+	p.lockMisses.Store(msg.ID, first) // antes del envío: quien lo tome ya lo ve como reintento
 	select {
 	case p.queue <- msg:
+		p.renewDedupClaim(msg.ID)
 		slog.Info("phone lock timeout: mensaje reencolado",
-			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "waited", waited.Round(time.Second))
 	default:
+		p.lockMisses.Delete(msg.ID)
 		slog.Warn("phone lock timeout: cola llena, mensaje pendiente para el replay",
-			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone))
 	}
 	return true
+}
+
+// renewDedupClaim refresca el claim de dedup de un mensaje reencolado: su reencolado puede durar más
+// que dedupTTL y, sin renovarlo, el replay de atascados metería una segunda copia en vuelo (B-01).
+// Un reenvío del webhook no llega aquí: el WAL ya lo rechaza en InsertIfNotExists.
+func (p *MessageWorkerPool) renewDedupClaim(id string) {
+	if _, loaded := p.recentMessages.LoadOrStore(id, time.Now()); loaded {
+		p.recentMessages.Store(id, time.Now())
+	} else {
+		p.dedupCount.Add(1) // la limpieza ya lo había borrado y descontado
+	}
 }
 
 // isClosing dice si Stop() ya marcó el cierre del pool.
@@ -598,7 +616,7 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		slog.Warn("phone lock timeout", "phone", utils.MaskPhone(msg.Phone), "error", err)
 		observability.Emit("infra:phone_lock_timeout", "infra", "phone_lock_timeout",
 			observability.EmitOpts{Phone: msg.Phone, Reason: "message"})
-		keepPending = p.handleLockMiss(appCtx, msg) && walTracked
+		keepPending = p.handleLockMiss(appCtx, msg, walTracked)
 		return
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(msg.Phone)
