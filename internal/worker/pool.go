@@ -48,7 +48,7 @@ const (
 	staleReplayInterval = 5 * time.Minute
 
 	// maxPhoneLockWait: cuánto se sigue reencolando un mensaje que no consigue el candado de su
-	// teléfono, contado desde su primer vencimiento, antes de cerrar su fila del WAL sin procesarlo
+	// teléfono, contado desde su primer intento fallido, antes de cerrar su fila del WAL sin procesarlo
 	// (B-01). Mismo margen que staleReplayMinutes: cubre una ráfaga de ~8 hojas con OCR de 75 s.
 	maxPhoneLockWait = staleReplayMinutes * time.Minute
 	// phoneLockRetryDelay: pausa antes de reencolar un mensaje cuyo teléfono ya tiene un worker
@@ -209,7 +209,7 @@ type MessageWorkerPool struct {
 	queue          chan bird.InboundMessage
 	agentCmds      chan AgentCommand
 	recentMessages sync.Map     // messageID -> time.Time (dedup)
-	lockMisses     sync.Map     // messageID -> time.Time: primer vencimiento del candado del teléfono (B-01)
+	lockMisses     sync.Map     // messageID -> lockMiss: primer intento fallido por el candado del teléfono (B-01)
 	lockWaiters    sync.Map     // phone -> struct{}: ya hay un worker esperando el candado de ese teléfono (B-01)
 	dedupCount     atomic.Int64 // approximate count for safety cap
 	workers        int
@@ -517,6 +517,13 @@ func recoverLog(name string) {
 	}
 }
 
+// lockMiss sigue a un mensaje del WAL que no consiguió el candado de su teléfono (B-01): cuándo empezó
+// su primer intento fallido y si el paciente ya recibió el aviso de espera.
+type lockMiss struct {
+	first    time.Time
+	notified bool
+}
+
 // handleLockMiss atiende un mensaje que no consiguió el candado de su teléfono (B-01) y dice si su
 // fila del WAL debe quedar 'pending'. Un mensaje del WAL se reencola al final de la cola (sin pasar
 // por el dedup de Enqueue): de inmediato si venció su espera, o tras `delay` si no llegó a esperar
@@ -524,37 +531,39 @@ func recoverLog(name string) {
 // el mismo estado de la sesión; no conserva su lugar en la ráfaga (el candado no es FIFO). Con la
 // cola llena o el pool apagándose no se reencola: la fila queda 'pending' para el replay de
 // atascados o el de arranque. Pasado maxPhoneLockWait desde el primer intento fallido se rinde,
-// cierra la fila y alerta, porque el mensaje se pierde. El aviso al paciente sale solo en ese primer
-// intento. Lo que no rastrea el WAL (virtual-, agent-, sin id) se descarta tras el aviso, como
-// siempre.
+// cierra la fila y alerta, porque el mensaje se pierde. El aviso al paciente sale una sola vez, en el
+// primer intento en que el mensaje ya lleva lockTimeout sin procesarse (como antes, cuando solo lo
+// daba una espera vencida); un diferido que se procesa antes no lo recibe. Lo que no rastrea el WAL
+// (virtual-, agent-, sin id) se descarta tras el aviso, como siempre.
 //
-// La entrada de lockMisses se borra al procesarse el mensaje o al rendirse; si se va al replay
-// (cola llena, apagado) se conserva para no reiniciar el plazo ni repetir el aviso, y la limpieza
+// attemptStart es cuándo empezó este intento: antes de esperar el candado, o al diferirse. La
+// entrada de lockMisses se borra al procesarse el mensaje o al rendirse; si se va al replay (cola
+// llena, apagado) se conserva para no reiniciar el plazo ni repetir el aviso, y la limpieza
 // periódica purga la de un mensaje que no volvió (purgeStaleLockMisses).
-func (p *MessageWorkerPool) handleLockMiss(appCtx context.Context, msg bird.InboundMessage, walTracked bool, delay time.Duration) bool {
-	// Sin carrera por el mismo id: el claim de dedup (renovado al reencolar) no deja dos copias en vuelo.
-	first, retried := p.lockMisses.Load(msg.ID)
-	if !walTracked || !retried {
-		// Notify patient so they know their message was received but delayed
-		if _, err := p.birdClient.SendText(msg.Phone, "",
-			"Tu mensaje anterior está siendo procesado. Por favor espera un momento antes de enviar otro mensaje."); err != nil {
-			slog.Warn("phone lock notice send failed", "phone", utils.MaskPhone(msg.Phone), "error", err)
-		}
-	}
+func (p *MessageWorkerPool) handleLockMiss(appCtx context.Context, msg bird.InboundMessage, walTracked bool,
+	attemptStart time.Time, delay time.Duration,
+) bool {
 	if !walTracked {
+		p.sendLockBusyNotice(msg.Phone)
 		return false
 	}
-	if !retried {
-		first = time.Now()
-		p.lockMisses.Store(msg.ID, first) // antes del reencolado: quien lo tome ya lo ve como reintento
+	// Sin carrera por el mismo id: el claim de dedup (renovado al reencolar) no deja dos copias en vuelo.
+	miss := lockMiss{first: attemptStart}
+	if v, retried := p.lockMisses.Load(msg.ID); retried {
+		miss = v.(lockMiss)
 	}
-	waited := time.Since(first.(time.Time))
+	waited := time.Since(miss.first)
 	if waited >= maxPhoneLockWait {
 		p.lockMisses.Delete(msg.ID)
 		slog.Error("phone lock timeout: mensaje descartado tras agotar la espera",
 			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "waited", waited.Round(time.Second))
 		return false
 	}
+	if !miss.notified && waited >= p.lockTimeout {
+		p.sendLockBusyNotice(msg.Phone)
+		miss.notified = true
+	}
+	p.lockMisses.Store(msg.ID, miss) // antes del reencolado: quien lo tome ya lo ve como reintento
 	if appCtx.Err() != nil {
 		slog.Warn("phone lock timeout: pool apagándose, mensaje pendiente para el replay",
 			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone))
@@ -568,6 +577,14 @@ func (p *MessageWorkerPool) handleLockMiss(appCtx context.Context, msg bird.Inbo
 		time.AfterFunc(delay, func() { p.requeueLockMiss(msg) })
 	}
 	return true
+}
+
+// sendLockBusyNotice avisa al paciente que su mensaje llegó pero espera al anterior.
+func (p *MessageWorkerPool) sendLockBusyNotice(phone string) {
+	if _, err := p.birdClient.SendText(phone, "",
+		"Tu mensaje anterior está siendo procesado. Por favor espera un momento antes de enviar otro mensaje."); err != nil {
+		slog.Warn("phone lock notice send failed", "phone", utils.MaskPhone(phone), "error", err)
+	}
 }
 
 // requeueLockMiss reencola, sin bloquear, un mensaje que no consiguió el candado de su teléfono.
@@ -605,11 +622,24 @@ func (p *MessageWorkerPool) renewDedupClaim(id string) {
 // aún en vuelo: ese se rinde en su siguiente intento pasado maxPhoneLockWait y borra su entrada.
 func (p *MessageWorkerPool) purgeStaleLockMisses(now time.Time) {
 	p.lockMisses.Range(func(key, value interface{}) bool {
-		if now.Sub(value.(time.Time)) > 2*maxPhoneLockWait {
+		if now.Sub(value.(lockMiss).first) > 2*maxPhoneLockWait {
 			p.lockMisses.Delete(key)
 		}
 		return true
 	})
+}
+
+// lockPhone toma el candado del teléfono. Un mensaje del WAL no espera si otro worker ya espera ese
+// teléfono: devuelve deferred sin tomarlo (B-01). La marca de espera se borra al volver Lock, salga
+// como salga, para no dejar diferidos para siempre los mensajes de ese teléfono.
+func (p *MessageWorkerPool) lockPhone(ctx context.Context, phone string, walTracked bool) (deferred bool, err error) {
+	if walTracked {
+		if _, waiting := p.lockWaiters.LoadOrStore(phone, struct{}{}); waiting {
+			return true, nil
+		}
+		defer p.lockWaiters.Delete(phone)
+	}
+	return false, p.sessionManager.PhoneMutex().Lock(ctx, phone)
 }
 
 func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.InboundMessage) {
@@ -639,28 +669,23 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		}()
 	}
 
-	// 1. B-01: a lo sumo un worker espera el candado de un mismo teléfono. Si ya hay uno esperando,
-	// este mensaje del WAL no ocupa otro worker: se reencola tras lockRetryDelay.
-	if walTracked {
-		if _, waiting := p.lockWaiters.LoadOrStore(msg.Phone, struct{}{}); waiting {
-			slog.Debug("phone lock busy: mensaje diferido", "id", msg.ID, "phone", utils.MaskPhone(msg.Phone))
-			keepPending = p.handleLockMiss(appCtx, msg, walTracked, p.lockRetryDelay)
-			return
-		}
-	}
-
-	// 2. Adquirir lock por teléfono (serializa mensajes del mismo usuario), con timeout de 30s
+	// 1-2. Adquirir lock por teléfono (serializa mensajes del mismo usuario), con timeout de 30s. B-01:
+	// si otro worker ya espera ese teléfono, este mensaje del WAL no ocupa otro: se reencola tras
+	// lockRetryDelay. attemptStart va antes del timeout: una espera vencida cuenta lockTimeout entero.
+	attemptStart := time.Now()
 	lockCtx, lockCancel := context.WithTimeout(parentCtx, p.lockTimeout)
 	defer lockCancel()
-	lockErr := p.sessionManager.PhoneMutex().Lock(lockCtx, msg.Phone)
-	if walTracked {
-		p.lockWaiters.Delete(msg.Phone)
+	deferred, lockErr := p.lockPhone(lockCtx, msg.Phone, walTracked)
+	if deferred {
+		slog.Debug("phone lock busy: mensaje diferido", "id", msg.ID, "phone", utils.MaskPhone(msg.Phone))
+		keepPending = p.handleLockMiss(appCtx, msg, walTracked, attemptStart, p.lockRetryDelay)
+		return
 	}
 	if lockErr != nil {
 		slog.Warn("phone lock timeout", "phone", utils.MaskPhone(msg.Phone), "error", lockErr)
 		observability.Emit("infra:phone_lock_timeout", "infra", "phone_lock_timeout",
 			observability.EmitOpts{Phone: msg.Phone, Reason: "message"})
-		keepPending = p.handleLockMiss(appCtx, msg, walTracked, 0)
+		keepPending = p.handleLockMiss(appCtx, msg, walTracked, attemptStart, 0)
 		return
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(msg.Phone)

@@ -240,7 +240,8 @@ func TestProcessMessage_PhoneLockTimeout_ClosingLeavesPending(t *testing.T) {
 func TestProcessMessage_PhoneLockTimeout_GivesUpAfterMaxWait(t *testing.T) {
 	lc := newLockContention(t, 10, 20*time.Millisecond)
 	msg := bird.InboundMessage{ID: "stuck-1", Phone: testPhone, MessageType: "text", Text: "hola"}
-	lc.pool.lockMisses.Store(msg.ID, time.Now().Add(-maxPhoneLockWait)) // primer vencimiento hace maxPhoneLockWait
+	// primer intento fallido hace maxPhoneLockWait, con el aviso ya dado
+	lc.pool.lockMisses.Store(msg.ID, lockMiss{first: time.Now().Add(-maxPhoneLockWait), notified: true})
 
 	lc.pool.processMessage(context.Background(), msg)
 
@@ -250,7 +251,7 @@ func TestProcessMessage_PhoneLockTimeout_GivesUpAfterMaxWait(t *testing.T) {
 	assertNotRequeued(t, lc.pool)
 	assertNoLockEntry(t, lc.pool, msg.ID)
 	if n := lc.sender.countText(lockBusyNotice); n != 0 {
-		t.Errorf("el aviso ya salió en el primer vencimiento, got %d", n)
+		t.Errorf("el aviso ya había salido, got %d", n)
 	}
 }
 
@@ -354,14 +355,14 @@ func TestProcessMessage_PhoneLockBurst_OneWaiterAndAllProcessed(t *testing.T) {
 	// Los 4 de otros teléfonos dentro del procesador A LA VEZ = 4 workers libres de 5.
 	waitFor(t, "4 workers libres atendiendo otros teléfonos", func() bool { return bp.otherInside.Load() == 4 })
 	close(bp.hold)
-	// Un aviso por cada diferido, aunque se haya reencolado varias veces; el que espera aún no venció.
-	if n := bp.sender.countText(lockBusyNotice); n != 4 {
-		t.Errorf("un aviso por mensaje diferido de la ráfaga, got %d", n)
-	}
 
 	bp.sm.mutex.Unlock(testPhone)
 	waitFor(t, "las 9 filas cerradas", func() bool { return bp.inbox.doneCount() == 9 })
 	time.Sleep(200 * time.Millisecond) // margen para ver un cierre de más
+	// R3-1: toda la ráfaga se procesó antes de lockTimeout, así que nadie recibe el aviso.
+	if n := bp.sender.countText(lockBusyNotice); n != 0 {
+		t.Errorf("procesada antes de lockTimeout, la ráfaga no debe recibir avisos, got %d", n)
+	}
 	bp.inbox.mu.Lock()
 	seen := map[string]int{}
 	for _, id := range bp.inbox.done {
@@ -376,6 +377,81 @@ func TestProcessMessage_PhoneLockBurst_OneWaiterAndAllProcessed(t *testing.T) {
 	if len(seen) != 9 || bp.processed.Load() != 9 {
 		t.Errorf("esperaba 9 mensajes procesados y cerrados, got %d filas y %d procesados", len(seen), bp.processed.Load())
 	}
+}
+
+// R3-1: textos seguidos («hola», «buenas», «quiero cita») mientras otro mensaje tiene el candado
+// menos de lockTimeout: se difieren o esperan, se procesan todos y ningún paciente recibe el aviso.
+func TestProcessMessage_PhoneLockQuickTexts_NoNotice(t *testing.T) {
+	bp := newBurstPool(t, 3, 2*time.Second, 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bp.pool.Start(ctx)
+
+	for i, text := range []string{"hola", "buenas", "quiero cita"} {
+		bp.pool.Enqueue(bird.InboundMessage{ID: fmt.Sprintf("quick-%d", i), Phone: testPhone, MessageType: "text", Text: text})
+	}
+	time.Sleep(300 * time.Millisecond) // el mensaje en vuelo aún tiene el candado
+	bp.sm.mutex.Unlock(testPhone)
+	waitFor(t, "las 3 filas cerradas", func() bool { return bp.inbox.doneCount() == 3 })
+	time.Sleep(100 * time.Millisecond) // margen para ver un aviso de más
+
+	if n := bp.processed.Load(); n != 3 {
+		t.Errorf("los 3 textos deben procesarse, got %d", n)
+	}
+	if n := bp.sender.countText(lockBusyNotice); n != 0 {
+		t.Errorf("procesados antes de lockTimeout no se avisa, got %d", n)
+	}
+}
+
+// requeuedWithin espera a que el timer de un diferido reencole el mensaje (sin workers arrancados).
+func requeuedWithin(t *testing.T, pool *MessageWorkerPool, id string) {
+	t.Helper()
+	select {
+	case got := <-pool.queue:
+		if got.ID != id {
+			t.Fatalf("esperaba %q reencolado, got %q", id, got.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%q debió reencolarse", id)
+	}
+}
+
+// R3-1: un diferido no avisa al diferirse; avisa una sola vez cuando ya lleva lockTimeout sin
+// procesarse, por más veces que se difiera después, y se procesa al liberarse el candado.
+func TestProcessMessage_PhoneLockDeferred_NoticeOnceAfterLockTimeout(t *testing.T) {
+	lc := newLockContention(t, 10, 50*time.Millisecond)
+	lc.pool.lockRetryDelay = time.Millisecond
+	lc.pool.lockWaiters.Store(testPhone, struct{}{}) // otro worker ya espera el candado
+	msg := bird.InboundMessage{ID: "deferred-1", Phone: testPhone, MessageType: "text", Text: "hola"}
+
+	lc.pool.processMessage(context.Background(), msg)
+	requeuedWithin(t, lc.pool, msg.ID)
+	if n := lc.sender.countText(lockBusyNotice); n != 0 {
+		t.Fatalf("diferido sin haber esperado lockTimeout no se avisa, got %d", n)
+	}
+
+	time.Sleep(60 * time.Millisecond) // ya lleva más de lockTimeout sin procesarse
+	for i := 0; i < 2; i++ {
+		lc.pool.processMessage(context.Background(), msg)
+		requeuedWithin(t, lc.pool, msg.ID)
+	}
+	if n := lc.sender.countText(lockBusyNotice); n != 1 {
+		t.Fatalf("pasado lockTimeout el diferido recibe exactamente un aviso, got %d", n)
+	}
+
+	lc.pool.lockWaiters.Delete(testPhone)
+	lc.sm.mutex.Unlock(testPhone)
+	lc.pool.processMessage(context.Background(), msg)
+	if n := lc.processed.Load(); n != 1 {
+		t.Fatalf("el mensaje debe procesarse una vez, got %d", n)
+	}
+	if n := lc.inbox.doneCount(); n != 1 {
+		t.Fatalf("la fila debe cerrarse una vez, got %d MarkDone", n)
+	}
+	if n := lc.sender.countText(lockBusyNotice); n != 1 {
+		t.Errorf("procesarlo no repite el aviso, got %d", n)
+	}
+	assertNoLockEntry(t, lc.pool, msg.ID)
 }
 
 // B-01 (R2-1): Stop con reencolados diferidos pendientes no se cuelga, y los timers que disparan
@@ -414,8 +490,8 @@ func TestProcessMessage_PhoneLockBurst_StopWithPendingTimers(t *testing.T) {
 func TestPurgeStaleLockMisses(t *testing.T) {
 	pool := NewMessageWorkerPool(1, 1)
 	now := time.Now()
-	pool.lockMisses.Store("gone", now.Add(-2*maxPhoneLockWait-time.Minute))
-	pool.lockMisses.Store("live", now.Add(-maxPhoneLockWait))
+	pool.lockMisses.Store("gone", lockMiss{first: now.Add(-2*maxPhoneLockWait - time.Minute)})
+	pool.lockMisses.Store("live", lockMiss{first: now.Add(-maxPhoneLockWait)})
 
 	pool.purgeStaleLockMisses(now)
 
