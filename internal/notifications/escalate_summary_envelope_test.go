@@ -286,9 +286,10 @@ func TestConfirmationEscalate_V1DetailPerReason(t *testing.T) {
 	for reason, want := range map[escalationReason]string{
 		escalationNoResponse:    "notificacion_sin_respuesta",
 		escalationSystemFailure: "notificacion_fallo_sistema",
-		// D-04: sin motivo de cable propio, viajan sin detalle (ausente, no inventado).
-		escalationSiesaCancelFailed: "",
-		escalationSiesaChanged:      "",
+		// D-04: las tres de la respuesta pendiente de SIESA comparten motivo; el caso va en el contexto.
+		escalationSiesaConfirm: "notificacion_siesa_pendiente",
+		escalationSiesaCancel:  "notificacion_siesa_pendiente",
+		escalationSiesaChanged: "notificacion_siesa_pendiente",
 	} {
 		mgr, bridge := nectarManager(t, &config.Config{
 			BirdTeamFallback: "team-fallback", ProtocolEscaladoVersion: config.ProtocolEscaladoV1,

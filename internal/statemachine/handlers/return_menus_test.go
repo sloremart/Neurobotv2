@@ -349,6 +349,20 @@ func TestNotifPendingReturnOptions_ByTypeAndDetail(t *testing.T) {
 			{"Reintentar la confirmación en SIESA", "confirm", np, "confirm", false},
 			{"Ya la confirmé a mano en SIESA", "confirmada_manual", "", "", true},
 		}},
+		{"SIESA pendiente: confirmación", view(sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifSiesaPending, sm.CtxNotifSiesaCase, sm.NotifSiesaCaseConfirm, "notif_type", "confirmation"), []want{
+			{"Reintentar la confirmación en SIESA", "confirm", np, "confirm", false},
+			{"Ya la confirmé a mano en SIESA", "confirmada_manual", "", "", true},
+		}},
+		{"SIESA pendiente: cancelación", view(sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifSiesaPending, sm.CtxNotifSiesaCase, sm.NotifSiesaCaseCancel, "notif_type", "confirmation"), []want{
+			{"Pedirle confirmar la cancelación", "cancel", np, "cancel", false},
+			{"Ya la cancelé a mano en SIESA", "cancelada_manual", "", "", true},
+		}},
+		{"SIESA pendiente: cita cambiada", view(sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifSiesaPending, sm.CtxNotifSiesaCase, sm.NotifSiesaCaseChanged, "notif_type", "confirmation"), []want{
+			{"Ya la revisé con el paciente", "revisada_manual", "", "", true},
+			{"Confirmar la cita", "confirm", np, "confirm", false},
+			{"Reprogramar la cita", "reschedule", np, "reschedule", false},
+			{"Cancelar la cita", "cancel", np, "cancel", false},
+		}},
 		{"lista de espera", view("notif_type", "waiting_list"), []want{
 			{"Agendar ahora", "wl_schedule", np, "wl_schedule", false},
 			{"No le interesa", "wl_decline", np, "wl_decline", false},

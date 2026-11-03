@@ -312,13 +312,19 @@ type escalationReason int
 const (
 	escalationNoResponse    escalationReason = iota // timeout: ni WhatsApp ni IVR
 	escalationSystemFailure                         // el paciente respondió, pero el UPDATE a SIESA falló
-	// escalationSiesaCancelFailed: el paciente pidió cancelar y la cancelación no llegó a SIESA a
-	// tiempo (D-04: venció un tope de la respuesta pendiente).
-	escalationSiesaCancelFailed
-	// escalationSiesaChanged: la respuesta pendiente de SIESA ya no se pudo aplicar porque la cita
-	// cambió entretanto (cancelada, movida, confirmada por otro o no encontrada).
-	escalationSiesaChanged
+	// Respuesta pendiente de SIESA que no se aplicó sola (D-04). Las tres viajan con el motivo
+	// sm.EscalationReasonNotifSiesaPending; el caso (sm.CtxNotifSiesaCase) elige nota y menú.
+	escalationSiesaConfirm // confirmó y la confirmación no llegó a SIESA a tiempo
+	escalationSiesaCancel  // pidió cancelar y no se le pudo pedir la confirmación
+	escalationSiesaChanged // la cita cambió antes de aplicar; no se tocó
 )
+
+// siesaCases es el caso de cada escalación de una respuesta pendiente de SIESA.
+var siesaCases = map[escalationReason]string{
+	escalationSiesaConfirm: sm.NotifSiesaCaseConfirm,
+	escalationSiesaCancel:  sm.NotifSiesaCaseCancel,
+	escalationSiesaChanged: sm.NotifSiesaCaseChanged,
+}
 
 // escalateToAgent sends an internal note to Bird Inbox, optionally messages the patient,
 // and assigns the conversation to the best available agent.
@@ -379,14 +385,13 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 			pending.AppointmentID)
 	}
 
-	// Las dos de D-04 no tienen motivo de cable propio: viajan sin detalle (el menú del agente es el
-	// de la cita: confirmar, reprogramar o cancelar) y la nota dice qué pasó.
-	var detail string
-	switch reason {
-	case escalationNoResponse:
-		detail = sm.EscalationReasonNotifNoResponse
-	case escalationSystemFailure:
+	detail := sm.EscalationReasonNotifNoResponse
+	siesaCase, siesaPending := siesaCases[reason]
+	switch {
+	case reason == escalationSystemFailure:
 		detail = sm.EscalationReasonNotifSystemFailure
+	case siesaPending:
+		detail = sm.EscalationReasonNotifSiesaPending
 	}
 	sessCtx := map[string]string{
 		"notif_appointment_id":      pending.AppointmentID,
@@ -400,15 +405,22 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 		"pre_escalation_state":      sm.StateNotifPending,
 		sm.CtxNotifEscalationDetail: detail,
 	}
+	if siesaPending {
+		sessCtx[sm.CtxNotifSiesaCase] = siesaCase
+	}
 
 	var note string
 	switch reason {
 	case escalationSystemFailure:
 		note = "⚠️ El paciente CONFIRMÓ su cita vía WhatsApp, pero la persistencia en SIESA FALLÓ.\n" +
 			"Revisar y confirmar la cita manualmente en el sistema (NO re-pedir confirmación al paciente).\n" + apptInfo
-	case escalationSiesaCancelFailed:
-		note = "⚠️ El paciente pidió CANCELAR su cita vía WhatsApp, pero la cancelación no se pudo registrar en SIESA.\n" +
-			"Revisar y cancelar la cita manualmente en el sistema (al paciente se le dijo que se registraría).\n" + apptInfo
+	case escalationSiesaConfirm:
+		note = "⚠️ El paciente CONFIRMÓ su cita vía WhatsApp con SIESA caída y la confirmación no llegó a SIESA a tiempo.\n" +
+			"Revisar y confirmar la cita manualmente en el sistema (NO re-pedir confirmación al paciente; se le dijo que se registraría).\n" + apptInfo
+	case escalationSiesaCancel:
+		note = "⚠️ El paciente pidió CANCELAR su cita vía WhatsApp con SIESA caída y el bot no alcanzó a pedirle que confirmara " +
+			"la cancelación (SIESA no volvió a tiempo, o el paciente estaba en otra conversación con el bot). La cita SIGUE vigente.\n" +
+			"Confirmar con el paciente si cancela y hacerlo (se le dijo que le escribiríamos).\n" + apptInfo
 	case escalationSiesaChanged:
 		note = "⚠️ El paciente respondió al recordatorio vía WhatsApp (su respuesta está en el chat), pero SIESA no " +
 			"estaba disponible y, cuando volvió, la cita ya había cambiado (cancelada, movida, confirmada o no encontrada). " +
@@ -471,8 +483,10 @@ func (m *NotificationManager) escalateToAgent(pending *PendingNotification, reas
 	switch reason {
 	case escalationSystemFailure:
 		escReason = "system_failure"
-	case escalationSiesaCancelFailed:
-		escReason = "siesa_cancel_failed"
+	case escalationSiesaConfirm:
+		escReason = "siesa_confirm_pending"
+	case escalationSiesaCancel:
+		escReason = "siesa_cancel_pending"
 	case escalationSiesaChanged:
 		escReason = "siesa_appointment_changed"
 	}
@@ -579,7 +593,7 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 
 	appt, _, err := m.apptSvc.FindBlockByAppointmentID(ctx, pending.AppointmentID)
 	if err != nil && m.deferToSiesa(ctx, phone, siesaActionCancel, pending, err) {
-		return // D-04: SIESA no respondió; el proceso de fondo la cancela cuando vuelva
+		return // D-04: SIESA no respondió; el proceso de fondo le pide confirmarla cuando vuelva
 	}
 	if err != nil || appt == nil {
 		slog.Error("startConfirmCancelSession: find appointment", "error", err, "appointment_id", pending.AppointmentID)
@@ -595,6 +609,16 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 		return
 	}
 
+	if err := m.openConfirmCancelSession(ctx, phone, pending, appt); err != nil {
+		_, _ = m.birdClient.SendText(phone, pending.ConversationID, "Lo sentimos, ocurrió un problema. Por favor intenta más tarde.")
+	}
+}
+
+// openConfirmCancelSession abre la sesión en CONFIRM_CANCEL_NOTIF con las citas del día de appt y
+// encola el mensaje virtual que le pregunta al paciente si confirma la cancelación. La comparten
+// «Cancelar» y el proceso de fondo de las respuestas pendientes de SIESA (D-04). Exige
+// sessionRepo y workerPool; devuelve el error de la BD local sin avisar al paciente.
+func (m *NotificationManager) openConfirmCancelSession(ctx context.Context, phone string, pending *PendingNotification, appt *domain.Appointment) error {
 	allAppts := m.patientDayAppointments(ctx, appt)
 
 	// Collect all appointment IDs, procedure names, and CUPS codes
@@ -652,8 +676,7 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 
 	if err := m.sessionRepo.Create(ctx, sess); err != nil {
 		slog.Error("startConfirmCancelSession: create session", "error", err)
-		m.birdClient.SendText(phone, pending.ConversationID, "Lo sentimos, ocurrió un problema. Por favor intenta más tarde.")
-		return
+		return err
 	}
 	if m.tracker != nil { // sesión proactiva: contar también en total_sessions
 		m.tracker.LogEvent(ctx, sess.ID, phone, "session_started", map[string]interface{}{"proactive": true})
@@ -661,10 +684,10 @@ func (m *NotificationManager) startConfirmCancelSession(phone string, pending *P
 	if err := m.sessionRepo.SetContextBatch(ctx, sess.ID, sessCtx); err != nil {
 		slog.Error("startConfirmCancelSession: set context", "error", err)
 		m.sessionRepo.UpdateStatus(ctx, sess.ID, session.StatusCompleted) // cleanup orphan
-		m.birdClient.SendText(phone, pending.ConversationID, "Lo sentimos, ocurrió un problema. Por favor intenta más tarde.")
-		return
+		return err
 	}
 
 	m.workerPool.EnqueueVirtual(phone)
 	slog.Info("confirm_cancel_session created", "phone", utils.MaskPhone(phone), "appointment_id", pending.AppointmentID)
+	return nil
 }

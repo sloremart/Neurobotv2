@@ -256,6 +256,7 @@ func TestNotifPendingReturnMenu_PlainResumeOnlyWhereTheButtonsApply(t *testing.T
 		{"reprogramación", view("notif_type", "reschedule"), true},
 		{"sesión de la máquina", view("notif_appt_id", "1"), true},
 		{"fallo de SIESA", view("notif_type", "confirmation", sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifSystemFailure), false},
+		{"respuesta pendiente de SIESA", view("notif_type", "confirmation", sm.CtxNotifEscalationDetail, sm.EscalationReasonNotifSiesaPending, sm.CtxNotifSiesaCase, sm.NotifSiesaCaseCancel), false},
 		{"lista de espera", view("notif_type", "waiting_list"), false},
 		{"cancelación", view("notif_type", "cancellation"), false},
 	}

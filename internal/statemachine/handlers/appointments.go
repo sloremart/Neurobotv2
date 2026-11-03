@@ -636,6 +636,10 @@ func confirmRescheduleNotifHandler(apptSvc *services.AppointmentService, procRep
 	}
 }
 
+// notifCancelledText es lo que recibe el paciente al cancelar desde una notificación
+// (CONFIRM_CANCEL_NOTIF y la reprogramación que termina en cancelar).
+const notifCancelledText = "Tu cita ha sido cancelada.\n\nSi deseas reprogramar, puedes escribirnos cuando lo necesites."
+
 // confirmCancelNotifHandler handles CONFIRM_CANCEL_NOTIF state.
 // Patient pressed "Cancelar" on the proactive confirmation template.
 // We ask them to confirm (1/2) before executing the cancellation.
@@ -681,7 +685,7 @@ func confirmCancelNotifHandler(apptSvc *services.AppointmentService, onCancel Ca
 			// Notify waiting list for freed slots (keyed by doctor+agenda, not by CUP).
 			notifyFreedSlots(ctx, onCancel, freedBlock)
 
-			return buildAutoCloseResult("Tu cita ha sido cancelada.\n\nSi deseas reprogramar, puedes escribirnos cuando lo necesites.").
+			return buildAutoCloseResult(notifCancelledText).
 				WithEvent("notification_cancel_confirmed", map[string]interface{}{
 					"appointment_ids": allIDs,
 					"total_cancelled": len(allIDs),
@@ -883,7 +887,7 @@ func notifRescheduleFallbackHandler(apptSvc *services.AppointmentService, procRe
 			// Notify waiting list for freed slots (keyed by doctor+agenda, not by CUP).
 			notifyFreedSlots(ctx, onCancel, block)
 
-			return buildAutoCloseResult("Tu cita ha sido cancelada.\n\nSi deseas reprogramar, puedes escribirnos cuando lo necesites.").
+			return buildAutoCloseResult(notifCancelledText).
 				WithEvent("notif_reschedule_fallback_cancelled", map[string]interface{}{
 					"appointment_id":  apptID,
 					"total_cancelled": len(allIDs),
@@ -1418,6 +1422,8 @@ const (
 	notifKindCancellation
 	// notifKindNoProcedure: el paciente pidió reprogramar y la cita no tiene procedimiento en SIESA.
 	notifKindNoProcedure
+	// notifKindSiesaPending: la respuesta del paciente quedó pendiente de SIESA y no se aplicó sola.
+	notifKindSiesaPending
 )
 
 // classifyNotifPending lee la clase de notificación de la sesión (nil = la de una cita).
@@ -1430,6 +1436,8 @@ func classifyNotifPending(sess *session.Session) notifPendingKind {
 		return notifKindSystemFailure
 	case sm.EscalationReasonRescheduleNoProcedure:
 		return notifKindNoProcedure
+	case sm.EscalationReasonNotifSiesaPending:
+		return notifKindSiesaPending
 	}
 	switch sess.GetContext("notif_type") {
 	case "waiting_list":
@@ -1438,6 +1446,31 @@ func classifyNotifPending(sess *session.Session) notifPendingKind {
 		return notifKindCancellation
 	}
 	return notifKindAppointment
+}
+
+// siesaPendingReturnOptions son las acciones de una respuesta pendiente de SIESA que pasó al agente,
+// según lo que quedó sin aplicar. Re-pedirle al paciente lo que ya respondió no sirve: el agente
+// reintenta por el bot o lo hace a mano y cierra.
+func siesaPendingReturnOptions(siesaCase string, action func(label, value string) sm.ReturnOption) []sm.ReturnOption {
+	switch siesaCase {
+	case sm.NotifSiesaCaseConfirm:
+		return []sm.ReturnOption{
+			action("Reintentar la confirmación en SIESA", "confirm"),
+			{Label: "Ya la confirmé a mano en SIESA", Value: "confirmada_manual", Close: true},
+		}
+	case sm.NotifSiesaCaseCancel:
+		return []sm.ReturnOption{
+			action("Pedirle confirmar la cancelación", "cancel"),
+			{Label: "Ya la cancelé a mano en SIESA", Value: "cancelada_manual", Close: true},
+		}
+	}
+	// La cita cambió: el agente la revisa con el paciente y decide.
+	return []sm.ReturnOption{
+		{Label: "Ya la revisé con el paciente", Value: "revisada_manual", Close: true},
+		action("Confirmar la cita", "confirm"),
+		action("Reprogramar la cita", "reschedule"),
+		action("Cancelar la cita", "cancel"),
+	}
 }
 
 // notifPendingButtonsDontApply dice si los 3 botones de NOTIF_PENDING NO corresponden a la
@@ -1470,6 +1503,8 @@ func notifPendingReturnOptions(sess *session.Session) []sm.ReturnOption {
 			{Label: "Ya la reprogramé a mano en SIESA", Value: "reprogramada_manual", Close: true},
 			action("Entendido, sin reprogramar", "understood"),
 		}
+	case notifKindSiesaPending:
+		return siesaPendingReturnOptions(sess.GetContext(sm.CtxNotifSiesaCase), action)
 	case notifKindWaitingList:
 		return []sm.ReturnOption{action("Agendar ahora", "wl_schedule"), action("No le interesa", "wl_decline")}
 	case notifKindCancellation:

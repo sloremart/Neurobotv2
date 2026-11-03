@@ -124,6 +124,9 @@ var catalog = map[string]stepSpec{
 	// reintento fallido del proceso de fondo deja siesa_retry_failed (detalle, attr n = intentos).
 	"notif_recordatorio/siesa_pending":      {LvMilestone, "retry", ""},
 	"notif_recordatorio/siesa_retry_failed": {LvFull, "retry", ""},
+	// siesa_cancel_prompted: la cancelación pendiente pasó a la sesión que le pide al paciente
+	// confirmarla (como al pulsar «Cancelar»): ahí termina la respuesta diferida.
+	"notif_recordatorio/siesa_cancel_prompted": {LvOutcome, "ok", ""},
 	// H131-1. same_day_no_response es TERMINAL válido (GUIA §16): la cita es de hoy, se avisó y el
 	// paciente no contestó; no hay más que hacer. Como milestone, su trace quedaba "sin cerrar" para
 	// siempre y aparecía como estancado en cada ciclo de auditoría.

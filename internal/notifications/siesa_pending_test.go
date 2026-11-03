@@ -16,6 +16,8 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/services"
+	"github.com/neuro-bot/neuro-bot/internal/session"
+	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
 // D-04: respuesta al recordatorio pendiente de SIESA.
@@ -137,13 +139,12 @@ func (s *memSiesaStore) pending() []SiesaPendingRow {
 
 // siesaFake es la SIESA de prueba: la lectura y las escrituras fallan mientras down sea true.
 type siesaFake struct {
-	mu         sync.Mutex
-	readDown   bool
-	writeDown  bool
-	appt       domain.Appointment
-	confirms   int
-	cancels    int
-	cancelArgs []string
+	mu        sync.Mutex
+	readDown  bool
+	writeDown bool
+	appt      domain.Appointment
+	confirms  int
+	cancels   int
 }
 
 func (f *siesaFake) repo() *mockApptRepoNotif {
@@ -168,14 +169,13 @@ func (f *siesaFake) repo() *mockApptRepoNotif {
 			f.appt.Confirmed = true
 			return nil
 		},
-		cancelFn: func(_ context.Context, id, reason, _, _ string) error {
+		cancelFn: func(context.Context, string, string, string, string) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if f.writeDown {
 				return errSiesaDown
 			}
 			f.cancels++
-			f.cancelArgs = append(f.cancelArgs, id+"|"+reason)
 			f.appt.Canceled = true
 			return nil
 		},
@@ -204,15 +204,16 @@ type siesaHarness struct {
 	siesa   *siesaFake
 	tracker *mockEventLoggerNotif
 	sess    *mockSessionCreator
+	wp      *mockVirtualEnqueuer
 }
 
 func newSiesaHarness(t *testing.T) *siesaHarness {
 	t.Helper()
-	h := &siesaHarness{bird: &sentBird{}, store: newMemSiesaStore(), siesa: &siesaFake{appt: futureAppt()}, tracker: &mockEventLoggerNotif{}, sess: &mockSessionCreator{}}
+	h := &siesaHarness{bird: &sentBird{}, store: newMemSiesaStore(), siesa: &siesaFake{appt: futureAppt()}, tracker: &mockEventLoggerNotif{}, sess: &mockSessionCreator{}, wp: &mockVirtualEnqueuer{}}
 	h.mgr = NewNotificationManager(h.bird.start(t), services.NewAppointmentService(h.siesa.repo(), nil), &config.Config{BirdTeamFallback: "team-fallback"})
 	h.mgr.SetSiesaPendingStore(h.store)
 	h.mgr.SetTracker(h.tracker)
-	h.mgr.SetWaitingListDeps(nil, h.sess, &mockVirtualEnqueuer{})
+	h.mgr.SetWaitingListDeps(nil, h.sess, h.wp)
 	return h
 }
 
@@ -453,19 +454,20 @@ func TestSiesaPending_AppointmentSoon_GivesUpAndEscalates(t *testing.T) {
 	}
 }
 
-// (f) Cancelar con SIESA caída: queda pendiente con su aviso; al volver SIESA se cancela y sale el
-// mensaje de cancelación de siempre.
-func TestSiesaPending_CancelWithSiesaDown(t *testing.T) {
+// (f) Cancelar con SIESA caída: queda pendiente con su aviso literal; al volver SIESA NO se cancela:
+// se abre la misma confirmación de la cancelación que al pulsar «Cancelar», una sola vez.
+func TestSiesaPending_CancelWithSiesaDown_PromptsConfirmationWithoutCancelling(t *testing.T) {
 	h := newSiesaHarness(t)
 	h.siesa.set(func(f *siesaFake) { f.readDown = true })
 
 	h.respond("cancelar")
 
 	row := h.onlyPending(t, siesaActionCancel)
-	if siesaCancelDeferredText != "Recibimos tu solicitud de cancelación. La registraremos en unos minutos." {
-		t.Fatalf("texto = %q", siesaCancelDeferredText)
+	const want = "Recibimos tu solicitud de cancelación. Te escribiremos en unos minutos para confirmarla."
+	if siesaCancelDeferredText != want {
+		t.Fatalf("texto = %q, want %q", siesaCancelDeferredText, want)
 	}
-	if got := h.bird.count(siesaCancelDeferredText); got != 1 {
+	if got := h.bird.count(want); got != 1 {
 		t.Fatalf("aviso de cancelación diferida enviado %d veces, want 1", got)
 	}
 	if h.bird.count("No pudimos encontrar tu cita") != 0 {
@@ -479,14 +481,67 @@ func TestSiesaPending_CancelWithSiesaDown(t *testing.T) {
 	h.pass(time.Now())
 	h.pass(time.Now())
 
-	if h.siesa.cancels != 1 || h.siesa.cancelArgs[0] != "APT001|Cancelada por paciente via WhatsApp" {
-		t.Fatalf("cancelaciones = %d %v", h.siesa.cancels, h.siesa.cancelArgs)
+	if h.siesa.cancels != 0 {
+		t.Fatalf("el proceso de fondo no cancela: CancelBatch = %d", h.siesa.cancels)
 	}
-	if got := h.bird.count(siesaCancelDoneText); got != 1 {
-		t.Fatalf("mensaje de cancelación enviado %d veces, want 1", got)
+	if s := h.sess.createdSession; s == nil || s.CurrentState != sm.StateConfirmCancelNotif || s.PhoneNumber != siesaTestPhone {
+		t.Fatalf("sesión abierta = %+v, want CONFIRM_CANCEL_NOTIF", s)
 	}
-	if h.store.outcomes[row.ID] != siesaOutcomeApplied || h.escalations() != 0 {
+	if h.sess.batchKVs["notif_appt_id"] != "APT001" {
+		t.Fatalf("contexto de la sesión = %v", h.sess.batchKVs)
+	}
+	if n := len(h.wp.calls); n != 1 {
+		t.Fatalf("mensajes virtuales encolados = %d, want 1 (la pregunta de confirmación)", n)
+	}
+	if h.store.outcomes[row.ID] != siesaOutcomeCancelPrompted || h.escalations() != 0 {
 		t.Fatalf("desenlace=%q escalaciones=%d", h.store.outcomes[row.ID], h.escalations())
+	}
+}
+
+// Con el paciente en otra conversación con el bot no se la interrumpe: se escala una vez.
+func TestSiesaPending_CancelWithPatientInSession_Escalates(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("cancelar")
+	row := h.onlyPending(t, siesaActionCancel)
+
+	h.siesa.set(func(f *siesaFake) { f.readDown = false })
+	h.sess.findCurrentFn = func(context.Context, string) (*session.Session, error) {
+		return &session.Session{ID: "otra", Status: session.StatusActive, CurrentState: sm.StateMainMenu, ExpiresAt: time.Now().Add(20 * time.Minute)}, nil
+	}
+	h.pass(time.Now())
+	h.pass(time.Now())
+
+	if h.sess.createdSession != nil || len(h.wp.calls) != 0 {
+		t.Fatalf("no se abre otra sesión encima: creada=%+v encoladas=%d", h.sess.createdSession, len(h.wp.calls))
+	}
+	if h.sess.completedPhone != "" {
+		t.Fatal("no se cierra la sesión en curso del paciente")
+	}
+	if h.siesa.cancels != 0 {
+		t.Fatal("no se cancela")
+	}
+	if h.store.outcomes[row.ID] != siesaOutcomeSessionBusy || h.escalations() != 1 {
+		t.Fatalf("desenlace=%q escalaciones=%d, want session_busy y 1", h.store.outcomes[row.ID], h.escalations())
+	}
+}
+
+// Una sesión activa ya vencida no es una conversación en curso: se abre la confirmación igual.
+func TestSessionInUse(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct {
+		name string
+		s    *session.Session
+		want bool
+	}{
+		{"sin sesión", nil, false},
+		{"activa vigente", &session.Session{Status: session.StatusActive, ExpiresAt: now.Add(time.Minute)}, true},
+		{"activa vencida", &session.Session{Status: session.StatusActive, ExpiresAt: now.Add(-time.Minute)}, false},
+		{"escalada vencida", &session.Session{Status: session.StatusEscalated, ExpiresAt: now.Add(-time.Hour)}, true},
+	} {
+		if got := sessionInUse(c.s, now); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -539,5 +594,28 @@ func TestSiesaPending_RunPassHonoursDeadline(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("la pasada no terminó al vencer su plazo")
+	}
+}
+
+// Cada caso de D-04 viaja con su motivo y su caso en la vista de la escalación, que es lo que elige
+// el menú del agente (handlers.siesaPendingReturnOptions; aquí un menú que los devuelve tal cual).
+func TestSiesaPending_EscalationCarriesCase(t *testing.T) {
+	for reason, wantCase := range map[escalationReason]string{
+		escalationSiesaConfirm: sm.NotifSiesaCaseConfirm,
+		escalationSiesaCancel:  sm.NotifSiesaCaseCancel,
+		escalationSiesaChanged: sm.NotifSiesaCaseChanged,
+	} {
+		mgr, bridge := nectarManager(t, &config.Config{
+			BirdTeamFallback: "team-fallback", ProtocolEscaladoVersion: config.ProtocolEscaladoV1,
+		})
+		sm.RegisterReturnMenu(sm.StateNotifPending, func(sess *session.Session) []sm.ReturnOption {
+			label := sess.GetContext(sm.CtxNotifEscalationDetail) + "/" + sess.GetContext(sm.CtxNotifSiesaCase)
+			return []sm.ReturnOption{{Label: label, Value: "x", Close: true}}
+		})
+		mgr.escalateToAgent(&PendingNotification{Phone: nectarPhone, AppointmentID: "APT001", Type: "confirmation", ConversationID: "777"}, reason)
+		want := sm.EscalationReasonNotifSiesaPending + "/" + wantCase
+		if esc := bridge.only(t); !strings.Contains(string(esc.Input), want) {
+			t.Errorf("reason %v: la vista no lleva %q: %s", reason, want, esc.Input)
+		}
 	}
 }

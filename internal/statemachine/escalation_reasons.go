@@ -20,6 +20,10 @@ const (
 	// EscalationReasonRescheduleNoProcedure: el paciente pidió reprogramar desde la notificación,
 	// pero la cita no tiene procedimiento (CUPS) en SIESA; la reprograma un agente a mano.
 	EscalationReasonRescheduleNoProcedure = "reprogramar_sin_procedimiento"
+	// EscalationReasonNotifSiesaPending: el paciente respondió al recordatorio con SIESA caída y la
+	// respuesta pendiente no se pudo aplicar sola (venció un tope, la cita cambió o el paciente
+	// estaba en otra conversación con el bot). CtxNotifSiesaCase dice cuál y elige el menú.
+	EscalationReasonNotifSiesaPending = "notificacion_siesa_pendiente"
 )
 
 // Motivos de las escalaciones del flujo del paciente. Cada sitio que manda a ESCALATE_TO_AGENT
@@ -81,7 +85,7 @@ const (
 func EscalationReasons() []string {
 	return []string{
 		EscalationReasonNotifNoResponse, EscalationReasonNotifSystemFailure, EscalationReasonNotifFreeText,
-		EscalationReasonRescheduleNoProcedure, EscalationReasonPatientAsked, EscalationReasonMaxRetries, EscalationReasonAIRecoveryExhausted,
+		EscalationReasonRescheduleNoProcedure, EscalationReasonNotifSiesaPending, EscalationReasonPatientAsked, EscalationReasonMaxRetries, EscalationReasonAIRecoveryExhausted,
 		EscalationReasonParticularNoOrder, EscalationReasonOCRAskedForAgent, EscalationReasonOCRNoCode,
 		EscalationReasonOCRInvalidJSON, EscalationReasonSanitasBlock, EscalationReasonNoValidCups,
 		EscalationReasonEmptyGrouping, EscalationReasonNoCoverage, EscalationReasonSleepStudy,
@@ -102,4 +106,18 @@ const (
 	CtxNotifWaitingListID = "notif_wl_id"
 	// CtxNotifCupsCode es el código CUPS del primer procedimiento de la cita notificada.
 	CtxNotifCupsCode = "notif_cups_code"
+	// CtxNotifSiesaCase dice, en una escalación EscalationReasonNotifSiesaPending, qué quedó sin
+	// aplicar: uno de los NotifSiesaCase*.
+	CtxNotifSiesaCase = "notif_siesa_case"
+)
+
+// Casos de una respuesta pendiente de SIESA que pasa a un agente (CtxNotifSiesaCase).
+const (
+	// NotifSiesaCaseConfirm: el paciente confirmó y la confirmación no llegó a SIESA a tiempo.
+	NotifSiesaCaseConfirm = "confirm"
+	// NotifSiesaCaseCancel: el paciente pidió cancelar y no se le pudo pedir la confirmación de la
+	// cancelación (venció un tope o estaba en otra conversación con el bot).
+	NotifSiesaCaseCancel = "cancel"
+	// NotifSiesaCaseChanged: cuando SIESA volvió, la cita ya había cambiado; no se aplicó nada.
+	NotifSiesaCaseChanged = "changed"
 )

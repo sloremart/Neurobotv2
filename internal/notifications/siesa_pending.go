@@ -3,18 +3,19 @@ package notifications
 import (
 	"context"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // Respuesta al recordatorio pendiente de SIESA (D-04). Si el paciente pulsa «Confirmar» o
 // «Cancelar» y SIESA no responde, la respuesta queda marcada en su fila de notification_history
-// (migración 047) y un proceso de fondo la aplica cuando SIESA vuelve.
+// (migración 047) y un proceso de fondo la retoma cuando SIESA vuelve: la confirmación se aplica;
+// la cancelación NO, se le pide al paciente que la confirme, como al pulsar «Cancelar».
 
 // Acciones que pueden quedar pendientes de SIESA (columna siesa_pending).
 const (
@@ -24,19 +25,18 @@ const (
 
 // Desenlaces de una respuesta que deja de estar pendiente (columna siesa_outcome).
 const (
-	siesaOutcomeApplied        = "applied"         // el proceso de fondo la aplicó en SIESA
+	siesaOutcomeApplied        = "applied"         // el proceso de fondo confirmó en SIESA
+	siesaOutcomeCancelPrompted = "cancel_prompted" // se abrió la confirmación de la cancelación
 	siesaOutcomeAlreadyApplied = "already_applied" // la cita ya estaba como pidió el paciente
 	siesaOutcomeNotApplicable  = "not_applicable"  // la cita cambió: no se tocó y se escaló
+	siesaOutcomeSessionBusy    = "session_busy"    // el paciente estaba en otra conversación: se escaló
 	siesaOutcomeGaveUp         = "gave_up"         // venció un tope: se escaló
 )
 
 // Textos al paciente cuando su respuesta queda pendiente de SIESA.
 const (
 	siesaConfirmDeferredText = "Recibimos tu confirmación. La registraremos en unos minutos."
-	siesaCancelDeferredText  = "Recibimos tu solicitud de cancelación. La registraremos en unos minutos."
-	// siesaCancelDoneText es el texto de «cita cancelada» de CONFIRM_CANCEL_NOTIF
-	// (confirmCancelNotifHandler, statemachine/handlers): el mismo que recibe quien cancela con SIESA arriba.
-	siesaCancelDoneText = "Tu cita ha sido cancelada.\n\nSi deseas reprogramar, puedes escribirnos cuando lo necesites."
+	siesaCancelDeferredText  = "Recibimos tu solicitud de cancelación. Te escribiremos en unos minutos para confirmarla."
 )
 
 // Topes de la espera: pasado cualquiera de ellos el bot deja de reintentar y escala a un agente.
@@ -127,11 +127,8 @@ func (m *NotificationManager) patientDayAppointments(ctx context.Context, appt *
 // siesaPendingBatch acota las filas de una pasada: las que sobren van en la siguiente.
 const siesaPendingBatch = 50
 
-// siesaCancelReason es el motivo de cancelación del paciente por WhatsApp (el de CONFIRM_CANCEL_NOTIF).
-const siesaCancelReason = "Cancelada por paciente via WhatsApp"
-
-// StartSiesaPendingRetrier aplica en SIESA, cada cfg.SiesaPendingRetryMin minutos, las respuestas
-// al recordatorio que quedaron pendientes. Las pasadas son secuenciales (un solo bucle): dos
+// StartSiesaPendingRetrier retoma, cada cfg.SiesaPendingRetryMin minutos, las respuestas al
+// recordatorio que quedaron pendientes de SIESA. Las pasadas son secuenciales (un solo bucle): dos
 // pasadas nunca trabajan la misma fila a la vez.
 func (m *NotificationManager) StartSiesaPendingRetrier(ctx context.Context) {
 	if m.siesaPending == nil {
@@ -179,7 +176,7 @@ func (m *NotificationManager) retrySiesaPending(ctx context.Context, now time.Ti
 	}
 }
 
-// retrySiesaRow intenta aplicar UNA respuesta pendiente. Releer la cita antes de escribir hace de
+// retrySiesaRow retoma UNA respuesta pendiente. Releer la cita antes de escribir hace de
 // SIESA la llave de idempotencia: si una pasada aplicó y envió pero no pudo cerrar la fila, la
 // siguiente encuentra la cita ya como pidió el paciente y la cierra sin reenviar nada.
 func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendingRow, now time.Time) {
@@ -211,43 +208,76 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 		return
 	}
 
-	allAppts := m.patientDayAppointments(ctx, appt)
-	text, eventType := siesaCancelDoneText, "notification_cancel_confirmed"
-	if row.Action == siesaActionConfirm {
-		err = m.apptSvc.ConfirmBlock(ctx, allAppts, "whatsapp_bot", row.ConversationID)
-		text, eventType = m.buildConfirmationMessage(ctx, appt, allAppts), "notification_confirmed"
-	} else {
-		err = m.apptSvc.CancelBlock(ctx, allAppts, siesaCancelReason, "whatsapp", row.ConversationID)
+	if row.Action == siesaActionCancel {
+		m.promptDeferredCancel(ctx, row, pending, appt, now)
+		return
 	}
-	if err != nil {
+
+	allAppts := m.patientDayAppointments(ctx, appt)
+	if err := m.apptSvc.ConfirmBlock(ctx, allAppts, "whatsapp_bot", row.ConversationID); err != nil {
 		m.recordSiesaFailure(ctx, row, err)
 		return
 	}
-	_, _ = m.birdClient.SendText(row.Phone, row.ConversationID, text) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)
+	_, _ = m.birdClient.SendText(row.Phone, row.ConversationID, m.buildConfirmationMessage(ctx, appt, allAppts)) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)
 
 	markCtx, cancel := utils.MarkContext(ctx)
 	defer cancel()
 	m.finishSiesaRow(markCtx, row, siesaOutcomeApplied)
-	if row.Action == siesaActionCancel {
-		m.notifyFreedSlots(markCtx, allAppts)
-	}
 	if m.tracker != nil {
-		m.tracker.LogEvent(markCtx, "", row.Phone, eventType, map[string]interface{}{
+		m.tracker.LogEvent(markCtx, "", row.Phone, "notification_confirmed", map[string]interface{}{
 			"appointment_id":  row.AppointmentID,
-			"total":           len(allAppts),
+			"total_confirmed": len(allAppts),
 			"conversation_id": row.ConversationID,
 			"siesa_deferred":  true,
 		})
 	}
-	applied := observability.EmitOpts{Phone: row.Phone, Reason: "whatsapp_siesa_deferred"}
-	if row.Action == siesaActionConfirm {
-		observability.Emit(observability.TraceNotif(row.AppointmentID), "notif_recordatorio", "confirmed", applied)
-	} else {
-		observability.Emit(observability.TraceNotif(row.AppointmentID), "notif_recordatorio", "cancelled", applied)
-	}
+	observability.Emit(observability.TraceNotif(row.AppointmentID), "notif_recordatorio", "confirmed",
+		observability.EmitOpts{Phone: row.Phone, Reason: "whatsapp_siesa_deferred"})
 	slog.Info("respuesta pendiente de SIESA aplicada",
 		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action,
 		"attempts", row.Attempts, "total", len(allAppts))
+}
+
+// promptDeferredCancel abre la confirmación de la cancelación, la misma que al pulsar «Cancelar»
+// con SIESA arriba: el bot NO cancela; la cancelación (y el aviso a la lista de espera) ocurre solo
+// si el paciente la confirma, por el camino de siempre. Si el paciente está en otra conversación con
+// el bot no se la interrumpe: pasa a un agente.
+func (m *NotificationManager) promptDeferredCancel(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, appt *domain.Appointment, now time.Time) {
+	if m.sessionRepo == nil || m.workerPool == nil {
+		slog.Error("respuesta pendiente de SIESA: sin sesiones para pedir la confirmación de la cancelación")
+		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp)
+		return
+	}
+	current, err := m.sessionRepo.FindCurrentByPhone(ctx, row.Phone)
+	if err != nil {
+		m.recordSiesaFailure(ctx, row, err)
+		return
+	}
+	if sessionInUse(current, now) {
+		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeSessionBusy)
+		return
+	}
+	if err := m.openConfirmCancelSession(ctx, row.Phone, pending, appt); err != nil {
+		m.recordSiesaFailure(ctx, row, err)
+		return
+	}
+
+	markCtx, cancel := utils.MarkContext(ctx)
+	defer cancel()
+	m.finishSiesaRow(markCtx, row, siesaOutcomeCancelPrompted)
+	observability.Emit(observability.TraceNotif(row.AppointmentID), "notif_recordatorio", "siesa_cancel_prompted",
+		observability.EmitOpts{Phone: row.Phone})
+	slog.Info("respuesta pendiente de SIESA: se pidió confirmar la cancelación",
+		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "attempts", row.Attempts)
+}
+
+// sessionInUse dice si la sesión que ocupa el teléfono es una conversación en curso: escalada, o
+// activa y sin vencer. Una activa ya vencida no es uso: openConfirmCancelSession la cierra.
+func sessionInUse(s *session.Session, now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	return s.Status == session.StatusEscalated || s.ExpiresAt.After(now)
 }
 
 // siesaCheck decide con la cita recién leída: "" = se puede aplicar la acción; already_applied = ya
@@ -286,14 +316,15 @@ func startsWithin(appt *domain.Appointment, now time.Time, lead time.Duration) b
 	return start.Before(now.Add(lead))
 }
 
-// recordSiesaFailure suma un intento: SIESA sigue sin responder y la fila espera a la pasada siguiente.
+// recordSiesaFailure suma un intento: SIESA (o la BD local al abrir la sesión) sigue fallando y la
+// fila espera a la pasada siguiente.
 func (m *NotificationManager) recordSiesaFailure(ctx context.Context, row SiesaPendingRow, cause error) {
 	if err := m.siesaPending.RecordSiesaAttempt(ctx, row.ID); err != nil {
 		slog.Error("respuesta pendiente de SIESA: anotar intento", "id", row.ID, "error", err)
 	}
 	observability.Emit(observability.TraceNotif(row.AppointmentID), "notif_recordatorio", "siesa_retry_failed",
 		observability.EmitOpts{Phone: row.Phone, Reason: row.Action, Attrs: map[string]interface{}{"n": row.Attempts + 1}})
-	slog.Warn("respuesta pendiente de SIESA: SIESA sigue sin responder",
+	slog.Warn("respuesta pendiente de SIESA: no se pudo aplicar, se reintenta",
 		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action,
 		"attempts", row.Attempts+1, "error", cause)
 }
@@ -320,29 +351,14 @@ func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPen
 	if !m.finishSiesaRow(ctx, row, outcome) {
 		return
 	}
-	reason := escalationSiesaChanged
-	if outcome == siesaOutcomeGaveUp {
-		reason = escalationSystemFailure // «el paciente confirmó y SIESA falló»: la nota y el menú de siempre
-		if row.Action == siesaActionCancel {
-			reason = escalationSiesaCancelFailed
-		}
+	reason := escalationSiesaConfirm
+	switch {
+	case outcome == siesaOutcomeNotApplicable:
+		reason = escalationSiesaChanged
+	case row.Action == siesaActionCancel:
+		reason = escalationSiesaCancel
 	}
 	m.escalateToAgent(pending, reason) //nolint:contextcheck // escalateToAgent no toma ctx por diseño (su propio timeout, como desde el timer)
-}
-
-// notifyFreedSlots avisa a la lista de espera por cada (médico, agenda) liberado al cancelar, como
-// la cancelación de CONFIRM_CANCEL_NOTIF.
-func (m *NotificationManager) notifyFreedSlots(ctx context.Context, block []domain.Appointment) {
-	seen := make(map[[2]int]bool)
-	for _, appt := range block {
-		cod, _ := strconv.Atoi(appt.DoctorID)
-		key := [2]int{cod, appt.AgendaID}
-		if cod <= 0 || appt.AgendaID <= 0 || seen[key] {
-			continue
-		}
-		seen[key] = true
-		go m.CheckWaitingListForSlot(context.WithoutCancel(ctx), cod, appt.AgendaID)
-	}
 }
 
 // notification arma el pending con el que se responde o se escala la fila.
