@@ -30,6 +30,23 @@ func TestMaskDocument(t *testing.T) {
 	}
 }
 
+// El texto libre del paciente (cédula, nombres, dirección, síntomas) no llega a los logs: solo su
+// largo, para que la guía de auditoría siga viendo que el mensaje entró al motor.
+func TestRedactLogAttr_PatientText(t *testing.T) {
+	SetMaskPhones(true)
+	cases := []struct{ key, in, want string }{
+		{"text", "1000000689 Juan Pérez", "[redactado: 21 caracteres]"},
+		{"Text", "hola", "[redactado: 4 caracteres]"},
+		{"text", "", ""},
+		{"state", "ASK_DOCUMENT", "ASK_DOCUMENT"},
+	}
+	for _, c := range cases {
+		if got := RedactLogAttr(c.key, c.in); got != c.want {
+			t.Errorf("RedactLogAttr(%q, %q) = %q, want %q", c.key, c.in, got, c.want)
+		}
+	}
+}
+
 func TestMaskDocument_Disabled(t *testing.T) {
 	SetMaskPhones(false)
 	defer SetMaskPhones(true)

@@ -1,6 +1,10 @@
 package utils
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+)
 
 // maskPhones controls whether phone numbers are masked in logs.
 // Default: true (production). Set to false via LOG_MASK_PHONES=false for debugging.
@@ -48,9 +52,19 @@ var (
 	}
 )
 
+// MaskText reemplaza el texto libre del paciente (puede traer cédula, nombres, dirección o
+// síntomas) por su largo en runas. Vacío queda vacío. Respeta el mismo LOG_MASK_PHONES.
+func MaskText(text string) string {
+	if !maskPhones || text == "" {
+		return text
+	}
+	return fmt.Sprintf("[redactado: %d caracteres]", utf8.RuneCountInString(text))
+}
+
 // RedactLogAttr devuelve el valor enmascarado si la clave es PII (documento/nombre → MaskDocument,
-// teléfono → MaskPhone); si no, lo devuelve igual. Centraliza la política de redacción para todos
-// los sinks de logs (stdout/archivo vía ReplaceAttr global, y el handler de Telegram).
+// teléfono → MaskPhone, texto del mensaje → MaskText); si no, lo devuelve igual. Centraliza la
+// política de redacción para todos los sinks de logs (stdout/archivo vía ReplaceAttr global, y el
+// handler de Telegram).
 func RedactLogAttr(key, value string) string {
 	k := strings.ToLower(key)
 	switch {
@@ -58,6 +72,8 @@ func RedactLogAttr(key, value string) string {
 		return MaskDocument(value)
 	case sensitivePhoneKeys[k]:
 		return MaskPhone(value)
+	case k == "text":
+		return MaskText(value)
 	}
 	return value
 }
