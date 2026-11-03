@@ -201,11 +201,12 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 	// solo para dejar pending (y llamada IVR) a los pacientes que faltaban, sin ninguna apertura.
 	configStopped := false
 	var inDoubt []string
-	// failed cuenta los envíos que fallaron por la línea (fuera de los en duda), para el aviso urgente.
-	failed := 0
+	// failed cuenta los envíos que fallaron por la línea (fuera de los en duda), para el aviso urgente;
+	// rateLimited, cuántos de ellos fueron un 429.
+	failed, rateLimited := 0, 0
 	defer func() {
 		logInDoubtSummary("confirmation", inDoubt)
-		t.reportUnsent(ctx, "confirmation", len(inDoubt)+failed, configStopped)
+		t.reportUnsent(ctx, "confirmation", len(inDoubt)+failed, rateLimited, configStopped)
 	}()
 
 	for _, group := range patientGroups {
@@ -325,6 +326,9 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 				slog.Error("send reminder failed", "phone", utils.MaskPhone(phone), "error", err)
 				if lineSendFailure(err) {
 					failed++
+					if errors.Is(err, bird.ErrLineRateLimited) {
+						rateLimited++
+					}
 				}
 				t.registerUnsentReminder(ctx, phone, firstAppt.ID, "send_error")
 			}
@@ -442,11 +446,11 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 	var inDoubt []string
 	// failed cuenta los envíos que fallaron por la línea (fuera de los en duda) y configStopped la detención por
 	// configuración: los dos van al aviso urgente de volver a Bird.
-	failed := 0
+	failed, rateLimited := 0, 0
 	configStopped := false
 	defer func() {
 		logInDoubtSummary("confirmation_same_day", inDoubt)
-		t.reportUnsent(ctx, "confirmation_same_day", len(inDoubt)+failed, configStopped)
+		t.reportUnsent(ctx, "confirmation_same_day", len(inDoubt)+failed, rateLimited, configStopped)
 	}()
 
 	for _, group := range patientGroups {
@@ -531,6 +535,9 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 			slog.Error("same-day reminder send failed", "phone", utils.MaskPhone(phone), "error", err)
 			if lineSendFailure(err) {
 				failed++
+				if errors.Is(err, bird.ErrLineRateLimited) {
+					rateLimited++
+				}
 			}
 			continue
 		}
@@ -665,12 +672,17 @@ func lineSendFailure(err error) bool {
 // corrida detenida por configuración ya avisó con TriggerProactiveStopped y cuántos quedaron: no se
 // avisa dos veces por la misma causa. Sin teléfonos. Config.Load garantiza un umbral ≥ 1
 // (parsePositiveInt); el max cubre una Config armada a mano con 0, para que 0 sin enviar no avise.
-func (t *Tasks) reportUnsent(ctx context.Context, run string, unsent int, configStopped bool) {
+// rateLimited (cuántos fueron un 429) se nombra aparte: un proxy limitando, no Néctar caído.
+func (t *Tasks) reportUnsent(ctx context.Context, run string, unsent, rateLimited int, configStopped bool) {
 	if t.Urgent == nil || t.Cfg == nil || configStopped || unsent < max(t.Cfg.UrgentUnsentThreshold, 1) {
 		return
 	}
-	t.Urgent.Fire(ctx, monitor.TriggerRemindersUnsent, fmt.Sprintf(
-		"corrida %s: %d recordatorios sin enviar o en duda (umbral %d)", run, unsent, t.Cfg.UrgentUnsentThreshold))
+	detail := fmt.Sprintf("corrida %s: %d recordatorios sin enviar o en duda (umbral %d)",
+		run, unsent, t.Cfg.UrgentUnsentThreshold)
+	if rateLimited > 0 {
+		detail += fmt.Sprintf("; %d por límite de peticiones (HTTP 429)", rateLimited)
+	}
+	t.Urgent.Fire(ctx, monitor.TriggerRemindersUnsent, detail)
 }
 
 // registerUnsentReminder deja el pending de confirmación de un recordatorio de día-antes que NO salió

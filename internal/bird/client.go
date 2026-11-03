@@ -33,6 +33,11 @@ var ErrNonContactable = errors.New("non-contactable identifier (not E.164)")
 // reintentarlo no sirve. IsPermanentSendError lo reconoce aunque venga envuelto.
 var ErrPermanentSend = errors.New("envío rechazado de forma permanente")
 
+// ErrLineRateLimited marca un envío que la línea rechazó con 429 (límite de peticiones, p. ej. un
+// proxy delante de Néctar) tras agotar los reintentos. Es transitorio y cuenta como falla de la
+// línea; el aviso urgente lo nombra aparte para que no se confunda con Néctar caído.
+var ErrLineRateLimited = errors.New("límite de peticiones de la línea (HTTP 429)")
+
 // APIError preserva el status HTTP de un error de la API de Bird, para que los callers puedan
 // distinguir fallos permanentes (4xx: reintentar es pagar otro envío condenado) de transitorios.
 type APIError struct {

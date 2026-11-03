@@ -680,6 +680,10 @@ func TestOpenConversation_429IsTransient(t *testing.T) {
 		if err == nil || bird.IsPermanentSendError(err) {
 			t.Fatalf("quiero un error transitorio, tengo %v", err)
 		}
+		// El aviso urgente nombra la causa: límite de peticiones, no Néctar caído.
+		if !errors.Is(err, bird.ErrLineRateLimited) {
+			t.Fatalf("el 429 agotado se reconoce como límite de peticiones: %v", err)
+		}
 		if f.calls() != 3 {
 			t.Fatalf("como mucho 2 reintentos: %d llamadas", f.calls())
 		}

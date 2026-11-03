@@ -96,6 +96,41 @@ func TestUrgent_SendErrorsCount(t *testing.T) {
 	}
 }
 
+// Un 429 (límite de peticiones de un proxy delante de Néctar) cuenta como falla de la línea, y el
+// aviso dice cuántos fueron por esa causa: la persona de turno sabe que no es Néctar caído.
+func TestUrgent_RateLimitedNamesCause(t *testing.T) {
+	for _, sameDay := range []bool{false, true} {
+		rig := newNectarReminderRigN(t, &fakenectar.Bridge{
+			OpenErr: fmt.Errorf("nectar: POST open: status 429: %w", bird.ErrLineRateLimited),
+		}, sameDay, 2)
+		stopRigTimers(t, rig.nm, 2)
+		urgent := &fakeurgent.Recorder{}
+		rig.tasks.Urgent = urgent
+		rig.tasks.Cfg.UrgentUnsentThreshold = 2
+		rig.run(t, sameDay)
+		fires := urgent.Fires()
+		if len(fires) != 1 || fires[0].Trigger != monitor.TriggerRemindersUnsent {
+			t.Fatalf("sameDay=%v: un aviso de no enviados: %+v", sameDay, fires)
+		}
+		if !strings.Contains(fires[0].Detail, "2 por límite de peticiones (HTTP 429)") {
+			t.Fatalf("sameDay=%v: el aviso nombra la causa: %q", sameDay, fires[0].Detail)
+		}
+	}
+}
+
+// Sin 429 el aviso no menciona el límite de peticiones.
+func TestUrgent_NoRateLimitNoCauseNote(t *testing.T) {
+	rig := newNectarReminderRigN(t, &fakenectar.Bridge{OpenErr: fmt.Errorf("nectar: 500 boom")}, false, 2)
+	stopRigTimers(t, rig.nm, 2)
+	urgent := &fakeurgent.Recorder{}
+	rig.tasks.Urgent = urgent
+	rig.tasks.Cfg.UrgentUnsentThreshold = 2
+	rig.run(t, false)
+	if fires := urgent.Fires(); len(fires) != 1 || strings.Contains(fires[0].Detail, "429") {
+		t.Fatalf("sin 429 no hay nota de causa: %+v", fires)
+	}
+}
+
 // No cuentan como falla de la línea: el tope local de envíos, el contacto no alcanzable, un rechazo
 // permanente del destinatario (400 phone_invalid) ni, en el de día antes, el paciente con un agente.
 // Con umbral 1, ninguno avisa en ninguna de las dos corridas.
@@ -160,11 +195,11 @@ func TestReportUnsent_ZeroUnsentNeverFires(t *testing.T) {
 	for _, threshold := range []int{0, 1} {
 		urgent := &fakeurgent.Recorder{}
 		tasks := &Tasks{Urgent: urgent, Cfg: &config.Config{UrgentUnsentThreshold: threshold}}
-		tasks.reportUnsent(context.Background(), "confirmation", 0, false)
+		tasks.reportUnsent(context.Background(), "confirmation", 0, 0, false)
 		if fires := urgent.Fires(); len(fires) != 0 {
 			t.Fatalf("umbral %d, 0 sin enviar: %+v", threshold, fires)
 		}
-		tasks.reportUnsent(context.Background(), "confirmation", 1, false)
+		tasks.reportUnsent(context.Background(), "confirmation", 1, 0, false)
 		if fires := urgent.Fires(); len(fires) != 1 || fires[0].Trigger != monitor.TriggerRemindersUnsent {
 			t.Fatalf("umbral %d, 1 sin enviar avisa: %+v", threshold, fires)
 		}

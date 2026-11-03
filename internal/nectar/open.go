@@ -212,5 +212,8 @@ func decodeOpen(resp reply) (Opened, error) {
 	if resp.status >= 400 && resp.status < 500 && resp.status != http.StatusTooManyRequests {
 		return Opened{}, fmt.Errorf("nectar: POST %s: status %d reason %q: %w", openPath, resp.status, reason, bird.ErrPermanentSend)
 	}
+	if resp.status == http.StatusTooManyRequests {
+		return Opened{}, fmt.Errorf("nectar: POST %s: status %d reason %q: %w", openPath, resp.status, reason, bird.ErrLineRateLimited)
+	}
 	return Opened{}, fmt.Errorf("nectar: POST %s: status %d reason %q", openPath, resp.status, reason)
 }
