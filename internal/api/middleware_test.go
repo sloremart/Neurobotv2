@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -190,5 +191,67 @@ func TestRateLimiter_BlocksOverLimit(t *testing.T) {
 
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("expected 429 over rate limit, got %d", rec.Code)
+	}
+}
+
+// rateLimitHits manda len(xffs) peticiones desde remoteAddr, cada una con su X-Forwarded-For,
+// y cuenta cuántas respondió el limitador con 429.
+func rateLimitHits(t *testing.T, limit int, remoteAddr string, xffs []string) int {
+	t.Helper()
+	handler := RateLimiter(limit, time.Minute)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	got429 := 0
+	for _, xff := range xffs {
+		req := httptest.NewRequest("GET", "/api/internal/kpis/health", nil)
+		req.RemoteAddr = remoteAddr
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			got429++
+		}
+	}
+	return got429
+}
+
+// TestRateLimiter_SpoofedXFFBehindProxyDoesNotEvade: detrás del túnel, el cliente puede inventar
+// las primeras entradas de X-Forwarded-For, pero ngrok AÑADE la IP real al final. Rotar la parte
+// inventada no debe abrir un bucket nuevo en cada petición (A-01).
+func TestRateLimiter_SpoofedXFFBehindProxyDoesNotEvade(t *testing.T) {
+	for _, proxy := range []string{"172.18.0.4:51234", "127.0.0.1:51234", "[::1]:51234"} {
+		xffs := make([]string, 10)
+		for i := range xffs {
+			xffs[i] = fmt.Sprintf("10.9.%d.%d, 198.51.100.9", i, i+1)
+		}
+		if got := rateLimitHits(t, 3, proxy, xffs); got != 7 {
+			t.Errorf("proxy %s: 10 peticiones del mismo cliente real con XFF inventado, límite 3: esperaba 7 respuestas 429, got %d", proxy, got)
+		}
+	}
+}
+
+// TestRateLimiter_ProxiedClientsHaveSeparateBuckets: detrás del túnel, clientes reales distintos
+// (última entrada distinta) no comparten bucket: el límite no se vuelve global.
+func TestRateLimiter_ProxiedClientsHaveSeparateBuckets(t *testing.T) {
+	xffs := make([]string, 10)
+	for i := range xffs {
+		xffs[i] = fmt.Sprintf("198.51.100.%d", i+1)
+	}
+	if got := rateLimitHits(t, 3, "172.18.0.4:51234", xffs); got != 0 {
+		t.Errorf("10 clientes reales distintos tras el proxy: esperaba 0 respuestas 429, got %d", got)
+	}
+}
+
+// TestRateLimiter_DirectRequestIgnoresXFF: una conexión que no viene del proxy (puerto publicado)
+// se identifica por RemoteAddr; su X-Forwarded-For, venga como venga, no cuenta.
+func TestRateLimiter_DirectRequestIgnoresXFF(t *testing.T) {
+	xffs := make([]string, 10)
+	for i := range xffs {
+		xffs[i] = fmt.Sprintf("198.51.100.%d", i+1)
+	}
+	if got := rateLimitHits(t, 3, "203.0.113.7:40001", xffs); got != 7 {
+		t.Errorf("10 peticiones directas desde la misma IP con XFF rotado, límite 3: esperaba 7 respuestas 429, got %d", got)
 	}
 }

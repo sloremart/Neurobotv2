@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -93,22 +94,7 @@ func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Keyear por HOST, no por "host:port": el puerto efímero cambia en cada conexión TCP,
-			// lo que vaciaba el bucket y hacía inefectivo el límite (N-14). Fallback a RemoteAddr
-			// crudo si no trae puerto.
-			ip := r.RemoteAddr
-			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-				ip = host
-			}
-			// El bot corre detrás de un reverse proxy: RemoteAddr es la IP del proxy (igual para todos),
-			// lo que haría el límite global. Se usa la PRIMERA IP de X-Forwarded-For (el cliente real).
-			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-				if first, _, found := strings.Cut(xff, ","); found || first != "" {
-					if c := strings.TrimSpace(first); c != "" {
-						ip = c
-					}
-				}
-			}
+			ip := clientIP(r)
 
 			mu.Lock()
 			c, exists := clients[ip]
@@ -130,6 +116,35 @@ func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// dockerBridgeNet es el rango de las redes bridge que Docker asigna por defecto (botnet incluida).
+var dockerBridgeNet = netip.MustParsePrefix("172.16.0.0/12")
+
+// clientIP identifica al cliente para el limitador. Topología asumida (docker-compose.yml): un solo
+// proxy delante del bot, el contenedor ngrok en la red botnet, que AÑADE la IP del cliente al final
+// de X-Forwarded-For (no la reemplaza ni manda otra cabecera con la IP real); el resto de la cabecera
+// lo escribe el cliente. Por eso, si la conexión llega desde el proxy (red bridge de Docker o
+// loopback) se toma la ÚLTIMA entrada; si no (puerto publicado, LAN), manda RemoteAddr. Se keyea por
+// HOST, no por "host:port": el puerto efímero cambia en cada conexión TCP (N-14).
+func clientIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || (!addr.IsLoopback() && !dockerBridgeNet.Contains(addr.Unmap())) {
+		return host
+	}
+	xff := r.Header.Values("X-Forwarded-For")
+	if len(xff) == 0 {
+		return host
+	}
+	entries := strings.Split(xff[len(xff)-1], ",")
+	if last := strings.TrimSpace(entries[len(entries)-1]); last != "" {
+		return last
+	}
+	return host
 }
 
 // SecurityHeaders adds standard security headers to all responses.
