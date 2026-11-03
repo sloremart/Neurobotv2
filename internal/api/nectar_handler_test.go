@@ -35,6 +35,8 @@ type sinkRecorder struct {
 	mu       sync.Mutex
 	messages []bird.InboundMessage
 	commands []worker.AgentCommand
+	// full simula el buffer de comandos lleno (o el pool apagándose): no encola nada.
+	full bool
 }
 
 func (s *sinkRecorder) Enqueue(m bird.InboundMessage) bool {
@@ -44,10 +46,14 @@ func (s *sinkRecorder) Enqueue(m bird.InboundMessage) bool {
 	return true
 }
 
-func (s *sinkRecorder) EnqueueAgentCommand(c worker.AgentCommand) {
+func (s *sinkRecorder) EnqueueAgentCommand(c worker.AgentCommand) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.full {
+		return false
+	}
 	s.commands = append(s.commands, c)
+	return true
 }
 
 func (s *sinkRecorder) counts() (messages, commands int) {
@@ -361,10 +367,36 @@ func TestHandleNectarNotice_ResolvedBecomesClose(t *testing.T) {
 	if sink.commands[0].Reason != worker.CloseReasonResolved {
 		t.Fatalf("resuelta sin motivo viaja con el centinela %q, got %q", worker.CloseReasonResolved, sink.commands[0].Reason)
 	}
-	// Un aviso sin mensaje no pasa por el worker, así que su fila del WAL se cierra aquí:
-	// si no, el replay de arranque la volvería a despachar cada reinicio.
-	if len(inbox.done) != 1 || inbox.done[0] != "e-res" {
-		t.Fatalf("la fila del WAL debe quedar done, got %v", inbox.done)
+	// La fila del WAL la cierra el worker al terminar el comando (D-02), no el manejador: el
+	// comando viaja con su event_id y la fila queda 'pending' hasta entonces.
+	if sink.commands[0].EventID != "e-res" {
+		t.Fatalf("el comando debe llevar el event_id del aviso, got %q", sink.commands[0].EventID)
+	}
+	if inbox.isDone("e-res") {
+		t.Fatalf("el manejador no debe cerrar la fila de una resuelta, got %v", inbox.done)
+	}
+}
+
+// D-02: con el buffer de comandos lleno (o el pool apagándose) la resuelta o devuelta no se
+// encola; su fila del WAL queda 'pending' para que el replay la vuelva a despachar, y el acuse a
+// Néctar sigue siendo 200.
+func TestHandleNectarNotice_CommandNotEnqueuedKeepsRowPending(t *testing.T) {
+	bodies := map[string]string{
+		"e-full-res": `{"event_id":"e-full-res","kind":"conversacion_resuelta","conversation_id":81}`,
+		"e-full-dev": `{"event_id":"e-full-dev","kind":"conversacion_devuelta","conversation_id":82,"return_value":"bot_x"}`,
+	}
+	for id, body := range bodies {
+		t.Run(id, func(t *testing.T) {
+			sink := &sinkRecorder{full: true}
+			inbox := newMemInbox()
+			h := newNectarHandler(inbox, sink)
+			if rec := postNotice(h, signedNotice(nectarTestSecret, body)); rec.Code != http.StatusOK {
+				t.Fatalf("el acuse sigue siendo 200, got %d", rec.Code)
+			}
+			if len(inbox.done) != 0 {
+				t.Fatalf("sin encolar, la fila debe quedar pending, got done %v", inbox.done)
+			}
+		})
 	}
 }
 
@@ -885,7 +917,7 @@ func TestDispatchNectarNotice_ReplayRoutesByKind(t *testing.T) {
 		body         string
 		wantMessages int
 		wantAction   string // "" = ningún comando
-		wantDone     bool   // el despacho cierra la fila (los mensajes los cierra el worker)
+		wantDone     bool   // el despacho cierra la fila (mensajes y comandos los cierra el worker)
 		wantStep     string // traza apertura/<step>, "" = ninguna
 	}{
 		{
@@ -894,14 +926,15 @@ func TestDispatchNectarNotice_ReplayRoutesByKind(t *testing.T) {
 			wantMessages: 1,
 		},
 		{
+			// La fila la cierra el worker al terminar el comando (D-02).
 			name:       "resolved becomes close",
 			body:       `{"event_id":"e-r-2","kind":"conversacion_resuelta","conversation_id":5}`,
-			wantAction: "close", wantDone: true,
+			wantAction: "close",
 		},
 		{
 			name:       "returned becomes resume",
 			body:       `{"event_id":"e-r-3","kind":"conversacion_devuelta","conversation_id":5,"return_value":"bot_x"}`,
-			wantAction: "resume", wantDone: true,
+			wantAction: "resume",
 		},
 		{
 			// El valor entero del cuarto aviso era la respuesta síncrona, que murió con el
@@ -940,7 +973,8 @@ func TestDispatchNectarNotice_ReplayRoutesByKind(t *testing.T) {
 				t.Fatalf("comandos = %d, quiero acción %q", cmds, c.wantAction)
 			}
 			if c.wantAction != "" {
-				if got := sink.commands[0]; got.Action != c.wantAction || got.Phone != nectar.SessionKey(n.ConversationID) {
+				if got := sink.commands[0]; got.Action != c.wantAction || got.Phone != nectar.SessionKey(n.ConversationID) ||
+					got.EventID != n.EventID {
 					t.Errorf("comando = %+v", got)
 				}
 			}

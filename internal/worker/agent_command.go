@@ -30,6 +30,11 @@ type AgentCommand struct {
 	ResolvedBy  string
 	EscalatedBy string
 
+	// EventID es el event_id del aviso de Néctar que originó el comando (resuelta/devuelta): su
+	// fila del WAL la cierra el worker al terminar el comando, como processMessage la de un
+	// mensaje. Vacío = comando sin fila (Bird, no_show).
+	EventID string
+
 	Action string // "resume", "close", "info", "reset", "orden", "cups"
 	State  string // Target state (optional, for resume)
 	Data   string // Corrected data (optional, for resume with data / orden description)

@@ -449,13 +449,25 @@ func (p *MessageWorkerPool) Enqueue(msg bird.InboundMessage) bool {
 	}
 }
 
-// EnqueueAgentCommand enqueues a /bot command from a human agent.
-func (p *MessageWorkerPool) EnqueueAgentCommand(cmd AgentCommand) {
+// EnqueueAgentCommand enqueues a /bot command from a human agent. Devuelve false si no lo encoló
+// (buffer lleno o pool apagándose): quien lo trajo de una fila del WAL la deja 'pending' para el
+// replay (D-02). Encola bajo closeMu.RLock, como requeueLockMiss: tras el Stop nada entra al buffer.
+func (p *MessageWorkerPool) EnqueueAgentCommand(cmd AgentCommand) bool {
+	p.closeMu.RLock()
+	defer p.closeMu.RUnlock()
+	if p.closing || p.ctx.Err() != nil {
+		slog.Warn("agent command dropped: pool apagándose", "phone", utils.MaskPhone(cmd.Phone),
+			"action", cmd.Action, "event_id", cmd.EventID)
+		return false
+	}
 	select {
 	case p.agentCmds <- cmd:
 		slog.Info("agent command enqueued", "phone", utils.MaskPhone(cmd.Phone), "action", cmd.Action)
+		return true
 	default:
-		slog.Warn("agent command queue full, dropping", "phone", utils.MaskPhone(cmd.Phone), "action", cmd.Action)
+		slog.Warn("agent command queue full, dropping", "phone", utils.MaskPhone(cmd.Phone),
+			"action", cmd.Action, "event_id", cmd.EventID)
+		return false
 	}
 }
 
@@ -921,6 +933,22 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	parentCtx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), processMsgTimeout)
 	defer cancel()
 
+	// WAL (D-02): el comando de una resuelta o devuelta de Néctar cierra su fila al terminar, como
+	// processMessage la de un mensaje. keepPending: no se aplicó (sin candado o sin sesión legible)
+	// y la fila queda 'pending' para el replay de atascados. Re-aplicarlo es inocuo: con la sesión
+	// ya fuera de escalación el comando no hace nada (paso 2).
+	keepPending := false
+	if p.inboxRepo != nil && cmd.EventID != "" {
+		defer func() {
+			if keepPending {
+				return
+			}
+			if err := p.inboxRepo.MarkDone(parentCtx, cmd.EventID); err != nil {
+				slog.Error("inbox mark done failed (agent cmd)", "id", cmd.EventID, "error", err)
+			}
+		}()
+	}
+
 	// 1. Acquire phone lock
 	lockCtx, lockCancel := context.WithTimeout(parentCtx, p.lockTimeout)
 	defer lockCancel()
@@ -929,6 +957,7 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 		slog.Warn("phone lock timeout (agent cmd)", "phone", utils.MaskPhone(cmd.Phone), "error", err)
 		observability.Emit("infra:phone_lock_timeout", "infra", "phone_lock_timeout",
 			observability.EmitOpts{Phone: cmd.Phone, Reason: "agent_cmd"})
+		keepPending = true
 		return
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(cmd.Phone)
@@ -939,6 +968,7 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	sess, err := p.sessionManager.FindForAgentCommand(parentCtx, cmd.Phone)
 	if err != nil {
 		slog.Error("session error (agent cmd)", "phone", utils.MaskPhone(cmd.Phone), "error", err)
+		keepPending = true
 		return
 	}
 	if sess == nil || sess.Status != session.StatusEscalated {

@@ -38,7 +38,7 @@ const nectarReplyToAgent = "agent"
 // contar en pruebas qué llegó a la cola sin arrancar workers.
 type nectarDispatcher interface {
 	Enqueue(msg bird.InboundMessage) bool
-	EnqueueAgentCommand(cmd worker.AgentCommand)
+	EnqueueAgentCommand(cmd worker.AgentCommand) bool
 }
 
 // nectarNotifier es la parte del NotificationManager que clasifica un mensaje entrante como
@@ -561,10 +561,11 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 		} else {
 			slog.Info("nectar: resuelta con motivo", "conversation_id", n.ConversationID, "motivo", n.Motivo)
 		}
-		sink.EnqueueAgentCommand(worker.AgentCommand{
+		enqueueNectarCommand(sink, n, worker.AgentCommand{
 			Action: "close", Phone: key, Reason: reason,
 			ResolvedBy: n.Actor.Label(), EscalatedBy: n.EscalatedBy.Label(),
 		})
+		return
 	case nectar.KindConversationReturned:
 		// Vuelve a ser del bot. Si el agente eligió una salida de NUESTRO menú, viaja aquí y
 		// el worker ramifica por ella; ausente = devolución sin decisión, se retoma en
@@ -588,7 +589,8 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 			slog.Info("nectar: devuelta con decisión del agente", "conversation_id", n.ConversationID,
 				"return_value", statemachine.ReturnValueForLog(value))
 		}
-		sink.EnqueueAgentCommand(cmd)
+		enqueueNectarCommand(sink, n, cmd)
+		return
 	case nectar.KindConversationOpenedByAgent:
 		// EL CUARTO AVISO llegando por el REPLAY (arranque tras una caída, o el barredor de
 		// filas atascadas). Aquí ya no hay nada que hacer: su valor entero era la RESPUESTA
@@ -604,12 +606,24 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 	default:
 		slog.Warn("nectar: kind desconocido, acusado e ignorado", "kind", n.Kind, "event_id", n.EventID)
 	}
-	// Los avisos sin mensaje no pasan por processMessage, que es quien cierra filas del WAL:
+	// Los avisos sin mensaje ni comando no pasan por el worker, que es quien cierra filas del WAL:
 	// se cierran aquí o el replay de arranque los volvería a despachar en cada reinicio.
 	if h.inboxRepo != nil {
 		if err := h.inboxRepo.MarkDone(ctx, n.EventID); err != nil {
 			slog.Warn("nectar: mark done failed", "event_id", n.EventID, "error", err)
 		}
+	}
+}
+
+// enqueueNectarCommand encola el comando de una resuelta o devuelta con el event_id del aviso: su
+// fila del WAL la cierra el worker al terminar el comando (D-02). Si no se encoló (buffer lleno o
+// bot apagándose) la fila queda 'pending' y la vuelve a despachar el replay de atascados o el de
+// arranque; a Néctar ya se le acusó con 200.
+func enqueueNectarCommand(sink nectarDispatcher, n nectar.Notice, cmd worker.AgentCommand) {
+	cmd.EventID = n.EventID
+	if !sink.EnqueueAgentCommand(cmd) {
+		slog.Warn("nectar: comando no encolado, la fila queda para el replay",
+			"kind", n.Kind, "event_id", n.EventID, "conversation_id", n.ConversationID)
 	}
 }
 
