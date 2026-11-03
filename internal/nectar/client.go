@@ -401,12 +401,15 @@ func (c *Client) SendTemplate(ctx context.Context, conversationID int64, tmpl Te
 // envío» es la misma conversación con el mismo cuerpo dentro de inDoubtKeyTTL.
 func (c *Client) send(ctx context.Context, conversationID int64, req sendRequest) (int64, error) {
 	fingerprint := sendFingerprint(conversationID, req)
-	req.IdempotencyKey = c.takeInDoubtKey(fingerprint)
+	key, reused := c.takeInDoubtKey(fingerprint)
+	req.IdempotencyKey = key
 	var out struct {
 		ID int64 `json:"id"`
 	}
 	err := c.do(ctx, http.MethodPost, c.convPath(conversationID, "messages"), req, &out)
-	c.settleInDoubtKey(fingerprint, req.IdempotencyKey, err)
+	if !reused {
+		c.rememberInDoubtKey(fingerprint, key, err)
+	}
 	return out.ID, err
 }
 
@@ -422,9 +425,11 @@ func sendFingerprint(conversationID int64, req sendRequest) string {
 	return strconv.FormatInt(conversationID, 10) + ":" + hex.EncodeToString(sum[:])
 }
 
-// takeInDoubtKey devuelve la clave en duda vigente de ese envío o una nueva. De paso descarta las
+// takeInDoubtKey CONSUME la clave en duda vigente de ese envío (reused=true) o acuña una nueva. Un
+// solo uso: es la del único reintento del worker, y si ese reintento vuelve a quedar en duda no se
+// guarda otra vez, así que un envío igual posterior sale como mensaje nuevo. De paso descarta las
 // vencidas: el mapa solo guarda fallos de los últimos inDoubtKeyTTL.
-func (c *Client) takeInDoubtKey(fingerprint string) string {
+func (c *Client) takeInDoubtKey(fingerprint string) (key string, reused bool) {
 	c.inDoubtMu.Lock()
 	defer c.inDoubtMu.Unlock()
 	now := c.now()
@@ -434,23 +439,20 @@ func (c *Client) takeInDoubtKey(fingerprint string) string {
 		}
 	}
 	if k, ok := c.inDoubt[fingerprint]; ok && fingerprint != "" {
-		return k.key
+		delete(c.inDoubt, fingerprint)
+		return k.key, true
 	}
-	return uuid.NewString()
+	return uuid.NewString(), false
 }
 
-// settleInDoubtKey recuerda la clave si el envío quedó en duda (lo que el worker reintenta: todo
-// fallo no permanente) y la olvida si salió o se rechazó para siempre.
-func (c *Client) settleInDoubtKey(fingerprint, key string, err error) {
-	if fingerprint == "" {
+// rememberInDoubtKey guarda la clave de un envío con clave nueva que quedó en duda (lo que el worker
+// reintenta: todo fallo no permanente). Si salió o se rechazó para siempre no hay nada que guardar.
+func (c *Client) rememberInDoubtKey(fingerprint, key string, err error) {
+	if fingerprint == "" || err == nil || bird.IsPermanentSendError(err) {
 		return
 	}
 	c.inDoubtMu.Lock()
 	defer c.inDoubtMu.Unlock()
-	if err == nil || bird.IsPermanentSendError(err) {
-		delete(c.inDoubt, fingerprint)
-		return
-	}
 	if c.inDoubt == nil {
 		c.inDoubt = map[string]inDoubtKey{}
 	}
@@ -508,8 +510,14 @@ func escalateBody(esc Escalation, suggestedTeamID *int64) escalateRequest {
 	}
 }
 
-// AttachmentURL es la URL absoluta de GET /api/bot/attachments/{id}.
-func (c *Client) AttachmentURL(id string) string { return c.baseURL + attachmentPath(id) }
+// AttachmentURL es la URL absoluta de GET /api/bot/attachments/{id} ("" si el id no es utilizable).
+func (c *Client) AttachmentURL(id string) string {
+	path := attachmentPath(id)
+	if path == "" {
+		return ""
+	}
+	return c.baseURL + path
+}
 
 // --- transporte ---
 

@@ -61,10 +61,10 @@ func TestInbound_AdjuntoSinURLSeComponeDelID(t *testing.T) {
 	if msg.MessageType != "image" || msg.ImageURL != "https://nectar.colibrixa.com/api/bot/attachments/abc123" {
 		t.Fatalf("la URL se compone del id: %+v", msg)
 	}
-	// Y la `url` explícita MANDA cuando viene y es de Néctar; una de otro anfitrión no se sigue
-	// (attachment_origin_test.go).
+	// Con id la URL se compone siempre desde él, aunque venga `url`; sin id manda la `url` de
+	// Néctar (attachment_origin_test.go).
 	body = `{"event_id":"e","kind":"mensaje_entrante","conversation_id":7,
-	         "message":{"id":1,"kind":"document","attachment":{"id":"abc123","url":"https://nectar.colibrixa.com/api/bot/attachments/abc123?v=2"}}}`
+	         "message":{"id":1,"kind":"document","attachment":{"url":"https://nectar.colibrixa.com/api/bot/attachments/abc123?v=2"}}}`
 	n, _ = ParseNotice([]byte(body))
 	if msg := n.ToInboundMessage("https://nectar.colibrixa.com"); msg.DocumentURL != "https://nectar.colibrixa.com/api/bot/attachments/abc123?v=2" {
 		t.Fatalf("%+v", msg)

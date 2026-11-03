@@ -462,10 +462,11 @@ type NoticeAttachment struct {
 
 // downloadURL es la URL de la que el bot baja el adjunto ("" = ninguna utilizable). El contrato
 // sirve TODO adjunto en GET /api/bot/attachments/{id} del propio Néctar —no hay CDN ni otro
-// anfitrión para medios—, así que la `url` del aviso solo se usa si es del mismo esquema y
-// anfitrión que baseURL (https en producción; http solo si la raíz local lo es). Cualquier otra
-// —otro anfitrión, otro esquema, file://— se descarta y la URL se compone desde el `id`: el
-// descargador no sale nunca hacia un destino que el aviso elija.
+// anfitrión para medios—, así que con `id` la URL se compone SIEMPRE desde él sobre baseURL y la
+// `url` del aviso no cuenta: no puede elegir otra ruta de Néctar, que se pediría con credencial.
+// Solo sin `id` se usa la `url`, y solo si es del mismo esquema y anfitrión que baseURL (https en
+// producción; http solo si la raíz local lo es). El descargador no sale nunca hacia un destino que
+// el aviso elija.
 func (a *NoticeAttachment) downloadURL(baseURL string) string {
 	if a == nil {
 		return ""
@@ -474,23 +475,42 @@ func (a *NoticeAttachment) downloadURL(baseURL string) string {
 	if err != nil || base.Host == "" {
 		return ""
 	}
-	if a.URL != "" {
-		if u, err := url.Parse(a.URL); err == nil &&
-			strings.EqualFold(u.Scheme, base.Scheme) && strings.EqualFold(u.Host, base.Host) {
-			return a.URL
+	if a.ID != "" {
+		path := attachmentPath(a.ID)
+		if path == "" {
+			return ""
 		}
-		slog.Warn("nectar: url de adjunto fuera de la raíz de Néctar; se descarta")
+		return strings.TrimRight(baseURL, "/") + path
 	}
-	if a.ID == "" {
+	if a.URL == "" {
 		return ""
 	}
-	return strings.TrimRight(baseURL, "/") + attachmentPath(a.ID)
+	u, err := url.Parse(a.URL)
+	if err != nil {
+		slog.Warn("nectar: url de adjunto ilegible; se descarta")
+		return ""
+	}
+	if !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) {
+		// Solo el anfitrión: la ruta y la consulta pueden llevar firmas o datos.
+		slog.Warn("nectar: url de adjunto fuera de la raíz de Néctar; se descarta", "host", u.Host)
+		return ""
+	}
+	return a.URL
 }
 
-// attachmentPath es la ruta de GET /api/bot/attachments/{id}. El id va escapado como segmento:
-// hoy es hexadecimal (nada que escapar), pero los de antes de 2026-09-09 eran base64 con «/», y un
-// id con «/» o «..» no puede salirse de la ruta (contrato: url.PathEscape es lo correcto).
-func attachmentPath(id string) string { return "/api/bot/attachments/" + url.PathEscape(id) }
+// attachmentPath es la ruta de GET /api/bot/attachments/{id} ("" si el id no es utilizable). El id
+// va escapado como segmento: hoy es hexadecimal (nada que escapar), pero los de antes de 2026-09-09
+// eran base64 con «/» (contrato: url.PathEscape es lo correcto). PathEscape no toca «.», así que
+// «.» y «..» —que nombrarían otra ruta— se rechazan aparte, igual que lo que tras escapar conserve
+// un separador.
+func attachmentPath(id string) string {
+	escaped := url.PathEscape(id)
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(escaped, `/\`) {
+		slog.Warn("nectar: id de adjunto no utilizable; no se descarga", "len", len(id))
+		return ""
+	}
+	return "/api/bot/attachments/" + escaped
+}
 
 // ProtocolMax es la versión de protocolo MÁS ALTA que este binario sabe leer. Un aviso con una
 // mayor se procesa igual —el lector es tolerante a propósito— y deja una alerta.

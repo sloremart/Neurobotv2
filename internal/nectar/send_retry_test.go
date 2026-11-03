@@ -140,3 +140,17 @@ func TestSend_FreshKeyOutsideTheInDoubtRetry(t *testing.T) {
 		}
 	})
 }
+
+// M-1: la clave en duda se reutiliza UNA vez (el único reintento del worker). Si ese reintento
+// también queda en duda no se vuelve a guardar: un envío igual posterior es otro mensaje.
+func TestSend_InDoubtKeyIsReusedOnlyOnce(t *testing.T) {
+	f := newFakeSlowSend(t, http.StatusGatewayTimeout, http.StatusGatewayTimeout, http.StatusOK)
+	c := newSlowSendClient(f)
+	for i := 0; i < 3; i++ {
+		_, _ = c.SendText(context.Background(), 1234, "hola")
+	}
+	keys := f.sentKeys()
+	if len(keys) != 3 || keys[1] != keys[0] || keys[2] == keys[1] {
+		t.Fatalf("claves = %v", keys)
+	}
+}
