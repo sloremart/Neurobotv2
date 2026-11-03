@@ -213,6 +213,33 @@ func TestEscalationCap_SilentAfterCap(t *testing.T) {
 	}
 }
 
+// El corte del tope no crea ninguna escalación, así que su texto no promete que alguien revisará el
+// caso: dice que ahora no hay asesor y deja los mismos dos botones.
+func TestEscalationCap_TextPromisesNoReview(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(noAgentsServer(t).URL), testEscalationConfig(), nil)
+
+	res := escalateTurn(t, m, map[string]string{sm.CtxEscalationCount: strconv.Itoa(escalationSessionCap)})
+	if !hasEvent(res, "escalation_cap_reached") || len(res.Messages) != 1 {
+		t.Fatalf("esperaba el corte del tope con un mensaje, got %+v %+v", res.Events, res.Messages)
+	}
+	bm, ok := res.Messages[0].(*sm.ButtonMessage)
+	if !ok {
+		t.Fatalf("el corte es un mensaje con botones, got %T", res.Messages[0])
+	}
+	const want = "En este momento no podemos comunicarte con un asesor. Puedes volver al inicio o escribirnos más tarde."
+	if bm.Text != want {
+		t.Errorf("texto del corte = %q, quería %q", bm.Text, want)
+	}
+	wantButtons := []sm.Button{
+		{Text: "Volver al inicio", Payload: "action:restart"},
+		{Text: "Terminar chat", Payload: "action:end"},
+	}
+	if !slices.Equal(bm.Buttons, wantButtons) {
+		t.Errorf("botones del corte = %+v, quería %+v", bm.Buttons, wantButtons)
+	}
+}
+
 // La palabra de reinicio sale del silencio como hoy: vuelve al saludo y borra todo el contexto.
 func TestEscalationCap_MenuKeywordStillRestarts(t *testing.T) {
 	m := sm.NewMachine()

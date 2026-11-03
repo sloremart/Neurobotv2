@@ -165,9 +165,9 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			// la marca se persiste y la lee EscalationCapInterceptor en FALLBACK_MENU.
 			return escalationDiverted(preState, sm.NewResult(sm.StateFallbackMenu).
 				WithContext(sm.CtxEscalationCapped, "1").
+				// El corte no crea escalación: el texto no promete que alguien revisará el caso.
 				WithButtons(
-					"Ya intentamos conectarte con un asesor varias veces en esta conversación. "+
-						"Un miembro de nuestro equipo revisará tu caso. ¿Deseas volver al inicio o terminar el chat?",
+					"En este momento no podemos comunicarte con un asesor. Puedes volver al inicio o escribirnos más tarde.",
 					sm.Button{Text: "Volver al inicio", Payload: "action:restart"},
 					sm.Button{Text: "Terminar chat", Payload: "action:end"},
 				).
