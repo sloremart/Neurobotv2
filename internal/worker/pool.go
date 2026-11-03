@@ -508,26 +508,58 @@ func recoverLog(name string) {
 	}
 }
 
-// retryAfterLockMiss cuenta un vencimiento del candado del teléfono para msg y dice si su fila del
-// WAL debe quedar 'pending' para el replay de atascados (B-01). Al llegar a maxPhoneLockMisses se
-// rinde: la fila se cierra (el replay no tiene tope propio y un teléfono que no se libera
-// avisaría al paciente cada staleReplayInterval sin fin) y se alerta, porque el mensaje se pierde.
-func (p *MessageWorkerPool) retryAfterLockMiss(msg bird.InboundMessage) bool {
+// handleLockMiss atiende un mensaje que no consiguió el candado de su teléfono (B-01) y dice si su
+// fila del WAL debe quedar 'pending'. El mensaje se reencola de inmediato al final de la cola (sin
+// pasar por el dedup de Enqueue: su claim sigue vigente), así se reprocesa apenas se libere el
+// candado y en el mismo estado de la sesión. Con la cola llena o el pool apagándose no se reencola:
+// la fila queda 'pending' para el replay de atascados o el de arranque. Al llegar a
+// maxPhoneLockMisses se rinde, cierra la fila y alerta, porque el mensaje se pierde. El aviso al
+// paciente sale solo en el primer vencimiento de cada mensaje.
+func (p *MessageWorkerPool) handleLockMiss(appCtx context.Context, msg bird.InboundMessage) bool {
 	// Sin carrera por el mismo id: el dedup de Enqueue no deja dos copias en vuelo a la vez.
 	misses := 1
 	if prev, ok := p.lockMisses.Load(msg.ID); ok {
 		misses = prev.(int) + 1
 	}
+	if misses == 1 {
+		// Notify patient so they know their message was received but delayed
+		if _, err := p.birdClient.SendText(msg.Phone, "",
+			"Tu mensaje anterior está siendo procesado. Por favor espera un momento antes de enviar otro mensaje."); err != nil {
+			slog.Warn("phone lock notice send failed", "phone", utils.MaskPhone(msg.Phone), "error", err)
+		}
+	}
+	if msg.ID == "" {
+		return false // sin id no hay fila ni cuenta posible
+	}
+	if misses >= maxPhoneLockMisses {
+		p.lockMisses.Delete(msg.ID)
+		slog.Error("phone lock timeout: mensaje descartado tras agotar los reintentos",
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+		return false
+	}
 	p.lockMisses.Store(msg.ID, misses)
-	if misses < maxPhoneLockMisses {
-		slog.Warn("phone lock timeout: mensaje pendiente para el replay",
+
+	if appCtx.Err() != nil || p.isClosing() {
+		slog.Warn("phone lock timeout: pool apagándose, mensaje pendiente para el replay",
 			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
 		return true
 	}
-	p.lockMisses.Delete(msg.ID)
-	slog.Error("phone lock timeout: mensaje descartado tras agotar los reintentos",
-		"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
-	return false
+	select {
+	case p.queue <- msg:
+		slog.Info("phone lock timeout: mensaje reencolado",
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+	default:
+		slog.Warn("phone lock timeout: cola llena, mensaje pendiente para el replay",
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+	}
+	return true
+}
+
+// isClosing dice si Stop() ya marcó el cierre del pool.
+func (p *MessageWorkerPool) isClosing() bool {
+	p.closeMu.RLock()
+	defer p.closeMu.RUnlock()
+	return p.closing
 }
 
 func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.InboundMessage) {
@@ -537,13 +569,14 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 	// desacopla con WithoutCancel + timeout propio: el worker deja de tomar mensajes NUEVOS al apagar
 	// (worker() <-ctx.Done()), pero el que YA empezó completa su persistencia en la ventana de gracia
 	// (Stop espera al wg; main da 20s). Aplica a todas las rutas (worker, overflow y drain).
+	appCtx := parentCtx // B-01: el reencolado sí mira el apagado
 	parentCtx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), processMsgTimeout)
 	defer cancel()
 
 	// WAL: mark message as done after processing (crash recovery)
 	walTracked := p.inboxRepo != nil && msg.ID != "" && !strings.HasPrefix(msg.ID, "virtual-") && !strings.HasPrefix(msg.ID, "agent-")
-	// keepPending: el mensaje no se procesó (candado vencido) y su fila se deja 'pending' para que
-	// el replay de atascados lo recupere (B-01).
+	// keepPending: el mensaje no se procesó (candado vencido) y su fila se deja 'pending': la cierra
+	// el intento que lo procese (B-01, ver handleLockMiss).
 	keepPending := false
 	if walTracked {
 		defer func() {
@@ -565,10 +598,7 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		slog.Warn("phone lock timeout", "phone", utils.MaskPhone(msg.Phone), "error", err)
 		observability.Emit("infra:phone_lock_timeout", "infra", "phone_lock_timeout",
 			observability.EmitOpts{Phone: msg.Phone, Reason: "message"})
-		// Notify patient so they know their message was received but delayed
-		p.birdClient.SendText(msg.Phone, "",
-			"Tu mensaje anterior está siendo procesado. Por favor espera un momento antes de enviar otro mensaje.")
-		keepPending = walTracked && p.retryAfterLockMiss(msg)
+		keepPending = p.handleLockMiss(appCtx, msg) && walTracked
 		return
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(msg.Phone)
