@@ -46,6 +46,10 @@ const (
 	// vuelo y garantiza que el claim de dedup del intento previo ya expiró.
 	staleReplayMinutes  = 10
 	staleReplayInterval = 5 * time.Minute
+
+	// maxPhoneLockMisses: cuántas veces puede vencer el candado del teléfono para un mismo mensaje
+	// (primer intento + replays de atascados) antes de cerrar su fila del WAL sin procesarlo (B-01).
+	maxPhoneLockMisses = 3
 )
 
 // StalePendingSource entrega mensajes inbound que quedaron 'pending' hace más de `minutes` minutos.
@@ -201,6 +205,7 @@ type MessageWorkerPool struct {
 	queue          chan bird.InboundMessage
 	agentCmds      chan AgentCommand
 	recentMessages sync.Map     // messageID -> time.Time (dedup)
+	lockMisses     sync.Map     // messageID -> int: vencimientos del candado del teléfono (B-01)
 	dedupCount     atomic.Int64 // approximate count for safety cap
 	workers        int
 	activeOverflow atomic.Int32
@@ -218,6 +223,8 @@ type MessageWorkerPool struct {
 
 	// retryDelay: espera antes del reintento de un envío fallido (solo errores transitorios).
 	retryDelay time.Duration
+	// lockTimeout: espera máxima por el candado del teléfono (phoneLockTimeout; los tests lo acortan).
+	lockTimeout time.Duration
 
 	// Dependencias (inyectadas después de creación)
 	sessionManager  SessionManagement
@@ -244,11 +251,12 @@ func NewMessageWorkerPool(workers, queueSize int) *MessageWorkerPool {
 		queueSize = defaultQueueSize
 	}
 	return &MessageWorkerPool{
-		queue:      make(chan bird.InboundMessage, queueSize),
-		agentCmds:  make(chan AgentCommand, agentCmdQueueSize),
-		workers:    workers,
-		ctx:        context.Background(),
-		retryDelay: 10 * time.Second,
+		queue:       make(chan bird.InboundMessage, queueSize),
+		agentCmds:   make(chan AgentCommand, agentCmdQueueSize),
+		workers:     workers,
+		ctx:         context.Background(),
+		retryDelay:  10 * time.Second,
+		lockTimeout: phoneLockTimeout,
 	}
 }
 
@@ -500,6 +508,28 @@ func recoverLog(name string) {
 	}
 }
 
+// retryAfterLockMiss cuenta un vencimiento del candado del teléfono para msg y dice si su fila del
+// WAL debe quedar 'pending' para el replay de atascados (B-01). Al llegar a maxPhoneLockMisses se
+// rinde: la fila se cierra (el replay no tiene tope propio y un teléfono que no se libera
+// avisaría al paciente cada staleReplayInterval sin fin) y se alerta, porque el mensaje se pierde.
+func (p *MessageWorkerPool) retryAfterLockMiss(msg bird.InboundMessage) bool {
+	// Sin carrera por el mismo id: el dedup de Enqueue no deja dos copias en vuelo a la vez.
+	misses := 1
+	if prev, ok := p.lockMisses.Load(msg.ID); ok {
+		misses = prev.(int) + 1
+	}
+	p.lockMisses.Store(msg.ID, misses)
+	if misses < maxPhoneLockMisses {
+		slog.Warn("phone lock timeout: mensaje pendiente para el replay",
+			"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+		return true
+	}
+	p.lockMisses.Delete(msg.ID)
+	slog.Error("phone lock timeout: mensaje descartado tras agotar los reintentos",
+		"id", msg.ID, "phone", utils.MaskPhone(msg.Phone), "misses", misses)
+	return false
+}
+
 func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.InboundMessage) {
 	// BUG-004: el procesamiento NO debe abortarse si el app-ctx se cancela en pleno apagado/redeploy.
 	// Antes, un mensaje en vuelo veía sus escrituras (SaveState/MarkDone/log) abortadas con
@@ -511,8 +541,15 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 	defer cancel()
 
 	// WAL: mark message as done after processing (crash recovery)
-	if p.inboxRepo != nil && msg.ID != "" && !strings.HasPrefix(msg.ID, "virtual-") && !strings.HasPrefix(msg.ID, "agent-") {
+	walTracked := p.inboxRepo != nil && msg.ID != "" && !strings.HasPrefix(msg.ID, "virtual-") && !strings.HasPrefix(msg.ID, "agent-")
+	// keepPending: el mensaje no se procesó (candado vencido) y su fila se deja 'pending' para que
+	// el replay de atascados lo recupere (B-01).
+	keepPending := false
+	if walTracked {
 		defer func() {
+			if keepPending {
+				return
+			}
 			if err := p.inboxRepo.MarkDone(parentCtx, msg.ID); err != nil {
 				slog.Error("inbox mark done failed", "id", msg.ID, "error", err)
 			}
@@ -520,7 +557,7 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 	}
 
 	// 1. Crear contexto con timeout de 30s para adquisición del lock
-	lockCtx, lockCancel := context.WithTimeout(parentCtx, phoneLockTimeout)
+	lockCtx, lockCancel := context.WithTimeout(parentCtx, p.lockTimeout)
 	defer lockCancel()
 
 	// 2. Adquirir lock por teléfono (serializa mensajes del mismo usuario)
@@ -531,9 +568,11 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		// Notify patient so they know their message was received but delayed
 		p.birdClient.SendText(msg.Phone, "",
 			"Tu mensaje anterior está siendo procesado. Por favor espera un momento antes de enviar otro mensaje.")
+		keepPending = walTracked && p.retryAfterLockMiss(msg)
 		return
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(msg.Phone)
+	p.lockMisses.Delete(msg.ID)
 
 	// 3. Cargar/crear sesión
 	sess, isNew, err := p.sessionManager.FindOrCreate(parentCtx, msg.Phone)
@@ -766,7 +805,7 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	defer cancel()
 
 	// 1. Acquire phone lock
-	lockCtx, lockCancel := context.WithTimeout(parentCtx, phoneLockTimeout)
+	lockCtx, lockCancel := context.WithTimeout(parentCtx, p.lockTimeout)
 	defer lockCancel()
 
 	if err := p.sessionManager.PhoneMutex().Lock(lockCtx, cmd.Phone); err != nil {
