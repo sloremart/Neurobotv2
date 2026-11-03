@@ -2,6 +2,7 @@ package worker
 
 import (
 	"strings"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
@@ -34,6 +35,10 @@ type AgentCommand struct {
 	// fila del WAL la cierra el worker al terminar el comando, como processMessage la de un
 	// mensaje. Vacío = comando sin fila (Bird, no_show).
 	EventID string
+	// OccurredAt es el occurred_at del aviso de Néctar (cero si no vino o era ilegible). Un aviso
+	// anterior a la escalación vigente es una copia tardía (replay) de uno ya aplicado y se ignora
+	// (ver isStaleNectarNotice).
+	OccurredAt time.Time
 
 	Action string // "resume", "close", "info", "reset", "orden", "cups"
 	State  string // Target state (optional, for resume)

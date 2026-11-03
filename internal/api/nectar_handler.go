@@ -615,12 +615,14 @@ func (h *WebhookHandler) dispatchNectar(ctx context.Context, n nectar.Notice) {
 	}
 }
 
-// enqueueNectarCommand encola el comando de una resuelta o devuelta con el event_id del aviso: su
-// fila del WAL la cierra el worker al terminar el comando (D-02). Si no se encoló (buffer lleno o
+// enqueueNectarCommand encola el comando de una resuelta o devuelta con el event_id y el
+// occurred_at del aviso: su fila del WAL la cierra el worker al terminar el comando (D-02), que
+// ignora el aviso si es anterior a la escalación vigente. Si no se encoló (buffer lleno o
 // bot apagándose) la fila queda 'pending' y la vuelve a despachar el replay de atascados o el de
 // arranque; a Néctar ya se le acusó con 200.
 func enqueueNectarCommand(sink nectarDispatcher, n nectar.Notice, cmd worker.AgentCommand) {
 	cmd.EventID = n.EventID
+	cmd.OccurredAt = n.OccurredAt.Time
 	if !sink.EnqueueAgentCommand(cmd) {
 		slog.Warn("nectar: comando no encolado, la fila queda para el replay",
 			"kind", n.Kind, "event_id", n.EventID, "conversation_id", n.ConversationID)

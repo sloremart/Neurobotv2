@@ -377,6 +377,42 @@ func TestHandleNectarNotice_ResolvedBecomesClose(t *testing.T) {
 	}
 }
 
+// D-02: apagado con una resuelta en el buffer del pool real. El pool no la procesa ni el
+// manejador cierra su fila: queda 'pending' para el replay de arranque. Lo que llega con el pool
+// ya parado tampoco se encola ni se cierra. El acuse sigue siendo 200.
+func TestHandleNectarNotice_ShutdownWithBufferedCommandKeepsRowsPending(t *testing.T) {
+	pool := worker.NewMessageWorkerPool(1, 10) // sin arrancar: nada toma el comando del buffer
+	inbox := newMemInbox()
+	h := newNectarHandler(inbox, nil)
+	h.SetNectarSink(pool)
+	before := `{"event_id":"e-buf","kind":"conversacion_resuelta","conversation_id":83,"occurred_at":"2026-11-03T10:00:00Z"}`
+	if rec := postNotice(h, signedNotice(nectarTestSecret, before)); rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+	pool.Stop()
+	after := `{"event_id":"e-late","kind":"conversacion_devuelta","conversation_id":83}`
+	if rec := postNotice(h, signedNotice(nectarTestSecret, after)); rec.Code != http.StatusOK {
+		t.Fatalf("el acuse sigue siendo 200, got %d", rec.Code)
+	}
+	if len(inbox.done) != 0 {
+		t.Fatalf("ninguna fila se cierra sin procesar su comando, got %v", inbox.done)
+	}
+}
+
+// El comando lleva el occurred_at del aviso para que el worker descarte las copias tardías.
+func TestHandleNectarNotice_CommandCarriesOccurredAt(t *testing.T) {
+	sink := &sinkRecorder{}
+	h := newNectarHandler(newMemInbox(), sink)
+	body := `{"event_id":"e-occ","kind":"conversacion_devuelta","conversation_id":84,"occurred_at":"2026-11-03T10:00:00Z"}`
+	if rec := postNotice(h, signedNotice(nectarTestSecret, body)); rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+	want := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	if _, c := sink.counts(); c != 1 || !sink.commands[0].OccurredAt.Equal(want) {
+		t.Fatalf("occurred_at = %v, quiero %v", sink.commands, want)
+	}
+}
+
 // D-02: con el buffer de comandos lleno (o el pool apagándose) la resuelta o devuelta no se
 // encola; su fila del WAL queda 'pending' para que el replay la vuelva a despachar, y el acuse a
 // Néctar sigue siendo 200.

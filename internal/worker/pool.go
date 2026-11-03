@@ -51,6 +51,13 @@ const (
 	// teléfono, contado desde su primer intento fallido, antes de cerrar su fila del WAL sin procesarlo
 	// (B-01). Mismo margen que staleReplayMinutes: cubre una ráfaga de ~8 hojas con OCR de 75 s.
 	maxPhoneLockWait = staleReplayMinutes * time.Minute
+	// noticeClockTolerance: holgura de reloj entre Néctar (occurred_at) y la BD del bot
+	// (sessions.escalated_at) al decidir si un aviso es anterior a la escalación vigente. Son
+	// servidores distintos; mismo margen que nectarreports.ClockTolerance (D-02).
+	noticeClockTolerance = 2 * time.Minute
+	// walMarkDoneTimeout acota el cierre de la fila del WAL de un comando de agente con contexto
+	// propio: el presupuesto del turno, ya gastado, no decide si la fila se cierra (D-02).
+	walMarkDoneTimeout = 5 * time.Second
 	// phoneLockRetryDelay: pausa antes de reencolar un mensaje cuyo teléfono ya tiene un worker
 	// esperando el candado; así una ráfaga de un teléfono ocupa a lo sumo un worker en espera (B-01).
 	phoneLockRetryDelay = 2 * time.Second
@@ -936,14 +943,18 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	// WAL (D-02): el comando de una resuelta o devuelta de Néctar cierra su fila al terminar, como
 	// processMessage la de un mensaje. keepPending: no se aplicó (sin candado o sin sesión legible)
 	// y la fila queda 'pending' para el replay de atascados. Re-aplicarlo es inocuo: con la sesión
-	// ya fuera de escalación el comando no hace nada (paso 2).
+	// ya fuera de escalación el comando no hace nada (paso 2), y el aviso anterior a la escalación
+	// vigente se ignora (isStaleNectarNotice). «Procesado» no es «aplicado»: si el handler falla
+	// (p. ej. ResumeFromEscalation), la fila se cierra igual, como antes.
 	keepPending := false
 	if p.inboxRepo != nil && cmd.EventID != "" {
 		defer func() {
 			if keepPending {
 				return
 			}
-			if err := p.inboxRepo.MarkDone(parentCtx, cmd.EventID); err != nil {
+			doneCtx, doneCancel := context.WithTimeout(context.WithoutCancel(parentCtx), walMarkDoneTimeout)
+			defer doneCancel()
+			if err := p.inboxRepo.MarkDone(doneCtx, cmd.EventID); err != nil {
 				slog.Error("inbox mark done failed (agent cmd)", "id", cmd.EventID, "error", err)
 			}
 		}()
@@ -973,6 +984,14 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	}
 	if sess == nil || sess.Status != session.StatusEscalated {
 		slog.Warn("agent command but no escalated session", "phone", utils.MaskPhone(cmd.Phone), "action", cmd.Action)
+		return
+	}
+	if isStaleNectarNotice(cmd, sess) {
+		slog.Info("nectar: aviso anterior a la escalación vigente, ignorado",
+			"event_id", cmd.EventID, "action", cmd.Action, "session_id", sess.ID,
+			"occurred_at", cmd.OccurredAt, "escalated_at", *sess.EscalatedAt)
+		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "aviso_tardio_ignorado",
+			observability.EmitOpts{Phone: cmd.Phone, Attrs: map[string]interface{}{"trigger": cmd.Action}})
 		return
 	}
 
@@ -1012,6 +1031,17 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	case "no_show":
 		p.handleAgentNoShow(parentCtx, sess)
 	}
+}
+
+// isStaleNectarNotice dice si el comando viene de un aviso de Néctar anterior a la escalación
+// vigente (más la holgura de reloj): una copia tardía (replay) de un aviso ya aplicado, cuya
+// escalación terminó y fue reemplazada por otra. Aplicarlo cerraría o devolvería la escalación
+// nueva. Sin occurred_at o sin escalated_at no se puede saber: se aplica, como siempre (D-02).
+func isStaleNectarNotice(cmd AgentCommand, sess *session.Session) bool {
+	if cmd.EventID == "" || cmd.OccurredAt.IsZero() || sess.EscalatedAt == nil {
+		return false
+	}
+	return cmd.OccurredAt.Before(sess.EscalatedAt.Add(-noticeClockTolerance))
 }
 
 // ResumeEscalationNoShow implementa session.EscalationResumer: lo invoca el checker de escalaciones

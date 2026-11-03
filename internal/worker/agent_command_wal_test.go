@@ -36,21 +36,13 @@ func TestEnqueueAgentCommand_FullBufferReportsNotEnqueued(t *testing.T) {
 	}
 }
 
-// Comandos en el buffer al apagar: el pool no los procesa ni cierra sus filas (quedan para el
-// replay de arranque), y lo que llega ya cerrando no se encola.
-func TestStop_BufferedAgentCommandsStayPending(t *testing.T) {
-	pool, _, inbox, _ := nectarEscalatedPool(t)
-	for _, id := range []string{"e-1", "e-2"} {
-		if !pool.EnqueueAgentCommand(AgentCommand{Action: "close", Phone: nectarTestKey, EventID: id}) {
-			t.Fatalf("%s debe encolarse", id)
-		}
-	}
+// Con el pool ya parado nada entra al buffer: quien trajo el comando de una fila del WAL la deja
+// 'pending' (lo que quedó en el buffer al apagar lo cubre el test del manejador en internal/api).
+func TestEnqueueAgentCommand_AfterStopReportsNotEnqueued(t *testing.T) {
+	pool := NewMessageWorkerPool(1, 10)
 	pool.Stop()
 	if pool.EnqueueAgentCommand(AgentCommand{Action: "close", Phone: nectarTestKey, EventID: "e-3"}) {
 		t.Fatal("con el pool cerrando no debe encolar")
-	}
-	if n := inbox.doneCount(); n != 0 {
-		t.Fatalf("ninguna fila se cierra sin procesar su comando, got %v", inbox.done)
 	}
 }
 
@@ -168,5 +160,62 @@ func runCommands(t *testing.T, pool *MessageWorkerPool, inbox *fakeInboxMarker, 
 	pool.Stop()
 	if n := inbox.doneCount(); n != len(cmds) {
 		t.Fatalf("cada comando procesado cierra su fila: %d de %d", n, len(cmds))
+	}
+}
+
+// Un aviso anterior a la escalación vigente es una copia tardía de uno ya aplicado: se ignora sin
+// tocar la sesión y su fila se cierra. Uno posterior, o dentro de la holgura de reloj, se aplica.
+func TestProcessAgentCommand_NoticeBeforeCurrentEscalation(t *testing.T) {
+	escalatedAt := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		occurredAt time.Time
+		wantApply  bool
+	}{
+		{"anterior a la escalación nueva se ignora", escalatedAt.Add(-10 * time.Minute), false},
+		{"posterior a la escalación se aplica", escalatedAt.Add(5 * time.Minute), true},
+		{"1 min antes, dentro de la holgura, se aplica", escalatedAt.Add(-time.Minute), true},
+		{"sin occurred_at se aplica como siempre", time.Time{}, true},
+	}
+	for _, c := range cases {
+		for _, action := range []string{"resume", "close"} {
+			t.Run(c.name+"/"+action, func(t *testing.T) {
+				pool, sm, inbox, sess := nectarEscalatedPool(t)
+				sess.EscalatedAt = &escalatedAt
+				resumes := 0
+				sm.resumeFn = func(_ context.Context, s *session.Session, target string) error {
+					resumes++
+					s.Status = session.StatusActive
+					s.CurrentState = target
+					return nil
+				}
+				pool.processAgentCommand(context.Background(), AgentCommand{
+					Action: action, Phone: nectarTestKey, EventID: "e-late", OccurredAt: c.occurredAt,
+					Reason: map[string]string{"close": CloseReasonResolved}[action],
+				})
+				applied := resumes + sm.completeCalls
+				if (applied == 1) != c.wantApply || applied > 1 {
+					t.Fatalf("aplicado %d veces, quiero aplicar = %v", applied, c.wantApply)
+				}
+				if len(inbox.done) != 1 || inbox.done[0] != "e-late" {
+					t.Fatalf("la fila se cierra en todo caso, got %v", inbox.done)
+				}
+				if !c.wantApply && sess.Status != session.StatusEscalated {
+					t.Fatalf("la escalación vigente no se toca, status %q", sess.Status)
+				}
+			})
+		}
+	}
+}
+
+// Sin escalated_at en la sesión no hay con qué comparar: el aviso se aplica como siempre.
+func TestProcessAgentCommand_NoticeWithoutEscalatedAtApplies(t *testing.T) {
+	pool, sm, _, _ := nectarEscalatedPool(t)
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "close", Phone: nectarTestKey, EventID: "e-old", Reason: CloseReasonResolved,
+		OccurredAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if sm.completeCalls != 1 {
+		t.Fatalf("got %d", sm.completeCalls)
 	}
 }

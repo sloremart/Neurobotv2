@@ -168,6 +168,9 @@ var catalog = map[string]stepSpec{
 	"escalacion/escalation_expired":         {LvOutcome, "info", ""},
 	"escalacion/agent_no_show":              {LvOutcome, "no_show", ""}, // agente nunca atendió → bot retoma
 	"escalacion/escalation_no_channel":      {LvOutcome, "error", ""},   // no se pudo resolver conversación en Bird
+	// aviso_tardio_ignorado: una resuelta o devuelta de Néctar anterior a la escalación vigente
+	// (copia tardía por el replay del WAL) se ignoró para no cerrar ni devolver la escalación nueva.
+	"escalacion/aviso_tardio_ignorado": {LvMilestone, "info", ""},
 	// H131-1. ack_sent: acuse al paciente de que un agente lo atenderá (sigue esperando → milestone).
 	// escalation_no_agents: el gate de disponibilidad CIERRA el intento y devuelve al paciente al menú;
 	// es terminal y es un bloqueo, no un 'info' (como milestone salía "estancado" en cada ciclo — ya
