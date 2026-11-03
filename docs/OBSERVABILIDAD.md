@@ -130,6 +130,8 @@ configurado en `.env`. La clasificación completa de **todas** las acciones del 
 (attrs: servicios, espacios) → [`gfr_blocked`(low) | `pregnancy_blocked` | `special_escalated`(sleep) |
 `already_has_appt`] → [`coverage_no_convenio` | `mrc_limit_hit`] → `slots_found` / `no_slots` →
 `booking_confirmed` → `booking_success`(ref cita_id) / `booking_failed`(reason: slot_taken\|price_0\|error).
+Topes que pasan la orden a un agente: `cups_quantity_out_of_range` (un CUPS con cantidad > 100, attrs: cups)
+y `ocr_failed_reads_cap` (3.ª lectura fallida seguida en la subida de la orden; reason: la causa de la última).
 
 ### 3.3 Recordatorio / confirmación (`flow=notif_recordatorio`, `trace=notif:<appt>:<date>`)
 `reminder_sent`(ref bird_msg) → [`response`(confirm\|cancel\|reschedule) | `followup1` | `followup2` |
@@ -141,6 +143,9 @@ configurado en `.env`. La clasificación completa de **todas** las acciones del 
 ### 3.5 Mis citas (`flow=mis_citas`): `appointments_listed` → `appt_confirmed` / `appt_cancelled` / `appt_reschedule_started`.
 ### 3.6 Admin (`flow=admin_agenda`, `trace=agenda:<id>:<date>`): `agenda_cancelled`(attrs: n_citas) → `patients_notified`(attrs: n) → errores por paciente.
 ### 3.7 Escalación (`flow=escalacion`): `escalated`(reason) → `agent_resumed` / `agent_closed` / `escalation_expired`.
+Tope por sesión: los desvíos (`escalation_no_agents`) y las escalaciones entregadas suman; a la 4.ª,
+`escalation_cap_reached` y la sesión queda cortada: cada entrada que no sea un botón del corte o la palabra
+de reinicio deja `escalation_cap_input_ignored` (reason: tipo de mensaje) y no recibe respuesta.
 
 ---
 
@@ -214,6 +219,7 @@ estado genérica" NO es `flow_event`, solo los estados con significado de negoci
 | Sin convenio→particular · filtro tope MRC | MILESTONE |
 | **`booking_success`** (cita creada) | OUTCOME |
 | `no_slots` · `gfr_blocked` · `pregnancy_blocked` · `special_escalated` (sueño) · `already_has_appt` · `coverage_escalated` · `cups_none` · semanas fuera de rango | OUTCOME |
+| `cups_quantity_out_of_range` (cantidad > 100 → agente) · `ocr_failed_reads_cap` (3.ª lectura fallida seguida → agente) | OUTCOME |
 | Reintento por slot tomado · código alternativo · enriquecer/descartar CUP en agrupación | FULL |
 | Error motor OCR · cita sin CPA/CP (compensación) · error genérico de creación | ERROR |
 
@@ -254,6 +260,7 @@ estado genérica" NO es `flow_event`, solo los estados con significado de negoci
 |--------|:---:|
 | `escalated` (reason) · `agent_closed` · `escalation_expired` | OUTCOME |
 | `agent_resumed` · fallback (agente no disponible) | MILESTONE |
+| `escalation_cap_input_ignored` (entrada ignorada en una sesión cortada por el tope) | FULL |
 
 **Comandos de agente (`agente`, trace `sess`)**
 | Acción | Nivel |
