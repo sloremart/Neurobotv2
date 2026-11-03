@@ -67,8 +67,8 @@ func MaxBodySize(next http.Handler) http.Handler {
 }
 
 // RateLimiter middleware que limita requests por IP con token bucket simple.
-// maxRequests por ventana de tiempo.
-func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.Handler {
+// maxRequests por ventana de tiempo. proxies decide de quién se cree el X-Forwarded-For (ver clientIP).
+func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies) func(http.Handler) http.Handler {
 	type client struct {
 		count   int
 		resetAt time.Time
@@ -94,7 +94,7 @@ func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r)
+			ip := clientIP(r, proxies)
 
 			mu.Lock()
 			c, exists := clients[ip]
@@ -118,22 +118,82 @@ func RateLimiter(maxRequests int, window time.Duration) func(http.Handler) http.
 	}
 }
 
-// dockerBridgeNet es el rango de las redes bridge que Docker asigna por defecto (botnet incluida).
-var dockerBridgeNet = netip.MustParsePrefix("172.16.0.0/12")
+// trustedProxyTTL es cada cuánto se vuelve a resolver el nombre del proxy: su IP cambia cuando
+// Docker recrea el contenedor.
+const trustedProxyTTL = time.Minute
+
+// TrustedProxies reconoce al proxy de confianza por su IDENTIDAD (el nombre del servicio en la red de
+// Docker), no por subred: la red bridge puede caer en cualquier rango y en ella viven otros
+// contenedores. Un nil o una lista vacía no confía en nadie, ni en loopback.
+type TrustedProxies struct {
+	hosts  []string
+	lookup func(host string) ([]net.IP, error)
+	ttl    time.Duration
+
+	mu        sync.Mutex
+	addrs     map[netip.Addr]struct{}
+	expiresAt time.Time
+	failing   map[string]bool // hosts que fallaron en la última resolución (para avisar una sola vez)
+}
+
+// NewTrustedProxies crea el reconocedor para los nombres de hosts (TRUSTED_PROXY_HOSTS).
+func NewTrustedProxies(hosts []string) *TrustedProxies {
+	return newTrustedProxies(hosts, net.LookupIP, trustedProxyTTL)
+}
+
+func newTrustedProxies(hosts []string, lookup func(string) ([]net.IP, error), ttl time.Duration) *TrustedProxies {
+	return &TrustedProxies{hosts: hosts, lookup: lookup, ttl: ttl, failing: map[string]bool{}}
+}
+
+// trusts dice si addr es el proxy: loopback o una IP que resuelve alguno de sus nombres. Un nombre que
+// no resuelve no aporta IPs (se avisa al empezar a fallar), así que su conexión se identifica por
+// RemoteAddr: modo seguro, no evadible.
+func (t *TrustedProxies) trusts(addr netip.Addr) bool {
+	if t == nil || len(t.hosts) == 0 {
+		return false
+	}
+	if addr.IsLoopback() {
+		return true
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if now := time.Now(); t.addrs == nil || !now.Before(t.expiresAt) {
+		t.addrs = map[netip.Addr]struct{}{}
+		for _, host := range t.hosts {
+			ips, err := t.lookup(host)
+			if err != nil {
+				if !t.failing[host] {
+					slog.Warn("trusted proxy not resolvable, rate limiting by RemoteAddr", "host", host, "error", err)
+				}
+				t.failing[host] = true
+				continue
+			}
+			delete(t.failing, host)
+			for _, ip := range ips {
+				if a, ok := netip.AddrFromSlice(ip); ok {
+					t.addrs[a.Unmap()] = struct{}{}
+				}
+			}
+		}
+		t.expiresAt = now.Add(t.ttl)
+	}
+	_, ok := t.addrs[addr]
+	return ok
+}
 
 // clientIP identifica al cliente para el limitador. Topología asumida (docker-compose.yml): un solo
-// proxy delante del bot, el contenedor ngrok en la red botnet, que AÑADE la IP del cliente al final
-// de X-Forwarded-For (no la reemplaza ni manda otra cabecera con la IP real); el resto de la cabecera
-// lo escribe el cliente. Por eso, si la conexión llega desde el proxy (red bridge de Docker o
-// loopback) se toma la ÚLTIMA entrada; si no (puerto publicado, LAN), manda RemoteAddr. Se keyea por
-// HOST, no por "host:port": el puerto efímero cambia en cada conexión TCP (N-14).
-func clientIP(r *http.Request) string {
+// proxy delante del bot, el contenedor ngrok de la red botnet, que AÑADE la IP del cliente al final de
+// X-Forwarded-For (no la reemplaza ni manda otra cabecera con la IP real); el resto de la cabecera lo
+// escribe el cliente. Si la conexión viene del proxy se toma la ÚLTIMA entrada, siempre que sea una IP;
+// si no (puerto publicado, LAN, otros contenedores), manda RemoteAddr. Se keyea por HOST, no por
+// "host:port": el puerto efímero cambia en cada conexión TCP (N-14).
+func clientIP(r *http.Request, proxies *TrustedProxies) string {
 	host := r.RemoteAddr
 	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		host = h
 	}
 	addr, err := netip.ParseAddr(host)
-	if err != nil || (!addr.IsLoopback() && !dockerBridgeNet.Contains(addr.Unmap())) {
+	if err != nil || !proxies.trusts(addr.Unmap()) {
 		return host
 	}
 	xff := r.Header.Values("X-Forwarded-For")
@@ -141,8 +201,12 @@ func clientIP(r *http.Request) string {
 		return host
 	}
 	entries := strings.Split(xff[len(xff)-1], ",")
-	if last := strings.TrimSpace(entries[len(entries)-1]); last != "" {
-		return last
+	last := strings.TrimSpace(entries[len(entries)-1])
+	if h, _, err := net.SplitHostPort(last); err == nil {
+		last = h
+	}
+	if client, err := netip.ParseAddr(last); err == nil {
+		return client.Unmap().String()
 	}
 	return host
 }

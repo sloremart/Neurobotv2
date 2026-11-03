@@ -631,7 +631,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/siesa/slot-recovery", internalHandler.HandleSiesaSlotRecovery)
 		mux.Handle(
 			"/api/internal/",
-			api.RateLimiter(30, time.Minute)(
+			api.RateLimiter(30, time.Minute, api.NewTrustedProxies(cfg.TrustedProxyHosts))(
 				api.MaxBodySize(
 					api.InternalAuth(cfg.InternalAPIKey)(internalMux),
 				),

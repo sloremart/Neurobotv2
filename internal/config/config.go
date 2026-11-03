@@ -193,6 +193,11 @@ type Config struct {
 	InternalAPIKey string
 	LogMaskPhones  bool // Mask phone numbers in logs (default true; set LOG_MASK_PHONES=false to disable)
 
+	// TrustedProxyHosts son los nombres (DNS de Docker) del proxy delante del bot: solo a las IPs que
+	// resuelven, más loopback, se les cree el X-Forwarded-For para el límite de la API interna. Hoy es un
+	// solo proxy, el servicio ngrok del compose. Sin definir = "ngrok"; definida vacía = no se cree a nadie.
+	TrustedProxyHosts []string
+
 	// Ngrok
 	NgrokHostname string
 
@@ -411,7 +416,8 @@ func Load() *Config {
 		InternalAPIKey: os.Getenv("INTERNAL_API_KEY"),
 		// #31 (auditoría): getEnvBool (acepta true/1/false/0, case-insensitive) en vez de == "true"
 		// estricto — un "True"/"1" desactivaba el masking de teléfonos (PII) silenciosamente.
-		LogMaskPhones: getEnvBool("LOG_MASK_PHONES", true),
+		LogMaskPhones:     getEnvBool("LOG_MASK_PHONES", true),
+		TrustedProxyHosts: trustedProxyHosts(),
 
 		// Ngrok
 		NgrokHostname: os.Getenv("NGROK_HOSTNAME"),
@@ -584,6 +590,16 @@ func digitsOnly(s string) string {
 		}
 		return -1
 	}, s)
+}
+
+// trustedProxyHosts lee TRUSTED_PROXY_HOSTS distinguiendo sin definir (el servicio ngrok del compose)
+// de definida vacía (no se confía en ningún proxy).
+func trustedProxyHosts() []string {
+	raw, ok := os.LookupEnv("TRUSTED_PROXY_HOSTS")
+	if !ok {
+		return []string{"ngrok"}
+	}
+	return parsePhoneList(raw)
 }
 
 func parsePhoneList(s string) []string {

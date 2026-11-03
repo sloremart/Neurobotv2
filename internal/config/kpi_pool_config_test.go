@@ -32,3 +32,21 @@ func TestExternalDBKPIMaxOpenDefaultAndOverride(t *testing.T) {
 		t.Errorf("override ExternalDBKPIMaxOpen = %d, want 5", cfg.ExternalDBKPIMaxOpen)
 	}
 }
+
+// A-01: sin definir se confía en el servicio ngrok; definida vacía, en nadie.
+func TestTrustedProxyHostsDefaultEmptyAndList(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TRUSTED_PROXY_HOSTS", "")
+	_ = os.Unsetenv("TRUSTED_PROXY_HOSTS")
+	if got := Load().TrustedProxyHosts; len(got) != 1 || got[0] != "ngrok" {
+		t.Errorf("sin definir = %q, want [ngrok]", got)
+	}
+	t.Setenv("TRUSTED_PROXY_HOSTS", "")
+	if got := Load().TrustedProxyHosts; len(got) != 0 {
+		t.Errorf("vacía = %q, want ninguno", got)
+	}
+	t.Setenv("TRUSTED_PROXY_HOSTS", "ngrok, ngrok_testing")
+	if got := Load().TrustedProxyHosts; len(got) != 2 || got[1] != "ngrok_testing" {
+		t.Errorf("lista = %q", got)
+	}
+}
