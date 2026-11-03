@@ -3,6 +3,8 @@ package nectar
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,7 +65,22 @@ type Client struct {
 	// urgent cuenta los fallos de Néctar para el aviso urgente de volver a Bird (urgent.go); nil = sin aviso.
 	urgent       UrgentReporter
 	urgentLimits UrgentLimits
+	// inDoubt guarda la idempotency_key de cada envío que quedó EN DUDA (ver send), por
+	// conversación y contenido, hasta inDoubtKeyTTL.
+	inDoubtMu sync.Mutex
+	inDoubt   map[string]inDoubtKey
 }
+
+// inDoubtKey es la clave de un envío en duda y hasta cuándo se reutiliza.
+type inDoubtKey struct {
+	key     string
+	expires time.Time
+}
+
+// inDoubtKeyTTL es cuánto se reutiliza la clave de un envío en duda. Cubre el único reintento del
+// worker (retrySend, 10 s después de un intento que puede tardar los 15 s del timeout) con margen,
+// y es corto para que un mensaje igual de un turno posterior salga como mensaje nuevo.
+const inDoubtKeyTTL = time.Minute
 
 // NewClient arma el cliente de las rutas /api/bot/* de Néctar. baseURL es la raíz pública (se le
 // quita la barra final), serviceKey la clave de servicio y requestSecret el secreto de ida.
@@ -366,13 +384,71 @@ func (c *Client) SendTemplate(ctx context.Context, conversationID int64, tmpl Te
 	return c.send(ctx, conversationID, sendRequest{Type: "template", Template: &tmpl})
 }
 
+// send acuña una idempotency_key por mensaje, SALVO en el reintento de un envío en duda.
+//
+// Un fallo no permanente (timeout, corte, 502/504 de un proxy) puede haber llegado a Néctar, y el
+// worker lo reintenta (retrySend) llamando de nuevo con el mismo contenido. Ese reintento viaja con
+// la MISMA clave: Néctar la encuentra en la conversación y contesta con el mensaje original sin
+// encolar otro (contrato: el índice único (conversation_id, idempotency_key) y «el reintento
+// idempotente no escribe otro»). Con una clave nueva el paciente lo recibiría dos veces. El
+// reintento no lleva la clave consigo —pasa por bird.Client, que no la conoce—, así que «el mismo
+// envío» es la misma conversación con el mismo cuerpo dentro de inDoubtKeyTTL.
 func (c *Client) send(ctx context.Context, conversationID int64, req sendRequest) (int64, error) {
-	req.IdempotencyKey = uuid.NewString()
+	fingerprint := sendFingerprint(conversationID, req)
+	req.IdempotencyKey = c.takeInDoubtKey(fingerprint)
 	var out struct {
 		ID int64 `json:"id"`
 	}
 	err := c.do(ctx, http.MethodPost, c.convPath(conversationID, "messages"), req, &out)
+	c.settleInDoubtKey(fingerprint, req.IdempotencyKey, err)
 	return out.ID, err
+}
+
+// sendFingerprint identifica un envío por su conversación y su cuerpo sin la clave ("" si el cuerpo
+// no se puede serializar: entonces tampoco sale y no hay nada que recordar).
+func sendFingerprint(conversationID int64, req sendRequest) string {
+	req.IdempotencyKey = ""
+	body, err := json.Marshal(req)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return strconv.FormatInt(conversationID, 10) + ":" + hex.EncodeToString(sum[:])
+}
+
+// takeInDoubtKey devuelve la clave en duda vigente de ese envío o una nueva. De paso descarta las
+// vencidas: el mapa solo guarda fallos de los últimos inDoubtKeyTTL.
+func (c *Client) takeInDoubtKey(fingerprint string) string {
+	c.inDoubtMu.Lock()
+	defer c.inDoubtMu.Unlock()
+	now := c.now()
+	for fp, k := range c.inDoubt {
+		if !now.Before(k.expires) {
+			delete(c.inDoubt, fp)
+		}
+	}
+	if k, ok := c.inDoubt[fingerprint]; ok && fingerprint != "" {
+		return k.key
+	}
+	return uuid.NewString()
+}
+
+// settleInDoubtKey recuerda la clave si el envío quedó en duda (lo que el worker reintenta: todo
+// fallo no permanente) y la olvida si salió o se rechazó para siempre.
+func (c *Client) settleInDoubtKey(fingerprint, key string, err error) {
+	if fingerprint == "" {
+		return
+	}
+	c.inDoubtMu.Lock()
+	defer c.inDoubtMu.Unlock()
+	if err == nil || bird.IsPermanentSendError(err) {
+		delete(c.inDoubt, fingerprint)
+		return
+	}
+	if c.inDoubt == nil {
+		c.inDoubt = map[string]inDoubtKey{}
+	}
+	c.inDoubt[fingerprint] = inDoubtKey{key: key, expires: c.now().Add(inDoubtKeyTTL)}
 }
 
 // Close llama a POST /api/bot/conversations/{id}/close — cierre por inactividad del bot.
