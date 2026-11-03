@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -55,6 +59,42 @@ func TestNectarHealth(t *testing.T) {
 	}
 	if got := nectarHealth("https://nectar.colibrixa.com:8443/x?k=v"); got != "nectar.colibrixa.com" {
 		t.Errorf("host = %q", got)
+	}
+}
+
+// pingConnector es un driver mínimo cuya conexión solo sabe responder Ping, respetando el ctx
+// como lo hace un driver real (una petición cortada cancela el Ping).
+type pingConnector struct{}
+
+func (pingConnector) Connect(context.Context) (driver.Conn, error) { return pingConn{}, nil }
+func (pingConnector) Driver() driver.Driver                        { return nil }
+
+type pingConn struct{}
+
+func (pingConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("not supported") }
+func (pingConn) Close() error                        { return nil }
+func (pingConn) Begin() (driver.Tx, error)           { return nil, errors.New("not supported") }
+func (pingConn) Ping(ctx context.Context) error      { return ctx.Err() }
+
+// TestHealth_CancelledRequestDoesNotPoisonCache: un cliente que corta su petición de /health no debe
+// dejar cacheado un «critical» para quien pregunte después con las BD sanas (A-02).
+func TestHealth_CancelledRequestDoesNotPoisonCache(t *testing.T) {
+	localDB := sql.OpenDB(pingConnector{})
+	externalDB := sql.OpenDB(pingConnector{})
+	t.Cleanup(func() { _ = localDB.Close(); _ = externalDB.Close() })
+	handler := healthHandler(localDB, externalDB, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/health", nil).WithContext(ctx))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/health tras una petición cancelada: esperaba 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != `{"external_db":"ok","local_db":"ok","nectar_host":"none","status":"ok"}`+"\n" {
+		t.Errorf("cuerpo inesperado: %s", body)
 	}
 }
 

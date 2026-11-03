@@ -793,7 +793,10 @@ func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.Handl
 			health := map[string]string{"status": "ok"}
 			critical := false
 
-			pingCtx, cancelPing := context.WithTimeout(r.Context(), 2*time.Second)
+			// El resultado se comparte con todos durante healthCacheTTL: el Ping no hereda la
+			// cancelación de quien pregunta (un cliente que corta no deja cacheado un «critical»),
+			// solo su propio timeout.
+			pingCtx, cancelPing := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
 			defer cancelPing()
 
 			if err := localDB.PingContext(pingCtx); err != nil {
