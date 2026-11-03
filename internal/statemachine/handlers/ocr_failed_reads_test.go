@@ -100,7 +100,7 @@ func TestUploadOrder_ThirdFailedReadEscalates(t *testing.T) {
 	if res.UpdateCtx[sm.CtxOCRFailureCause] == "" {
 		t.Error("el agente debe ver la causa de la última lectura fallida")
 	}
-	persist(sess, res)
+	persist(sess, escalationExit(res)) // la salida del paso de escalación, que sigue encadenado
 	if got := sess.GetContext(sm.CtxOCRFailedReads); got != "" {
 		t.Errorf("la escalación reinicia el contador (el agente puede pedir la foto otra vez): %q", got)
 	}
@@ -177,5 +177,37 @@ func TestAskMedicalOrder_StashFailureDoesNotCount(t *testing.T) {
 	}
 	if _, ok := res.UpdateCtx[sm.CtxOCRFailedReads]; ok {
 		t.Error("el intento de la orden guardada no suma al contador")
+	}
+}
+
+// Toda escalación borra el contador, no solo la del tope: si el paciente pide el agente tras dos
+// fallos y el agente devuelve «Pedir de nuevo la foto», vuelve a tener sus intentos.
+func TestEscalationExit_ClearsFailedReads(t *testing.T) {
+	sess := testSess(sm.StateUploadMedicalOrder)
+	sess.SetContext(sm.CtxOCRFailedReads, "2")
+	res, err := uploadNonMedia(sess, nil, postbackM("escalate_agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("esperaba ESCALATE_TO_AGENT, got %s", res.NextState)
+	}
+	if !hasClear(escalationExit(res), sm.CtxOCRFailedReads) {
+		t.Error("escalationExit debe borrar CtxOCRFailedReads")
+	}
+}
+
+// Confirmar lo leído («Sí, correcto») cierra la orden: los añadidos fallidos no pasan a la
+// siguiente orden de la misma sesión.
+func TestConfirmOCR_CorrectClearsFailedReads(t *testing.T) {
+	sess := testSess(sm.StateConfirmOCRResult)
+	sess.SetContext("ocr_cups_json", `[{"cups_code":"883141","cups_name":"RM","quantity":1}]`)
+	sess.SetContext(sm.CtxOCRFailedReads, "2")
+	res, err := confirmOCRResultHandler(activeCatalogRepo(), nil)(context.Background(), sess, postbackM("ocr_correct"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasClear(res, sm.CtxOCRFailedReads) {
+		t.Errorf("ocr_correct debe borrar CtxOCRFailedReads: %v", res.ClearCtx)
 	}
 }

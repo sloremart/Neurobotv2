@@ -103,8 +103,16 @@ func agentCupsReturnInput() sm.ReturnInput {
 		Required: true,
 		Command:  sm.ReturnCommandCups,
 		Validate: func(_ *session.Session, value string) sm.InputRejection {
-			if len(services.ParseAgentCups(value)) == 0 {
+			cups := services.ParseAgentCups(value)
+			if len(cups) == 0 {
 				return sm.Reject(services.AgentCupsNoCodesProblem)
+			}
+			// Mismo tope que VALIDATE_OCR: rechazada aquí, el agente la corrige en el formulario en
+			// vez de que el bot se la vuelva a escalar.
+			for _, c := range cups {
+				if c.Quantity > maxCupsQuantity {
+					return sm.Reject(fmt.Sprintf("La cantidad máxima por CUPS es %d (%s tiene %d).", maxCupsQuantity, c.Code, c.Quantity))
+				}
 			}
 			return sm.InputRejection{}
 		},
@@ -450,8 +458,8 @@ func failedOrderReads(sess *session.Session) int {
 // capFailedOrderReads cuenta la lectura fallida que devolvió processOrderMedia (las salidas que
 // ofrecen «Enviar de nuevo»: error, tiempo agotado, lectura sin éxito o sin procedimientos; todas
 // dejan CtxOCRFailureCause) y, a la maxFailedOrderReads-ésima, escala en vez de ofrecer otro intento.
-// La escalación borra el contador: si el agente pide la foto otra vez, el paciente vuelve a tener sus
-// intentos. Una lectura buena lo borra en processOrderMedia. Solo lo usa el paso de subida: la orden
+// Toda escalación borra el contador (escalationExit): si el agente pide la foto otra vez, el paciente
+// vuelve a tener sus intentos. Una lectura buena lo borra en processOrderMedia. Solo lo usa el paso de subida: la orden
 // guardada es un intento único que, si falla, pide la foto como siempre.
 func capFailedOrderReads(sess *session.Session, res *sm.StateResult) *sm.StateResult {
 	if res == nil || res.NextState != sess.CurrentState || res.UpdateCtx[sm.CtxOCRFailureCause] == "" {
@@ -468,7 +476,6 @@ func capFailedOrderReads(sess *session.Session, res *sm.StateResult) *sm.StateRe
 		WithText(ocrUnreadEscalationText).
 		WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRFailedReads).
 		WithContext(sm.CtxOCRFailureCause, cause).
-		WithClearCtx(sm.CtxOCRFailedReads).
 		WithEvent("ocr_failed_reads_cap", map[string]interface{}{"reads": n, "cause": cause})
 	// Los eventos de la lectura fallida (ocr_error, ocr_failed…) se conservan.
 	esc.Events = append(res.Events, esc.Events...)
@@ -572,7 +579,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 		res := sm.NewResult(sm.StateEscalateToAgent).
 			WithText(ocrUnreadEscalationText).
 			WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
-			WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRFailedReads).
+			WithClearCtx(sm.CtxOCRFailureCause).
 			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 		if unread != "" {
 			// El nombre es lo único que el agente tiene de lo que no tenía código.
@@ -827,6 +834,7 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 			// la orden de la EMG (docs/DISENO-CONSOLIDACION-EMG-CITAS.md).
 			if services.IsFisiatriaDependentOnly(cups) {
 				return sm.NewResult(sm.StateCheckEmgConsolidation).
+					WithClearCtx(sm.CtxOCRFailedReads).
 					WithEvent("emg_dependent_only_detected", map[string]interface{}{"cups": len(cups)}), nil
 			}
 
@@ -890,7 +898,9 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 
 			groupsJSON, _ := json.Marshal(groups)
 
+			// La orden quedó confirmada: los añadidos que fallaron no cuentan para la siguiente.
 			r := sm.NewResult(sm.StateCheckSpecialCups).
+				WithClearCtx(sm.CtxOCRFailedReads).
 				WithContext("procedures_json", string(groupsJSON)).
 				WithContext("total_procedures", fmt.Sprintf("%d", len(groups))).
 				WithContext("current_procedure_idx", "0")

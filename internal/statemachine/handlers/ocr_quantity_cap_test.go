@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -65,5 +66,17 @@ func TestValidateOCR_QuantityAtMaxIsAccepted(t *testing.T) {
 	_ = json.Unmarshal([]byte(res.UpdateCtx["ocr_cups_json"]), &cups)
 	if len(cups) != 1 || cups[0].Quantity != maxCupsQuantity {
 		t.Errorf("la cantidad no se toca: %+v", cups)
+	}
+}
+
+// El campo de CUPS del agente rechaza en el formulario una cantidad por encima del tope: si no,
+// VALIDATE_OCR la volvería a escalar como si fuera un lazo del bot.
+func TestAgentCupsReturnInput_RejectsQuantityAboveMax(t *testing.T) {
+	in := agentCupsReturnInput()
+	if rej := in.Validate(nil, "883141:"+strconv.Itoa(maxCupsQuantity+1)); rej.Reason == "" {
+		t.Error("una cantidad mayor que el tope debe rechazarse")
+	}
+	if rej := in.Validate(nil, "883141:"+strconv.Itoa(maxCupsQuantity)); rej.Reason != "" {
+		t.Errorf("la cantidad del tope se acepta, got %q", rej.Reason)
 	}
 }
