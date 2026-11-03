@@ -24,6 +24,20 @@ import (
 // de ahí se asume lazo (recovery↔escalación, no-show↔re-escalación, etc.) y se corta.
 const escalationSessionCap = 3
 
+// ctxEscalationCount es el contador de ese tope: las escalaciones entregadas y los desvíos por falta
+// de asesores o por horario.
+const ctxEscalationCount = "escalation_count"
+
+// bumpEscalationCount suma una vuelta al contador del tope y devuelve el valor nuevo, que el caller
+// pone en el resultado: escrito solo en la sesión en memoria, se perdía al recargarla de la BD en el
+// mensaje siguiente y el tope nunca saltaba entre mensajes.
+func bumpEscalationCount(sess *session.Session) string {
+	n, _ := strconv.Atoi(sess.GetContext(ctxEscalationCount))
+	v := strconv.Itoa(n + 1)
+	sess.SetContext(ctxEscalationCount, v)
+	return v
+}
+
 // escalateMaxRetries: intentos totales para EscalateToAgent ante errores transitorios de la API.
 // Delays: 0s → 1s → 2s entre intentos; peor caso ~3s extra antes de mostrar el fallback.
 const escalateMaxRetries = 3
@@ -139,7 +153,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		//     EXENTA también la re-escalación por un dato del agente que no sirvió
 		//     (CtxAgentInputRejection): la causó una persona, no un lazo del bot, y cada vuelta
 		//     necesita otra acción humana; cortarla dejaría al paciente sin asesor.
-		if n, _ := strconv.Atoi(sess.GetContext("escalation_count")); n >= escalationSessionCap &&
+		if n, _ := strconv.Atoi(sess.GetContext(ctxEscalationCount)); n >= escalationSessionCap &&
 			!queuedWaitStillOpen(cfg, sess) && sess.GetContext(sm.CtxAgentInputRejection) == "" {
 			observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_reached",
 				observability.EmitOpts{
@@ -213,8 +227,12 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 					Phone: sess.PhoneNumber, Reason: preState,
 					Attrs: attrs,
 				})
+			// El desvío también suma al tope anti-bucle (guard (2)): sin asesores, un contestador
+			// automático que re-escala sin fin recibía este aviso y el menú en cada vuelta. Al paciente
+			// que pide un asesor una o dos veces de noche le sigue llegando igual.
 			r := sm.NewResult(sm.StateMainMenu).
 				WithText(noAgentsText(cfg)).
+				WithContext(ctxEscalationCount, bumpEscalationCount(sess)).
 				WithEvent("escalation_no_agents", map[string]interface{}{"pre_state": preState, "gate": gate})
 			r.Messages = append(r.Messages, buildMainMenuList())
 			return escalationDiverted(preState, r), nil
@@ -493,8 +511,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		sess.AgentID = assignedAgentID
 		sess.AgentName = assignedAgentName
 		// Contador del tope anti-bucle (guard (2) arriba): una escalación exitosa más en esta sesión.
-		prevCount, _ := strconv.Atoi(sess.GetContext("escalation_count"))
-		sess.SetContext("escalation_count", strconv.Itoa(prevCount+1))
+		escalationCount := bumpEscalationCount(sess)
 		// Registrar la escalación (una fila por escalación, con el paso del chat donde se escaló).
 		if escRepo != nil {
 			if err := escRepo.Create(ctx, sess.ID, msg.Phone, preState, teamID, assignedAgentID, assignedAgentName); err != nil {
@@ -541,6 +558,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts, "escalation_note").
 			WithContext("pre_escalation_state", preState).
 			WithContext("escalation_team", teamID).
+			WithContext(ctxEscalationCount, escalationCount).
 			WithEvent("escalated_to_agent", map[string]interface{}{
 				"from_state": preState,
 				"team_id":    teamID,
