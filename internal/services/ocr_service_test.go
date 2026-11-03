@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -518,5 +519,49 @@ func TestDownloadMedia_BirdNoRetryOn500(t *testing.T) {
 	}
 	if rt.calls != 1 {
 		t.Fatalf("calls=%d, want 1", rt.calls)
+	}
+}
+
+// Un adjunto de Néctar que responde 3xx no se sigue: la petición lleva la clave de servicio y la
+// firma, que Go reenviaría al anfitrión de destino. Néctar sirve el archivo él mismo, sin redirigir.
+func TestDownloadMedia_NectarRedirectNotFollowed(t *testing.T) {
+	var reached int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&reached, 1)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer other.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/obj", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	s := NewOCRService("k", "m", "", "bird-key")
+	s.SetNectarCredentials(origin.URL, "service-key", "req-secret")
+	s.mediaRetryDelays = []time.Duration{0, 0, 0}
+	if _, err := s.downloadMedia(context.Background(), origin.URL+"/api/bot/attachments/7"); err == nil {
+		t.Fatal("un 3xx de Néctar no es el adjunto")
+	}
+	if n := atomic.LoadInt32(&reached); n != 0 {
+		t.Fatalf("la redirección de Néctar se siguió %d veces", n)
+	}
+}
+
+// Fuera de Néctar no cambia nada: la media de Bird puede redirigir a un almacenamiento pre-firmado.
+func TestDownloadMedia_OtherHostRedirectStillFollowed(t *testing.T) {
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer other.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/obj", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	s := NewOCRService("k", "m", "", "bird-key")
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
+	data, err := s.downloadMedia(context.Background(), origin.URL+"/x.jpg")
+	if err != nil || string(data) != "data" {
+		t.Fatalf("data=%q err=%v", data, err)
 	}
 }

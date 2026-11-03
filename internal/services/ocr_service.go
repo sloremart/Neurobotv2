@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -57,25 +58,41 @@ type OCRService struct {
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
-	return &OCRService{
+	s := &OCRService{
 		apiKey:         apiKey,
 		model:          model,
 		apiURL:         "https://api.openai.com/v1/chat/completions",
-		client:         &http.Client{Timeout: 60 * time.Second},
 		cupsContext:    cupsContext,
 		birdAccessKey:  birdAccessKey,
 		analyzeTimeout: defaultAnalyzeTimeout,
 	}
+	s.client = &http.Client{Timeout: 60 * time.Second, CheckRedirect: s.checkRedirect}
+	return s
 }
 
 // NewOCRServiceForTest creates an OCRService pointing at a custom URL (for httptest).
 func NewOCRServiceForTest(apiURL string) *OCRService {
-	return &OCRService{
+	s := &OCRService{
 		apiURL:         apiURL,
 		model:          "test-model",
-		client:         &http.Client{Timeout: 5 * time.Second},
 		analyzeTimeout: defaultAnalyzeTimeout,
 	}
+	s.client = &http.Client{Timeout: 5 * time.Second, CheckRedirect: s.checkRedirect}
+	return s
+}
+
+// checkRedirect no sigue un 3xx de Néctar: la petición lleva su clave de servicio y su firma, y Go
+// solo quita Authorization y Cookie al cambiar de dominio, no las cabeceras propias. Néctar sirve
+// el adjunto él mismo y no redirige. Lo demás sigue como siempre (la media de Bird puede redirigir
+// a un almacenamiento pre-firmado; su Authorization la quita Go al salir de su dominio).
+func (s *OCRService) checkRedirect(_ *http.Request, via []*http.Request) error {
+	if s.isNectarURL(via[0].URL) {
+		return http.ErrUseLastResponse
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
 }
 
 // SetAnalyzeTimeout ajusta el presupuesto propio de un análisis (<=0 restaura el default).

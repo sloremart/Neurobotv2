@@ -89,11 +89,17 @@ func NewClient(baseURL, serviceKey, requestSecret string) *Client {
 		baseURL:       strings.TrimRight(baseURL, "/"),
 		serviceKey:    serviceKey,
 		requestSecret: requestSecret,
-		http:          &http.Client{Timeout: 15 * time.Second},
+		http:          &http.Client{Timeout: 15 * time.Second, CheckRedirect: noRedirects},
 		now:           time.Now,
 		sleep:         sleepCtx,
 	}
 }
+
+// noRedirects es el CheckRedirect del cliente: ninguna ruta del bot redirige en el contrato de
+// Néctar, y seguir un 3xx reenviaría la clave de servicio y la firma al anfitrión de destino (Go
+// solo quita Authorization y Cookie al cambiar de dominio, no las cabeceras propias). El 3xx se
+// devuelve tal cual y quien llama lo trata como cualquier código fuera de contrato.
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // sleepCtx espera d o hasta que el contexto se cancele, lo que ocurra primero.
 func sleepCtx(ctx context.Context, d time.Duration) error {
