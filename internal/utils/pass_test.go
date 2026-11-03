@@ -87,3 +87,31 @@ func TestRowContext_OutlivesPassDeadlineButNotShutdown(t *testing.T) {
 		t.Errorf("la fila debe cortarse con el apagado: %v", row.Err())
 	}
 }
+
+// MarkContext no hereda ni el plazo ni la cancelación: registra un envío que ya salió.
+func TestMarkContext_IgnoresExpiredParent(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	mark, done := MarkContext(parent)
+	defer done()
+	if mark.Err() != nil {
+		t.Fatalf("la marca heredó la cancelación: %v", mark.Err())
+	}
+	if dl, ok := mark.Deadline(); !ok || time.Until(dl) > MarkTimeout {
+		t.Errorf("plazo de la marca = %v, want ≤ %v", time.Until(dl), MarkTimeout)
+	}
+}
+
+// WithRowTimeout cambia el plazo de las filas; sin él rige RowTimeout.
+func TestRowContext_RowTimeoutOverride(t *testing.T) {
+	row, cancel := RowContext(WithRowTimeout(context.Background(), time.Second))
+	defer cancel()
+	if dl, _ := row.Deadline(); time.Until(dl) > time.Second {
+		t.Errorf("plazo = %v, want ≤ 1s", time.Until(dl))
+	}
+	row2, cancel2 := RowContext(context.Background())
+	defer cancel2()
+	if dl, _ := row2.Deadline(); time.Until(dl) < RowTimeout-time.Minute {
+		t.Errorf("plazo = %v, want ~%v", time.Until(dl), RowTimeout)
+	}
+}

@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // D-07: con MySQL colgado (la consulta no vuelve hasta que se cancele su ctx), la pasada del
@@ -176,5 +178,43 @@ func TestRunInactivityPass_ExpiredPassAlertsOnce(t *testing.T) {
 	out := logged.String()
 	if n := strings.Count(out, "level=ERROR"); n != 1 || !strings.Contains(out, "loop=inactive-sessions") {
 		t.Fatalf("esperaba UN error, el de la pasada vencida; got %d: %q", n, out)
+	}
+}
+
+// D-07 (R1-1): un recordatorio cuyo envío tarda más que el plazo de la fila y sale bien queda
+// marcado con un ctx vivo, creado tras el envío, y no se reenvía en la pasada siguiente.
+func TestCheckEscalatedSession_SlowSendStillMarked(t *testing.T) {
+	now := time.Now()
+	sent := 0 // recordatorios ya marcados
+	var markErr error
+	repo := &mockRepo{
+		findEscalatedFn: func(context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "1", PhoneNumber: "+573000000001", ConversationID: "conv-1",
+				LastPatientMsg: now.Add(-20 * time.Minute), EscalatedAt: now.Add(-20 * time.Minute),
+				RemindersSent: sent,
+			}}, nil
+		},
+		incrementRemFn: func(ctx context.Context, _ string) error {
+			markErr = ctx.Err()
+			if markErr == nil {
+				sent++
+			}
+			return markErr
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	bird := &slowInternalBird{mockInactivityBird: &mockInactivityBird{}, delay: 60 * time.Millisecond}
+	deps := escalationDeps(nil)
+	deps.BirdClient = bird
+	ctx := utils.WithRowTimeout(context.Background(), 20*time.Millisecond)
+
+	mgr.runInactivityPass(ctx, deps)
+	if markErr != nil || sent != 1 {
+		t.Fatalf("el envío lento debía quedar marcado con ctx vivo (sent=%d, err=%v)", sent, markErr)
+	}
+	mgr.runInactivityPass(ctx, deps)
+	if len(bird.internalTexts) != 1 {
+		t.Fatalf("el recordatorio marcado no debe reenviarse: enviados=%d", len(bird.internalTexts))
 	}
 }

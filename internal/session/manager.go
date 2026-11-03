@@ -513,9 +513,11 @@ func (m *SessionManager) checkInactiveSession(ctx context.Context, deps Inactivi
 			_ = deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID)
 		}
 		if deps.Tracker != nil {
-			deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "session_closed_inactivity", map[string]interface{}{
+			markCtx, cancel := utils.MarkContext(ctx) // tras CloseFeedItems (Bird, sin ctx)
+			deps.Tracker.LogEvent(markCtx, s.ID, s.PhoneNumber, "session_closed_inactivity", map[string]interface{}{
 				"idle_minutes": elapsedMin,
 			})
+			cancel()
 		}
 		slog.Info("session closed by inactivity",
 			"session_id", s.ID, "phone", utils.MaskPhone(s.PhoneNumber), "idle_min", elapsedMin)
@@ -562,9 +564,11 @@ func (m *SessionManager) closeEscalatedBySilence(ctx context.Context, deps Inact
 		}
 	}
 	if deps.Tracker != nil {
-		deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_expired", map[string]interface{}{
+		markCtx, cancel := utils.MarkContext(ctx) // tras CloseFeedItems (Bird, sin ctx)
+		deps.Tracker.LogEvent(markCtx, s.ID, s.PhoneNumber, "escalation_expired", map[string]interface{}{
 			"patient_silent_min": int(patientSilent.Minutes()),
 		})
+		cancel()
 	}
 	observability.Emit(observability.TraceSession(s.ID), "escalacion", "escalation_expired",
 		observability.EmitOpts{
@@ -696,7 +700,12 @@ func (m *SessionManager) checkEscalatedSession(ctx context.Context, deps Inactiv
 			"Por favor atiéndelo. (aviso %d de %d)",
 		formatMinutes(int(patientSilent.Minutes())), s.RemindersSent+1, deps.AgentReminderMax,
 	)
-	if _, err := deps.BirdClient.SendInternalText(s.PhoneNumber, s.ConversationID, reminder); err != nil {
+	_, err := deps.BirdClient.SendInternalText(s.PhoneNumber, s.ConversationID, reminder)
+	// Lo que sigue registra un envío que ya salió (o que Bird rechazó): con un ctx nuevo, creado tras
+	// el envío, para que un envío lento no deje la marca sin guardar y el recordatorio se repita.
+	ctx, cancel := utils.MarkContext(ctx)
+	defer cancel()
+	if err != nil {
 		// BUG-005: si Bird responde que la conversación ya NO está activa (el agente la cerró),
 		// el recordatorio nunca tendrá éxito. Sin esto, el checker reintentaba cada minuto
 		// indefinidamente (no incrementa RemindersSent en el error) hasta la expiración a las 6h.
