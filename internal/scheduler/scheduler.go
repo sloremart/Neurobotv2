@@ -21,22 +21,30 @@ const defaultTaskTimeout = 1 * time.Hour
 // volvería a cobrar los envíos ya hechos.
 var ErrNothingSent = errors.New("nothing sent")
 
-// Reintento acotado de una tarea que falló antes de enviar (D-03): cada taskRetryInterval y a lo
-// sumo taskMaxRetries veces tras la corrida de su hora.
+// Reintento acotado de una tarea que falló antes de enviar (D-03): cada taskRetryInterval, a lo
+// sumo taskMaxRetries veces y nunca después de taskRetryWindow desde su hora programada; manda el
+// primer tope que se cumpla. La ventana mantiene el reintento dentro de las ventanas de negocio
+// (IVR, WA diurno) y evita que same_day_reminders_HH se solape con la corrida de HH+1.
+// Con CONFIRMATION_FOLLOWUP_ENABLED, un recordatorio de las 07:00 reintentado llega a su segundo
+// seguimiento después de las 13:00 y ese día queda fuera del IVR.
 const (
 	taskRetryInterval = 5 * time.Minute
 	taskMaxRetries    = 6
+	taskRetryWindow   = 30 * time.Minute
 )
 
-// noRetry es el intento de una corrida que no se reintenta (el catch-up del arranque, que ya tiene
-// su propia política horaria L14).
-const noRetry = -1
+// retryChain ubica un intento en la cadena de reintentos de una corrida: scheduledAt es el minuto de
+// la corrida de su hora y attempt el número de intento (0 = esa corrida).
+type retryChain struct {
+	scheduledAt time.Time
+	attempt     int
+}
 
-// pendingRetry es el próximo reintento programado de una tarea: attempt es su número (1..taskMaxRetries).
+// pendingRetry es el próximo reintento programado de una tarea.
 type pendingRetry struct {
-	task    ScheduledTask
-	attempt int
-	due     time.Time
+	task  ScheduledTask
+	chain retryChain
+	due   time.Time
 }
 
 // RunRepo persists the last successful execution of scheduled tasks.
@@ -132,8 +140,9 @@ func (s *Scheduler) Wait(timeout time.Duration) bool {
 
 // runTask ejecuta una tarea en su propia goroutine, trackeada por el WaitGroup (N-37) y acotada
 // por un timeout por-ejecución (N-39). Persiste el last-run solo si la tarea terminó con éxito.
-// attempt es 0 en la corrida de su hora, 1..taskMaxRetries en un reintento y noRetry en el catch-up.
-func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.Time, label string, attempt int) {
+// chain ubica el intento en su cadena de reintentos; nil en el catch-up, que no se reintenta (ya
+// tiene su propia política horaria L14).
+func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.Time, label string, chain *retryChain) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -160,11 +169,15 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 		start := time.Now()
 		trace := observability.TraceTask(task.Name, runAt.Format("20060102"))
 		if err := task.Fn(taskCtx); err != nil {
-			dur := time.Since(start).Milliseconds()
+			elapsed := time.Since(start)
+			dur := elapsed.Milliseconds()
 			slog.Error(label+" failed", "task", task.Name, "error", err,
-				"duration_ms", dur, "attempt", attempt)
-			attrs := map[string]interface{}{"duration_ms": dur, "attempt": attempt}
-			if s.scheduleRetry(ctx, task, runAt, attempt, err) {
+				"duration_ms", dur)
+			attrs := map[string]interface{}{"duration_ms": dur}
+			if chain != nil {
+				attrs["attempt"] = chain.attempt
+			}
+			if s.scheduleRetry(ctx, task, chain, runAt.Add(elapsed), err) {
 				attrs["retries_exhausted"] = true
 			}
 			observability.Emit(trace, "scheduler", "task_failed", observability.EmitOpts{
@@ -195,49 +208,54 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 	}()
 }
 
-// scheduleRetry programa el reintento de una tarea que falló (D-03) y devuelve true si se agotaron
-// los reintentos. Solo se reintenta un error marcado con ErrNothingSent (nada salió: reintentar no
-// duplica envíos), nunca en el apagado (ctx cancelado) ni en el catch-up. El reintento lo lanza
-// evaluateTasks en el tick que cumple `due`: no hay timers ni goroutines que drenar.
-func (s *Scheduler) scheduleRetry(ctx context.Context, task ScheduledTask, runAt time.Time, attempt int, err error) bool {
-	if attempt == noRetry || ctx.Err() != nil || !errors.Is(err, ErrNothingSent) {
+// scheduleRetry programa el reintento de un intento que falló (D-03) y devuelve true si la cadena
+// se rinde. Solo se reintenta un error marcado con ErrNothingSent (nada salió: reintentar no duplica
+// envíos), nunca en el apagado (ctx cancelado) ni en el catch-up (chain nil). El reintento sale
+// taskRetryInterval después del minuto en que terminó el intento (endedAt), así que un intento
+// colgado que termina fuera de la ventana no se reintenta. Lo lanza evaluateTasks en el tick que
+// cumple due: no hay timers ni goroutines que drenar.
+func (s *Scheduler) scheduleRetry(ctx context.Context, task ScheduledTask, chain *retryChain, endedAt time.Time, err error) bool {
+	if chain == nil || ctx.Err() != nil || !errors.Is(err, ErrNothingSent) {
 		return false
 	}
-	if attempt >= taskMaxRetries {
+	due := endedAt.Truncate(time.Minute).Add(taskRetryInterval)
+	if chain.attempt >= taskMaxRetries || due.After(chain.scheduledAt.Add(taskRetryWindow)) {
 		slog.Error("scheduler task retries exhausted", "task", task.Name,
-			"retries", taskMaxRetries, "error", err)
+			"attempts", chain.attempt+1, "scheduled_at", chain.scheduledAt, "error", err)
 		return true
 	}
+	next := retryChain{scheduledAt: chain.scheduledAt, attempt: chain.attempt + 1}
 	s.retryMu.Lock()
 	defer s.retryMu.Unlock()
 	if s.retries == nil {
 		s.retries = make(map[string]pendingRetry)
 	}
-	s.retries[task.Name] = pendingRetry{task: task, attempt: attempt + 1, due: runAt.Add(taskRetryInterval)}
+	s.retries[task.Name] = pendingRetry{task: task, chain: next, due: due}
 	slog.Warn("scheduler task retry scheduled", "task", task.Name,
-		"attempt", attempt+1, "due", runAt.Add(taskRetryInterval))
+		"attempt", next.attempt, "due", due)
 	return false
 }
 
-// takeDueRetries saca los reintentos vencidos a `now`.
+// takeDueRetries saca los reintentos vencidos a now. Uno que vence pero ya no cabe en su ventana
+// (el tick llegó tarde) se descarta. Se compara por minuto, la granularidad del tick.
 func (s *Scheduler) takeDueRetries(now time.Time) []pendingRetry {
+	minute := now.Truncate(time.Minute)
 	s.retryMu.Lock()
 	defer s.retryMu.Unlock()
 	var due []pendingRetry
 	for name, r := range s.retries {
-		if !now.Before(r.due) {
-			due = append(due, r)
-			delete(s.retries, name)
+		if minute.Before(r.due) {
+			continue
 		}
+		delete(s.retries, name)
+		if minute.After(r.chain.scheduledAt.Add(taskRetryWindow)) {
+			slog.Error("scheduler task retries exhausted: retry outside its window", "task", name,
+				"attempt", r.chain.attempt, "scheduled_at", r.chain.scheduledAt)
+			continue
+		}
+		due = append(due, r)
 	}
 	return due
-}
-
-// dropRetry descarta el reintento pendiente de una tarea (su corrida de hora lo reemplaza).
-func (s *Scheduler) dropRetry(name string) {
-	s.retryMu.Lock()
-	delete(s.retries, name)
-	s.retryMu.Unlock()
 }
 
 // AddTask registers a task to be executed at the configured time.
@@ -324,7 +342,7 @@ func (s *Scheduler) RunMissedTasks(ctx context.Context) {
 			"scheduled_at", scheduledToday,
 		)
 
-		s.runTask(ctx, task, time.Now(), "scheduler catch-up", noRetry)
+		s.runTask(ctx, task, time.Now(), "scheduler catch-up", nil)
 	}
 }
 
@@ -337,7 +355,7 @@ func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun ma
 	if ctx.Err() == nil {
 		for _, r := range s.takeDueRetries(now) {
 			executed = append(executed, r.task.Name)
-			s.runTask(ctx, r.task, now, "scheduler retry", r.attempt)
+			s.runTask(ctx, r.task, now, "scheduler retry", &r.chain)
 		}
 	}
 
@@ -368,8 +386,7 @@ func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun ma
 		lastRun[key] = now
 		executed = append(executed, task.Name)
 
-		s.dropRetry(task.Name)
-		s.runTask(ctx, task, now, "scheduler task", 0)
+		s.runTask(ctx, task, now, "scheduler task", &retryChain{scheduledAt: now.Truncate(time.Minute)})
 	}
 
 	return executed

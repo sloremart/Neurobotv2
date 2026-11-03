@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -462,5 +463,128 @@ func TestRetry_CancelledContextDoesNotRetry(t *testing.T) {
 	tickUntil(ctx2, t, s2, at(1), at(40))
 	if got := calls2.Load(); got != 1 {
 		t.Fatalf("retry due after shutdown: calls = %d, want 1", got)
+	}
+}
+
+// La cadena de reintentos no pasa de taskRetryWindow desde la hora programada aunque queden
+// intentos: same_day_reminders_16 nunca corre después de las 16:30 (no se solapa con la corrida
+// siguiente ni sale de su ventana de negocio).
+func TestRetry_NeverAfterWindow(t *testing.T) {
+	at := func(h, m int) time.Time { return time.Date(2026, 3, 16, h, m, 0, 0, time.UTC) }
+	newSched := func(calls *atomic.Int32) *Scheduler {
+		s := NewScheduler(time.UTC)
+		task := failingUntil(1000, calls)
+		task.Name, task.Hour = "same_day_reminders_16", 16
+		s.AddTask(task)
+		return s
+	}
+
+	// Ticks que llegan tarde (16:20): los reintentos siguen cada 5 min solo hasta las 16:30.
+	var calls atomic.Int32
+	s := newSched(&calls)
+	tickUntil(context.Background(), t, s, at(16, 0), at(16, 0))
+	tickUntil(context.Background(), t, s, at(16, 20), at(16, 30))
+	if got := calls.Load(); got != 4 { // 16:00, 16:20, 16:25, 16:30
+		t.Fatalf("up to 16:30: calls = %d, want 4", got)
+	}
+	tickUntil(context.Background(), t, s, at(16, 31), at(17, 30))
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("after 16:30: calls = %d, want 4 (no retry outside the window)", got)
+	}
+
+	// Un reintento vencido cuyo tick llega ya fuera de la ventana se descarta.
+	var late atomic.Int32
+	s2 := newSched(&late)
+	tickUntil(context.Background(), t, s2, at(16, 0), at(16, 0))
+	tickUntil(context.Background(), t, s2, at(16, 40), at(17, 30))
+	if got := late.Load(); got != 1 {
+		t.Fatalf("late tick: calls = %d, want 1", got)
+	}
+}
+
+// fakeRunRepo registra los last-run persistidos.
+type fakeRunRepo struct {
+	mu   sync.Mutex
+	sets []time.Time
+}
+
+func (f *fakeRunRepo) GetLastRun(context.Context, string) (time.Time, error) { return time.Time{}, nil }
+
+func (f *fakeRunRepo) SetLastRun(_ context.Context, _ string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sets = append(f.sets, at)
+	return nil
+}
+
+func (f *fakeRunRepo) snapshot() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Time(nil), f.sets...)
+}
+
+// Un reintento exitoso persiste el last-run (con la hora del reintento); el intento fallido no.
+func TestRetry_SuccessPersistsLastRun(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	repo := &fakeRunRepo{}
+	s.SetRunRepo(repo)
+	var calls atomic.Int32
+	s.AddTask(failingUntil(1, &calls))
+
+	at := func(m int) time.Time { return time.Date(2026, 3, 16, 7, m, 0, 0, time.UTC) }
+	tickUntil(context.Background(), t, s, at(0), at(4))
+	if got := repo.snapshot(); len(got) != 0 {
+		t.Fatalf("failed attempt persisted last-run: %v", got)
+	}
+	tickUntil(context.Background(), t, s, at(5), at(10))
+	if got := repo.snapshot(); len(got) != 1 || !got[0].Equal(at(5)) {
+		t.Fatalf("last-run = %v, want [%v]", got, at(5))
+	}
+}
+
+// El catch-up del arranque que falla no se reintenta: conserva su política horaria L14.
+func TestRetry_FailedCatchupIsNotRetried(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	s.SetRunRepo(&fakeRunRepo{}) // last-run cero: la tarea se da por perdida hoy
+	var calls atomic.Int32
+	task := failingUntil(1000, &calls)
+	task.Hour = 0 // su hora de hoy ya pasó, sea cual sea la hora real
+	s.AddTask(task)
+
+	s.RunMissedTasks(context.Background())
+	if !s.Wait(2 * time.Second) {
+		t.Fatal("catch-up did not drain")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("catch-up calls = %d, want 1", got)
+	}
+	s.retryMu.Lock()
+	pending := len(s.retries)
+	s.retryMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("failed catch-up scheduled %d retries, want 0", pending)
+	}
+}
+
+// Un intento colgado (p. ej. SIESA sin responder hasta el backstop de 1 h) que termina fuera de la
+// ventana no se reintenta, aunque le queden intentos.
+func TestRetry_HungAttemptEndingOutsideWindowIsNotRetried(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	task := ScheduledTask{Name: "voice_reminders", Hour: 13}
+	scheduled := time.Date(2026, 3, 16, 13, 0, 0, 0, time.UTC)
+	err := fmt.Errorf("fetch appointments for IVR: %w", ErrNothingSent)
+
+	if !s.scheduleRetry(context.Background(), task, &retryChain{scheduledAt: scheduled}, scheduled.Add(time.Hour), err) {
+		t.Error("expected the chain to give up")
+	}
+	if len(s.retries) != 0 {
+		t.Errorf("retries = %v, want none", s.retries)
+	}
+	// El mismo fallo a tiempo sí se reintenta, 5 min después del minuto en que terminó.
+	if s.scheduleRetry(context.Background(), task, &retryChain{scheduledAt: scheduled}, scheduled.Add(42*time.Second), err) {
+		t.Error("in-window failure should be retried")
+	}
+	if r, ok := s.retries[task.Name]; !ok || !r.due.Equal(scheduled.Add(taskRetryInterval)) || r.chain.attempt != 1 {
+		t.Errorf("retry = %+v, want attempt 1 due %v", r, scheduled.Add(taskRetryInterval))
 	}
 }
