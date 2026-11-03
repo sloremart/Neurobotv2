@@ -52,24 +52,37 @@ var menuResetKeywords = map[string]bool{
 	"menu": true, "menú": true, "inicio": true, "reiniciar": true, "0": true,
 }
 
-// EscalationCapInterceptor deja en silencio la sesión cortada por el tope de escalaciones
-// (CtxEscalationCapped): en FALLBACK_MENU solo pasan las pulsaciones de los botones del corte y la
-// palabra de reinicio, con la conducta de siempre. Todo lo demás se ignora sin enviar nada (queda
-// un evento): un contestador automático que responde a cada mensaje no recibe nada más hasta que
+// IgnoredByEscalationCap dice si la sesión está cortada por el tope de escalaciones
+// (CtxEscalationCapped) y esta entrada no es una de las que se siguen atendiendo: en FALLBACK_MENU
+// solo pasan las pulsaciones de los botones del corte y la palabra de reinicio. Lo consulta el
+// worker antes de renovar la sesión (una entrada ignorada no la mantiene viva) y
+// EscalationCapInterceptor dentro de la máquina.
+func IgnoredByEscalationCap(sess *session.Session, msg bird.InboundMessage) bool {
+	if sess.CurrentState != StateFallbackMenu || sess.GetContext(CtxEscalationCapped) == "" {
+		return false
+	}
+	if msg.IsPostback {
+		return msg.PostbackPayload != "action:restart" && msg.PostbackPayload != "action:end"
+	}
+	return !menuResetKeywords[strings.TrimSpace(strings.ToLower(msg.Text))]
+}
+
+// TraceEscalationCapIgnored deja la traza de una entrada ignorada por el tope.
+func TraceEscalationCapIgnored(sess *session.Session, msg bird.InboundMessage) {
+	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_input_ignored",
+		observability.EmitOpts{Phone: sess.PhoneNumber, Reason: msg.MessageType})
+}
+
+// EscalationCapInterceptor deja en silencio la sesión cortada por el tope de escalaciones: lo que
+// IgnoredByEscalationCap descarta no recibe respuesta (queda un evento), con la conducta de siempre
+// para lo demás. Un contestador automático que responde a cada mensaje no recibe nada más hasta que
 // tome la sesión un agente o venza. Va PRIMERO, antes de las palabras clave de escalación.
 func EscalationCapInterceptor() Interceptor {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*StateResult, bool) {
-		if sess.CurrentState != StateFallbackMenu || sess.GetContext(CtxEscalationCapped) == "" {
+		if !IgnoredByEscalationCap(sess, msg) {
 			return nil, false
 		}
-		if msg.IsPostback && (msg.PostbackPayload == "action:restart" || msg.PostbackPayload == "action:end") {
-			return nil, false
-		}
-		if !msg.IsPostback && menuResetKeywords[strings.TrimSpace(strings.ToLower(msg.Text))] {
-			return nil, false
-		}
-		observability.Emit(observability.TraceSession(sess.ID), "escalacion", "escalation_cap_input_ignored",
-			observability.EmitOpts{Phone: sess.PhoneNumber, Reason: msg.MessageType})
+		TraceEscalationCapIgnored(sess, msg)
 		return NewResult(StateFallbackMenu).
 			WithEvent("escalation_cap_input_ignored", map[string]interface{}{"type": msg.MessageType}), true
 	}

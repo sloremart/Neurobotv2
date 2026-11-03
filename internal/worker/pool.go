@@ -872,6 +872,17 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		return
 	}
 
+	// 5a. Sesión cortada por el tope de escalaciones: la entrada se ignora en silencio y NO renueva
+	// la expiración ni la actividad (tampoco se guarda nada). La sesión vence como siempre, contando
+	// desde lo último que el bot sí atendió, y el mensaje siguiente abre una sesión nueva con el
+	// saludo; si se renovara, un paciente cortado que vuelve al otro día recibiría silencio siempre.
+	if statemachine.IgnoredByEscalationCap(sess, msg) {
+		statemachine.TraceEscalationCapIgnored(sess, msg)
+		slog.Info("entrada ignorada: sesión cortada por el tope de escalaciones",
+			"session_id", sess.ID, "phone", utils.MaskPhone(msg.Phone), "type", msg.MessageType)
+		return
+	}
+
 	// 5b. Renew timeout + seal patient activity for active sessions
 	if err := p.sessionManager.TouchPatientActivity(parentCtx, sess); err != nil {
 		slog.Error("touch patient activity error", "phone", utils.MaskPhone(msg.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID, "error", err)
