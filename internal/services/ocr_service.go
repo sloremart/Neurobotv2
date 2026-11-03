@@ -22,7 +22,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
 
-// maxOCRPages acota cuántas páginas de un PDF multipágina se mandan a Vision en el fallback (costo/tamaño).
+// maxOCRPages acota cuántas páginas de un PDF se mandan a Vision en su única llamada (costo/tamaño).
 const maxOCRPages = 10
 
 // defaultAnalyzeTimeout es el presupuesto propio de UN análisis OCR. DEBE quedar holgadamente por
@@ -55,6 +55,9 @@ type OCRService struct {
 	// un 404 o un 500 (ver downloadMedia). nil = defaultMediaRetryDelays; inyectable para que los tests no
 	// esperen los ~17 s reales.
 	mediaRetryDelays []time.Duration
+	// pdfToImages convierte hojas de un PDF a imágenes (Ghostscript en producción); inyectable para
+	// probar sin gs qué hojas van a Vision.
+	pdfToImages func(ctx context.Context, pdfPath string, first, last int) ([]string, error)
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
@@ -65,6 +68,7 @@ func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService
 		cupsContext:    cupsContext,
 		birdAccessKey:  birdAccessKey,
 		analyzeTimeout: defaultAnalyzeTimeout,
+		pdfToImages:    pdfPagesToDataURIs,
 	}
 	s.client = &http.Client{Timeout: 60 * time.Second, CheckRedirect: s.checkRedirect}
 	return s
@@ -76,6 +80,7 @@ func NewOCRServiceForTest(apiURL string) *OCRService {
 		apiURL:         apiURL,
 		model:          "test-model",
 		analyzeTimeout: defaultAnalyzeTimeout,
+		pdfToImages:    pdfPagesToDataURIs,
 	}
 	s.client = &http.Client{Timeout: 5 * time.Second, CheckRedirect: s.checkRedirect}
 	return s
@@ -592,12 +597,11 @@ func (s *OCRService) downloadMediaOnce(ctx context.Context, documentURL string) 
 	return fileData, resp.StatusCode, nil
 }
 
-// AnalyzeDocument downloads a document (PDF), converts the first page to JPEG
-// using Ghostscript (300 DPI), and sends the image to OpenAI Vision for OCR.
-// Same behavior as Laravel's VisionMedicalOrderService.
+// AnalyzeDocument baja el adjunto de la orden: una imagen va directa a Vision; un PDF se convierte con
+// Ghostscript (300 DPI) y sus hojas van a Vision en una sola llamada (analyzePages).
 func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*OCRResult, error) {
-	// Presupuesto propio: cubre download + conversión de PDF + Vision (incluido el fallback
-	// multipágina). Sin él, un documento pesado o un Vision colgado agotaba el contexto del mensaje.
+	// Presupuesto propio: cubre download + conversión de PDF + Vision (incluido el reintento con la
+	// primera hoja). Sin él, un documento pesado o un Vision colgado agotaba el contexto del mensaje.
 	ctx, cancel := s.withAnalyzeBudget(ctx)
 	defer cancel()
 
@@ -616,8 +620,7 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 		return s.AnalyzeImage(ctx, dataURI)
 	}
 
-	// 3. If PDF: página 1 primero (cubre la orden de 1 hoja, la mayoría) y solo si no trae CUP se
-	// analizan todas las páginas (órdenes multipágina: historia clínica primero, orden al final).
+	// 3. Si es PDF: TODAS sus hojas a Vision en una sola llamada (ver analyzePages).
 	if mimeType != "application/pdf" {
 		return &OCRResult{Success: false, Error: "formato_no_soportado"}, nil
 	}
@@ -634,42 +637,40 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	}
 	pdfFile.Close()
 
-	// Página 1: flujo normal, SIN costo/latencia extra para la orden de 1 hoja.
-	page1URIs, err := s.pdfPagesToDataURIs(ctx, pdfFile.Name(), 1, 1)
+	// Antes se leía la hoja 1 y solo si no traía CUP se miraban las demás. Un PDF cuya primera hoja
+	// trae procedimientos y cuyos demás siguen en las hojas 2, 3… se leía a medias, y el paciente
+	// veía un resumen que parecía completo. Siguen siendo UNA llamada; en la orden de una hoja no
+	// cambia nada (Ghostscript convierte la única que hay) y maxOCRPages acota las imágenes.
+	uris, err := s.pdfToImages(ctx, pdfFile.Name(), 1, maxOCRPages)
 	if err != nil {
 		return nil, err
 	}
-	if len(page1URIs) == 0 {
-		return nil, fmt.Errorf("pdf sin páginas convertidas")
-	}
-	res, err := s.AnalyzeImage(ctx, page1URIs[0])
-	if err != nil {
-		return nil, err
-	}
-	if hasValidCUP(res) {
-		return res, nil // la 1ª hoja ya trae el CUP → sin cambios respecto al comportamiento previo
-	}
+	return s.analyzePages(ctx, uris)
+}
 
-	// Fallback multipágina: convertir TODAS las páginas (acotado) y mandarlas juntas en UNA llamada.
-	allURIs, err := s.pdfPagesToDataURIs(ctx, pdfFile.Name(), 1, maxOCRPages)
+// analyzePages lee las hojas YA convertidas de un PDF: una sola va como imagen suelta; varias, juntas
+// con el prompt multipágina (AnalyzeImages), que sabe descartar la historia clínica y juntar los
+// procedimientos de todas las hojas de orden. Si esa lectura falla, se intenta solo la primera hoja,
+// donde está la orden en la mayoría de los casos.
+func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResult, error) {
+	switch len(uris) {
+	case 0:
+		return nil, fmt.Errorf("pdf sin páginas convertidas")
+	case 1:
+		return s.AnalyzeImage(ctx, uris[0])
+	}
+	slog.Info("ocr: documento multipágina, se leen todas las hojas", "pages", len(uris))
+	res, err := s.AnalyzeImages(ctx, uris)
 	if err != nil {
-		slog.Warn("ocr multipágina: conversión falló; se usa el resultado de la página 1", "error", err)
-		return res, nil
+		slog.Warn("ocr multipágina falló; se reintenta solo con la primera hoja", "error", err)
+		return s.AnalyzeImage(ctx, uris[0])
 	}
-	if len(allURIs) <= 1 {
-		return res, nil // documento de una sola página: nada más que intentar
-	}
-	slog.Info("ocr multipágina: página 1 sin CUP, analizando todas las páginas", "pages", len(allURIs))
-	multi, err := s.AnalyzeImages(ctx, allURIs)
-	if err != nil {
-		return res, nil // fail-safe: si el multipágina falla, devolver lo de la página 1
-	}
-	return multi, nil
+	return res, nil
 }
 
 // pdfPagesToDataURIs convierte las páginas [first,last] del PDF a JPEG (300 DPI) con Ghostscript y las
 // devuelve como data URIs base64 en orden de página. last<=0 = hasta el final.
-func (s *OCRService) pdfPagesToDataURIs(ctx context.Context, pdfPath string, first, last int) ([]string, error) {
+func pdfPagesToDataURIs(ctx context.Context, pdfPath string, first, last int) ([]string, error) {
 	outPattern := pdfPath + "-p%d.jpg"
 	args := []string{"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=jpeg", "-r300"}
 	if first > 0 {
@@ -708,22 +709,7 @@ func pdfPageNum(path string) int {
 	return n
 }
 
-// hasValidCUP indica si el OCR extrajo al menos un CUP con código NO vacío (el código es la fuente
-// autoritativa para cobertura/tarifa). Un resultado sin código válido NO debe tratarse como "sin
-// convenio": dispara el fallback multipágina y, si aun así no hay código, la guarda del handler escala.
-func hasValidCUP(res *OCRResult) bool {
-	if res == nil {
-		return false
-	}
-	for _, c := range res.Cups {
-		if strings.TrimSpace(c.Code) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// AnalyzeImages envía VARIAS páginas de un PDF en UNA sola llamada a Vision (fallback multipágina). El
+// AnalyzeImages envía VARIAS páginas de un PDF en UNA sola llamada a Vision. El
 // documento puede mezclar historia clínica y hojas de orden; el prompt refuerza extraer CUPS SOLO de
 // las hojas de FORMULACIÓN/orden e ignorar la historia clínica, e incluir todas las órdenes si hay varias.
 func (s *OCRService) AnalyzeImages(ctx context.Context, imageURLs []string) (*OCRResult, error) {

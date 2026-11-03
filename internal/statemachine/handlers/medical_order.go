@@ -561,7 +561,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 	// GUARDA (el CÓDIGO CUPS es prioridad para agendar): quedarse solo con los CUPS que traen
 	// código. Un CUP sin código NO debe llegar al gate de cobertura, que lo interpretaría como
 	// "sin convenio" y mandaría a particular (bug reportado: orden multipágina cuyo código quedó
-	// vacío al leer solo la 1ª hoja). Si tras el fallback multipágina NINGÚN CUP trae código,
+	// vacío al leer solo la 1ª hoja). Si tras leer todas las hojas NINGÚN CUP trae código,
 	// escalar a un agente (que sí puede leer la orden) en vez de mandar a particular.
 	validCups := make([]services.CUPSEntry, 0, len(ocrResult.Cups))
 	var unreadNames []string
