@@ -376,6 +376,11 @@ const (
 	// resumen del agente (grupo `orden`).
 	CtxOCRFailureCause = "ocr_failure_cause"
 
+	// CtxOCRFailedReads cuenta las lecturas FALLIDAS seguidas de la orden en la sesión (error, tiempo
+	// agotado, lectura sin éxito o sin procedimientos). Lo suben el paso de subida y el de páginas
+	// añadidas, lo borra una lectura buena y la escalación por tope (maxFailedOrderReads).
+	CtxOCRFailedReads = "ocr_failed_reads"
+
 	// OCRFailureNoProcedures es la causa que se guarda cuando la lectura falló sin que el OCR diera
 	// un motivo (`ocrResult.Error` vacío).
 	OCRFailureNoProcedures = "ocr_sin_procedimientos"

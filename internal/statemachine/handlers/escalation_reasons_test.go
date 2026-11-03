@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -82,6 +83,12 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 		}},
 		{"cantidad_fuera_de_rango", sm.EscalationReasonQuantityOutOfRange, false, func(t *testing.T) *sm.StateResult {
 			return validateCups(t, []services.CUPSEntry{{Code: "883141", Name: "RM", Quantity: maxCupsQuantity + 1}})
+		}},
+		{"ocr_lecturas_fallidas", sm.EscalationReasonOCRFailedReads, false, func(*testing.T) *sm.StateResult {
+			sess := testSess(sm.StateUploadMedicalOrder)
+			sess.SetContext(sm.CtxOCRFailedReads, strconv.Itoa(maxFailedOrderReads-1))
+			res := sm.NewResult(sm.StateUploadMedicalOrder).WithContext(sm.CtxOCRFailureCause, sm.OCRFailureNoProcedures)
+			return capFailedOrderReads(sess, res)
 		}},
 		{"sin_convenio", sm.EscalationReasonNoCoverage, true, func(t *testing.T) *sm.StateResult {
 			return must(coverageNoConvenioHandler()(ctx, testSess(sm.StateCoverageNoConvenio), postbackM("cov_agente")))(t)

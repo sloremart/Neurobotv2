@@ -93,7 +93,11 @@ func PhotoAppendInterceptor(ocrSvc *services.OCRService) sm.Interceptor {
 			return nil, false
 		}
 		appends, _ := strconv.Atoi(sess.GetContext("ocr_append_count"))
-		if appends >= maxOCRAppends || ocrSvc == nil {
+		// Las páginas que no se pudieron leer cuentan para el mismo tope de lecturas fallidas de la
+		// sesión que el paso de subida; aquí no se escala (lo ya leído es una orden válida): se deja
+		// de llamar al OCR y se sigue con lo leído.
+		failed := failedOrderReads(sess)
+		if appends >= maxOCRAppends || failed >= maxFailedOrderReads || ocrSvc == nil {
 			return sm.NewResult(sess.CurrentState).
 				WithButtons("Ya tengo varias imágenes de tu orden; sigamos con lo leído.\n\n¿Es correcto?",
 					ocrConfirmButtons()...), true
@@ -106,6 +110,7 @@ func PhotoAppendInterceptor(ocrSvc *services.OCRService) sm.Interceptor {
 			return sm.NewResult(sess.CurrentState).
 				WithButtons("No pude leer esta imagen adicional. Si es otra página de tu orden, envíala más nítida.\n\n¿Es correcto lo detectado hasta ahora?",
 					ocrConfirmButtons()...).
+				WithContext(sm.CtxOCRFailedReads, strconv.Itoa(failed+1)).
 				WithEvent("ocr_append_failed", nil), true
 		}
 
@@ -116,6 +121,7 @@ func PhotoAppendInterceptor(ocrSvc *services.OCRService) sm.Interceptor {
 		return sm.NewResult(sm.StateValidateOCR).
 			WithContext("ocr_cups_json", merged).
 			WithContext("ocr_append_count", strconv.Itoa(appends+1)).
+			WithClearCtx(sm.CtxOCRFailedReads).
 			WithEvent("ocr_page_appended", map[string]interface{}{"added": added}), true
 	}
 }

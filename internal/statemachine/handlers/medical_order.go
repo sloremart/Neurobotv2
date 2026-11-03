@@ -420,13 +420,59 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 				return sm.NewResult(sess.CurrentState).
 					WithText("No pudimos obtener el archivo. Por favor envía otra foto o PDF."), nil
 			}
-			return processOrderMedia(ctx, sess, ocrSvc, birdClient, mediaURL)
+			res, err := processOrderMedia(ctx, sess, ocrSvc, birdClient, mediaURL)
+			if err != nil {
+				return res, err
+			}
+			return capFailedOrderReads(sess, res), nil
 
 		default:
 			// (el resto del switch sigue abajo)
 			return uploadNonMedia(sess, birdClient, msg)
 		}
 	}
+}
+
+// maxFailedOrderReads es cuántas lecturas fallidas SEGUIDAS de la orden aguanta una sesión antes de
+// pasarla a un agente. Cada lectura son una o dos llamadas al LLM, y sin tope un paciente atascado
+// (o un número que manda en bucle archivos sin procedimientos) recibía «Enviar de nuevo» sin fin.
+const maxFailedOrderReads = 3
+
+// ocrUnreadEscalationText es el aviso al paciente cuando la orden no se pudo leer y pasa a un agente.
+const ocrUnreadEscalationText = "No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita."
+
+// failedOrderReads es el contador de lecturas fallidas seguidas de la sesión (CtxOCRFailedReads).
+func failedOrderReads(sess *session.Session) int {
+	n, _ := strconv.Atoi(sess.GetContext(sm.CtxOCRFailedReads))
+	return n
+}
+
+// capFailedOrderReads cuenta la lectura fallida que devolvió processOrderMedia (las salidas que
+// ofrecen «Enviar de nuevo»: error, tiempo agotado, lectura sin éxito o sin procedimientos; todas
+// dejan CtxOCRFailureCause) y, a la maxFailedOrderReads-ésima, escala en vez de ofrecer otro intento.
+// La escalación borra el contador: si el agente pide la foto otra vez, el paciente vuelve a tener sus
+// intentos. Una lectura buena lo borra en processOrderMedia. Solo lo usa el paso de subida: la orden
+// guardada es un intento único que, si falla, pide la foto como siempre.
+func capFailedOrderReads(sess *session.Session, res *sm.StateResult) *sm.StateResult {
+	if res == nil || res.NextState != sess.CurrentState || res.UpdateCtx[sm.CtxOCRFailureCause] == "" {
+		return res
+	}
+	n := failedOrderReads(sess) + 1
+	if n < maxFailedOrderReads {
+		return res.WithContext(sm.CtxOCRFailedReads, strconv.Itoa(n))
+	}
+	cause := res.UpdateCtx[sm.CtxOCRFailureCause]
+	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_failed_reads_cap",
+		observability.EmitOpts{Phone: sess.PhoneNumber, Reason: cause, Attrs: map[string]interface{}{"n": n}})
+	esc := sm.NewResult(sm.StateEscalateToAgent).
+		WithText(ocrUnreadEscalationText).
+		WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRFailedReads).
+		WithContext(sm.CtxOCRFailureCause, cause).
+		WithClearCtx(sm.CtxOCRFailedReads).
+		WithEvent("ocr_failed_reads_cap", map[string]interface{}{"reads": n, "cause": cause})
+	// Los eventos de la lectura fallida (ocr_error, ocr_failed…) se conservan.
+	esc.Events = append(res.Events, esc.Events...)
+	return esc
 }
 
 // minBudgetForExtraPage es lo que debe quedarle al mensaje para intentar OTRA hoja del stash. El
@@ -524,9 +570,9 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_no_cups_code",
 			observability.EmitOpts{Phone: sess.PhoneNumber})
 		res := sm.NewResult(sm.StateEscalateToAgent).
-			WithText("No pudimos leer el código (CUPS) de tu orden. Te comunico con un agente para ayudarte a agendar tu cita.").
+			WithText(ocrUnreadEscalationText).
 			WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
-			WithClearCtx(sm.CtxOCRFailureCause).
+			WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRFailedReads).
 			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 		if unread != "" {
 			// El nombre es lo único que el agente tiene de lo que no tenía código.
@@ -543,7 +589,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 
 	r := sm.NewResult(sm.StateValidateOCR).
 		WithContext("ocr_cups_json", string(cupsJSON)).
-		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames).
+		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames, sm.CtxOCRFailedReads).
 		WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
 		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})

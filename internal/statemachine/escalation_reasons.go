@@ -72,6 +72,9 @@ const (
 	// EscalationReasonQuantityOutOfRange: la orden trae un CUPS con una cantidad por encima del
 	// tope que el bot agenda solo; la nota para el agente dice cuál y cuánta.
 	EscalationReasonQuantityOutOfRange = "cantidad_fuera_de_rango"
+	// EscalationReasonOCRFailedReads: se agotaron las lecturas fallidas seguidas de la orden en la
+	// sesión (error, tiempo agotado o lectura sin procedimientos).
+	EscalationReasonOCRFailedReads = "ocr_lecturas_fallidas"
 )
 
 // EscalationReasons lista TODOS los motivos de cable: las notificaciones y los del flujo.
@@ -85,7 +88,7 @@ func EscalationReasons() []string {
 		EscalationReasonNoEntities, EscalationReasonEntityUnresolved, EscalationReasonParticularLiga,
 		EscalationReasonMedicationError, EscalationReasonEmgConsolidationFailed,
 		EscalationReasonEmgAskedForAgent, EscalationReasonBotDisabled, EscalationReasonAgentInputRejected,
-		EscalationReasonRescheduleNoSlots, EscalationReasonQuantityOutOfRange,
+		EscalationReasonRescheduleNoSlots, EscalationReasonQuantityOutOfRange, EscalationReasonOCRFailedReads,
 	}
 }
 
