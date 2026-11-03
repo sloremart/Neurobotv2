@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
@@ -137,4 +138,95 @@ func (r *NotificationRepo) queryRows(ctx context.Context, query string) ([]notif
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// MarkSiesaPending deja la respuesta del paciente pendiente de SIESA (migración 047) en la última
+// fila del historial de ese teléfono y cita, que Resolve acaba de escribir, con la conversación si
+// llega (la del webhook puede no estar en la fila). Si no hay fila (Resolve falló) inserta una con
+// status, para que la respuesta no se pierda.
+func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notifications.SiesaPendingRow, status string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var id int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM notification_history WHERE phone = ? AND appointment_id = ?
+		 ORDER BY id DESC LIMIT 1 FOR UPDATE`, row.Phone, row.AppointmentID).Scan(&id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO notification_history
+			   (phone, type, appointment_id, bird_message_id, conversation_id, contact_phone, status, created_at,
+			    siesa_pending, siesa_pending_since, siesa_last_error_at)
+			 VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, NOW(), ?, NOW(), NOW())`,
+			row.Phone, row.Type, row.AppointmentID, row.BirdMessageID, row.ConversationID, row.ContactPhone,
+			status, row.Action)
+	case err == nil:
+		_, err = tx.ExecContext(ctx,
+			`UPDATE notification_history
+			 SET siesa_pending = ?, siesa_pending_since = NOW(), siesa_attempts = 0,
+			     siesa_last_error_at = NOW(), siesa_outcome = NULL,
+			     conversation_id = COALESCE(NULLIF(?, ''), conversation_id)
+			 WHERE id = ?`, row.Action, row.ConversationID, id)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// FindSiesaPending devuelve hasta limit respuestas pendientes de SIESA, la más vieja primero. El
+// tiempo pendiente se mide en la BD (misma zona que siesa_pending_since).
+func (r *NotificationRepo) FindSiesaPending(ctx context.Context, limit int) ([]notifications.SiesaPendingRow, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, phone, type, COALESCE(appointment_id, ''), COALESCE(bird_message_id, ''),
+		        COALESCE(conversation_id, ''), COALESCE(contact_phone, ''), siesa_pending, siesa_attempts,
+		        TIMESTAMPDIFF(SECOND, siesa_pending_since, NOW())
+		 FROM notification_history
+		 WHERE siesa_pending IS NOT NULL
+		 ORDER BY id ASC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []notifications.SiesaPendingRow
+	for rows.Next() {
+		var row notifications.SiesaPendingRow
+		var pendingSec int64
+		if err := rows.Scan(
+			&row.ID, &row.Phone, &row.Type, &row.AppointmentID, &row.BirdMessageID,
+			&row.ConversationID, &row.ContactPhone, &row.Action, &row.Attempts, &pendingSec,
+		); err != nil {
+			return nil, err
+		}
+		row.PendingFor = time.Duration(pendingSec) * time.Second
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+// RecordSiesaAttempt suma un intento fallido a una respuesta que sigue pendiente de SIESA.
+func (r *NotificationRepo) RecordSiesaAttempt(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE notification_history
+		 SET siesa_attempts = siesa_attempts + 1, siesa_last_error_at = NOW()
+		 WHERE id = ? AND siesa_pending IS NOT NULL`, id)
+	return err
+}
+
+// FinishSiesaPending saca la respuesta de pendientes con su desenlace. Devuelve false si ya no
+// estaba pendiente (nada que hacer).
+func (r *NotificationRepo) FinishSiesaPending(ctx context.Context, id int64, outcome string) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE notification_history SET siesa_pending = NULL, siesa_outcome = ?
+		 WHERE id = ? AND siesa_pending IS NOT NULL`, outcome, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
