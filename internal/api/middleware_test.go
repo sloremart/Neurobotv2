@@ -2,14 +2,16 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -220,13 +222,20 @@ func rateLimitHits(t *testing.T, limit int, proxies *TrustedProxies, remoteAddr 
 	return got429
 }
 
+var proxyAddr = netip.MustParseAddr("172.18.0.4")
+
+// failingLookup simula un nombre que no resuelve.
+func failingLookup(context.Context, string) ([]netip.Addr, error) {
+	return nil, errors.New("no such host")
+}
+
 // ngrokProxies simula el DNS de Docker: el servicio ngrok resuelve a 172.18.0.4.
 func ngrokProxies() *TrustedProxies {
-	return newTrustedProxies([]string{"ngrok"}, func(host string) ([]net.IP, error) {
+	return newTrustedProxies([]string{"ngrok"}, func(_ context.Context, host string) ([]netip.Addr, error) {
 		if host != "ngrok" {
 			return nil, errors.New("no such host")
 		}
-		return []net.IP{net.ParseIP("172.18.0.4")}, nil
+		return []netip.Addr{proxyAddr}, nil
 	}, time.Minute)
 }
 
@@ -264,9 +273,7 @@ func TestRateLimiter_ProxiedClientsHaveSeparateBuckets(t *testing.T) {
 // conexión directa, otro contenedor de la misma red, un proxy que no resuelve, una lista vacía (ni
 // loopback cuenta) o una última entrada que no es IP se identifican por RemoteAddr.
 func TestRateLimiter_UntrustedSourcesUseRemoteAddr(t *testing.T) {
-	failing := newTrustedProxies([]string{"ngrok"}, func(string) ([]net.IP, error) {
-		return nil, errors.New("no such host")
-	}, time.Minute)
+	failing := newTrustedProxies([]string{"ngrok"}, failingLookup, time.Minute)
 	cases := []struct {
 		name       string
 		proxies    *TrustedProxies
@@ -320,9 +327,9 @@ func TestClientIP_ProxyEntry(t *testing.T) {
 // un fallo se avisa una sola vez mientras dure.
 func TestTrustedProxies_CachesResolution(t *testing.T) {
 	lookups := 0
-	proxies := newTrustedProxies([]string{"ngrok"}, func(string) ([]net.IP, error) {
+	proxies := newTrustedProxies([]string{"ngrok"}, func(context.Context, string) ([]netip.Addr, error) {
 		lookups++
-		return []net.IP{net.ParseIP("172.18.0.4")}, nil
+		return []netip.Addr{proxyAddr}, nil
 	}, time.Minute)
 	rateLimitHits(t, 100, proxies, "172.18.0.4:51234", xffSeries(10, "198.51.100.%d"))
 	if lookups != 1 {
@@ -333,11 +340,83 @@ func TestTrustedProxies_CachesResolution(t *testing.T) {
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	failing := newTrustedProxies([]string{"ngrok"}, func(string) ([]net.IP, error) {
-		return nil, errors.New("no such host")
-	}, 0)
+	failing := newTrustedProxies([]string{"ngrok"}, failingLookup, 0)
 	rateLimitHits(t, 100, failing, "172.18.0.4:51234", xffSeries(5, "198.51.100.%d"))
 	if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
 		t.Errorf("5 resoluciones fallidas seguidas: esperaba 1 WARN, got %d\n%s", n, logs.String())
+	}
+}
+
+// TestTrustedProxies_TransientFailureKeepsAddresses: si el nombre deja de resolver un momento, el proxy
+// se sigue reconociendo por las IPs anteriores (el túnel no pasa a un solo bucket) y se reintenta pronto,
+// no al cabo de un TTL entero.
+func TestTrustedProxies_TransientFailureKeepsAddresses(t *testing.T) {
+	fail := false
+	proxies := newTrustedProxies([]string{"ngrok"}, func(context.Context, string) ([]netip.Addr, error) {
+		if fail {
+			return nil, errors.New("temporary failure in name resolution")
+		}
+		return []netip.Addr{proxyAddr}, nil
+	}, 0)
+	if !proxies.trusts(proxyAddr) {
+		t.Fatal("con el nombre resuelto, el proxy debe reconocerse")
+	}
+	fail = true
+	proxies.ttl = time.Hour
+	if !proxies.trusts(proxyAddr) {
+		t.Error("tras un fallo transitorio, el proxy debe seguir reconociéndose por sus IPs anteriores")
+	}
+	if wait := time.Until(proxies.expiresAt); wait > 2*trustedProxyRetry {
+		t.Errorf("tras un fallo se reintenta en %s, want ~%s", wait, trustedProxyRetry)
+	}
+}
+
+// TestTrustedProxies_SlowLookupDoesNotBlock: mientras una petición resuelve el nombre, las demás no
+// esperan: usan la caché vencida si la hay, o RemoteAddr si nunca hubo.
+func TestTrustedProxies_SlowLookupDoesNotBlock(t *testing.T) {
+	newBlocking := func(primed bool) (*TrustedProxies, chan struct{}, chan struct{}) {
+		started, release := make(chan struct{}), make(chan struct{})
+		calls := 0
+		var once sync.Once
+		proxies := newTrustedProxies([]string{"ngrok"}, func(context.Context, string) ([]netip.Addr, error) {
+			calls++
+			if !primed || calls > 1 {
+				once.Do(func() { close(started) })
+				<-release
+			}
+			return []netip.Addr{proxyAddr}, nil
+		}, 0)
+		if primed {
+			proxies.trusts(proxyAddr) // primera resolución, rápida; con TTL 0 queda vencida
+		}
+		return proxies, started, release
+	}
+	for _, tc := range []struct {
+		name   string
+		primed bool
+		want   bool
+	}{
+		{"con caché vencida", true, true},
+		{"sin caché", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proxies, started, release := newBlocking(tc.primed)
+			done := make(chan struct{})
+			go func() { proxies.trusts(proxyAddr); close(done) }()
+			<-started
+
+			got := make(chan bool, 1)
+			go func() { got <- proxies.trusts(proxyAddr) }()
+			select {
+			case v := <-got:
+				if v != tc.want {
+					t.Errorf("con una resolución en vuelo: trusts = %v, want %v", v, tc.want)
+				}
+			case <-time.After(time.Second):
+				t.Error("una petición esperó a la resolución en vuelo de otra")
+			}
+			close(release)
+			<-done
+		})
 	}
 }

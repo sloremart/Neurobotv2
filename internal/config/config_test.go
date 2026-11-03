@@ -4,24 +4,24 @@ import (
 	"testing"
 )
 
-// --- parsePhoneList ---
+// --- parseCSVList ---
 
 func TestParsePhoneList_Empty(t *testing.T) {
-	result := parsePhoneList("")
+	result := parseCSVList("")
 	if result != nil {
 		t.Errorf("expected nil for empty string, got %v", result)
 	}
 }
 
 func TestParsePhoneList_Single(t *testing.T) {
-	result := parsePhoneList("+573001234567")
+	result := parseCSVList("+573001234567")
 	if len(result) != 1 || result[0] != "+573001234567" {
 		t.Errorf("expected [+573001234567], got %v", result)
 	}
 }
 
 func TestParsePhoneList_MultipleWithSpaces(t *testing.T) {
-	result := parsePhoneList("+573001234567, +573009876543 , +573005555555")
+	result := parseCSVList("+573001234567, +573009876543 , +573005555555")
 	if len(result) != 3 {
 		t.Fatalf("expected 3 phones, got %d: %v", len(result), result)
 	}

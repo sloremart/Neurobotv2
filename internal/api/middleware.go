@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"log/slog"
 	"net"
@@ -118,36 +119,51 @@ func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies)
 	}
 }
 
-// trustedProxyTTL es cada cuánto se vuelve a resolver el nombre del proxy: su IP cambia cuando
-// Docker recrea el contenedor.
-const trustedProxyTTL = time.Minute
+// Resolución del nombre del proxy: se renueva cada trustedProxyTTL (su IP cambia cuando Docker recrea
+// el contenedor); tras un fallo se reintenta a los trustedProxyRetry; cada consulta DNS tiene
+// trustedProxyLookupTimeout.
+const (
+	trustedProxyTTL           = time.Minute
+	trustedProxyRetry         = 5 * time.Second
+	trustedProxyLookupTimeout = time.Second
+)
 
 // TrustedProxies reconoce al proxy de confianza por su IDENTIDAD (el nombre del servicio en la red de
 // Docker), no por subred: la red bridge puede caer en cualquier rango y en ella viven otros
 // contenedores. Un nil o una lista vacía no confía en nadie, ni en loopback.
 type TrustedProxies struct {
 	hosts  []string
-	lookup func(host string) ([]net.IP, error)
+	lookup func(ctx context.Context, host string) ([]netip.Addr, error)
 	ttl    time.Duration
+	retry  time.Duration
 
-	mu        sync.Mutex
-	addrs     map[netip.Addr]struct{}
-	expiresAt time.Time
-	failing   map[string]bool // hosts que fallaron en la última resolución (para avisar una sola vez)
+	mu         sync.Mutex
+	addrs      map[string][]netip.Addr // última resolución buena de cada nombre; nil = nunca se resolvió
+	expiresAt  time.Time
+	refreshing bool            // hay una resolución en vuelo
+	failing    map[string]bool // nombres que fallaron en la última resolución (para avisar una sola vez)
 }
 
-// NewTrustedProxies crea el reconocedor para los nombres de hosts (TRUSTED_PROXY_HOSTS).
+// NewTrustedProxies crea el reconocedor para los nombres de hosts (TRUSTED_PROXY_HOSTS). Sin nombres
+// avisa: el límite de la API interna contará a todo el túnel como un solo cliente.
 func NewTrustedProxies(hosts []string) *TrustedProxies {
-	return newTrustedProxies(hosts, net.LookupIP, trustedProxyTTL)
+	if len(hosts) == 0 {
+		slog.Warn("TRUSTED_PROXY_HOSTS is empty: X-Forwarded-For is ignored, internal API rate limit keyed by RemoteAddr")
+	}
+	return newTrustedProxies(hosts, func(ctx context.Context, host string) ([]netip.Addr, error) {
+		return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	}, trustedProxyTTL)
 }
 
-func newTrustedProxies(hosts []string, lookup func(string) ([]net.IP, error), ttl time.Duration) *TrustedProxies {
-	return &TrustedProxies{hosts: hosts, lookup: lookup, ttl: ttl, failing: map[string]bool{}}
+func newTrustedProxies(hosts []string, lookup func(context.Context, string) ([]netip.Addr, error), ttl time.Duration) *TrustedProxies {
+	return &TrustedProxies{hosts: hosts, lookup: lookup, ttl: ttl, retry: trustedProxyRetry, failing: map[string]bool{}}
 }
 
-// trusts dice si addr es el proxy: loopback o una IP que resuelve alguno de sus nombres. Un nombre que
-// no resuelve no aporta IPs (se avisa al empezar a fallar), así que su conexión se identifica por
-// RemoteAddr: modo seguro, no evadible.
+// trusts dice si addr es el proxy: loopback o una IP que resuelve alguno de sus nombres. Si la caché
+// venció, esta petición la renueva FUERA del lock; las que llegan mientras tanto usan la caché vieja sin
+// esperar (o RemoteAddr si nunca hubo). Un nombre que deja de resolver conserva sus IPs anteriores y se
+// reintenta pronto; si nunca resolvió no aporta IPs y su conexión se identifica por RemoteAddr: modo
+// seguro, no evadible.
 func (t *TrustedProxies) trusts(addr netip.Addr) bool {
 	if t == nil || len(t.hosts) == 0 {
 		return false
@@ -156,29 +172,63 @@ func (t *TrustedProxies) trusts(addr netip.Addr) bool {
 		return true
 	}
 	t.mu.Lock()
+	if !t.refreshing && (t.addrs == nil || !time.Now().Before(t.expiresAt)) {
+		t.refreshing = true
+		t.mu.Unlock()
+		t.refresh()
+		t.mu.Lock()
+	}
 	defer t.mu.Unlock()
-	if now := time.Now(); t.addrs == nil || !now.Before(t.expiresAt) {
-		t.addrs = map[netip.Addr]struct{}{}
-		for _, host := range t.hosts {
-			ips, err := t.lookup(host)
-			if err != nil {
-				if !t.failing[host] {
-					slog.Warn("trusted proxy not resolvable, rate limiting by RemoteAddr", "host", host, "error", err)
-				}
-				t.failing[host] = true
-				continue
-			}
-			delete(t.failing, host)
-			for _, ip := range ips {
-				if a, ok := netip.AddrFromSlice(ip); ok {
-					t.addrs[a.Unmap()] = struct{}{}
-				}
+	for _, ips := range t.addrs {
+		for _, ip := range ips {
+			if ip == addr {
+				return true
 			}
 		}
-		t.expiresAt = now.Add(t.ttl)
 	}
-	_, ok := t.addrs[addr]
-	return ok
+	return false
+}
+
+// refresh resuelve todos los nombres sin el lock y publica el resultado.
+func (t *TrustedProxies) refresh() {
+	resolved := make(map[string][]netip.Addr, len(t.hosts))
+	errs := make(map[string]error)
+	for _, host := range t.hosts {
+		ctx, cancel := context.WithTimeout(context.Background(), trustedProxyLookupTimeout)
+		ips, err := t.lookup(ctx, host)
+		cancel()
+		if err != nil {
+			errs[host] = err
+			continue
+		}
+		for i := range ips {
+			ips[i] = ips[i].Unmap()
+		}
+		resolved[host] = ips
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.addrs == nil {
+		t.addrs = map[string][]netip.Addr{}
+	}
+	for host, ips := range resolved {
+		t.addrs[host] = ips
+		delete(t.failing, host)
+	}
+	for host, err := range errs {
+		if !t.failing[host] {
+			slog.Warn("trusted proxy not resolvable, keeping previous addresses (if any) and retrying",
+				"host", host, "previous", len(t.addrs[host]), "error", err)
+		}
+		t.failing[host] = true
+	}
+	next := t.ttl
+	if len(errs) > 0 {
+		next = min(t.retry, t.ttl)
+	}
+	t.expiresAt = time.Now().Add(next)
+	t.refreshing = false
 }
 
 // clientIP identifica al cliente para el limitador. Topología asumida (docker-compose.yml): un solo

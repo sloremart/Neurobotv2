@@ -441,7 +441,7 @@ func Load() *Config {
 		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
 
 		// Testing whitelist
-		TestingWhitelistPhones: parsePhoneList(os.Getenv("TESTING_WHITELIST_PHONES")),
+		TestingWhitelistPhones: parseCSVList(os.Getenv("TESTING_WHITELIST_PHONES")),
 
 		// Transición de líneas
 		NewLineAnnouncement: strings.TrimSpace(os.Getenv("NEW_LINE_ANNOUNCEMENT")),
@@ -599,10 +599,11 @@ func trustedProxyHosts() []string {
 	if !ok {
 		return []string{"ngrok"}
 	}
-	return parsePhoneList(raw)
+	return parseCSVList(raw)
 }
 
-func parsePhoneList(s string) []string {
+// parseCSVList parte una lista separada por comas, recortando espacios y descartando entradas vacías.
+func parseCSVList(s string) []string {
 	if s == "" {
 		return nil
 	}
