@@ -68,13 +68,24 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	ctx, cancel := context.WithCancel(context.Background())
+
+	cfg := config.Load()
+
+	// Timezone ANTES de lanzar cualquier goroutine: time.Local es una variable global sin
+	// sincronización y reasignarla con goroutines ya corriendo es una carrera de datos (D-12). La
+	// señal no se pierde mientras tanto: signal.Notify ya la encola en sigCh (buffer 1).
+	loc, err := time.LoadLocation(cfg.Timezone)
+	if err != nil {
+		log.Fatalf("invalid timezone %s: %v", cfg.Timezone, err)
+	}
+	time.Local = loc
+
 	safeGo("signal-handler", func() {
 		sig := <-sigCh
 		slog.Info("signal received", "signal", sig.String())
 		cancel()
 	})
 
-	cfg := config.Load()
 	utils.SetMaskPhones(cfg.LogMaskPhones)
 
 	// Configurar logger
@@ -106,13 +117,6 @@ func main() {
 		slog.SetDefault(slog.New(alertHandler))
 		slog.Info("telegram error alerts enabled")
 	}
-
-	// Configurar timezone
-	loc, err := time.LoadLocation(cfg.Timezone)
-	if err != nil {
-		log.Fatalf("invalid timezone %s: %v", cfg.Timezone, err)
-	}
-	time.Local = loc
 
 	// Conectar BD local
 	localDB, err := database.NewLocalDB(cfg)
