@@ -412,13 +412,22 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   botones y «menú», y lo ignorado no renueva la sesión.
 - «¿Es correcto?» (CONFIRM_OCR_RESULT): si la lista no cabe en el cuerpo de botones (1.024), sale COMPLETA antes en
   texto (trozos ≤4.096) y los botones llevan solo el aviso de omitidos y la pregunta; nunca se recorta con «…».
-- Imagen (`docker/Dockerfile`): `alpine:3.21.9`, `ghostscript~10.05`; el bot corre como `bot` (UID/GID 10001), no
-  root. El servicio `bot-logs-init` del compose (`chown` de `bot-logs` a 10001, en cada `up`; el watcher lo ignora)
-  deja escribible el volumen creado cuando corría como root: sin él no hay logs en archivo ni `/api/internal/logs`.
-  Despliegue: `docker compose up -d --build bot` (arrastra el init).
-  `.dockerignore`: sin `.env*`, backups, `auditoria/` ni docs en el contexto (sí `.git`, que sella el commit).
+- Imagen (`docker/Dockerfile`): `alpine:3.24.3`, `ghostscript~10.08` (gs en `community`: revisar la fijación, la
+  de `bot-logs-init` y `GS_MIN_VERSION` del CI en cada versión de Alpine); el bot corre como `bot` (UID/GID
+  10001), no root. El job `image` del CI falla si la imagen corre como root o gs < `GS_MIN_VERSION`. El servicio
+  `bot-logs-init` del compose (`chown` de `bot-logs` a 10001, en cada `up`; el watcher lo ignora) deja escribible
+  el volumen creado cuando corría como root: sin él no hay logs en archivo ni `/api/internal/logs`.
+  `.dockerignore`: sin `**/.env*`, backups, `auditoria/` ni docs. `.git` está en el contexto pero no en ninguna
+  capa (`COPY --exclude=.git` + bind mount solo para el `git rev-parse`; `# syntax=docker/dockerfile:1.19`, que
+  BuildKit baja de Docker Hub).
+- Despliegue de la imagen sin root (primera vez): 1) `docker compose up -d watcher` ANTES que el bot (toma el nuevo
+  `IGNORE_CONTAINERS`; si no, avisa «DETENIDO: neuro_bot_logs_init»); 2) `docker compose up -d --build bot`
+  (arrastra el init); 3) `docker compose exec bot id -u` = 10001 y `/api/internal/logs` con líneas de hoy. Tras un
+  rollback a la imagen vieja (root), volver adelante con `docker compose up -d bot`, NUNCA `restart`: solo `up`
+  corre el init y la vieja deja el log del día de root.
 - Ghostscript (OCR del PDF): `-dSAFER`, `-dMaxBitmap=10000000`, `-dLastPage=maxOCRPages`, tiempo acotado por
-  `defaultAnalyzeTimeout`; un JPEG convertido >10 MB, o >50 MB en total, rechaza la conversión antes de leerlo.
+  `defaultAnalyzeTimeout`. Si un JPEG convertido pasa 10 MB, o el total 32 MB, se reconvierte a 150 y luego 100 DPI
+  (la foto pasada a PDF a 72-96 DPI); solo si ni así cabe se rechaza. Carta/oficio siguen a 300 DPI.
 - `/health`: SIESA caído = 200 `degraded` (Docker no lo marca unhealthy); BD local caída = 503 `critical`. Monitor
   externo (keyword `"status":"ok"` cada 1 min): `docs/MONITOREO-EXTERNO.md`; el watcher solo ve eventos de Docker.
 - Aviso del mismo día: tras leer SIESA se descartan las citas cuya hora no es posterior a la hora real (la franja
