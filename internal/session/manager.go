@@ -221,8 +221,13 @@ func (m *SessionManager) AttachContact(ctx context.Context, s *Session, contact 
 // RenewTimeout renueva el expires_at con cada mensaje (TTL de liveness de la sesión).
 // Lo usa tanto el flujo del paciente como el del agente, así que NO toca los relojes de
 // actividad del paciente — para eso está TouchPatientActivity.
+//
+// Como TouchPatientActivity, NUNCA acorta el vencimiento: el comando de un agente sobre una
+// escalación encolada para el próximo día hábil (ExtendExpiry) no la devuelve al TTL normal.
 func (m *SessionManager) RenewTimeout(ctx context.Context, s *Session) error {
-	s.ExpiresAt = time.Now().Add(m.timeout)
+	if renewed := time.Now().Add(m.timeout); renewed.After(s.ExpiresAt) {
+		s.ExpiresAt = renewed
+	}
 	return m.repo.RenewExpiry(ctx, s.ID, s.ExpiresAt)
 }
 

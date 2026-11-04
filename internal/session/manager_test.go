@@ -1555,6 +1555,26 @@ func TestExtendExpiry_ExtendsButNeverShortens(t *testing.T) {
 	}
 }
 
+// RenewTimeout (el comando del agente) tampoco acorta un vencimiento extendido: una escalación
+// encolada para el próximo día hábil que el agente toca no vuelve al TTL normal.
+func TestRenewTimeout_NeverShortensExtendedExpiry(t *testing.T) {
+	var persisted time.Time
+	repo := &mockRepo{renewExpiryFn: func(_ context.Context, _ string, expiresAt time.Time) error {
+		persisted = expiresAt
+		return nil
+	}}
+	mgr := NewSessionManager(repo, 120)
+	extended := time.Now().Add(30 * time.Hour)
+	sess := &Session{ID: "s1", ExpiresAt: extended}
+
+	if err := mgr.RenewTimeout(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.Equal(extended) || !sess.ExpiresAt.Equal(extended) {
+		t.Fatalf("no debía acortar: persisted=%s mem=%s want %s", persisted, sess.ExpiresAt, extended)
+	}
+}
+
 // TouchPatientActivity renueva el TTL pero NUNCA acorta un vencimiento extendido (la escalación
 // encolada para el próximo día hábil vive hasta la apertura + 8 h).
 func TestTouchPatientActivity_NeverShortensExtendedExpiry(t *testing.T) {
