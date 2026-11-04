@@ -409,6 +409,17 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   motivo vacío o nuevo sin clasificar suma). Las que dispara el bot (orden dudosa, B-05, B-10, SANITAS, fallos)
   ni suman ni cortan; `bot_disabled` exento. Tras el corte el bot calla salvo sus botones y «menú», y lo ignorado
   no renueva la sesión.
+- Imagen (`docker/Dockerfile`): `alpine:3.21.9`, `ghostscript~10.05`; el bot corre como `bot` (UID/GID 10001), no
+  root. El servicio `bot-logs-init` del compose (`chown` de `bot-logs` a 10001, en cada `up`; el watcher lo ignora)
+  deja escribible el volumen creado cuando corría como root: sin él no hay logs en archivo ni `/api/internal/logs`.
+  Despliegue: `docker compose up -d --build bot` (arrastra el init).
+  `.dockerignore`: sin `.env*`, backups, `auditoria/` ni docs en el contexto (sí `.git`, que sella el commit).
+- Ghostscript (OCR del PDF): `-dSAFER`, `-dMaxBitmap=10000000`, `-dLastPage=maxOCRPages`, tiempo acotado por
+  `defaultAnalyzeTimeout`; un JPEG convertido >10 MB, o >50 MB en total, rechaza la conversión antes de leerlo.
+- `/health`: SIESA caído = 200 `degraded` (Docker no lo marca unhealthy); BD local caída = 503 `critical`. Monitor
+  externo (keyword `"status":"ok"` cada 1 min): `docs/MONITOREO-EXTERNO.md`; el watcher solo ve eventos de Docker.
+- Aviso del mismo día: tras leer SIESA se descartan las citas cuya hora no es posterior a la hora real (la franja
+  sigue saliendo de la hora programada).
 
 ## OCR DE LA ORDEN (mejoras tomadas de hdg-bot, 2026-11-03; plan en `docs/PLAN-MEJORA-OCR-CUPS.md`)
 
