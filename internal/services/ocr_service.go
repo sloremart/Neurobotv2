@@ -662,7 +662,7 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	// barato, más rápido y sin el riesgo de que un dígito se lea mal en la imagen. Salvaguarda: si del
 	// texto no sale ningún CUPS con código (o el análisis falla) se sigue con las imágenes, para que un
 	// escaneo con una capa de texto mala no lea peor que antes.
-	if pages := s.pdfText(ctx, pdfPath); len(strings.Fields(strings.Join(pages, " "))) >= minPDFTextWords {
+	if pages := s.pdfText(ctx, pdfPath); usableTextLayer(pages) {
 		res, err := s.analyzeText(ctx, pages)
 		if err == nil && hasValidCUP(res) {
 			return res, nil
@@ -699,8 +699,8 @@ func writeTempPDF(data []byte) (string, error) {
 
 // analyzePages lee las hojas YA convertidas de un PDF: una sola va como imagen suelta; varias, juntas
 // con el prompt multipágina (AnalyzeImages), que sabe descartar la historia clínica y juntar los
-// procedimientos de todas las hojas de orden. Si esa lectura falla, se intenta solo la primera hoja,
-// donde está la orden en la mayoría de los casos.
+// procedimientos de todas las hojas de orden. Si esa lectura falla o no trae ningún CUPS con código, se
+// intenta solo la primera hoja, donde está la orden en la mayoría de los casos (antes iba primero).
 func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResult, error) {
 	switch len(uris) {
 	case 0:
@@ -710,16 +710,42 @@ func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResul
 	}
 	slog.Info("ocr: documento multipágina, se leen todas las hojas", "pages", len(uris))
 	res, err := s.AnalyzeImages(ctx, uris)
-	if err != nil {
-		slog.Warn("ocr multipágina falló; se reintenta solo con la primera hoja", "error", err)
-		return s.AnalyzeImage(ctx, uris[0])
+	if err == nil && hasValidCUP(res) {
+		return res, nil
 	}
-	return res, nil
+	slog.Warn("ocr multipágina falló o sin código; se reintenta solo con la primera hoja", "error", err)
+	first, ferr := s.AnalyzeImage(ctx, uris[0])
+	if err == nil && !hasValidCUP(first) {
+		// La primera hoja no mejora lo leído (o falló): se queda la lectura conjunta, que sí respondió.
+		return res, nil //nolint:nilerr // ferr se descarta a propósito: la lectura conjunta es válida
+	}
+	return first, ferr
 }
 
 // minPDFTextWords: por debajo de esto el PDF NO tiene una capa de texto útil (un escaneo trae cero o
 // unas pocas palabras sueltas del membrete) y hay que mirarlo como imagen. Una orden real ronda las 100.
 const minPDFTextWords = 40
+
+// minPDFPageWords es el mínimo de CADA hoja. Una hoja escaneada dentro de un PDF de sistema (la orden
+// escaneada detrás de una historia clínica digitada) no trae texto, o solo el membrete o un sello
+// (menos de 10 palabras); la hoja de orden o formulación más corta de un sistema pasa de 60. 20 deja
+// margen a los dos lados. Si una sola hoja no llega, el texto no es el documento completo y todo el PDF
+// va como imágenes: si no, esa hoja —que puede ser la orden— nunca se miraría.
+const minPDFPageWords = 20
+
+// usableTextLayer dice si la capa de texto representa el PDF entero: el total y cada hoja tienen
+// palabras suficientes.
+func usableTextLayer(pages []string) bool {
+	total := 0
+	for _, p := range pages {
+		n := len(strings.Fields(p))
+		if n < minPDFPageWords {
+			return false
+		}
+		total += n
+	}
+	return total >= minPDFTextWords
+}
 
 // pdfTextLayer extrae con Ghostscript (txtwrite, sin dependencias nuevas) el texto EMBEBIDO del PDF,
 // una entrada por hoja (hasta maxOCRPages). txtwrite no separa las hojas en un solo archivo (no emite
@@ -757,6 +783,12 @@ func pdfTextLayer(ctx context.Context, pdfPath string) []string {
 // (AnalyzeImages) y para la capa de texto (analyzeText).
 const multiPageInstruction = "Este documento tiene VARIAS páginas y puede incluir HISTORIA CLÍNICA además de la(s) hoja(s) de FORMULACIÓN/orden. Extrae los CUPS SOLO de las hojas de orden/formulación (las que traen la tabla de procedimientos con su código). IGNORA la historia clínica. Si hay órdenes en varias páginas, inclúyelas todas."
 
+// pdfTextLayerNotice presenta la capa de texto al modelo. No la da por literal: en un escaneo «buscable»
+// la pone el reconocimiento del escáner y puede traer dígitos mal leídos.
+const pdfTextLayerNotice = "TEXTO DEL DOCUMENTO (capa de texto del propio PDF; si el PDF es un escaneo, puede venir del " +
+	"reconocimiento automático del escáner y traer caracteres mal leídos: transcribe los códigos tal como aparecen y " +
+	"omite los que no se lean con certeza):"
+
 // analyzeText corre el OCR de la orden sobre la capa de texto de un PDF (sin visión). Con varias hojas
 // lleva la instrucción multipágina y cada hoja tras su marcador («--- HOJA N ---»), para que el modelo
 // distinga la historia clínica de la hoja de orden; con una sola, el mensaje de siempre.
@@ -773,8 +805,7 @@ func (s *OCRService) analyzeText(ctx context.Context, pages []string) (*OCRResul
 	}
 	messages := []map[string]interface{}{
 		{"role": "system", "content": s.buildSystemPrompt()},
-		{"role": "user", "content": header + "\n\n" +
-			"TEXTO DEL DOCUMENTO (extraído del propio PDF, es literal y fiable):\n" + body},
+		{"role": "user", "content": header + "\n\n" + pdfTextLayerNotice + "\n" + body},
 	}
 	return s.callOpenAI(ctx, messages)
 }

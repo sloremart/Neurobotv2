@@ -421,10 +421,44 @@ func TestAnalyzeDocument_PDFTextLayerSinglePageUnchanged(t *testing.T) {
 	if _, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t)); err != nil {
 		t.Fatal(err)
 	}
-	want := "Analiza esta orden médica y extrae los datos según las reglas indicadas.\n\n" +
-		"TEXTO DEL DOCUMENTO (extraído del propio PDF, es literal y fiable):\n" + orderText
-	if got := userText(rec.bodies[0]); got != want {
-		t.Errorf("una hoja: el mensaje de siempre.\ngot:  %q\nwant: %q", got, want)
+	got := userText(rec.bodies[0])
+	if !strings.HasPrefix(got, "Analiza esta orden médica y extrae los datos según las reglas indicadas.") ||
+		!strings.HasSuffix(got, orderText) {
+		t.Errorf("una hoja: la instrucción de una orden y su texto: %q", got)
+	}
+	if strings.Contains(got, multiPageInstruction) || strings.Contains(got, "--- HOJA") {
+		t.Errorf("una hoja: sin instrucción multipágina ni marcadores: %q", got)
+	}
+}
+
+// H2 (ronda 2): la capa de texto puede venir del OCR de un escáner. El prompt no la da por literal y
+// fiable sin matices.
+func TestAnalyzeText_DoesNotClaimTheTextLayerIsReliable(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, cupsPage1)
+	withTextLayer(svc, orderText)
+	if _, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t)); err != nil {
+		t.Fatal(err)
+	}
+	got := userText(rec.bodies[0])
+	if strings.Contains(got, "literal y fiable") || !strings.Contains(got, "escáner") {
+		t.Errorf("el prompt debe advertir que el texto puede venir del escáner: %q", got)
+	}
+}
+
+// H2 (ronda 2): la capa de texto se usa solo si CADA hoja trae texto suficiente. Una historia clínica
+// digitada con la hoja de orden escaneada (sin texto) va entera como imágenes: si no, el modelo solo
+// vería la historia y la hoja de orden nunca se miraría.
+func TestAnalyzeDocument_PDFWithAPageWithoutTextGoesToImages(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t)
+	rec.respond = byImageCount
+	history := strings.Repeat("HISTORIA CLINICA EVOLUCION PLAN SE SOLICITA RNM CEREBRAL 883101 ", 8)
+	rasterized := withTextLayer(svc, history, "CLINICA NEURO")
+
+	if _, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t)); err != nil {
+		t.Fatal(err)
+	}
+	if *rasterized != 1 || len(rec.bodies) != 1 || len(imageParts(rec.bodies[0])) != 2 {
+		t.Fatalf("todo el PDF a imágenes: %d conversiones, %d llamadas", *rasterized, len(rec.bodies))
 	}
 }
 
@@ -440,5 +474,26 @@ func TestPdfPageNum_ImagesAndTextPages(t *testing.T) {
 		if got := pdfPageNum(path); got != want {
 			t.Errorf("pdfPageNum(%s) = %d, quería %d", path, got, want)
 		}
+	}
+}
+
+// H3 (revisión, nota 8): si la lectura conjunta responde pero sin ningún CUPS con código, también se
+// prueba la primera hoja sola (antes iba primero), y gana la que trae código.
+func TestAnalyzeDocument_PDFMultiPageWithoutCodeTriesFirstPage(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t)
+	rec.respond = func(body map[string]interface{}) string {
+		if len(imageParts(body)) > 1 {
+			return `{"cups": [{"cups_code": "", "cups_name": "CONSULTA NEUROLOGIA", "quantity": 1}]}`
+		}
+		return cupsPage1
+	}
+	fakePages(svc, 2)
+
+	res, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.bodies) != 2 || len(res.Cups) != 1 || res.Cups[0].Code != "890274" {
+		t.Fatalf("se prueba la primera hoja y gana la que trae código: %d llamadas, %+v", len(rec.bodies), res.Cups)
 	}
 }
