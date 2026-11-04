@@ -427,12 +427,19 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   el resumen del agente, `agendar/cups_corregido`) se borran al leer una orden nueva.
 - Sin código en la orden (decisión del dueño, 2026-11-03): el prompt de visión YA NO lleva el catálogo ni elige
   códigos; devuelve `cups_code` vacío con el nombre tal cual (y `is_interconsulta`). VALIDATE_OCR, al inicio,
-  asigna por nombre (`handlers/cups_name_assign.go` + `services/cups_name.go`): nombre canónico (sin tildes,
-  abreviaturas RM/TAC/ECO/RX/EMG/NC/PET… expandidas) IGUAL a un único procedimiento → se asigna; si no, el modelo
-  de `OPENAI_DOC_MODEL` (solo texto, `ChooseCupsByName`) confirma entre ≤5 candidatos, y vale solo con confianza
-  alta y si es el ÚNICO candidato que encaja (sin contradecir contraste, primera vez/control, pediatría, lado,
-  superior/inferior, vía, marcador PET, modalidad, doppler, región ni números). Interconsulta → solo consultas de
-  primera vez (asuntos 1, 8, 10). Lo demás → agente (`ocr_sin_codigo`, nota con nombre y candidatos). Lo asignado:
+  asigna por nombre (`handlers/cups_name_assign.go` + `services/cups_name.go`, sobre el nombre canónico: sin
+  tildes, abreviaturas RM/TAC/ECO/RX/EMG/NC/PET y sinónimos CRÁNEO=CEREBRO, LUMBOSACRA=LUMBAR, TORÁCICA=DORSAL,
+  MIEMBRO=EXTREMIDAD… expandidos). Nombre IGUAL a un único procedimiento → se asigna; si no, el modelo de
+  `OPENAI_DOC_MODEL` (solo texto, `ChooseCupsByName`) solo puede confirmar, con confianza alta, al ÚNICO candidato
+  que ENCAJA: las mismas palabras de contenido en los dos sentidos (salvo `orderNoise`, `catalogNoise` y lo que
+  el catálogo pone entre paréntesis) y lo mismo en cada grupo de calificadores (contraste, primera vez/control,
+  pediátrica/adultos, lado, superior/inferior, vía, marcador PET, modalidad, doppler, columna, región,
+  números). Interconsulta → solo consultas de primera vez (asuntos 1, 8, 10). Con candidatos pero sin asignación
+  segura → agente (`ocr_sin_codigo`, nota con nombre y candidatos); SIN candidatos → se descarta como antes
+  (cuenta como omitido) y queda en `CtxOCRUnreadNames`; si la orden se queda sin CUPS, escala como la orden sin
+  código. `/bot orden` con un procedimiento sin código se le rechaza al agente pidiendo el código. Lo asignado:
   `ocr_cups_name_assignments` («CUPS asignados por nombre»), `agendar/cups_asignado_nombre`, y el paciente ve
-  «<catálogo> (en tu orden: «<leído>»)». Guarda: un CUPS CON código cuyo nombre leído contradice EXPLÍCITAMENTE el
-  del catálogo → agente (`cups_posible_mala_lectura`).
+  «<catálogo> (en tu orden: «<leído, ≤60>»)» (cuerpo ≤1.024). Guarda: un CUPS CON código cuyo nombre leído
+  contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera vez/control,
+  pediátrica/adultos, lado, superior/inferior, vía, marcador PET; NO región ni modalidad) → agente
+  (`cups_posible_mala_lectura`).
