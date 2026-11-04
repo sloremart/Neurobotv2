@@ -98,6 +98,43 @@ func TestHealth_CancelledRequestDoesNotPoisonCache(t *testing.T) {
 	}
 }
 
+// downConnector simula una BD caída: la conexión abre pero el Ping falla.
+type downConnector struct{}
+
+func (downConnector) Connect(context.Context) (driver.Conn, error) { return downConn{}, nil }
+func (downConnector) Driver() driver.Driver                        { return nil }
+
+type downConn struct{ pingConn }
+
+func (downConn) Ping(context.Context) error { return errors.New("connection refused") }
+
+// TestHealth_SiesaDownIsDegradedNot503: con SIESA caído /health responde 200 «degraded» y
+// external_db «error». El healthcheck de Docker (wget falla con un 503) no marca al bot unhealthy por
+// SIESA, y el monitor externo distingue el estado por el cuerpo (docs/MONITOREO-EXTERNO.md). Solo la
+// BD local da 503 «critical».
+func TestHealth_SiesaDownIsDegradedNot503(t *testing.T) {
+	localDB := sql.OpenDB(pingConnector{})
+	externalDB := sql.OpenDB(downConnector{})
+	t.Cleanup(func() { _ = localDB.Close(); _ = externalDB.Close() })
+
+	rec := httptest.NewRecorder()
+	healthHandler(localDB, externalDB, "").ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("SIESA caído: esperaba 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != `{"external_db":"error","local_db":"ok","nectar_host":"none","status":"degraded"}`+"\n" {
+		t.Errorf("cuerpo inesperado: %s", body)
+	}
+
+	localDown := sql.OpenDB(downConnector{})
+	t.Cleanup(func() { _ = localDown.Close() })
+	rec = httptest.NewRecorder()
+	healthHandler(localDown, externalDB, "").ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"status":"critical"`) {
+		t.Fatalf("BD local caída: esperaba 503 critical, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 // Puente puesto sin canal de apertura: arranca (el resto de Néctar funciona), pero lo dice en ERROR —
 // ninguna plantilla proactiva (recordatorios, lista de espera, avisos) va a salir.
 func TestNectarWiring_NoChannelLogsError(t *testing.T) {
