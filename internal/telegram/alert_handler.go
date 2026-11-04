@@ -22,6 +22,12 @@ const (
 	channelSize = 100
 )
 
+// dedupEntry es el último envío de una alerta y cuántas repeticiones se suprimieron desde entonces.
+type dedupEntry struct {
+	sent       time.Time
+	suppressed int
+}
+
 // AlertHandler wraps another slog.Handler and dispatches ERROR-level logs
 // to Telegram asynchronously via a buffered channel.
 type AlertHandler struct {
@@ -32,7 +38,7 @@ type AlertHandler struct {
 	// mu y dedup se comparten con los handlers derivados (WithAttrs/WithGroup): el cerrojo es un
 	// puntero para que todos protejan el mismo mapa.
 	mu    *sync.Mutex
-	dedup map[string]time.Time
+	dedup map[string]dedupEntry
 
 	// attrs and group collected via WithAttrs/WithGroup
 	attrs []slog.Attr
@@ -47,7 +53,7 @@ func NewAlertHandler(inner slog.Handler, client *Client) *AlertHandler {
 		client: client,
 		ch:     make(chan string, channelSize),
 		mu:     &sync.Mutex{},
-		dedup:  make(map[string]time.Time),
+		dedup:  make(map[string]dedupEntry),
 	}
 }
 
@@ -103,16 +109,22 @@ func (h *AlertHandler) Handle(ctx context.Context, r slog.Record) error {
 	// no vuelva a salir. Otro mensaje u otros detalles dan otro hash y sí salen.
 	hash := h.hashMessage(body)
 	h.mu.Lock()
-	if lastSent, ok := h.dedup[hash]; ok && time.Since(lastSent) < dedupWindow {
-		h.mu.Unlock()
+	defer h.mu.Unlock()
+	entry := h.dedup[hash]
+	if !entry.sent.IsZero() && time.Since(entry.sent) < dedupWindow {
+		entry.suppressed++
+		h.dedup[hash] = entry
 		return err
 	}
-	h.dedup[hash] = time.Now()
-	h.mu.Unlock()
+	if entry.suppressed > 0 {
+		body += fmt.Sprintf("\n<i>(se repitió %d veces más desde el aviso anterior)</i>", entry.suppressed)
+	}
 
-	// Non-blocking send to channel
+	// Non-blocking send to channel. La marca de dedup solo se escribe si la alerta se encola: una
+	// descartada por el canal lleno no silencia las siguientes (H7).
 	select {
 	case h.ch <- withTimestamp(body, r.Time):
+		h.dedup[hash] = dedupEntry{sent: time.Now()}
 	default:
 		// Channel full, drop alert (don't block the application).
 		// Use log.Println instead of slog to avoid infinite recursion (this IS the slog handler).
@@ -358,8 +370,8 @@ func (h *AlertHandler) cleanupDedup() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()
-	for k, t := range h.dedup {
-		if now.Sub(t) > dedupWindow {
+	for k, e := range h.dedup {
+		if now.Sub(e.sent) > dedupWindow {
 			delete(h.dedup, k)
 		}
 	}

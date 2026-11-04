@@ -305,3 +305,44 @@ func TestAlertHandler_SiblingWithAttrsDoNotAlias(t *testing.T) {
 		t.Errorf("el handler hermano pisó los attrs: %q", out)
 	}
 }
+
+// H7: una alerta descartada por el canal lleno no queda marcada como enviada (saldrá en cuanto
+// haya sitio), y la siguiente que sale dice cuántas repeticiones se suprimieron.
+func TestAlertHandler_DedupMarksOnlySentAndCountsRepeats(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	h := NewAlertHandler(inner, &Client{})
+	for i := 0; i < channelSize; i++ {
+		h.ch <- "filler"
+	}
+	record := func() slog.Record { return slog.NewRecord(time.Now(), slog.LevelError, "siesa timeout", 0) }
+
+	_ = h.Handle(context.Background(), record()) // canal lleno: se descarta
+	for len(h.ch) > 0 {
+		<-h.ch
+	}
+	_ = h.Handle(context.Background(), record())
+	if len(h.ch) != 1 {
+		t.Fatalf("la alerta descartada no debía quedar silenciada, en cola %d", len(h.ch))
+	}
+	<-h.ch
+
+	_ = h.Handle(context.Background(), record())
+	_ = h.Handle(context.Background(), record())
+	if len(h.ch) != 0 {
+		t.Fatalf("las repeticiones dentro de la ventana se suprimen, en cola %d", len(h.ch))
+	}
+	// Vence la ventana: la siguiente sale con el conteo de las suprimidas.
+	h.mu.Lock()
+	for k, e := range h.dedup {
+		e.sent = e.sent.Add(-2 * dedupWindow)
+		h.dedup[k] = e
+	}
+	h.mu.Unlock()
+	_ = h.Handle(context.Background(), record())
+	if len(h.ch) != 1 {
+		t.Fatalf("vencida la ventana la alerta vuelve a salir, en cola %d", len(h.ch))
+	}
+	if msg := <-h.ch; !strings.Contains(msg, "2 veces") {
+		t.Errorf("la alerta dice cuántas repeticiones se suprimieron: %q", msg)
+	}
+}
