@@ -1434,3 +1434,23 @@ func TestDispatchNectarNotice_InFlightIsNotRedispatched(t *testing.T) {
 		t.Fatalf("respuesta = %v", got)
 	}
 }
+
+// Con el pool real: un mensaje con el claim de dedup vivo (msg.ID = event_id) no se vuelve a enrutar.
+func TestDispatchNectarNotice_RealPoolSkipsInFlight(t *testing.T) {
+	cfg := &config.Config{NectarNoticeSecret: nectarTestSecret}
+	pool := worker.NewMessageWorkerPool(1, 10)
+	h := NewWebhookHandler(bird.NewClient(cfg), pool, nil, cfg)
+	h.SetNectarBridgeOn(true)
+	notify := newFakeNectarNotifier("nectar:77")
+	h.SetNectarNotifier(notify)
+	if !pool.Enqueue(bird.InboundMessage{ID: "e-real", Phone: "nectar:77"}) {
+		t.Fatal("debe encolar")
+	}
+
+	if err := h.DispatchNectarNotice(context.Background(), buttonBody("e-real", "Confirmar")); !errors.Is(err, ErrNoticeInFlight) {
+		t.Fatalf("err = %v, quiero ErrNoticeInFlight", err)
+	}
+	if len(notify.responses) != 0 {
+		t.Fatalf("no se enruta: %d respuestas", len(notify.responses))
+	}
+}

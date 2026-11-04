@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 )
 
@@ -299,5 +300,44 @@ func TestProcessAgentCommand_NoticeComparesBogotaAgainstUTC(t *testing.T) {
 		if (sm.completeCalls == 1) != c.wantApply {
 			t.Fatalf("occurred_at %s: aplicado=%d, quiero %v", c.occurredAt, sm.completeCalls, c.wantApply)
 		}
+	}
+}
+
+// Si el comando no se pudo reencolar (buffer lleno), no queda en memoria: el replay de atascados tiene
+// que verlo, no saltárselo como «en vuelo».
+func TestProcessAgentCommand_LockMissNotRequeuedIsNotInFlight(t *testing.T) {
+	pool, sm, inbox, _ := nectarEscalatedPool(t)
+	pool.lockTimeout = 20 * time.Millisecond
+	if err := sm.mutex.Lock(context.Background(), nectarTestKey); err != nil {
+		t.Fatal(err)
+	}
+	defer sm.mutex.Unlock(nectarTestKey)
+	for i := 0; i < agentCmdQueueSize; i++ {
+		if !pool.EnqueueAgentCommand(AgentCommand{Action: "close", Phone: nectarTestKey}) {
+			t.Fatalf("el comando %d cabe en el buffer", i)
+		}
+	}
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "close", Phone: nectarTestKey, EventID: "e-full"})
+
+	if pool.IsInFlight("e-full") {
+		t.Fatal("sin reencolar no está en vuelo: el replay debe retomarlo")
+	}
+	if inbox.doneCount() != 0 {
+		t.Fatalf("la fila queda pendiente: %v", inbox.done)
+	}
+}
+
+// Un mensaje con el claim de dedup vivo está en vuelo; uno que el pool no conoce, no.
+func TestIsInFlight_MessageWithLiveClaim(t *testing.T) {
+	pool := NewMessageWorkerPool(1, 10)
+	if !pool.Enqueue(bird.InboundMessage{ID: "e-msg", Phone: nectarTestKey}) {
+		t.Fatal("debe encolar")
+	}
+	if !pool.IsInFlight("e-msg") {
+		t.Fatal("el mensaje encolado está en vuelo")
+	}
+	if pool.IsInFlight("e-otro") {
+		t.Fatal("un id desconocido no está en vuelo")
 	}
 }

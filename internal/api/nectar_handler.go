@@ -712,6 +712,10 @@ type inFlightChecker interface {
 	IsInFlight(id string) bool
 }
 
+// La aserción de nectarNoticeInFlight falla en silencio: si el pool dejara de cumplirla, el replay
+// perdería la protección sin aviso.
+var _ inFlightChecker = (*worker.MessageWorkerPool)(nil)
+
 // nectarNoticeInFlight dice si el pool que recibe los avisos tiene en memoria el de ese event_id.
 func (h *WebhookHandler) nectarNoticeInFlight(eventID string) bool {
 	var sink nectarDispatcher = h.workerPool

@@ -36,17 +36,28 @@ func TestWaitResponses_WaitsForInFlightResponse(t *testing.T) {
 	}
 }
 
-// Ya en el apagado, la respuesta corre en el llamador: nada se registra después de que
-// WaitResponses empezó a esperar.
+// Ya en el apagado, la respuesta corre en el llamador: nada se registra después de que WaitResponses
+// empezó a esperar. Por eso la llamada no vuelve mientras la respuesta siga bloqueada en el candado.
 func TestGoHandleResponse_AfterWaitRunsInCaller(t *testing.T) {
 	mgr := NewNotificationManager(nil, nil, &config.Config{})
 	mgr.WaitResponses(time.Second)
+	const phone = "+573001234567"
+	if !mgr.lockPhone(phone) {
+		t.Fatal("no se tomó el candado")
+	}
 
 	done := make(chan struct{})
 	go func() {
-		mgr.GoHandleResponse("+573001234567", "confirm", "") // sin pending: vuelve enseguida
+		mgr.GoHandleResponse(phone, "confirm", "")
 		close(done)
 	}()
+	select {
+	case <-done:
+		t.Fatal("tras WaitResponses la respuesta debe correr en el llamador")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	mgr.unlockPhone(phone)
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
