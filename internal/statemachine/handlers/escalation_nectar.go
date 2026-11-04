@@ -163,10 +163,17 @@ func escalationExit(r *sm.StateResult) *sm.StateResult {
 
 // escalationDiverted es escalationExit para las salidas en que la escalación NO llegó a un agente
 // (anti-bucle, tope, gate de horario o de asesores, escalado apagado, fallo del canal): el paciente
-// vuelve a un menú. Si se escalaba «Reprogramar» sin horarios (NOTIF_RESCHEDULE_FALLBACK), el
+// vuelve a un menú. La NOTA para el agente (escalation_note) se borra aquí y en la salida entregada,
+// no en escalationExit: la recuperación IA sale por escalationExit y su escalación posterior, cuando
+// se agota, tiene que seguir llevándola. Nadie reintenta una escalación desviada con la nota guardada:
+// quien la escribe (VALIDATE_OCR, el retorno rechazado del agente, el kill switch) lo hace en el mismo
+// paso que escala. Si se escalaba «Reprogramar» sin horarios (NOTIF_RESCHEDULE_FALLBACK), el
 // trámite de reprogramación se suelta: si después agenda otra cosa, la cita original no se toca.
 func escalationDiverted(preState string, r *sm.StateResult) *sm.StateResult {
 	r = escalationExit(r)
+	if r != nil {
+		r.WithClearCtx("escalation_note")
+	}
 	if r != nil && preState == sm.StateNotifRescheduleFallback {
 		r.WithClearCtx(rescheduleTramiteKeys...)
 	}

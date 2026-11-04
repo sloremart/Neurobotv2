@@ -563,9 +563,9 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		} else {
 			r = r.WithClearCtx(sm.CtxEscalationNextDay)
 		}
-		// La NOTA es de ESTA escalación y ya viajó: se borra solo aquí, cuando el escalate se
-		// entregó (si falla, el reintento tiene que volver a llevarla). La marca del paciente la
-		// borra escalationExit en toda salida.
+		// La NOTA es de ESTA escalación y ya viajó: se borra aquí y en las salidas desviadas
+		// (escalationDiverted), no en la de la recuperación IA. La marca del paciente la borra
+		// escalationExit en toda salida.
 		return escalationExit(r).
 			WithClearCtx(recovery.CtxRecoveryActive, recovery.CtxRecoveryAttempts, "escalation_note").
 			WithContext("pre_escalation_state", preState).

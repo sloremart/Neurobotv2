@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -523,6 +524,33 @@ func TestEscalate_ClearsAskedMarkAndNoteOnEscalate(t *testing.T) {
 	res := escalateOnce(t, m, sess)
 	if !hasClear(res, sm.CtxPatientAskedForAgent) || !hasClear(res, "escalation_note") {
 		t.Fatalf("se borran la marca y la nota: %v", res.ClearCtx)
+	}
+}
+
+// La nota también es de ESTA escalación cuando no llega a un agente: la salida desviada la borra, y
+// una escalación posterior de la misma sesión no lleva la de esta.
+func TestEscalate_DivertedExitClearsNote(t *testing.T) {
+	old := nowFunc
+	nowFunc = func() time.Time { return time.Date(2026, 8, 12, 4, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { nowFunc = old })
+	cfg := testEscalationConfig()
+	cfg.TestingAlwaysOpen = false
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(escalationTestServer(t).URL), cfg, nil)
+	sess := testSess(sm.StateEscalateToAgent)
+	sess.ConversationID = "conv-test"
+	sess.Context[sm.CtxPreAutoState] = sm.StateValidateOCR
+	sess.Context["escalation_note"] = "POSIBLE MALA LECTURA DEL CUPS"
+
+	res, err := m.Process(context.Background(), sess, textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState == sm.StateEscalated {
+		t.Fatal("fuera de horario el caso se desvía")
+	}
+	if !hasClear(res, "escalation_note") {
+		t.Fatalf("la salida desviada borra la nota: %v", res.ClearCtx)
 	}
 }
 
