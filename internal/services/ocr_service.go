@@ -26,6 +26,20 @@ import (
 // maxOCRPages acota cuántas páginas de un PDF se mandan a Vision en su única llamada (costo/tamaño).
 const maxOCRPages = 10
 
+// Topes de los JPEG que deja Ghostscript, antes de leerlos a memoria y pasarlos a base64. Una hoja
+// carta escaneada a 300 DPI pesa 1-3 MB; una con un MediaBox desmesurado (200" son 60.000 × 60.000 px)
+// deja decenas de MB aun en blanco, y diez de ellas tumbarían al bot por memoria. Pasarse de cualquiera
+// de los dos rechaza la conversión, igual que un fallo de Ghostscript.
+const (
+	maxOCRPageImageBytes   = 10 << 20
+	maxOCRImagesTotalBytes = 50 << 20
+)
+
+// gsMaxBitmap fija el raster que Ghostscript tiene en memoria por banda (10 MB): una hoja más grande se
+// pinta por bandas en vez de entera. Ghostscript 10.05 ya divide por bandas por defecto (medido: unos
+// 33 MB de RSS con la hoja de 60.000 px); el valor explícito evita depender del de la versión instalada.
+const gsMaxBitmap = "-dMaxBitmap=10000000"
+
 // defaultAnalyzeTimeout es el presupuesto propio de UN análisis OCR. DEBE quedar holgadamente por
 // debajo del presupuesto por mensaje del worker (processMsgTimeout = 2 min).
 //
@@ -814,25 +828,52 @@ func hasValidCUP(res *OCRResult) bool {
 // pdfPagesToDataURIs convierte las páginas [first,last] del PDF a JPEG (300 DPI) con Ghostscript y las
 // devuelve como data URIs base64 en orden de página. last<=0 = hasta el final.
 func pdfPagesToDataURIs(ctx context.Context, pdfPath string, first, last int) ([]string, error) {
-	outPattern := pdfPath + "-p%d.jpg"
-	args := []string{"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=jpeg", "-r300"}
+	args := jpegRenderArgs(first, last, pdfPath+"-p%d.jpg", pdfPath)
+	//nolint:gosec // G204: binario fijo (gs); los argumentos son rutas temporales propias, no input externo
+	output, err := exec.CommandContext(ctx, "gs", args...).CombinedOutput()
+	matches, _ := filepath.Glob(pdfPath + "-p*.jpg")
+	for _, m := range matches {
+		defer func(p string) { _ = os.Remove(p) }(m)
+	}
+	if err != nil {
+		slog.Error("ghostscript conversion failed", "error", err, "output", string(output))
+		return nil, fmt.Errorf("pdf to image conversion failed: %w", err)
+	}
+	sort.Slice(matches, func(i, j int) bool { return pdfPageNum(matches[i]) < pdfPageNum(matches[j]) })
+	return readPageImages(matches)
+}
+
+// jpegRenderArgs arma los argumentos de Ghostscript para pasar las hojas [first,last] a JPEG. El tiempo
+// lo acota el contexto (defaultAnalyzeTimeout) y las hojas, last (maxOCRPages).
+func jpegRenderArgs(first, last int, outPattern, pdfPath string) []string {
+	args := []string{"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=jpeg", "-r300", gsMaxBitmap}
 	if first > 0 {
 		args = append(args, fmt.Sprintf("-dFirstPage=%d", first))
 	}
 	if last > 0 {
 		args = append(args, fmt.Sprintf("-dLastPage=%d", last))
 	}
-	args = append(args, "-sOutputFile="+outPattern, pdfPath)
-	if output, err := exec.CommandContext(ctx, "gs", args...).CombinedOutput(); err != nil {
-		slog.Error("ghostscript conversion failed", "error", err, "output", string(output))
-		return nil, fmt.Errorf("pdf to image conversion failed: %w", err)
+	return append(args, "-sOutputFile="+outPattern, pdfPath)
+}
+
+// readPageImages lee los JPEG ya convertidos (en orden) como data URIs base64. Mira los tamaños antes
+// de leer nada: con una hoja o un total fuera de tope no carga ninguna.
+func readPageImages(paths []string) ([]string, error) {
+	var total int64
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		total += info.Size()
+		if info.Size() > maxOCRPageImageBytes || total > maxOCRImagesTotalBytes {
+			slog.Warn("ocr: imagen del pdf fuera de tope; no se lee", "page_bytes", info.Size(), "total_bytes", total)
+			return nil, fmt.Errorf("pdf page images too large (page %d bytes, total %d bytes)", info.Size(), total)
+		}
 	}
-	matches, _ := filepath.Glob(pdfPath + "-p*.jpg")
-	sort.Slice(matches, func(i, j int) bool { return pdfPageNum(matches[i]) < pdfPageNum(matches[j]) })
-	uris := make([]string, 0, len(matches))
-	for _, m := range matches {
-		defer func(p string) { _ = os.Remove(p) }(m)
-		data, rerr := os.ReadFile(m) //nolint:gosec // JPEG temporal propio (glob derivado de pdfPath), no input externo
+	uris := make([]string, 0, len(paths))
+	for _, p := range paths {
+		data, rerr := os.ReadFile(p) //nolint:gosec // JPEG temporal propio (glob derivado de pdfPath), no input externo
 		if rerr != nil {
 			continue
 		}
