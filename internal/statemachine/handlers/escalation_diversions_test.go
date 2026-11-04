@@ -356,3 +356,27 @@ func TestEscalationCap_PatientCyclesCut(t *testing.T) {
 		})
 	}
 }
+
+// f7 (B-batch R2-1): la marca del corte describe el corte. Una salida exenta del tope (aquí, una
+// escalación que dispara el bot sobre una sesión ya cortada) la borra: si después la sesión llega a
+// FALLBACK_MENU por otro camino, el bot muestra los botones en vez de callar por una marca vieja. El
+// contador no se toca: el siguiente pedido del paciente vuelve a cortar.
+func TestEscalationCap_ExemptExitClearsCappedMark(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(escalationTestServer(t).URL), testEscalationConfig(), nil)
+
+	stored := map[string]string{
+		sm.CtxEscalationCount:  strconv.Itoa(escalationSessionCap),
+		sm.CtxEscalationCapped: "1",
+	}
+	if res := escalateTurnWith(t, m, stored, sm.EscalationReasonOCRNoCode, false); res.NextState != sm.StateEscalated {
+		t.Fatalf("la escalación del bot no corta, got %s %+v", res.NextState, res.Events)
+	}
+	if stored[sm.CtxEscalationCapped] != "" {
+		t.Fatal("la salida exenta debía borrar la marca del corte")
+	}
+	if res := escalateTurnWith(t, m, stored, sm.EscalationReasonPatientAsked, true); !hasEvent(res, "escalation_cap_reached") ||
+		stored[sm.CtxEscalationCapped] == "" {
+		t.Fatalf("el pedido del paciente vuelve a cortar y a marcar, got %s %+v", res.NextState, res.Events)
+	}
+}

@@ -152,13 +152,18 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 // CtxEscalationWaitingListID) igual, y también lo que dejó la lectura de la orden
 // (CtxOCRFailureCause, CtxOCRUnreadNames): son datos de ESTA escalación y el resumen los pinta
 // tal cual. Regla: toda clave que describe UNA escalación se borra al salir.
+//
+// (5) LA MARCA DEL CORTE (CtxEscalationCapped) también: describe el corte por el tope, y solo la rama
+// del tope la vuelve a escribir (el set del resultado gana sobre el clear al guardar). Viva tras una
+// salida exenta del tope, haría callar al bot en un FALLBACK_MENU al que la sesión llegue por otro
+// camino (escalado apagado, fallo del canal). El contador no se borra: el tope sigue contando.
 func escalationExit(r *sm.StateResult) *sm.StateResult {
 	if r == nil {
 		return r
 	}
 	return r.WithClearCtx(sm.CtxAgentInputRejection, sm.CtxPatientAskedForAgent, sm.CtxEscalationReason,
 		sm.CtxEscalationLastInput, sm.CtxEscalationWaitingListID, sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames,
-		sm.CtxOCRFailedReads)
+		sm.CtxOCRFailedReads, sm.CtxEscalationCapped)
 }
 
 // escalationDiverted es escalationExit para las salidas en que la escalación NO llegó a un agente
