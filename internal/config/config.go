@@ -141,6 +141,9 @@ type Config struct {
 	// OpenAI
 	OpenAIAPIKey string
 	OpenAIModel  string
+	// OpenAIDocModel es el modelo de la segunda lectura del código CUPS (OCRService.ReadCupsCode),
+	// que solo corre cuando el código leído no sirve.
+	OpenAIDocModel string
 
 	// Recuperación asistida por IA (capa antes de escalar; ver docs/RECUPERACION-IA.md).
 	// Reutiliza OpenAIAPIKey pero con su PROPIO modelo (fijo en código, distinto al del OCR).
@@ -377,8 +380,9 @@ func Load() *Config {
 		NectarTemplateNames: parseKeyValueList(os.Getenv("NECTAR_TEMPLATE_NAMES")),
 
 		// OpenAI
-		OpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
-		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel:    getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIDocModel: getEnv("OPENAI_DOC_MODEL", "gpt-4.1"),
 
 		// Recuperación asistida por IA (3 env; modelo y max_tokens fijos en código)
 		AIRecoveryEnabled:            getEnvBool("AI_RECOVERY_ENABLED", true),

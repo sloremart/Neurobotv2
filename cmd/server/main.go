@@ -206,6 +206,7 @@ func main() {
 		}
 	}
 	ocrSvc := services.NewOCRService(cfg.OpenAIAPIKey, cfg.OpenAIModel, cupsContext, cfg.BirdAccessKeyID)
+	ocrSvc.SetDocumentModel(cfg.OpenAIDocModel)
 
 	if nectarBridge != nil {
 		ocrSvc.SetNectarCredentials(cfg.NectarBaseURL, cfg.NectarServiceKey, cfg.NectarRequestSecret)

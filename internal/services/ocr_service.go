@@ -38,8 +38,11 @@ const maxOCRPages = 10
 const defaultAnalyzeTimeout = 75 * time.Second
 
 type OCRService struct {
-	apiKey        string
-	model         string // gpt-4o-mini
+	apiKey string
+	model  string // gpt-4o-mini
+	// docModel es el modelo de la segunda lectura del código (ReadCupsCode, OPENAI_DOC_MODEL): corre
+	// solo cuando el código leído no sirve, y por eso puede ser uno más fuerte. Vacío = model.
+	docModel      string
 	apiURL        string // default: https://api.openai.com/v1/chat/completions
 	client        *http.Client
 	cupsContext   string // CUPS reference table injected into the prompt
@@ -103,6 +106,9 @@ func (s *OCRService) checkRedirect(_ *http.Request, via []*http.Request) error {
 	}
 	return nil
 }
+
+// SetDocumentModel fija el modelo de la segunda lectura del código (OPENAI_DOC_MODEL).
+func (s *OCRService) SetDocumentModel(model string) { s.docModel = strings.TrimSpace(model) }
 
 // SetAnalyzeTimeout ajusta el presupuesto propio de un análisis (<=0 restaura el default).
 func (s *OCRService) SetAnalyzeTimeout(d time.Duration) {
@@ -294,8 +300,22 @@ func (s *OCRService) buildSystemPrompt() string {
 // callOpenAI sends a request to OpenAI and parses the OCR-style response.
 // Shared by AnalyzeImage and AnalyzeText.
 func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]interface{}) (*OCRResult, error) {
+	content, err := s.callOpenAIRaw(ctx, s.model, messages)
+	if err != nil {
+		return nil, err
+	}
+	if content == "" {
+		return &OCRResult{Success: false, Error: "sin respuesta de OpenAI"}, nil
+	}
+	return parseOrderResponse(content), nil
+}
+
+// callOpenAIRaw hace la llamada con el modelo elegido y devuelve el contenido de la respuesta tal cual
+// ("" si no trajo ninguna opción). Comparte transporte, reintentos y manejo de errores entre la lectura
+// de la orden y la segunda lectura del código, que tienen contratos de salida distintos.
+func (s *OCRService) callOpenAIRaw(ctx context.Context, model string, messages []map[string]interface{}) (string, error) {
 	reqBody := map[string]interface{}{
-		"model":       s.model,
+		"model":       model,
 		"messages":    messages,
 		"max_tokens":  1200,
 		"temperature": 0,
@@ -303,12 +323,12 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", s.apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
@@ -322,7 +342,7 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		if attempt > 0 {
 			req, err = http.NewRequestWithContext(ctx, "POST", s.apiURL, bytes.NewReader(bodyBytes))
 			if err != nil {
-				return nil, fmt.Errorf("create retry request: %w", err)
+				return "", fmt.Errorf("create retry request: %w", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+s.apiKey)
@@ -331,14 +351,14 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		resp, err = s.client.Do(req)
 		if err != nil {
 			if attempt == maxRetries {
-				return nil, fmt.Errorf("openai request after %d attempts: %w", attempt+1, err)
+				return "", fmt.Errorf("openai request after %d attempts: %w", attempt+1, err)
 			}
 			delay := time.Duration((attempt+1)*(attempt+1)) * time.Second
 			slog.Warn("openai_retry_network", "attempt", attempt+1, "delay", delay, "error", err)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return nil, fmt.Errorf("openai retry cancelled: %w", ctx.Err())
+				return "", fmt.Errorf("openai retry cancelled: %w", ctx.Err())
 			}
 			continue
 		}
@@ -350,14 +370,14 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		// de Unmarshal. Tratarlo como error de transporte y reintentar, igual que el error de red.
 		if readErr != nil {
 			if attempt == maxRetries {
-				return nil, fmt.Errorf("openai read body after %d attempts: %w", attempt+1, readErr)
+				return "", fmt.Errorf("openai read body after %d attempts: %w", attempt+1, readErr)
 			}
 			delay := time.Duration((attempt+1)*(attempt+1)) * time.Second
 			slog.Warn("openai_retry_read_body", "attempt", attempt+1, "delay", delay, "error", readErr)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return nil, fmt.Errorf("openai retry cancelled: %w", ctx.Err())
+				return "", fmt.Errorf("openai retry cancelled: %w", ctx.Err())
 			}
 			continue
 		}
@@ -370,14 +390,14 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		if resp.StatusCode == http.StatusTooManyRequests {
 			if attempt == maxRetries {
 				slog.Error("openai rate limited after retries", "attempts", attempt+1)
-				return nil, fmt.Errorf("openai rate limited after %d attempts", attempt+1)
+				return "", fmt.Errorf("openai rate limited after %d attempts", attempt+1)
 			}
 			delay := parseRetryAfterHeader(resp.Header.Get("Retry-After"))
 			slog.Warn("openai_retry_rate_limited", "attempt", attempt+1, "retry_after", delay)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return nil, fmt.Errorf("openai retry cancelled: %w", ctx.Err())
+				return "", fmt.Errorf("openai retry cancelled: %w", ctx.Err())
 			}
 			continue
 		}
@@ -386,14 +406,14 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		if resp.StatusCode >= 500 {
 			if attempt == maxRetries {
 				slog.Error("openai server error after retries", "status", resp.StatusCode, "attempts", attempt+1)
-				return nil, fmt.Errorf("openai api status %d after %d attempts", resp.StatusCode, attempt+1)
+				return "", fmt.Errorf("openai api status %d after %d attempts", resp.StatusCode, attempt+1)
 			}
 			delay := time.Duration((attempt+1)*(attempt+1)) * time.Second
 			slog.Warn("openai_retry_server_error", "attempt", attempt+1, "status", resp.StatusCode, "delay", delay)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return nil, fmt.Errorf("openai retry cancelled: %w", ctx.Err())
+				return "", fmt.Errorf("openai retry cancelled: %w", ctx.Err())
 			}
 			continue
 		}
@@ -401,7 +421,7 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		// 4xx client error (not 429) — no retry. No logueamos el body crudo: puede traer PII de
 		// salud (cédula/CUPS/EPS de la orden) y este ERROR se reenvía a Telegram (N-7).
 		slog.Error("openai api error", "status", resp.StatusCode, "body_len", len(respBody))
-		return nil, fmt.Errorf("openai api status %d", resp.StatusCode)
+		return "", fmt.Errorf("openai api status %d", resp.StatusCode)
 	}
 
 	// Parsear respuesta de OpenAI
@@ -413,15 +433,16 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("unmarshal api response: %w", err)
+		return "", fmt.Errorf("unmarshal api response: %w", err)
 	}
-
 	if len(apiResp.Choices) == 0 {
-		return &OCRResult{Success: false, Error: "sin respuesta de OpenAI"}, nil
+		return "", nil
 	}
+	return apiResp.Choices[0].Message.Content, nil
+}
 
-	content := apiResp.Choices[0].Message.Content
-
+// parseOrderResponse interpreta el JSON de la lectura de una orden.
+func parseOrderResponse(content string) *OCRResult {
 	// Extraer JSON del contenido (puede venir con markdown ```json ... ```)
 	jsonStr := extractJSON(content)
 
@@ -435,11 +456,11 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
 		// No logueamos `content` crudo (PII de la orden médica); solo su longitud para diagnóstico (N-7).
 		slog.Warn("ocr json parse failed", "content_len", len(content), "error", err)
-		return &OCRResult{Success: false, Error: "no se pudo interpretar la respuesta"}, nil
+		return &OCRResult{Success: false, Error: "no se pudo interpretar la respuesta"}
 	}
 
 	if parsed.Error != "" {
-		return &OCRResult{Success: false, Error: parsed.Error, Entity: parsed.Entity}, nil
+		return &OCRResult{Success: false, Error: parsed.Error, Entity: parsed.Entity}
 	}
 
 	// Asegurar quantity >= 1
@@ -460,7 +481,7 @@ func (s *OCRService) callOpenAI(ctx context.Context, messages []map[string]inter
 		Entity:   parsed.Entity,
 		Notes:    parsed.Notes,
 		Document: doc,
-	}, nil
+	}
 }
 
 // visionImagePart es la parte image_url de un mensaje a Vision. Pide detail=high: sin él OpenAI elige el
@@ -629,23 +650,17 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 		return &OCRResult{Success: false, Error: "formato_no_soportado"}, nil
 	}
 
-	pdfFile, err := os.CreateTemp("", "order-*.pdf")
+	pdfPath, err := writeTempPDF(fileData)
 	if err != nil {
-		return nil, fmt.Errorf("create temp pdf: %w", err)
+		return nil, err
 	}
-	defer os.Remove(pdfFile.Name())
-
-	if _, err := pdfFile.Write(fileData); err != nil {
-		pdfFile.Close()
-		return nil, fmt.Errorf("write temp pdf: %w", err)
-	}
-	pdfFile.Close()
+	defer func() { _ = os.Remove(pdfPath) }()
 
 	// Capa de texto primero: un PDF generado por un sistema trae el texto exacto, y leerlo sale más
 	// barato, más rápido y sin el riesgo de que un dígito se lea mal en la imagen. Salvaguarda: si del
 	// texto no sale ningún CUPS con código (o el análisis falla) se sigue con las imágenes, para que un
 	// escaneo con una capa de texto mala no lea peor que antes.
-	if text := s.pdfText(ctx, pdfFile.Name()); len(strings.Fields(text)) >= minPDFTextWords {
+	if text := s.pdfText(ctx, pdfPath); len(strings.Fields(text)) >= minPDFTextWords {
 		res, err := s.analyzeText(ctx, text)
 		if err == nil && hasValidCUP(res) {
 			return res, nil
@@ -658,11 +673,26 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	// trae procedimientos y cuyos demás siguen en las hojas 2, 3… se leía a medias, y el paciente
 	// veía un resumen que parecía completo. Siguen siendo UNA llamada; en la orden de una hoja no
 	// cambia nada (Ghostscript convierte la única que hay) y maxOCRPages acota las imágenes.
-	uris, err := s.pdfToImages(ctx, pdfFile.Name(), 1, maxOCRPages)
+	uris, err := s.pdfToImages(ctx, pdfPath, 1, maxOCRPages)
 	if err != nil {
 		return nil, err
 	}
 	return s.analyzePages(ctx, uris)
+}
+
+// writeTempPDF deja el PDF en un archivo temporal para Ghostscript; quien llama lo borra.
+func writeTempPDF(data []byte) (string, error) {
+	f, err := os.CreateTemp("", "order-*.pdf")
+	if err != nil {
+		return "", fmt.Errorf("create temp pdf: %w", err)
+	}
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("write temp pdf: %w", err)
+	}
+	return f.Name(), nil
 }
 
 // analyzePages lee las hojas YA convertidas de un PDF: una sola va como imagen suelta; varias, juntas
@@ -806,6 +836,87 @@ func (s *OCRService) AnalyzeText(ctx context.Context, description string) (*OCRR
 		},
 	}
 	return s.callOpenAI(ctx, messages)
+}
+
+// ReadCupsCode es la SEGUNDA LECTURA dedicada del código CUPS de UN procedimiento (tomada de hdg-bot,
+// donde el OCR general leyó 892262 donde decía 890262): se vuelve a mirar la orden con una sola tarea
+// —el código del procedimiento cuyo nombre se da— y con el modelo de docModel. Una imagen va tal cual; un
+// PDF, con todas sus hojas como en la lectura general (el procedimiento puede estar en cualquiera).
+// Devuelve solo el código; vacío = no se pudo leer con seguridad (nunca se adivina).
+func (s *OCRService) ReadCupsCode(ctx context.Context, documentURL, procedureName string) (string, error) {
+	ctx, cancel := s.withAnalyzeBudget(ctx)
+	defer cancel()
+	fileData, err := s.downloadMedia(ctx, documentURL)
+	if err != nil {
+		return "", err
+	}
+	var uris []string
+	switch mimeType := http.DetectContentType(fileData); {
+	case strings.HasPrefix(mimeType, "image/"):
+		uris = []string{"data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(fileData)}
+	case mimeType == "application/pdf":
+		pdfPath, err := writeTempPDF(fileData)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = os.Remove(pdfPath) }()
+		if uris, err = s.pdfToImages(ctx, pdfPath, 1, maxOCRPages); err != nil {
+			return "", err
+		}
+	}
+	if len(uris) == 0 {
+		return "", nil
+	}
+	content := []map[string]interface{}{
+		{"type": "text", "text": "Transcribe el código CUPS del procedimiento: " + strings.TrimSpace(procedureName)},
+	}
+	for _, u := range uris {
+		content = append(content, visionImagePart(u))
+	}
+	model := s.docModel
+	if model == "" {
+		model = s.model
+	}
+	raw, err := s.callOpenAIRaw(ctx, model, []map[string]interface{}{
+		{"role": "system", "content": cupsCodePrompt},
+		{"role": "user", "content": content},
+	})
+	if err != nil {
+		return "", err
+	}
+	return parseCupsCode(raw), nil
+}
+
+// cupsCodePrompt: una sola tarea, con las trampas típicas de una orden colombiana.
+const cupsCodePrompt = `Eres un lector de órdenes médicas colombianas.
+Tu ÚNICA tarea: transcribir el CÓDIGO CUPS del procedimiento que se te indica.
+- El CUPS tiene 6 dígitos (p. ej. 890274, 883101) y va junto al nombre del procedimiento, en una columna "Código", "CUPS" o "Cód."; a veces va con puntos (89.02.74).
+- NO es el número de la orden, NO la autorización, NO el documento del paciente, NO la cantidad, NO el código de diagnóstico (CIE-10, que lleva una letra: G40.9).
+- Si el código trae un sufijo tras un guion (891509-16), transcribe solo el código base (891509).
+- Léelo DÍGITO A DÍGITO. Dígitos que se confunden: 0/2/6/8, 1/7, 3/8, 5/6. Vuelve a mirar cada uno antes de responder.
+Responde SOLO con JSON válido: {"cups": "<solo dígitos>", "como_aparece": "<texto literal>", "confianza": "alta|media|baja"}.
+Si no lo ves con seguridad, "cups": null y "confianza": "baja". NUNCA adivines ni completes dígitos.`
+
+// parseCupsCode saca el código del JSON de la segunda lectura; con confianza baja, sin código o con una
+// respuesta ilegible devuelve vacío.
+func parseCupsCode(content string) string {
+	var out struct {
+		Cups      *string `json:"cups"`
+		Confianza string  `json:"confianza"`
+	}
+	if err := json.Unmarshal([]byte(extractJSON(content)), &out); err != nil || out.Cups == nil {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(out.Confianza), "baja") {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range strings.ToUpper(*out.Cups) {
+		if (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') {
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
 }
 
 // extractJSON extrae el JSON de una respuesta que puede contener markdown

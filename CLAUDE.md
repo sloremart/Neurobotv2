@@ -406,3 +406,11 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   seguidas de la orden → agente (`ocr_lecturas_fallidas`); los desvíos «no hay asesores» cuentan para el tope de
   3 escalaciones (persistido; `bot_disabled` exento; se reinicia cuando un agente atiende y devuelve). Tras el corte
   el bot calla salvo sus botones y «menú», y lo ignorado no renueva la sesión.
+
+## OCR DE LA ORDEN (mejoras tomadas de hdg-bot, 2026-11-03; plan en `docs/PLAN-MEJORA-OCR-CUPS.md`)
+
+- Toda imagen a Vision pide `detail: "high"` (`visionImagePart`).
+- PDF: capa de texto primero (`gs -sDEVICE=txtwrite`, ≥40 palabras, sin visión); si de ahí no sale ningún CUPS con
+  código, o falla, se leen las imágenes: todas las hojas (máx. `maxOCRPages`) en UNA llamada y, si falla, solo la 1.ª.
+- `OPENAI_DOC_MODEL` (por defecto `gpt-4.1`): modelo de la segunda lectura del código (`OCRService.ReadCupsCode`,
+  una sola tarea; confianza baja → vacío, nunca adivina).

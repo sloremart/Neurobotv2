@@ -300,3 +300,86 @@ func TestAnalyzeDocument_PDFShortTextGoesToImages(t *testing.T) {
 		t.Fatalf("directo a imágenes: %d conversiones, %d llamadas", *rasterized, len(rec.bodies))
 	}
 }
+
+// jpegFileServer sirve una imagen mínima (firma JPEG).
+func jpegFileServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/orden.jpg"
+}
+
+// H4: la segunda lectura pide UNA sola cosa —el código del procedimiento nombrado— con el modelo de
+// OPENAI_DOC_MODEL y la imagen en detalle alto.
+func TestReadCupsCode_DedicatedReadWithDocModel(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, `{"cups": "890274", "como_aparece": "89.02.74", "confianza": "alta"}`)
+	svc.SetDocumentModel("modelo-doc")
+
+	code, err := svc.ReadCupsCode(context.Background(), jpegFileServer(t), "CONSULTA NEUROLOGIA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != "890274" {
+		t.Fatalf("código = %q", code)
+	}
+	body := rec.bodies[0]
+	if body["model"] != "modelo-doc" {
+		t.Errorf("modelo = %v, quería el de OPENAI_DOC_MODEL", body["model"])
+	}
+	imgs := imageParts(body)
+	if len(imgs) != 1 || imgs[0]["detail"] != "high" {
+		t.Errorf("una imagen en detalle alto: %v", imgs)
+	}
+	raw, _ := json.Marshal(body["messages"])
+	if !strings.Contains(string(raw), "CONSULTA NEUROLOGIA") {
+		t.Error("el prompt nombra el procedimiento cuyo código se pide")
+	}
+}
+
+// H4: sin modelo de documento configurado, la segunda lectura usa el modelo de siempre.
+func TestReadCupsCode_DefaultsToMainModel(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, `{"cups": "890274", "confianza": "media"}`)
+	if _, err := svc.ReadCupsCode(context.Background(), jpegFileServer(t), "X"); err != nil {
+		t.Fatal(err)
+	}
+	if rec.bodies[0]["model"] != "test-model" {
+		t.Errorf("modelo = %v", rec.bodies[0]["model"])
+	}
+}
+
+// H4: nunca se adivina. Confianza baja, código nulo o respuesta ilegible → vacío.
+func TestReadCupsCode_NeverGuesses(t *testing.T) {
+	for _, content := range []string{
+		`{"cups": "890274", "confianza": "baja"}`,
+		`{"cups": null, "confianza": "baja"}`,
+		`no es json`,
+	} {
+		_, svc := newRecordingOpenAI(t, content)
+		code, err := svc.ReadCupsCode(context.Background(), jpegFileServer(t), "X")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != "" {
+			t.Errorf("%s → %q, quería vacío", content, code)
+		}
+	}
+}
+
+// H4: en un PDF el procedimiento puede estar en cualquier hoja (H3): van todas, como en la lectura
+// general.
+func TestReadCupsCode_PDFSendsEveryPage(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, `{"cups": "89.02.74", "confianza": "alta"}`)
+	fakePages(svc, 2)
+	code, err := svc.ReadCupsCode(context.Background(), pdfFileServer(t), "X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != "890274" {
+		t.Errorf("los puntos no son parte del código: %q", code)
+	}
+	if len(imageParts(rec.bodies[0])) != 2 {
+		t.Errorf("las dos hojas van en la segunda lectura")
+	}
+}
