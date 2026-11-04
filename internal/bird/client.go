@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -901,7 +902,8 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 		// Los botones estáticos actuales caben, pero cualquiera dinámico/futuro quedaría protegido.
 		title := truncateWhatsApp(btn.Text, waButtonLabelMax)
 		if title != btn.Text {
-			slog.Warn("wa_button_title_truncated", "original", btn.Text, "sent", title, "payload", btn.Payload)
+			// Solo el largo: el título puede llevar datos de salud del paciente.
+			slog.Warn("wa_button_title_truncated", "original_len", utf8.RuneCountInString(btn.Text), "payload", btn.Payload)
 		}
 		actions[i] = map[string]interface{}{
 			"type": "postback",
@@ -975,7 +977,8 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 		for j, row := range section.Rows {
 			title := truncateWhatsApp(row.Title, waRowTitleMax)
 			if title != row.Title {
-				slog.Warn("wa_list_row_title_truncated", "original", row.Title, "sent", title, "payload", row.ID)
+				// Solo el largo: en las listas de citas el título lleva el procedimiento del paciente.
+				slog.Warn("wa_list_row_title_truncated", "original_len", utf8.RuneCountInString(row.Title), "payload", row.ID)
 			}
 			actions[j] = map[string]interface{}{
 				"type": "postback",
