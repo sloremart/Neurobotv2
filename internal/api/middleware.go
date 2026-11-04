@@ -59,7 +59,16 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-// Unwrap deja a http.ResponseController llegar al writer original (Flush, plazos).
+// Flush delega en el writer original: los handlers que acusan antes de terminar (avisos de Néctar)
+// hacen w.(http.Flusher) y no pasan por http.ResponseController.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		s.wroteHeader = true
+		f.Flush()
+	}
+}
+
+// Unwrap deja a http.ResponseController llegar al writer original (Flush, plazos, Hijack).
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // InternalAuth middleware para endpoints internos (requiere X-API-Key header).

@@ -498,3 +498,40 @@ func TestAuthFailureLimiter_ParallelGuessesDoNotExceedQuota(t *testing.T) {
 		t.Fatalf("100 intentos en paralelo con límite 30: quiero 30×401 y 70×429, got %v", codes)
 	}
 }
+
+// TestRequestLogger_KeepsFlush: RequestLogger envuelve todo el mux; un handler que hace Flush (el acuse
+// inmediato de los avisos de Néctar) sigue entregando la respuesta antes de terminar.
+func TestRequestLogger_KeepsFlush(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+	})))
+	t.Cleanup(srv.Close)
+	defer close(release)
+
+	got := make(chan int, 1)
+	go func() {
+		resp, err := http.Get(srv.URL + "/api/webhooks/nectar")
+		if err != nil {
+			got <- 0
+			return
+		}
+		_ = resp.Body.Close()
+		got <- resp.StatusCode
+	}()
+	select {
+	case code := <-got:
+		if code != http.StatusOK {
+			t.Fatalf("código %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("el 200 no salió hasta que terminó el handler: RequestLogger se come el Flush")
+	}
+	if _, ok := any(&statusRecorder{ResponseWriter: httptest.NewRecorder()}).(interface{ Unwrap() http.ResponseWriter }); !ok {
+		t.Error("statusRecorder debe exponer Unwrap para http.ResponseController")
+	}
+}
