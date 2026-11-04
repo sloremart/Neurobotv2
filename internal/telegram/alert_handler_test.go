@@ -276,3 +276,16 @@ func TestFormatMessage_PanicKeepsStackLocation(t *testing.T) {
 		t.Errorf("el stack no es un cuerpo HTTP: %q", out)
 	}
 }
+
+// H6: solo se omite un cuerpo JSON reconocible, conservando su código de error si es un
+// identificador corto; un «{» que no abre JSON (un struct impreso con %v) no corta el contexto.
+func TestTrimForAlert_OnlyJSONBodies(t *testing.T) {
+	got := trimForAlert(`open conversation: status 409 {"code":"already_open","contact":{"name":"María López"}}: retry later`)
+	if strings.Contains(got, "María") || !strings.Contains(got, "code=already_open") || !strings.Contains(got, "retry later") {
+		t.Errorf("el cuerpo JSON se omite con su código y se conserva el contexto que sigue: %q", got)
+	}
+	got = trimForAlert(`slot {Doctor:20 Room:9} not free: conflict`)
+	if got != `slot {Doctor:20 Room:9} not free: conflict` {
+		t.Errorf("un «{» que no abre JSON no se toca: %q", got)
+	}
+}

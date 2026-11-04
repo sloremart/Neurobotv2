@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -234,12 +235,42 @@ func redactValue(s string) string {
 // maxAttrRunes es el largo máximo de un valor en la alerta; el valor entero queda en el log.
 const maxAttrRunes = 160
 
-// trimForAlert quita el cuerpo HTTP que algunos errores incrustan (Bird y Néctar responden JSON que
-// puede repetir el contacto con su nombre) y recorta el resto a maxAttrRunes (C-16).
-func trimForAlert(s string) string {
-	if i := strings.Index(s, "{"); i >= 0 {
-		s = s[:i] + fmt.Sprintf("[cuerpo omitido: %d caracteres]", utf8.RuneCountInString(s[i:]))
+// errorCodeRe reconoce un código de error corto (p. ej. "already_open") que vale la pena conservar.
+var errorCodeRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,40}$`)
+
+// omitJSONBody sustituye el primer objeto JSON del texto (el cuerpo que Bird y Néctar incrustan en
+// sus errores, que puede repetir el contacto con su nombre) por su largo y su código de error. Un
+// «{» que no abre un objeto JSON válido (p. ej. un struct impreso con %v) se deja como está (H6).
+func omitJSONBody(s string) string {
+	for start := 0; start < len(s); {
+		i := strings.Index(s[start:], "{")
+		if i < 0 {
+			return s
+		}
+		i += start
+		var body map[string]interface{}
+		dec := json.NewDecoder(strings.NewReader(s[i:]))
+		if err := dec.Decode(&body); err != nil {
+			start = i + 1
+			continue
+		}
+		end := i + int(dec.InputOffset())
+		label := fmt.Sprintf("[cuerpo omitido: %d caracteres", utf8.RuneCountInString(s[i:end]))
+		for _, key := range []string{"code", "error"} {
+			if v, ok := body[key].(string); ok && errorCodeRe.MatchString(v) {
+				label += ", " + key + "=" + v
+				break
+			}
+		}
+		return s[:i] + label + "]" + s[end:]
 	}
+	return s
+}
+
+// trimForAlert quita el cuerpo HTTP incrustado (omitJSONBody) y recorta el resto a maxAttrRunes
+// (C-16).
+func trimForAlert(s string) string {
+	s = omitJSONBody(s)
 	if r := []rune(s); len(r) > maxAttrRunes {
 		s = string(r[:maxAttrRunes]) + "…"
 	}
