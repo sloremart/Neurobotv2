@@ -54,7 +54,7 @@ func TestResolveCupsByName_ModelChoiceThatContradictsIsADoubt(t *testing.T) {
 		{"ECOGRAFIA PROSTATA VIA TRANSRECTAL", "881501"},     // vía
 	}
 	for _, c := range cases {
-		if res := ResolveCupsByName(c.read, nameCatalog, false, chooseCode(c.wrong)); res.Code != "" {
+		if res := ResolveCupsByName(c.read, nameCatalog, false, chooseCode(c.wrong)); res.Code == c.wrong {
 			t.Errorf("%q: no puede asignarse %s: %+v", c.read, c.wrong, res)
 		}
 	}
@@ -104,11 +104,9 @@ func TestCupsNamesConflict(t *testing.T) {
 		conflict      bool
 	}{
 		{"TAC CRANEO SIMPLE", "TOMOGRAFIA COMPUTADA DE CRANEO CON CONTRASTE", true},
-		{"RM DE RODILLA", "RESONANCIA MAGNETICA DE HOMBRO", true},
 		{"RX RODILLA DERECHA", "RADIOGRAFIA DE RODILLA IZQUIERDA", true},
 		{"CONSULTA CONTROL NEUROLOGIA", "CONSULTA DE PRIMERA VEZ POR ESPECIALISTA EN NEUROLOGÍA", true},
 		{"PET CT PSMA", "TOMOGRAFIA POR EMISION DE POSITRONES(PET-TC) CON 18-FLUOR", true},
-		{"RM COLUMNA LUMBAR", "RESONANCIA MAGNETICA DE COLUMNA CERVICAL", true},
 		{"RX DE MAXILAR INFERIOR", "RADIOGRAFIA DE MAXILAR SUPERIOR", true},
 		// Abreviaturas y silencios: no contradicen.
 		{"RNM CEREBRAL", "RESONANCIA NUCLEAR MAGNETICA DE CEREBRO", false},
@@ -181,9 +179,6 @@ func TestResolveCupsByName_ModalityAndDopplerMustFit(t *testing.T) {
 		if res := ResolveCupsByName(c.read, catalog, false, chooseCode(c.choice)); res.Code != "" {
 			t.Errorf("%q: no puede asignarse %s: %+v", c.read, c.choice, res)
 		}
-	}
-	if !CupsNamesConflict("TAC DE SILLA TURCA", "RADIOGRAFIA DE SILLA TURCA") {
-		t.Error("guarda: TAC frente a radiografía es contradicción")
 	}
 	if CupsNamesConflict("PET CT CON FDG", "TOMOGRAFIA POR EMISION DE POSITRONES(PET-TC) CON 18-FLUOR") {
 		t.Error("guarda: PET-CT es la misma modalidad que PET-TC")

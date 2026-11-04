@@ -14,10 +14,11 @@ import (
 //  1. Un único procedimiento del catálogo con el nombre IGUAL (CompareCupsNames sobre los nombres
 //     canónicos: sin tildes, con las abreviaturas de las órdenes expandidas) → se asigna.
 //  2. Si no, hasta maxNameCandidates candidatos por parecido amplio de palabras; un modelo de solo texto
-//     elige uno, y se acepta solo con confianza alta, si está en la lista, si su nombre no contradice
-//     las palabras distintivas del leído (candidateFits) y si es el ÚNICO de los parecidos que encaja:
-//     cuando el nombre leído no distingue entre dos («POTENCIALES VISUALES EVOCADOS» frente a
-//     monofocales y multifocales), la elección sería una adivinanza.
+//     elige uno, y se acepta solo con confianza alta, si está en la lista y si es el ÚNICO de los
+//     parecidos que ENCAJA con el leído (candidateFits): las mismas palabras de contenido en los dos
+//     sentidos —salvo palabras vacías y anotaciones del catálogo— y lo mismo en cada grupo de
+//     calificadores. El modelo solo confirma o desempata lo que ya coincide; cuando el leído no distingue
+//     entre dos candidatos, la elección sería una adivinanza.
 //  3. Cualquier otra cosa es duda para un agente.
 
 // CupsCandidate es un procedimiento del catálogo que puede corresponder a un nombre leído.
@@ -42,6 +43,8 @@ const (
 // orderPhrases se reemplazan antes de partir en palabras (frases de las órdenes con un solo sentido).
 var orderPhrases = strings.NewReplacer(
 	"SIN MEDIO DE CONTRASTE", " SIMPLE ", "SIN CONTRASTE", " SIMPLE ",
+	"TOMOGRAFIA POR EMISION DE POSITRONES", " PET ",
+	"VASOS ARTERIALES", " ARTERIAL ", "VASOS VENOSOS", " VENOSO ", "COXO-FEMORAL", " CADERA ", "COXO FEMORAL", " CADERA ",
 	"1A VEZ", " PRIMERA VEZ ", "1RA VEZ", " PRIMERA VEZ ", "1ª VEZ", " PRIMERA VEZ ", "1° VEZ", " PRIMERA VEZ ",
 	"RAYOS X", " RADIOGRAFIA ",
 )
@@ -52,7 +55,8 @@ var orderPhrases = strings.NewReplacer(
 var orderAbbreviations = map[string]string{
 	"RM": "RESONANCIA MAGNETICA", "RMN": "RESONANCIA MAGNETICA", "RNM": "RESONANCIA MAGNETICA",
 	"IRM": "RESONANCIA MAGNETICA", "NUCLEAR": "",
-	"TAC": "TOMOGRAFIA", "TC": "TOMOGRAFIA", "CT": "TOMOGRAFIA", "TACAR": "TOMOGRAFIA",
+	"TAC": "TOMOGRAFIA", "TC": "TOMOGRAFIA", "CT": "TOMOGRAFIA",
+	"TACAR": "TOMOGRAFIA ALTA RESOLUCION TORAX",
 	"AXIAL": "", "COMPUTADA": "", "COMPUTARIZADA": "",
 	"ECO": "ECOGRAFIA", "US": "ECOGRAFIA", "ULTRASONOGRAFIA": "ECOGRAFIA", "ULTRASONIDO": "ECOGRAFIA",
 	"RX":  "RADIOGRAFIA",
@@ -61,12 +65,18 @@ var orderAbbreviations = map[string]string{
 	"EEG": "ELECTROENCEFALOGRAMA", "ELECTROENCEFALOGRAFIA": "ELECTROENCEFALOGRAMA",
 	"PETCT":     "PET TOMOGRAFIA",
 	"FISIATRIA": "FISICA REHABILITACION", "NEUROPEDIATRIA": "NEUROLOGIA PEDIATRICA",
-	"MMII": "MIEMBROS INFERIORES", "MMSS": "MIEMBROS SUPERIORES",
-	"DER": "DERECHA", "DCHA": "DERECHA", "DERECHO": "DERECHA", "IZQ": "IZQUIERDA", "IZQUIERDO": "IZQUIERDA",
-	"BILAT":    "BILATERAL",
-	"CEREBRAL": "CEREBRO", "ENCEFALO": "CEREBRO", "CRANEAL": "CRANEO",
+	// MIEMBRO y EXTREMIDAD son lo mismo en las órdenes y en el catálogo.
+	"MMII": "EXTREMIDADES INFERIORES", "MMSS": "EXTREMIDADES SUPERIORES",
+	"MIEMBRO": "EXTREMIDAD", "MIEMBROS": "EXTREMIDADES",
+	// Errata del catálogo (930860 «ELECTROMIOGRAFÍIA»).
+	"ELECTROMIOGRAFIIA": "ELECTROMIOGRAFIA",
+	"DER":               "DERECHA", "DCHA": "DERECHA", "DERECHO": "DERECHA", "IZQ": "IZQUIERDA", "IZQUIERDO": "IZQUIERDA",
+	"BILAT": "BILATERAL",
+	// Sinónimos de región y de columna en las órdenes de Neuro.
+	"CEREBRAL": "CEREBRO", "ENCEFALO": "CEREBRO", "CRANEAL": "CEREBRO", "CRANEO": "CEREBRO",
+	"TORACICA": "DORSAL", "LUMBOSACRA": "LUMBAR", "COXOFEMORAL": "CADERA", "HIPOFISIS": "SILLA TURCA",
 	"CONTRASTADA": "CONTRASTE", "CONTRASTADO": "CONTRASTE", "GADOLINIO": "CONTRASTE",
-	"PEDIATRICO": "PEDIATRICA", "PEDIATRIA": "PEDIATRICA",
+	"PEDIATRICO": "PEDIATRICA", "PEDIATRIA": "PEDIATRICA", "MAMARIA": "MAMA", "MAMAS": "MAMA",
 }
 
 // retrievalStopWords no aportan a la búsqueda de candidatos (encabezados de remisiones e interconsultas).
@@ -74,6 +84,29 @@ var retrievalStopWords = map[string]bool{
 	"INTERCONSULTA": true, "REMISION": true, "VALORACION": true, "SERVICIO": true, "ESPECIALIDAD": true,
 	"SOLICITUD": true, "ORDEN": true, "REFERENTE": true,
 }
+
+// orderNoise son palabras de la orden que no describen el procedimiento (prioridad, proyecciones): no
+// necesitan par en el candidato.
+var orderNoise = map[string]bool{
+	"AMB": true, "AMBULATORIO": true, "PRIORITARIO": true, "URGENTE": true,
+	"LATERAL": true, "LAT": true, "OBLICUA": true, "OBLICUAS": true, "PROYECCIONES": true, "VISTAS": true,
+	// Dónde se hace la EMG o la NC («4 EXTREMIDADES»): el catálogo la factura por extremidad o nervio.
+	"EXTREMIDAD": true, "EXTREMIDADES": true,
+}
+
+// catalogNoise son palabras del catálogo que anotan la forma de facturar o el equipo, no un procedimiento
+// distinto («EN CADA EXTREMIDAD», «CON TRANSDUCTOR DE 7 MHZ O MAS», «ULTRASONOGRAFÍA DIAGNÓSTICA», «CON
+// ELECTRODO», «AP, LATERAL»): el nombre leído no tiene que traerlas. Lo que va entre paréntesis o
+// corchetes también es anotación (catalogAnnotation). «VASOS» NO lo es («TOMOGRAFÍA COMPUTADA DE VASOS» es
+// una angio-TC): «VASOS ARTERIALES/VENOSOS» se reduce a ARTERIAL/VENOSO en orderPhrases.
+var catalogNoise = map[string]bool{
+	"CADA": true, "UNO": true, "MAS": true, "MHZ": true, "TRANSDUCTOR": true, "DIAGNOSTICA": true,
+	"ANALISIS": true, "ELECTRODO": true, "EXTREMIDAD": true, "EXTREMIDADES": true, "NERVIO": true, "LATERAL": true,
+}
+
+// catalogAnnotation es lo que el catálogo escribe entre paréntesis o corchetes: «(62)», «(UNO O MAS
+// MUSCULOS)», «(CADA NERVIO)», «[CARPOGRAMA]». No obliga al nombre leído a traerlo.
+var catalogAnnotation = regexp.MustCompile(`\([^)]*\)|\[[^\]]*\]`)
 
 // quantityMark es la cantidad de las órdenes («(#4)», «#16»): no es parte del nombre.
 var quantityMark = regexp.MustCompile(`#\s*\d+`)
@@ -137,16 +170,20 @@ func ResolveCupsByName(
 	if len(equal) == 1 {
 		return CupsNameResolution{Code: equal[0].Code, Name: equal[0].Name, Via: CupsNameViaEqual, Candidates: equal}
 	}
-	similar := nameCandidates(retrievalRead, catalog)
+	// La lista corta pone primero los que encajan: un nombre de catálogo con muchas anotaciones (la EMG
+	// «en cada extremidad (uno o más músculos)») puede quedar lejos por parecido y ser el único que encaja.
+	var fitting, rest []CupsCandidate
+	for _, c := range nameCandidates(retrievalRead, catalog) {
+		if candidateFits(canonRead, c.Name) {
+			fitting = append(fitting, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	similar := append(append([]CupsCandidate{}, fitting...), rest...)
 	res := CupsNameResolution{Candidates: similar[:min(len(similar), maxNameCandidates)]}
 	if len(res.Candidates) == 0 || choose == nil {
 		return res
-	}
-	var fitting []CupsCandidate
-	for _, c := range similar {
-		if candidateFits(canonRead, canonicalOrderName(c.Name)) {
-			fitting = append(fitting, c)
-		}
 	}
 	// Sin un único candidato que encaje no hay nada que confirmar: no se gasta la llamada.
 	if len(fitting) != 1 || !containsCode(res.Candidates, fitting[0].Code) {
@@ -173,7 +210,7 @@ func containsCode(list []CupsCandidate, code string) bool {
 func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 	var readWords []string
 	for _, w := range distinctiveWords(canonRead) {
-		if !retrievalStopWords[w] {
+		if !retrievalStopWords[w] && !orderNoise[w] {
 			readWords = append(readWords, w)
 		}
 	}
@@ -237,6 +274,10 @@ type qualifierGroup struct {
 	// numbers: el grupo son los números del nombre (cantidad de un paquete: «Paq. 1» frente a «Paq. 2»).
 	// Solo cuenta cuando los dos nombres traen números: el catálogo arrastra números sueltos («(62)»).
 	numbers bool
+	// exclusive: sus valores se excluyen de verdad (contraste, primera vez/control, pediátrica/adultos,
+	// lado, superior/inferior, vía, marcador del PET). Solo estos cuentan para la guarda de los CUPS con
+	// código: la región o la columna tienen sinónimos (CRÁNEO/CEREBRO, LUMBAR/LUMBOSACRA) y la decide H5.
+	exclusive bool
 }
 
 func words(values ...string) map[string]string {
@@ -256,17 +297,20 @@ var qualifierGroups = []qualifierGroup{
 	{values: words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
 		"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA"), readSilentOK: true},
 	{values: words("DOPPLER")},
-	{values: words("SIMPLE", "CONTRASTE"), silentAs: "SIMPLE"},
-	{values: words("PRIMERA=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL")},
-	{values: words("PEDIATRICA")},
-	{values: words("DERECHA", "IZQUIERDA", "BILATERAL"), readMayAdd: true},
-	{values: words("SUPERIOR", "SUPERIORES=SUPERIOR", "INFERIOR", "INFERIORES=INFERIOR")},
-	{values: words("TRANSRECTAL", "TRANSABDOMINAL", "TRANSVAGINAL", "TRANSFONTANELAR", "TRANSCRANEAL")},
-	{values: words("FLUOR=FDG", "FDG", "FLUORODESOXIGLUCOSA=FDG", "PSMA", "COLINA", "DOTATATE")},
+	{values: words("SIMPLE", "CONTRASTE"), silentAs: "SIMPLE", exclusive: true},
+	{values: words("PRIMERA=PRIMERA_VEZ", "VEZ=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL"), exclusive: true},
+	{values: words("PEDIATRICA", "ADULTO", "ADULTOS=ADULTO"), silentAs: "ADULTO", exclusive: true},
+	{values: words("DERECHA", "IZQUIERDA", "BILATERAL"), readMayAdd: true, exclusive: true},
+	// El leído puede precisar superior/inferior cuando el código del catálogo vale para cualquier
+	// extremidad (la EMG «en cada extremidad»).
+	{values: words("SUPERIOR", "SUPERIORES=SUPERIOR", "INFERIOR", "INFERIORES=INFERIOR"), readMayAdd: true, exclusive: true},
+	{values: words("TRANSRECTAL", "TRANSABDOMINAL", "TRANSVAGINAL"), exclusive: true},
+	{values: words("TRANSFONTANELAR", "TRANSCRANEAL")},
+	{values: words("FLUOR=FDG", "FDG", "FLUORODESOXIGLUCOSA=FDG", "PSMA", "COLINA", "DOTATATE"), exclusive: true},
 	{values: words("FUNCIONAL", "TRACTOGRAFIA", "ESPECTROSCOPIA", "PERFUSION")},
 	{values: words("CERVICAL", "DORSAL", "LUMBAR", "LUMBOSACRA", "SACRA", "SACRO=SACRA", "COCCIX")},
 	{prefix: true, values: words(
-		"CRANEO", "CEREBRO", "CARA", "ORBITA", "SENOS", "OIDO", "MASTOIDES", "HIPOFISIS", "SILLA",
+		"CEREBRO", "CARA", "ORBITA", "SENOS", "OIDO", "MASTOIDES", "SILLA",
 		"CUELLO", "COLUMNA", "TORAX", "ABDOMEN", "PELVIS", "HOMBRO", "BRAZO", "HUMERO", "CODO",
 		"ANTEBRAZO", "MUNECA", "MANO", "DEDOS", "CADERA", "MUSLO", "FEMUR", "RODILLA", "PIERNA", "TIBIA",
 		"TOBILLO", "PIE", "CALCANEO", "MAXILAR", "MANDIBULA", "PROSTATA", "TIROIDES", "MAMA", "RENAL",
@@ -330,13 +374,14 @@ func disjoint(a, b map[string]bool) bool {
 }
 
 // CupsNamesConflict dice si dos nombres se contradicen EXPLÍCITAMENTE: los dos mencionan un mismo grupo
-// (contraste, tipo de consulta, lado, superior/inferior, vía, marcador del PET, columna, región) con
-// valores distintos. Un nombre que no dice nada de un grupo no lo contradice: las órdenes abrevian.
+// excluyente (contraste, primera vez/control, pediátrica/adultos, lado, superior/inferior, vía,
+// marcador del PET) con valores distintos. Un nombre que no dice nada de un grupo no lo contradice (las
+// órdenes abrevian), y la región, la columna o la modalidad no cuentan: tienen sinónimos.
 func CupsNamesConflict(read, catalog string) bool {
 	r, c := canonicalOrderName(read), canonicalOrderName(catalog)
 	for _, g := range qualifierGroups {
-		if g.numbers {
-			continue // la cantidad de la orden («(#4)») no contradice al catálogo
+		if !g.exclusive {
+			continue
 		}
 		rv, cv := g.groupValues(r), g.groupValues(c)
 		if len(rv) > 0 && len(cv) > 0 && disjoint(rv, cv) {
@@ -346,11 +391,18 @@ func CupsNamesConflict(read, catalog string) bool {
 	return false
 }
 
-// candidateFits es la comparación estricta para aceptar un candidato elegido por el modelo (nombres ya
-// canónicos): en cada grupo los dos nombres dicen lo mismo, salvo que el leído puede precisar el lado
-// y que, en el contraste, no decir nada vale SIMPLE. Un candidato que añade PEDIÁTRICA, FUNCIONAL, una
-// región o un marcador que el leído no dice, no encaja.
-func candidateFits(canonRead, canonCand string) bool {
+// candidateFits es la comparación estricta para aceptar un candidato elegido por el modelo (canonRead ya
+// canónico; candName, el nombre del catálogo tal cual). Encaja si:
+//   - toda palabra de contenido del leído tiene su par en el candidato (igual, por prefijo, o por una
+//     abreviatura o sinónimo de orderAbbreviations): ANGIOTAC, GAMAGRAFÍA, BIOPSIA o DINÁMICA sin par
+//     descartan al candidato;
+//   - el candidato no trae palabras de contenido propias que el leído no diga (subtipo, región, vía:
+//     FIBRA ÚNICA, CERVICO DORSAL, PÍLORO), salvo sus anotaciones (catalogNoise y lo que va entre
+//     paréntesis);
+//   - en cada grupo de calificadores los dos dicen lo mismo: el leído puede precisar el lado o
+//     superior/inferior, el silencio en el contraste vale SIMPLE y en la pediatría, adultos.
+func candidateFits(canonRead, candName string) bool {
+	canonCand := canonicalOrderName(candName)
 	for _, g := range qualifierGroups {
 		rv, cv := g.groupValues(canonRead), g.groupValues(canonCand)
 		if g.silentAs != "" {
@@ -371,5 +423,37 @@ func candidateFits(canonRead, canonCand string) bool {
 			return false
 		}
 	}
-	return true
+	readContent := contentWords(canonRead, orderNoise)
+	if !allWordsIn(readContent, distinctiveWords(canonCand), prefixWord) {
+		return false
+	}
+	candCore := contentWords(canonicalOrderName(catalogAnnotation.ReplaceAllString(candName, " ")), catalogNoise)
+	return allWordsIn(candCore, distinctiveWords(canonRead), prefixWord)
+}
+
+// contentWords son las palabras distintivas de un nombre canónico que describen el procedimiento: sin
+// encabezados (retrievalStopWords), sin ruido (noise), sin números y sin las palabras de un grupo de
+// calificadores (esas las compara su grupo).
+func contentWords(canon string, noise map[string]bool) []string {
+	var out []string
+	for _, w := range distinctiveWords(canon) {
+		if retrievalStopWords[w] || noise[w] || strings.Trim(w, "0123456789") == "" || isQualifierWord(w) {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// isQualifierWord dice si la palabra es un valor de algún grupo de calificadores.
+func isQualifierWord(w string) bool {
+	for _, g := range qualifierGroups {
+		if g.numbers {
+			continue
+		}
+		if len(g.groupValues(w)) > 0 {
+			return true
+		}
+	}
+	return false
 }
