@@ -100,6 +100,8 @@ type WebhookHandler struct {
 	// nectarBridgeOn: el puente de Néctar está armado (main lo marca). Apagado, los avisos se
 	// acusan y se descartan (HandleNectarNotice).
 	nectarBridgeOn bool
+	// authLog acota los WARN de las firmas rechazadas: cualquiera puede provocarlos (A-09).
+	authLog *logSampler
 }
 
 // DeliveryTracker registra el resultado de ENTREGA de los envíos salientes (webhook outbound).
@@ -147,6 +149,7 @@ func NewWebhookHandler(birdClient *bird.Client, workerPool *worker.MessageWorker
 		notifyManager: notifyManager,
 		cfg:           cfg,
 		startedAt:     time.Now(),
+		authLog:       newAuthLogSampler(),
 	}
 }
 
@@ -325,7 +328,7 @@ func (h *WebhookHandler) verifyAndParse(w http.ResponseWriter, r *http.Request, 
 		// M1 (auditoría): NO loguear el body crudo — contiene PHI (teléfono/nombre/texto del paciente).
 		// Para correlacionar eventos idénticos basta un hash corto del cuerpo (sin exponer contenido).
 		sum := sha256.Sum256(body)
-		slog.Warn("invalid webhook signature",
+		h.authLog.Warn("invalid webhook signature",
 			"has_signature", signature != "",
 			"has_timestamp", timestamp != "",
 			"url", requestURL,
@@ -595,7 +598,7 @@ func (h *WebhookHandler) HandleConversation(w http.ResponseWriter, r *http.Reque
 		timestamp := r.Header.Get("MessageBird-Request-Timestamp")
 		requestURL := reconstructFullURL(r)
 		if !bird.VerifySignatureWithKey(secret, signature, timestamp, requestURL, body) {
-			slog.Warn("invalid conversation webhook signature",
+			h.authLog.Warn("invalid conversation webhook signature",
 				"has_signature", signature != "",
 				"has_timestamp", timestamp != "",
 				"url", requestURL,
@@ -690,7 +693,7 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 	if secret != "" {
 		requestURL := reconstructFullURL(r)
 		if !bird.VerifySignatureWithKey(secret, signature, timestamp, requestURL, body) {
-			slog.Warn("invalid voice webhook signature", "has_signature", signature != "")
+			h.authLog.Warn("invalid voice webhook signature", "has_signature", signature != "")
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}
@@ -827,7 +830,7 @@ func (h *WebhookHandler) HandleVoiceDTMF(w http.ResponseWriter, r *http.Request)
 	if secret != "" {
 		requestURL := reconstructFullURL(r)
 		if !bird.VerifySignatureWithKey(secret, signature, timestamp, requestURL, body) {
-			slog.Warn("invalid voice dtmf webhook signature", "has_signature", signature != "")
+			h.authLog.Warn("invalid voice dtmf webhook signature", "has_signature", signature != "")
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}

@@ -33,18 +33,19 @@ func RequestLogger(next http.Handler) http.Handler {
 }
 
 // InternalAuth middleware para endpoints internos (requiere X-API-Key header).
-// Si apiKey está vacío, rechaza TODOS los requests (fail-closed).
+// Si apiKey está vacío, rechaza TODOS los requests (fail-closed). Los WARN de rechazo van con tope.
 func InternalAuth(apiKey string) func(http.Handler) http.Handler {
+	authLog := newAuthLogSampler()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if apiKey == "" {
-				slog.Warn("internal API key not configured, rejecting request", "path", r.URL.Path)
+				authLog.Warn("internal API key not configured, rejecting request", "path", r.URL.Path)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			key := r.Header.Get("X-API-Key")
 			if subtle.ConstantTimeCompare([]byte(key), []byte(apiKey)) != 1 {
-				slog.Warn("security: invalid API key",
+				authLog.Warn("security: invalid API key",
 					"path", r.URL.Path,
 					"ip", r.RemoteAddr,
 					"has_key", key != "",
@@ -77,6 +78,7 @@ func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies)
 
 	var mu sync.Mutex
 	clients := make(map[string]*client)
+	exceededLog := newAuthLogSampler()
 
 	// Cleanup goroutine
 	go func() {
@@ -109,7 +111,7 @@ func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies)
 			c.count++
 			if c.count > maxRequests {
 				mu.Unlock()
-				slog.Warn("rate limit exceeded", "ip", ip, "path", r.URL.Path)
+				exceededLog.Warn("rate limit exceeded", "ip", ip, "path", r.URL.Path)
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 				return
 			}

@@ -356,7 +356,7 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 		requestURL, body); verr != nil {
 		sum := sha256.Sum256(body)
 		//nolint:gosec // G706: la URL sale del Host/X-Forwarded-* de una conexión HTTP que Go ya valida y slog cita los valores; es justo el dato que hay que cotejar con Néctar.
-		slog.Warn("nectar: aviso rechazado", "reason", verr.Error(), "url", requestURL,
+		h.authLog.Warn("nectar: aviso rechazado", "reason", verr.Error(), "url", requestURL,
 			"body_len", len(body), "body_sha256", hex.EncodeToString(sum[:])[:16])
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
