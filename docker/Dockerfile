@@ -1,3 +1,7 @@
+# syntax=docker/dockerfile:1.19
+# La línea de arriba fija el frontend de BuildKit que entiende `COPY --exclude` sin la variante «labs»
+# (verificado: 1.18 lo rechaza, 1.19 lo acepta). BuildKit lo baja de Docker Hub en el primer build.
+
 # === Stage 1: Build ===
 FROM golang:1.26-alpine AS builder
 
@@ -16,10 +20,15 @@ RUN go mod download
 # build, así que NO hay que pasar build-args: `docker compose up -d --build bot` sigue siendo el mismo
 # comando de siempre. Si el .git no estuviera disponible, queda "unknown" en vez de fallar el build.
 #
-# safe.directory: el .git copiado pertenece a otro usuario dentro del contenedor y git, si no, aborta
+# El .git NO se copia a la capa (`--exclude`): se monta solo durante el RUN, que no lo guarda. Así no
+# quedan en la caché del servidor `.git/config` (la URL del remoto, que puede llevar un token) ni las
+# ramas y reflogs locales.
+#
+# safe.directory: el .git montado pertenece a otro usuario dentro del contenedor y git, si no, aborta
 # con "dubious ownership".
-COPY . .
-RUN git config --global --add safe.directory /app && \
+COPY --exclude=.git . .
+RUN --mount=type=bind,source=.git,target=/app/.git \
+    git config --global --add safe.directory /app && \
     COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" && \
     BUILT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" && \
     echo "building commit=$COMMIT at $BUILT" && \
@@ -28,12 +37,14 @@ RUN git config --global --add safe.directory /app && \
       -o neuro-bot ./cmd/server
 
 # === Stage 2: Runtime ===
-# Versión fija de la base. Ghostscript abre los PDF que mandan los pacientes: se fija la rama 10.05 (`~`
-# admite los parches -rN que Alpine publica en esa rama, que son justo los de seguridad). Si Alpine la
-# retira, el build falla a la vista en vez de cambiar de versión en silencio.
-FROM alpine:3.21.9
+# Versión fija de la base. Ghostscript abre los PDF que mandan los pacientes: se fija la rama 10.08 (`~`
+# admite los parches -rN que Alpine publica en esa rama, que son justo los de seguridad). En 3.24 gs está
+# en `community`, con soporte solo hasta la siguiente versión estable de Alpine: REVISAR esta fijación (y
+# la imagen de bot-logs-init en el compose) en cada versión nueva de Alpine. Una rama sin soporte sigue
+# sirviendo su gs viejo sin error; el CI comprueba la versión mínima de gs (GS_MIN_VERSION en ci.yml).
+FROM alpine:3.24.3
 
-RUN apk --no-cache add ca-certificates tzdata wget 'ghostscript~10.05'
+RUN apk --no-cache add ca-certificates tzdata wget 'ghostscript~10.08'
 
 # El bot corre sin root: un PDF que lograra evadir -dSAFER no ejecuta como root dentro del contenedor.
 # UID/GID fijos (10001): el servicio bot-logs-init del compose deja el volumen de logs con ese dueño.

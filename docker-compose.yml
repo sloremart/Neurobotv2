@@ -52,7 +52,7 @@ services:
   # solo por stdout) y /api/internal/logs queda vacío. Corre en cada `up`, tarda un instante y termina; el
   # watcher lo ignora para no avisar de su salida.
   bot-logs-init:
-    image: alpine:3.21.9
+    image: alpine:3.24.3
     container_name: neuro_bot_logs_init
     user: "0:0"
     command: ["chown", "-R", "10001:10001", "/app/logs"]

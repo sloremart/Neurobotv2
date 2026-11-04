@@ -53,6 +53,32 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  # La imagen del bot abre los PDF de los pacientes con Ghostscript: debe correr sin root y con un gs
+  # que no sea más viejo que GS_MIN_VERSION. Una rama de Alpine sin soporte sigue sirviendo su gs viejo
+  # sin error, así que la fijación del Dockerfile sola no lo detecta. Subir GS_MIN_VERSION al mover la
+  # fijación de docker/Dockerfile.
+  image:
+    name: Imagen Docker (sin root, Ghostscript mínimo)
+    runs-on: ubuntu-latest
+    env:
+      GS_MIN_VERSION: "10.08.0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build de la imagen
+        run: docker build -f docker/Dockerfile -t neuro-bot:ci .
+
+      - name: Sin root y Ghostscript mínimo
+        run: |
+          uid=$(docker run --rm --entrypoint id neuro-bot:ci -u)
+          if [ "$uid" = "0" ]; then echo "::error::la imagen corre como root"; exit 1; fi
+          gs=$(docker run --rm --entrypoint gs neuro-bot:ci --version)
+          lowest=$(printf '%s\n%s\n' "$GS_MIN_VERSION" "$gs" | sort -V | head -1)
+          if [ "$lowest" != "$GS_MIN_VERSION" ]; then
+            echo "::error::Ghostscript $gs es más viejo que el mínimo $GS_MIN_VERSION"; exit 1
+          fi
+          echo "uid=$uid gs=$gs (mínimo $GS_MIN_VERSION)"
+
   # OPCIONAL (recomendado por ser datos de salud): sube hallazgos de seguridad
   # a la pestaña Security de GitHub como SARIF. Descomenta si quieres activarlo.
   #
