@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/api"
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -461,4 +462,23 @@ type staleRowsCtx struct {
 
 func (s staleRowsCtx) FindPendingOlderThan(context.Context, int) ([]localrepo.InboxRow, error) {
 	return s.rows, nil
+}
+
+// m2: un aviso que el pool todavía tiene en memoria (api.ErrNoticeInFlight) no se cierra ni se toma
+// por ilegible: su fila la cierra la copia en curso.
+func TestReplayNectarRow_InFlightLeavesRowPending(t *testing.T) {
+	f := &fakeReplay{dispatchErr: api.ErrNoticeInFlight}
+	row := localrepo.InboxRow{ID: "e-fly", RawBody: nectarInboundBody, MsgType: "nectar_notice"}
+	src := inboxReplaySource{nectar: f, repo: staleRows{fakeReplay: f, rows: []localrepo.InboxRow{row}}}
+	logged := captureLogs(t, func() {
+		if msgs, err := src.PendingOlderThan(context.Background(), 5); err != nil || len(msgs) != 0 {
+			t.Fatalf("msgs=%+v err=%v", msgs, err)
+		}
+	})
+	if len(f.done) != 0 {
+		t.Fatalf("la fila en vuelo no se cierra: %v", f.done)
+	}
+	if strings.Contains(logged, "level=ERROR") {
+		t.Errorf("un aviso en vuelo no es un error: %s", logged)
+	}
 }

@@ -685,6 +685,11 @@ func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage, contact bir
 // Con el puente apagado (vuelta a Bird) NO despacha nada, igual que HandleNectarNotice: procesar
 // una fila vieja podría tocar SIESA sin que el paciente reciba respuesta. Devuelve
 // bird.ErrNectarBridgeOff y el replay cierra la fila sin registrarla como error.
+//
+// Si el pool todavía tiene en memoria el mensaje o el comando de ese aviso (lo reencoló al perder el
+// candado), no lo despacha y devuelve ErrNoticeInFlight: repetir el contacto, la whitelist y el
+// enrutado antes del dedup podría reenviar botones pagados y cerrar la fila de una copia en curso.
+// La fila la cierra esa copia; si se pierde, el replay siguiente la retoma.
 func (h *WebhookHandler) DispatchNectarNotice(ctx context.Context, rawBody string) error {
 	if !h.nectarBridgeOn {
 		slog.Warn("nectar: fila del WAL descartada, el puente está apagado", "reason", "bridge_off")
@@ -694,8 +699,29 @@ func (h *WebhookHandler) DispatchNectarNotice(ctx context.Context, rawBody strin
 	if err != nil {
 		return err
 	}
+	if h.nectarNoticeInFlight(n.EventID) {
+		return ErrNoticeInFlight
+	}
 	h.dispatchNectar(ctx, n)
 	return nil
+}
+
+// ErrNoticeInFlight dice que el aviso de la fila del WAL sigue en memoria en el pool (DispatchNectarNotice).
+var ErrNoticeInFlight = errors.New("nectar: el aviso sigue en vuelo en el pool")
+
+// inFlightChecker es lo que el replay pregunta al pool (worker.MessageWorkerPool.IsInFlight).
+type inFlightChecker interface {
+	IsInFlight(id string) bool
+}
+
+// nectarNoticeInFlight dice si el pool que recibe los avisos tiene en memoria el de ese event_id.
+func (h *WebhookHandler) nectarNoticeInFlight(eventID string) bool {
+	var sink nectarDispatcher = h.workerPool
+	if h.nectarSink != nil {
+		sink = h.nectarSink
+	}
+	c, ok := sink.(inFlightChecker)
+	return ok && eventID != "" && c.IsInFlight(eventID)
 }
 
 // IsNectarInboxRow dice si una fila del WAL es un aviso de Néctar (y no un webhook de Bird).

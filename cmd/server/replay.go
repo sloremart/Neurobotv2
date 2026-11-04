@@ -59,11 +59,16 @@ type replayDeps struct {
 // deduplica por ID). Un aviso ilegible se cierra para no repetirlo en cada corrida. Con el puente
 // apagado (bird.ErrNectarBridgeOff) la fila también se cierra, sin Error: no se despachó nada, el
 // despachador ya dejó su Warn bridge_off, y al volver el puente no debe re-despacharse algo viejo.
+// Un aviso que el pool todavía tiene en memoria (api.ErrNoticeInFlight) no se toca: su fila la
+// cierra la copia en curso.
 func replayNectarRow(ctx context.Context, logPrefix string, row localrepo.InboxRow, r nectarReplayer, c inboxCloser) {
 	slog.Info(logPrefix+": re-despachando aviso de Néctar", "id", row.ID)
 	err := r.DispatchNectarNotice(ctx, row.RawBody)
 	switch {
 	case err == nil:
+		return
+	case errors.Is(err, api.ErrNoticeInFlight):
+		slog.Info(logPrefix+": aviso de Néctar todavía en vuelo, se deja", "id", row.ID)
 		return
 	case !errors.Is(err, bird.ErrNectarBridgeOff):
 		slog.Error(logPrefix+": aviso de Néctar ilegible", "id", row.ID, "error", err)

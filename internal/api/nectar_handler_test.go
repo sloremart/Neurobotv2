@@ -1397,3 +1397,40 @@ func TestHandleNectarNotice_ResolvedCarriesWhoClosedAndEscalated(t *testing.T) {
 		}
 	}
 }
+
+// inFlightSink es el pool falso que además dice qué avisos tiene todavía en memoria.
+type inFlightSink struct {
+	*sinkRecorder
+	ids map[string]bool
+}
+
+func (s inFlightSink) IsInFlight(id string) bool { return s.ids[id] }
+
+// m2: el replay no vuelve a enrutar un aviso que el pool todavía tiene en memoria. Con una
+// notificación pendiente, repetir el enrutado reenviaría los botones (envío pagado).
+func TestDispatchNectarNotice_InFlightIsNotRedispatched(t *testing.T) {
+	inbox := newMemInbox()
+	sink := &sinkRecorder{}
+	h := newNectarHandler(inbox, sink)
+	h.SetNectarSink(inFlightSink{sinkRecorder: sink, ids: map[string]bool{"e-fly": true}})
+	notify := newFakeNectarNotifier("nectar:77")
+	h.SetNectarNotifier(notify)
+
+	if err := h.DispatchNectarNotice(context.Background(), buttonBody("e-fly", "Confirmar")); !errors.Is(err, ErrNoticeInFlight) {
+		t.Fatalf("err = %v, quiero ErrNoticeInFlight", err)
+	}
+	if len(notify.responses) != 0 || len(notify.invalid) != 0 {
+		t.Fatalf("no se enruta: responses=%d invalid=%v", len(notify.responses), notify.invalid)
+	}
+	if m, _ := sink.counts(); m != 0 || inbox.isDone("e-fly") {
+		t.Fatalf("ni al pool ni se cierra la fila: enq=%d done=%v", m, inbox.isDone("e-fly"))
+	}
+
+	// Otro aviso, que no está en vuelo, se despacha como siempre.
+	if err := h.DispatchNectarNotice(context.Background(), buttonBody("e-new", "Confirmar")); err != nil {
+		t.Fatal(err)
+	}
+	if got := notify.waitResponse(t); got[1] != "confirm" {
+		t.Fatalf("respuesta = %v", got)
+	}
+}
