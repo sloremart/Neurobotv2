@@ -108,6 +108,14 @@ func cupsNameDoubtNote(name string, candidates []services.CupsCandidate) string 
 		"Candidatos del catálogo: %s. Verifica la orden y devuelve los CUPS correctos.", oneLine(name), strings.Join(parts, "; "))
 }
 
+// cupsReadDoubtNote es la nota del agente para dos lecturas de la misma orden que se parecen solo por
+// prefijo (services.CUPSEntry.ReadDoubtWith): pueden ser el mismo procedimiento u otro.
+func cupsReadDoubtNote(name, other string) string {
+	return fmt.Sprintf("POSIBLE MALA LECTURA DEL CUPS: la orden dice «%s» sin código y en otra hoja «%s». Pueden ser "+
+		"el mismo procedimiento o dos distintos (unilateral o bilateral). Verifica la orden y devuelve los CUPS correctos.",
+		oneLine(name), oneLine(other))
+}
+
 // cupsConflictNote es la nota del agente para un CUPS con código cuyo nombre leído contradice el del
 // catálogo (guarda de VALIDATE_OCR).
 func cupsConflictNote(cup services.CUPSEntry, catalogName string) string {

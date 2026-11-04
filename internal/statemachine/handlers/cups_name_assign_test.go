@@ -280,3 +280,29 @@ func TestValidateOCR_CapReachedWithoutCandidatesDiscards(t *testing.T) {
 		t.Errorf("sin candidatos no es duda: %q", res.UpdateCtx["escalation_note"])
 	}
 }
+
+// Un nombre de otra hoja parecido solo por prefijo al de la hoja 1 (unilateral o bilateral) es duda: va
+// al agente como posible mala lectura, sin asignarle código aunque el catálogo lo tenga igual.
+func TestValidateOCR_ReadDoubtGoesToAgentWithoutAssignment(t *testing.T) {
+	reader := &fakeCupsReader{}
+	cups := []services.CUPSEntry{
+		{Code: "890274", Name: "CONSULTA DE PRIMERA VEZ POR ESPECIALISTA EN NEUROLOGIA", Quantity: 1},
+		{Name: "RESONANCIA MAGNETICA DE CEREBRO", Quantity: 1, ReadDoubtWith: "RESONANCIA MAGNETICA DE CEREBROS"},
+	}
+	res, _, _ := runValidate(t, cups, "", reader)
+
+	if res.NextState != sm.StateEscalateToAgent ||
+		res.UpdateCtx[sm.CtxEscalationReason] != sm.EscalationReasonCupsPossibleMisread {
+		t.Fatalf("debe escalar como posible mala lectura: %s %v", res.NextState, res.UpdateCtx)
+	}
+	note := res.UpdateCtx["escalation_note"]
+	if !strings.Contains(note, "«RESONANCIA MAGNETICA DE CEREBRO»") || !strings.Contains(note, "«RESONANCIA MAGNETICA DE CEREBROS»") {
+		t.Fatalf("la nota nombra las dos lecturas: %q", note)
+	}
+	if res.UpdateCtx[sm.CtxOCRUnreadNames] != "RESONANCIA MAGNETICA DE CEREBRO" {
+		t.Fatalf("queda como procedimiento sin código en el resumen: %q", res.UpdateCtx[sm.CtxOCRUnreadNames])
+	}
+	if reader.choiceCalls != 0 {
+		t.Fatalf("no se gasta el modelo: %d llamadas", reader.choiceCalls)
+	}
+}

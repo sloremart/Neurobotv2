@@ -191,6 +191,10 @@ type CUPSEntry struct {
 	// OrderName es el nombre tal como venía en la orden cuando el código se asignó por nombre (Name pasa
 	// a ser el del catálogo); vacío si la orden traía el código.
 	OrderName string `json:"order_name,omitempty"`
+	// ReadDoubtWith es el nombre de otra hoja de la misma orden al que este se parece solo por prefijo
+	// (MIEMBRO frente a MIEMBROS: en CUPS es unilateral frente a bilateral). No se sabe si es el mismo
+	// procedimiento: VALIDATE_OCR lo manda a un agente, sin asignarle código.
+	ReadDoubtWith string `json:"read_doubt_with,omitempty"`
 }
 
 type CUPSGroup struct {
@@ -750,21 +754,30 @@ func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResul
 	return first, ferr
 }
 
-// addUncodedFrom añade a dst los procedimientos SIN código de src que dst no trae ya por nombre
-// (CompareCupsNames, o el mismo texto cuando no hay palabras distintivas con qué comparar).
+// addUncodedFrom añade a dst los procedimientos SIN código de src que dst no trae ya (compareReadNames).
+// El mismo procedimiento con otra redacción no se añade: la asignación por nombre lo vería como un
+// código repetido y mandaría la orden a un agente. El parecido solo por prefijo se añade marcado como
+// duda (ReadDoubtWith), para que no se descarte en silencio ni se le asigne un código.
 func addUncodedFrom(dst, src *OCRResult) {
 	if dst == nil || src == nil {
 		return
 	}
+	known := slices.Clone(dst.Cups)
 	for _, c := range src.Cups {
 		if strings.TrimSpace(c.Code) != "" || strings.TrimSpace(c.Name) == "" {
 			continue
 		}
-		known := slices.ContainsFunc(dst.Cups, func(d CUPSEntry) bool {
-			return strings.EqualFold(strings.TrimSpace(d.Name), strings.TrimSpace(c.Name)) ||
-				CompareCupsNames(d.Name, c.Name) != CupsNamesDiffer
-		})
-		if !known {
+		same := false
+		for _, d := range known {
+			switch compareReadNames(d.Name, c.Name) {
+			case CupsNamesEqual:
+				same = true
+			case CupsNamesByPrefix:
+				c.ReadDoubtWith = d.Name
+			case CupsNamesDiffer:
+			}
+		}
+		if !same {
 			dst.Cups = append(dst.Cups, c)
 		}
 	}

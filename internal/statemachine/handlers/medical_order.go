@@ -702,6 +702,11 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 			if name == "" {
 				continue
 			}
+			if cup.ReadDoubtWith != "" {
+				unreadNames = append(unreadNames, name)
+				doubts = append(doubts, cupsReadDoubtNote(name, cup.ReadDoubtWith))
+				continue
+			}
 			r := resolver.assignByName(ctx, cup)
 			if r.Code == "" {
 				unreadNames = append(unreadNames, name)

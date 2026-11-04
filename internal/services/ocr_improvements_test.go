@@ -606,3 +606,42 @@ func TestAnalyzeImage_ParsesInterconsultaMark(t *testing.T) {
 		t.Fatalf("interconsulta sin código: %+v", res.Cups)
 	}
 }
+
+// OCR-review R2-3 y revisión del lote C: de la lectura conjunta solo se añade lo que la primera hoja no
+// trae. El mismo procedimiento con otra redacción no entra; el parecido solo por prefijo queda en duda.
+func TestAddUncodedFrom_ComparesReadNames(t *testing.T) {
+	cases := []struct {
+		name, first, joint string
+		wantAdded          bool
+		wantDoubt          bool
+	}{
+		{"abreviatura", "RESONANCIA MAGNETICA DE CEREBRO", "RM CEREBRO", false, false},
+		{"sigla y artículo", "TOMOGRAFIA COMPUTADA DE CRANEO SIMPLE", "TAC DE CRANEO SIMPLE", false, false},
+		{"contraste en silencio vale simple", "RESONANCIA MAGNETICA DE COLUMNA LUMBAR SIMPLE", "RNM COLUMNA LUMBAR", false, false},
+		{"unilateral y bilateral", "EMG MIEMBRO INFERIOR", "EMG MIEMBROS INFERIORES", true, true},
+		{"por prefijo con otro calificador en silencio", "RM MIEMBRO INFERIOR SIMPLE", "RM MIEMBROS INFERIORES", true, true},
+		{"contraste distinto es otro", "RM CEREBRO", "RM CEREBRO CON CONTRASTE", true, false},
+		{"lado distinto es otro", "RM RODILLA DERECHA", "RM RODILLA IZQUIERDA", true, false},
+		{"primera vez y control son otros", "CONSULTA PRIMERA VEZ NEUROLOGIA", "CONSULTA CONTROL NEUROLOGIA", true, false},
+		{"otra región es otro", "RM CEREBRO", "RM RODILLA", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			first := &OCRResult{Cups: []CUPSEntry{{Code: "890274", Name: c.first}}}
+			addUncodedFrom(first, &OCRResult{Cups: []CUPSEntry{{Name: c.joint}}})
+			if added := len(first.Cups) == 2; added != c.wantAdded {
+				t.Fatalf("añadido = %v, quiero %v: %+v", added, c.wantAdded, first.Cups)
+			}
+			if !c.wantAdded {
+				return
+			}
+			got := first.Cups[1]
+			if got.Code != "" || (got.ReadDoubtWith != "") != c.wantDoubt {
+				t.Fatalf("entrada añadida: %+v, quiero duda = %v", got, c.wantDoubt)
+			}
+			if c.wantDoubt && got.ReadDoubtWith != c.first {
+				t.Fatalf("la duda nombra lo que trae la otra hoja: %q", got.ReadDoubtWith)
+			}
+		})
+	}
+}

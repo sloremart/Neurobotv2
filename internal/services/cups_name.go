@@ -2,6 +2,7 @@ package services
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -176,6 +177,35 @@ func hasUnknownSlash(text string) bool {
 // CupsNameKey es la forma canónica de un nombre de procedimiento (sin tildes, mayúsculas y abreviaturas
 // expandidas): sirve para reconocer el mismo procedimiento sin código escrito de dos maneras.
 func CupsNameKey(name string) string { return canonicalOrderName(name) }
+
+// compareReadNames compara dos nombres leídos de la misma orden sobre su forma canónica. Además de lo que
+// ve CompareCupsNames, cuenta como el mismo procedimiento lo que encaja salvo calificadores en silencio
+// (candidateFits: «RNM COLUMNA LUMBAR» y «RESONANCIA … LUMBAR SIMPLE»); si en eso alguna palabra solo
+// coincide por prefijo, sigue siendo duda.
+func compareReadNames(a, b string) CupsNameMatch {
+	ca, cb := canonicalOrderName(a), canonicalOrderName(b)
+	if m := CompareCupsNames(ca, cb); m != CupsNamesDiffer {
+		return m
+	}
+	if !candidateFits(ca, b, hasUnknownSlash(a)) && !candidateFits(cb, a, hasUnknownSlash(b)) {
+		return CupsNamesDiffer
+	}
+	wa, wb := distinctiveWords(ca), distinctiveWords(cb)
+	if prefixOnlyWord(wa, wb) || prefixOnlyWord(wb, wa) {
+		return CupsNamesByPrefix
+	}
+	return CupsNamesEqual
+}
+
+// prefixOnlyWord dice si alguna palabra de words solo tiene par en other por prefijo.
+func prefixOnlyWord(words, other []string) bool {
+	for _, w := range words {
+		if !slices.Contains(other, w) && allWordsIn([]string{w}, other, prefixWord) {
+			return true
+		}
+	}
+	return false
+}
 
 // firstVisitSuffix se suma al nombre leído de una interconsulta: es una consulta de primera vez.
 const firstVisitSuffix = " CONSULTA PRIMERA VEZ"
