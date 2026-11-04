@@ -65,3 +65,27 @@ func TestMaskPhonesOff_OnlyAffectsPhones(t *testing.T) {
 		t.Errorf("el nombre se redacta aunque el interruptor de teléfonos esté apagado, got %q", got)
 	}
 }
+
+// C-21: las claves de texto libre y de contacto que llegan a los logs (también en Debug) se
+// redactan; las que comparten nombre con datos del flujo (p. ej. "to" de una transición de
+// estado) no se tocan.
+func TestRedactLogAttr_FreeTextAndContactKeys(t *testing.T) {
+	SetMaskPhones(true)
+	cases := []struct{ key, in, want string }{
+		{"input", "1000000689", "[redactado: 10 caracteres]"},
+		{"last_input", "mi cédula es 1000000689", "[redactado: 23 caracteres]"},
+		{"email", "maria@example.com", "[redactado: 17 caracteres]"},
+		{"correo", "maria@example.com", "[redactado: 17 caracteres]"},
+		{"direccion", "Cra 1 # 2-3", "[redactado: 11 caracteres]"},
+		{"observaciones", "dolor lumbar", "[redactado: 12 caracteres]"},
+		{"numero_documento", "1000000689", "10***89"},
+		{"patient_phone", "+573103343616", "+573***3616"},
+		{"to", "ASK_DOCUMENT", "ASK_DOCUMENT"},
+		{"payload", "appt_confirm", "appt_confirm"},
+	}
+	for _, c := range cases {
+		if got := RedactLogAttr(c.key, c.in); got != c.want {
+			t.Errorf("RedactLogAttr(%q, %q) = %q, want %q", c.key, c.in, got, c.want)
+		}
+	}
+}

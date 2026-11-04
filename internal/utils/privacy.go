@@ -38,15 +38,21 @@ func MaskDocument(doc string) string {
 	return string(r[:2]) + "***" + string(r[len(r)-2:])
 }
 
-// sensitiveDocKeys / sensitivePhoneKeys son las claves de log que portan PII de salud (Ley 1581).
+// sensitiveDocKeys / sensitivePhoneKeys / sensitiveTextKeys son las claves de log que portan PII
+// de salud (Ley 1581). "to", "from" y "payload" no están: también nombran estados y botones.
 var (
 	sensitiveDocKeys = map[string]bool{
 		"doc": true, "cedula": true, "cédula": true, "document": true, "documento": true,
-		"num_id": true, "numid": true, "patient_doc": true,
+		"num_id": true, "numid": true, "numero_documento": true, "patient_doc": true,
 		"name": true, "nombre": true, "nombres": true, "patient_name": true, "paciente": true,
 	}
 	sensitivePhoneKeys = map[string]bool{
-		"phone": true, "telefono": true, "teléfono": true, "celular": true,
+		"phone": true, "telefono": true, "teléfono": true, "celular": true, "patient_phone": true,
+	}
+	sensitiveTextKeys = map[string]bool{
+		"text": true, "input": true, "last_input": true, "email": true, "correo": true,
+		"direccion": true, "dirección": true, "address": true,
+		"observacion": true, "observaciones": true, "observations": true,
 	}
 )
 
@@ -70,7 +76,7 @@ func RedactLogAttr(key, value string) string {
 		return MaskDocument(value)
 	case sensitivePhoneKeys[k]:
 		return MaskPhone(value)
-	case k == "text":
+	case sensitiveTextKeys[k]:
 		return MaskText(value)
 	}
 	return value
