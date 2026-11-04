@@ -82,3 +82,23 @@ func TestHandleTestVoiceCall_RespectsTestingWhitelist(t *testing.T) {
 		t.Fatal("se llamó a un teléfono fuera de la lista")
 	}
 }
+
+// TestHandleTestVoiceCall_BirdErrorNotEchoed: un fallo de Bird no le devuelve al cliente el cuerpo ni la
+// URL de Bird; el detalle queda en el log.
+func TestHandleTestVoiceCall_BirdErrorNotEchoed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"detail":"detalle-interno-de-bird"}`))
+	}))
+	t.Cleanup(srv.Close)
+	h := &InternalHandler{cfg: &config.Config{CenterName: "Centro"}, birdClient: bird.NewVoiceClientForTest(srv.URL)}
+	captureAdminErrors(t)
+
+	rec := postTestVoiceCall(h, "+573001112233")
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("código %d, quiero 502", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "detalle-interno") || strings.Contains(body, srv.URL) {
+		t.Errorf("el cuerpo repite el error de Bird: %s", body)
+	}
+}

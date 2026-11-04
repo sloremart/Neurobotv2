@@ -1275,7 +1275,15 @@ func (h *InternalHandler) HandleTestVoiceCall(w http.ResponseWriter, r *http.Req
 	})
 	if err != nil {
 		slog.Error("test voice call failed", "phone", utils.MaskPhone(req.Phone), "error", err)
-		http.Error(w, "call failed: "+err.Error(), http.StatusInternalServerError)
+		// El detalle (cuerpo y URL de Bird) queda en el log; al cliente, solo lo que puede accionar.
+		switch {
+		case errors.Is(err, bird.ErrIVRNotificationsDisabled):
+			http.Error(w, "call failed: ivr notifications disabled", http.StatusConflict)
+		case errors.Is(err, bird.ErrSendRateLimited):
+			http.Error(w, "call failed: rate limited", http.StatusTooManyRequests)
+		default:
+			http.Error(w, "call failed", http.StatusBadGateway)
+		}
 		return
 	}
 
