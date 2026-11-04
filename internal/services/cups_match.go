@@ -26,22 +26,44 @@ var genericProcedureWords = map[string]bool{
 // accentFolder quita tildes y diéresis (el texto ya va en mayúsculas).
 var accentFolder = strings.NewReplacer("Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U", "Ü", "U", "Ñ", "N")
 
-// CupsNamesMatch dice si dos nombres describen el MISMO procedimiento: cada palabra distintiva de uno
-// está en el otro, en los DOS sentidos (igualdad, o una es prefijo de la otra con 5+ letras: RODILLA ~
-// RODILLAS). Cualquier palabra distintiva de más o de menos —RODILLA frente a HOMBRO, SIMPLE frente a
-// CONTRASTE, PRIMERA VEZ frente a CONTROL, PEDIÁTRICA, SUPERIOR, TRANSRECTAL, PSMA, FUNCIONAL— hace que
-// no se parezcan. Sin palabras distintivas en alguno de los dos, no hay con qué comparar: false.
-func CupsNamesMatch(a, b string) bool {
+// CupsNameMatch es cuánto se parecen dos nombres de procedimiento (CompareCupsNames).
+type CupsNameMatch int
+
+const (
+	// CupsNamesDiffer indica alguna palabra distintiva de más o de menos: otro procedimiento.
+	CupsNamesDiffer CupsNameMatch = iota
+	// CupsNamesByPrefix indica las mismas palabras, pero alguna solo por prefijo de 5+ letras (singular y
+	// plural: MIEMBROS INFERIORES frente a MIEMBRO INFERIOR, que en CUPS es bilateral frente a
+	// unilateral). No basta para corregir: es duda.
+	CupsNamesByPrefix
+	// CupsNamesEqual indica las mismas palabras distintivas, iguales tras quitar tildes y mayúsculas. Es el
+	// mismo procedimiento.
+	CupsNamesEqual
+)
+
+// CompareCupsNames compara dos nombres por sus palabras distintivas, en los DOS sentidos. Cualquier
+// palabra distintiva de más o de menos —RODILLA frente a HOMBRO, SIMPLE frente a CONTRASTE, PRIMERA VEZ
+// frente a CONTROL, PEDIÁTRICA, SUPERIOR, TRANSRECTAL, PSMA, FUNCIONAL— da CupsNamesDiffer. Sin palabras
+// distintivas en alguno de los dos no hay con qué comparar: CupsNamesDiffer.
+func CompareCupsNames(a, b string) CupsNameMatch {
 	aw, bw := distinctiveWords(a), distinctiveWords(b)
-	return len(aw) > 0 && len(bw) > 0 && allWordsIn(aw, bw) && allWordsIn(bw, aw)
+	switch {
+	case len(aw) == 0 || len(bw) == 0:
+		return CupsNamesDiffer
+	case allWordsIn(aw, bw, sameWord) && allWordsIn(bw, aw, sameWord):
+		return CupsNamesEqual
+	case allWordsIn(aw, bw, prefixWord) && allWordsIn(bw, aw, prefixWord):
+		return CupsNamesByPrefix
+	}
+	return CupsNamesDiffer
 }
 
-// allWordsIn dice si cada palabra de words tiene su par en other.
-func allWordsIn(words, other []string) bool {
+// allWordsIn dice si cada palabra de words tiene su par en other según match.
+func allWordsIn(words, other []string, match func(a, b string) bool) bool {
 	for _, w := range words {
 		found := false
 		for _, o := range other {
-			if wordsMatch(w, o) {
+			if match(w, o) {
 				found = true
 				break
 			}
@@ -53,7 +75,10 @@ func allWordsIn(words, other []string) bool {
 	return true
 }
 
-func wordsMatch(a, b string) bool {
+func sameWord(a, b string) bool { return a == b }
+
+// prefixWord: iguales, o una es prefijo de la otra con 5+ letras (RODILLA ~ RODILLAS).
+func prefixWord(a, b string) bool {
 	if a == b {
 		return true
 	}

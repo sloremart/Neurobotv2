@@ -63,7 +63,28 @@ var siblingPairs = []struct {
 		domain.Procedure{Code: "870113", Name: "RADIOGRAFIA DE MAXILAR INFERIOR"},
 		domain.Procedure{Code: "870112", Name: "RADIOGRAFIA DE MAXILAR SUPERIOR"},
 	},
+	// Revisión ronda 3 (R2-1): bilateral frente a unilateral, solo por prefijo.
+	{
+		domain.Procedure{Code: "882317", Name: "ECOGRAFIA DOPPLER DE VASOS VENOSOS DE MIEMBROS INFERIORES"},
+		domain.Procedure{Code: "882318", Name: "ECOGRAFÍA DOPPLER DE VASOS VENOSOS DE MIEMBRO INFERIOR"},
+	},
+	{
+		domain.Procedure{Code: "882318", Name: "ECOGRAFÍA DOPPLER DE VASOS VENOSOS DE MIEMBRO INFERIOR"},
+		domain.Procedure{Code: "882317", Name: "ECOGRAFIA DOPPLER DE VASOS VENOSOS DE MIEMBROS INFERIORES"},
+	},
+	{
+		domain.Procedure{Code: "882309", Name: "ECOGRAFIA DOPPLER DE VASOS VENOSOS DE MIEMBROS SUPERIORES"},
+		domain.Procedure{Code: "882316", Name: "ECOGRAFIA DOPPLER DE VASOS VENOSOS DE MIEMBRO SUPERIOR"},
+	},
+	{
+		domain.Procedure{Code: "882316", Name: "ECOGRAFIA DOPPLER DE VASOS VENOSOS DE MIEMBRO SUPERIOR"},
+		domain.Procedure{Code: "882309", Name: "ECOGRAFIA DOPPLER DE VASOS VENOSOS DE MIEMBROS SUPERIORES"},
+	},
 }
+
+// prefixOnlyPairs son los pares cuyos nombres coinciden solo por prefijo (singular/plural, bilateral
+// frente a unilateral): con el código ausente el caso es DUDA y va al agente; nunca se corrige.
+var prefixOnlyPairs = map[string]bool{"882317": true, "882318": true, "882309": true, "882316": true}
 
 func withActive(p domain.Procedure, isActive bool) domain.Procedure {
 	p.IsActive = isActive
@@ -129,8 +150,33 @@ func TestValidateOCR_AbsentCodeIsNotCorrectedToARealSibling(t *testing.T) {
 	for _, pair := range siblingPairs {
 		catalog := []domain.Procedure{withActive(pair.sibling, true), otherProc}
 		res, sink, _ := runValidateWith(t, catalog, orderWith(pair.read), "", nil)
+		if prefixOnlyPairs[pair.read.Code] {
+			assertDoubtNotCorrected(t, res, sink, pair.read.Code)
+			continue
+		}
 		assertDiscardedAsToday(t, res, sink, pair.read.Code)
 	}
+}
+
+// assertDoubtNotCorrected: el código leído no se corrige; la orden pasa al agente como duda.
+func assertDoubtNotCorrected(t *testing.T, res *sm.StateResult, sink *observability.CaptureSink, read string) {
+	t.Helper()
+	if res.NextState != sm.StateEscalateToAgent || res.UpdateCtx[sm.CtxEscalationReason] != sm.EscalationReasonCupsPossibleMisread {
+		t.Errorf("%s: coincidencia solo por prefijo → duda: %s / %q", read, res.NextState, res.UpdateCtx[sm.CtxEscalationReason])
+	}
+	if sink.FindStep("agendar", "cups_corregido") != nil {
+		t.Errorf("%s: no puede corregirse", read)
+	}
+}
+
+// R2-1: la segunda lectura que apunta a un código cuyo nombre coincide solo por prefijo tampoco corrige:
+// es duda.
+func TestValidateOCR_SecondReadingWithPrefixOnlyNameIsADoubt(t *testing.T) {
+	read := domain.Procedure{Code: "882399", Name: "ECOGRAFIA DOPPLER DE VASOS VENOSOS DE MIEMBROS INFERIORES"}
+	unilateral := withActive(domain.Procedure{Code: "882318", Name: "ECOGRAFÍA DOPPLER DE VASOS VENOSOS DE MIEMBRO INFERIOR"}, true)
+	reader := &fakeCupsReader{code: "882318"}
+	res, sink, _ := runValidateWith(t, []domain.Procedure{unilateral, otherProc}, orderWith(read), testOrderURL, reader)
+	assertDoubtNotCorrected(t, res, sink, read.Code)
 }
 
 // 1b: si la segunda lectura devuelve el MISMO código leído, el código está confirmado y no se corrige

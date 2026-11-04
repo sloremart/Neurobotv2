@@ -419,8 +419,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - VALIDATE_OCR (`handlers/cups_resolve.go`): un código inactivo del catálogo se descarta sin más (es real). Uno
   fuera del catálogo o con otra especialidad pasa por la cascada: segunda lectura (con `ocr_order_url`, que vive solo
   en el paso encadenado; sin ella, sin nombre o con <25 s de mensaje se salta; si confirma el mismo código, se
-  descarta) → el MISMO procedimiento por nombre (`services.CupsNamesMatch`: palabras distintivas iguales en los dos
-  sentidos, números incluidos; región, lateralidad, contraste, primera vez/control… cuentan) con código a UN dígito
-  (único) → si hay mismos nombres sin ese dígito, o el código corregido ya está en la orden, agente
+  descarta) → el MISMO procedimiento por nombre (`services.CompareCupsNames`: palabras distintivas IGUALES en los dos
+  sentidos tras quitar tildes, números incluidos; región, lateralidad, contraste, primera vez/control… cuentan; si
+  solo coinciden por prefijo —singular/plural, bilateral/unilateral— es duda) con código a UN dígito (único) → si
+  hay mismos nombres sin ese dígito, solo por prefijo, o el código corregido ya está en la orden, agente
   (`cups_posible_mala_lectura`) → si no, se descarta. Las correcciones (`ocr_cups_corrections`, «CUPS corregidos» en
   el resumen del agente, `agendar/cups_corregido`) se borran al leer una orden nueva.
