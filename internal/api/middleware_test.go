@@ -535,3 +535,30 @@ func TestRequestLogger_KeepsFlush(t *testing.T) {
 		t.Error("statusRecorder debe exponer Unwrap para http.ResponseController")
 	}
 }
+
+// TestAuthFailureLimiter_PanicReturnsReservation: un handler que entra en pánico no se queda con el
+// intento reservado.
+func TestAuthFailureLimiter_PanicReturnsReservation(t *testing.T) {
+	panicking := true
+	handler := AuthFailureLimiter(1, time.Minute, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if panicking {
+			panic("fallo del handler")
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	serve := func() int {
+		req := httptest.NewRequest("GET", "/api/internal/sessions", nil)
+		req.RemoteAddr = "203.0.113.7:40001"
+		rec := httptest.NewRecorder()
+		func() {
+			defer func() { _ = recover() }()
+			handler.ServeHTTP(rec, req)
+		}()
+		return rec.Code
+	}
+	serve()
+	panicking = false
+	if got := serve(); got != http.StatusUnauthorized {
+		t.Fatalf("tras un pánico, el intento siguiente: código %d, quiero 401 (el pánico se quedó la reserva)", got)
+	}
+}

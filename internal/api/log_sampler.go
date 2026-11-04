@@ -7,7 +7,7 @@ import (
 )
 
 // Tope de las líneas que puede provocar una entrada sin autenticar (firma o clave mala, límite
-// superado, y la línea «request» de esas respuestas): por mensaje, authLogBurst líneas por
+// superado, y la línea «request» de toda respuesta de error): por mensaje, authLogBurst líneas por
 // authLogWindow, más un resumen al cerrar la ventana. Alcanza para diagnosticar una firma mal
 // configurada y deja el volumen del log de una inundación anónima acotado, no proporcional a ella.
 const (

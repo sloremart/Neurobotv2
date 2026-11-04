@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -100,12 +101,12 @@ func TestLogSampler_ReportsSuppressedInNextWindow(t *testing.T) {
 	}
 }
 
-// TestRequestLogger_RejectedRequestsAreCapped: la línea «request» de cada 401/429 también va con tope;
-// las demás respuestas se registran todas, como siempre (A-09).
+// TestRequestLogger_RejectedRequestsAreCapped: la línea «request» de cada 401 también va con tope; las
+// respuestas 2xx se registran todas, como siempre (A-09).
 func TestRequestLogger_RejectedRequestsAreCapped(t *testing.T) {
 	logs := captureWarnLog(t)
 	handler := RequestLogger(InternalAuth("clave-interna")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusNoContent)
 	})))
 	for range 200 {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/internal/sessions", nil))
@@ -123,7 +124,7 @@ func TestRequestLogger_RejectedRequestsAreCapped(t *testing.T) {
 	if got := strings.Count(logs.String(), "msg=request"); got != 20 {
 		t.Errorf("20 respuestas autenticadas dejaron %d líneas «request»; quiero 20", got)
 	}
-	if !strings.Contains(logs.String(), "status=404") {
+	if !strings.Contains(logs.String(), "status=204") {
 		t.Errorf("la línea «request» lleva el código de la respuesta:\n%s", logs.String())
 	}
 }
@@ -157,5 +158,23 @@ func TestLogSampler_SummaryAtWindowEnd(t *testing.T) {
 	s.Warn("rechazo A")
 	if got := strings.Count(logs.String(), "suppressed="); got != 1 {
 		t.Errorf("el total salió %d veces, quiero 1:\n%s", got, logs.String())
+	}
+}
+
+// TestRequestLogger_ErrorFloodIsCapped: cualquier código >= 400 se puede provocar sin límite (404 de rutas
+// inventadas, 405…): su línea «request» va con tope, una cuenta por código.
+func TestRequestLogger_ErrorFloodIsCapped(t *testing.T) {
+	logs := captureWarnLog(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/webhooks/nectar", func(http.ResponseWriter, *http.Request) {})
+	handler := RequestLogger(mux)
+	for i := range 200 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, fmt.Sprintf("/no-existe-%d", i), nil))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/webhooks/nectar", nil))
+	}
+	for _, code := range []string{"status=404", "status=405"} {
+		if got := strings.Count(logs.String(), code); got == 0 || got > authLogBurst {
+			t.Errorf("200 respuestas %s dejaron %d líneas; quiero entre 1 y %d", code, got, authLogBurst)
+		}
 	}
 }

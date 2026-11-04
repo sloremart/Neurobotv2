@@ -15,13 +15,25 @@ import (
 // maxRequestBodySize limits the size of incoming request bodies (1 MB).
 const maxRequestBodySize = 1 << 20
 
-// RequestLogger middleware para logging de requests (skips /health to reduce noise). Las respuestas
-// 401 y 429 las puede provocar cualquiera sin límite, así que su línea va con el tope de logSampler;
-// las demás se registran todas.
+// RequestLogger middleware para logging de requests (skips /health to reduce noise). Una respuesta de
+// error (>= 400: 401, 404 de una ruta inventada, 405, 429…) la puede provocar cualquiera sin límite,
+// así que su línea va con el tope de logSampler, con una cuenta por código; las 2xx y 3xx se
+// registran todas.
 func RequestLogger(next http.Handler) http.Handler {
-	rejected := map[int]*logSampler{
-		http.StatusUnauthorized:    newAuthLogSampler(),
-		http.StatusTooManyRequests: newAuthLogSampler(),
+	var mu sync.Mutex
+	errorLogs := map[int]*logSampler{} // por código: el conjunto está acotado (enteros de estado HTTP)
+	samplerFor := func(status int) *logSampler {
+		if status < http.StatusBadRequest {
+			return nil // sin tope
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		s, ok := errorLogs[status]
+		if !ok {
+			s = newAuthLogSampler()
+			errorLogs[status] = s
+		}
+		return s
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
@@ -31,7 +43,7 @@ func RequestLogger(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		rejected[rec.status].Info("request", // nil (otro código) = sin tope
+		samplerFor(rec.status).Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
@@ -172,12 +184,14 @@ func newRateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxi
 				return
 			}
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			defer func() { // también si el handler entra en pánico
+				if rec.status != http.StatusUnauthorized {
+					mu.Lock()
+					c.count--
+					mu.Unlock()
+				}
+			}()
 			next.ServeHTTP(rec, r)
-			if rec.status != http.StatusUnauthorized {
-				mu.Lock()
-				c.count--
-				mu.Unlock()
-			}
 		})
 	}
 }
