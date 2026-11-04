@@ -1867,3 +1867,30 @@ func TestProcessMessage_NectarEscalated_AckOnlyWhileAgentHasNotResponded(t *test
 		})
 	}
 }
+
+// Lo que un agente envía nunca vuelve a escalar por duda de nombre: una descripción con un procedimiento
+// sin código CUPS se le rechaza (pidiéndole el código) en vez de retomar con el paciente.
+func TestHandleAgentOrder_NoCodeIsRejectedAskingForTheCode(t *testing.T) {
+	sm := newMockSessionMgmt()
+	resumed := false
+	sm.resumeFn = func(context.Context, *session.Session, string) error { resumed = true; return nil }
+	sender := &mockMessageSender{}
+	pool := NewMessageWorkerPool(1, 10)
+	pool.SetDependencies(sm, sender, &mockMessageProcessor{})
+	pool.SetOCRService(&mockOCRAnalyzer{result: &services.OCRResult{Success: true, Cups: []services.CUPSEntry{
+		{Code: "883141", Name: "Resonancia cerebral simple", Quantity: 1},
+		{Code: "", Name: "Angiorresonancia cerebral", Quantity: 1},
+	}}})
+	sess := &session.Session{ID: "s", PhoneNumber: "+573001234567", ConversationID: "c", Context: map[string]string{}}
+
+	problem := pool.handleAgentOrder(context.Background(), sess, AgentCommand{Action: "orden", Data: "x", Phone: sess.PhoneNumber})
+	if problem == "" || !strings.Contains(problem, "Angiorresonancia cerebral") || !strings.Contains(problem, "CUPS") {
+		t.Fatalf("el agente recibe el rechazo con el nombre y el pedido del código: %q", problem)
+	}
+	if resumed {
+		t.Error("no se retoma con el paciente")
+	}
+	if _, ok := sess.Context["ocr_cups_json"]; ok {
+		t.Error("no se guarda la orden rechazada")
+	}
+}

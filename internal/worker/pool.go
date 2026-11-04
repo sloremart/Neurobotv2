@@ -1495,6 +1495,16 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		return "No se pudieron extraer procedimientos de la descripción; revísela o escriba los códigos CUPS."
 	}
 
+	// Un procedimiento sin código CUPS no se retoma con el paciente: la asignación por nombre de
+	// VALIDATE_OCR podría dejarlo en duda y la sesión volvería a escalar justo después de que el agente
+	// la devolvió. El agente ve la orden: se le rechaza el dato pidiéndole el código.
+	if missing := cupsWithoutCode(result.Cups); len(missing) > 0 {
+		problem := "La descripción trae procedimientos sin código CUPS (" + strings.Join(missing, "; ") +
+			"). Escriba el código CUPS de cada uno."
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, problem)
+		return problem
+	}
+
 	// 2. Serialize CUPS to JSON and store in session
 	cupsJSON, _ := json.Marshal(result.Cups)
 	sess.SetContext("ocr_cups_json", string(cupsJSON))
@@ -1545,6 +1555,17 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		})
 	}
 	return ""
+}
+
+// cupsWithoutCode son los nombres de los procedimientos leídos sin código CUPS.
+func cupsWithoutCode(cups []services.CUPSEntry) []string {
+	var out []string
+	for _, c := range cups {
+		if strings.TrimSpace(c.Code) == "" {
+			out = append(out, strings.TrimSpace(c.Name))
+		}
+	}
+	return out
 }
 
 // handleAgentCups injects CUPS codes directly without AI extraction.
