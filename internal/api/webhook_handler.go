@@ -747,8 +747,10 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 			case "ongoing":
 				// Call is active — send mid-call gather command (two-phase IVR). Una reentrega del
 				// mismo «ongoing» no manda otro gather (cada uno se cobra): la entrada sin commandID
-				// lo reserva mientras el primero está en vuelo, y se libera si ese envío falla.
-				if _, sent := h.voiceGatherCmds.LoadOrStore(callID, gatherEntry{storedAt: time.Now()}); sent {
+				// lo reserva mientras el primero está en vuelo, y se libera si ese envío falla (solo esa
+				// reserva: si entretanto otra entrega reservó de nuevo, la suya se respeta).
+				reservation := gatherEntry{storedAt: time.Now()}
+				if _, sent := h.voiceGatherCmds.LoadOrStore(callID, reservation); sent {
 					slog.Info("voice call ongoing again, gather already sent", "callId", callID)
 					break
 				}
@@ -757,7 +759,7 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 					defer recoverLog("voice-gather-send")
 					commandID, err := h.birdClient.SendGather(callID)
 					if err != nil {
-						h.voiceGatherCmds.Delete(callID)
+						h.voiceGatherCmds.CompareAndDelete(callID, reservation)
 						slog.Error("send gather failed", "callId", callID, "error", err)
 						return
 					}

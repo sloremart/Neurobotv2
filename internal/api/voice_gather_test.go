@@ -99,3 +99,39 @@ func TestVoiceWebhook_CompletedBeforeGatherIDTreatsAsNoGather(t *testing.T) {
 		t.Fatalf("una llamada sin gather no es un error: %v", lines)
 	}
 }
+
+// TestVoiceWebhook_GatherFailureReleasesReservation: si el gather falla, la reserva se libera y una
+// reentrega del «ongoing» lo vuelve a intentar.
+func TestVoiceWebhook_GatherFailureReleasesReservation(t *testing.T) {
+	var gathers atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/gather") && gathers.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"cmd-2"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := bird.NewVoiceClientForTest(srv.URL)
+	cfg := &config.Config{}
+	h := NewWebhookHandler(client, nil, notifications.NewNotificationManager(client, nil, cfg), cfg)
+	captureAdminErrors(t) // el fallo del primer gather se registra en ERROR, a propósito
+
+	body := `{"service":"channels","event":"voice.outbound","payload":{"id":"call-3","status":"ongoing"}}`
+	send := func() {
+		h.HandleVoiceWebhook(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/webhooks/voice", strings.NewReader(body)))
+	}
+	send()
+	waitFor(t, "la reserva se libera tras el fallo", func() bool {
+		_, ok := h.voiceGatherCmds.Load("call-3")
+		return gathers.Load() == 1 && !ok
+	})
+	send()
+	waitFor(t, "la reentrega registra el gather", func() bool {
+		val, ok := h.voiceGatherCmds.Load("call-3")
+		return ok && val.(gatherEntry).commandID == "cmd-2"
+	})
+	if got := gathers.Load(); got != 2 {
+		t.Fatalf("gathers = %d, quiero 2", got)
+	}
+}
