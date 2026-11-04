@@ -62,8 +62,9 @@ type OCRService struct {
 	// pdfToImages convierte hojas de un PDF a imágenes (Ghostscript en producción); inyectable para
 	// probar sin gs qué hojas van a Vision.
 	pdfToImages func(ctx context.Context, pdfPath string, first, last int) ([]string, error)
-	// pdfText extrae la capa de texto de un PDF (Ghostscript txtwrite en producción); inyectable.
-	pdfText func(ctx context.Context, pdfPath string) string
+	// pdfText extrae la capa de texto de un PDF, una entrada por hoja (Ghostscript txtwrite en
+	// producción); inyectable.
+	pdfText func(ctx context.Context, pdfPath string) []string
 }
 
 func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
@@ -661,13 +662,13 @@ func (s *OCRService) AnalyzeDocument(ctx context.Context, documentURL string) (*
 	// barato, más rápido y sin el riesgo de que un dígito se lea mal en la imagen. Salvaguarda: si del
 	// texto no sale ningún CUPS con código (o el análisis falla) se sigue con las imágenes, para que un
 	// escaneo con una capa de texto mala no lea peor que antes.
-	if text := s.pdfText(ctx, pdfPath); len(strings.Fields(text)) >= minPDFTextWords {
-		res, err := s.analyzeText(ctx, text)
+	if pages := s.pdfText(ctx, pdfPath); len(strings.Fields(strings.Join(pages, " "))) >= minPDFTextWords {
+		res, err := s.analyzeText(ctx, pages)
 		if err == nil && hasValidCUP(res) {
 			return res, nil
 		}
 		slog.Info("ocr: la capa de texto del pdf no dio CUPS con código; se leen las imágenes",
-			"words", len(strings.Fields(text)), "error", err)
+			"pages", len(pages), "error", err)
 	}
 
 	// Antes se leía la hoja 1 y solo si no traía CUP se miraban las demás. Un PDF cuya primera hoja
@@ -720,30 +721,60 @@ func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResul
 // unas pocas palabras sueltas del membrete) y hay que mirarlo como imagen. Una orden real ronda las 100.
 const minPDFTextWords = 40
 
-// pdfTextLayer extrae con Ghostscript (txtwrite, sin dependencias nuevas) el texto EMBEBIDO del PDF.
-// Vacío si no se pudo; el umbral de palabras lo aplica quien llama.
-func pdfTextLayer(ctx context.Context, pdfPath string) string {
-	outPath := pdfPath + ".txt"
-	defer func() { _ = os.Remove(outPath) }()
-	args := []string{"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=txtwrite", "-sOutputFile=" + outPath, pdfPath}
+// pdfTextLayer extrae con Ghostscript (txtwrite, sin dependencias nuevas) el texto EMBEBIDO del PDF,
+// una entrada por hoja (hasta maxOCRPages). txtwrite no separa las hojas en un solo archivo (no emite
+// salto de página; verificado con el Ghostscript de Alpine), así que se le pide un archivo por hoja con
+// %d en el nombre. nil si no se pudo; el umbral de palabras lo aplica quien llama.
+func pdfTextLayer(ctx context.Context, pdfPath string) []string {
+	outPattern := pdfPath + "-t%d.txt"
+	args := []string{
+		"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=txtwrite",
+		fmt.Sprintf("-dLastPage=%d", maxOCRPages), "-sOutputFile=" + outPattern, pdfPath,
+	}
 	//nolint:gosec // G204: binario fijo (gs); los argumentos son rutas temporales propias, no input externo
-	if out, err := exec.CommandContext(ctx, "gs", args...).CombinedOutput(); err != nil {
-		slog.Warn("no se pudo extraer la capa de texto del pdf", "error", err, "output_len", len(out))
-		return ""
+	out, err := exec.CommandContext(ctx, "gs", args...).CombinedOutput()
+	matches, _ := filepath.Glob(pdfPath + "-t*.txt")
+	for _, m := range matches {
+		defer func(p string) { _ = os.Remove(p) }(m)
 	}
-	data, err := os.ReadFile(outPath) //nolint:gosec // archivo temporal propio (derivado de pdfPath), no input externo
 	if err != nil {
-		return ""
+		slog.Warn("no se pudo extraer la capa de texto del pdf", "error", err, "output_len", len(out))
+		return nil
 	}
-	return strings.TrimSpace(string(data))
+	sort.Slice(matches, func(i, j int) bool { return pdfPageNum(matches[i]) < pdfPageNum(matches[j]) })
+	pages := make([]string, 0, len(matches))
+	for _, m := range matches {
+		data, rerr := os.ReadFile(m) //nolint:gosec // archivo temporal propio (glob derivado de pdfPath), no input externo
+		if rerr != nil {
+			return nil
+		}
+		pages = append(pages, strings.TrimSpace(string(data)))
+	}
+	return pages
 }
 
-// analyzeText corre el OCR de la orden sobre la capa de texto de un PDF (sin visión).
-func (s *OCRService) analyzeText(ctx context.Context, text string) (*OCRResult, error) {
+// multiPageInstruction es la instrucción de un documento de VARIAS hojas, igual para las imágenes
+// (AnalyzeImages) y para la capa de texto (analyzeText).
+const multiPageInstruction = "Este documento tiene VARIAS páginas y puede incluir HISTORIA CLÍNICA además de la(s) hoja(s) de FORMULACIÓN/orden. Extrae los CUPS SOLO de las hojas de orden/formulación (las que traen la tabla de procedimientos con su código). IGNORA la historia clínica. Si hay órdenes en varias páginas, inclúyelas todas."
+
+// analyzeText corre el OCR de la orden sobre la capa de texto de un PDF (sin visión). Con varias hojas
+// lleva la instrucción multipágina y cada hoja tras su marcador («--- HOJA N ---»), para que el modelo
+// distinga la historia clínica de la hoja de orden; con una sola, el mensaje de siempre.
+func (s *OCRService) analyzeText(ctx context.Context, pages []string) (*OCRResult, error) {
+	header := "Analiza esta orden médica y extrae los datos según las reglas indicadas."
+	body := strings.Join(pages, "\n")
+	if len(pages) > 1 {
+		header = multiPageInstruction
+		var b strings.Builder
+		for i, p := range pages {
+			fmt.Fprintf(&b, "--- HOJA %d ---\n%s\n", i+1, p)
+		}
+		body = strings.TrimSuffix(b.String(), "\n")
+	}
 	messages := []map[string]interface{}{
 		{"role": "system", "content": s.buildSystemPrompt()},
-		{"role": "user", "content": "Analiza esta orden médica y extrae los datos según las reglas indicadas.\n\n" +
-			"TEXTO DEL DOCUMENTO (extraído del propio PDF, es literal y fiable):\n" + text},
+		{"role": "user", "content": header + "\n\n" +
+			"TEXTO DEL DOCUMENTO (extraído del propio PDF, es literal y fiable):\n" + body},
 	}
 	return s.callOpenAI(ctx, messages)
 }
@@ -793,14 +824,15 @@ func pdfPagesToDataURIs(ctx context.Context, pdfPath string, first, last int) ([
 	return uris, nil
 }
 
-// pdfPageNum extrae el número de página del nombre "<pdf>-p<N>.jpg" (para ordenar las páginas).
+// pdfPageNum extrae el número de hoja del nombre "<pdf>-p<N>.jpg" (imagen) o "<pdf>-t<N>.txt" (texto),
+// para ordenar las hojas.
 func pdfPageNum(path string) int {
-	base := filepath.Base(path)
-	i := strings.LastIndex(base, "-p")
-	if i < 0 {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	i := strings.LastIndex(base, "-")
+	if i < 0 || i+2 > len(base) {
 		return 0
 	}
-	n, _ := strconv.Atoi(strings.TrimSuffix(base[i+2:], ".jpg"))
+	n, _ := strconv.Atoi(base[i+2:])
 	return n
 }
 
@@ -812,7 +844,7 @@ func (s *OCRService) AnalyzeImages(ctx context.Context, imageURLs []string) (*OC
 	defer cancel()
 
 	content := []map[string]interface{}{
-		{"type": "text", "text": "Este documento tiene VARIAS páginas y puede incluir HISTORIA CLÍNICA además de la(s) hoja(s) de FORMULACIÓN/orden. Extrae los CUPS SOLO de las hojas de orden/formulación (las que traen la tabla de procedimientos con su código). IGNORA la historia clínica. Si hay órdenes en varias páginas, inclúyelas todas."},
+		{"type": "text", "text": multiPageInstruction},
 	}
 	for _, u := range imageURLs {
 		content = append(content, visionImagePart(u))

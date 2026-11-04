@@ -120,7 +120,7 @@ func fakePages(svc *OCRService, n int) {
 		}
 		return uris, nil
 	}
-	svc.pdfText = func(context.Context, string) string { return "" }
+	svc.pdfText = func(context.Context, string) []string { return nil }
 }
 
 const (
@@ -208,8 +208,9 @@ func userText(body map[string]interface{}) string {
 // orderText es la capa de texto de una orden generada por un sistema (más de 40 palabras).
 var orderText = strings.Repeat("ORDEN MEDICA PACIENTE ", 15) + "890274 CONSULTA DE PRIMERA VEZ POR ESPECIALISTA EN NEUROLOGIA"
 
-// withTextLayer simula un PDF con capa de texto y cuenta cuántas veces se rasterizó.
-func withTextLayer(svc *OCRService, text string) *int {
+// withTextLayer simula un PDF con capa de texto (una hoja por elemento de pages) y cuenta cuántas
+// veces se rasterizó.
+func withTextLayer(svc *OCRService, pages ...string) *int {
 	rasterized := 0
 	fakePages(svc, 2)
 	images := svc.pdfToImages
@@ -217,7 +218,7 @@ func withTextLayer(svc *OCRService, text string) *int {
 		rasterized++
 		return images(ctx, path, first, last)
 	}
-	svc.pdfText = func(context.Context, string) string { return text }
+	svc.pdfText = func(context.Context, string) []string { return pages }
 	return &rasterized
 }
 
@@ -388,5 +389,56 @@ func TestReadCupsCode_PDFSendsEveryPage(t *testing.T) {
 func TestParseCupsCode_DropsQuantitySuffix(t *testing.T) {
 	if got := parseCupsCode(`{"cups": "891509-16", "confianza": "alta"}`); got != "891509" {
 		t.Errorf("código = %q, quería 891509", got)
+	}
+}
+
+// H2: un PDF de varias hojas con capa de texto se analiza con la MISMA instrucción multipágina del
+// camino de imágenes (descartar la historia clínica, juntar todas las órdenes) y el texto separado por
+// hoja, para que el modelo sepa qué hoja es cuál.
+func TestAnalyzeDocument_PDFTextLayerMultiPageUsesMultiPageInstruction(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, cupsPage1)
+	withTextLayer(svc, strings.Repeat("HISTORIA CLINICA EVOLUCION ", 15), orderText)
+
+	if _, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t)); err != nil {
+		t.Fatal(err)
+	}
+	text := userText(rec.bodies[0])
+	for _, want := range []string{multiPageInstruction, "--- HOJA 1 ---", "--- HOJA 2 ---"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("el texto multipágina debe traer %q:\n%s", want, text)
+		}
+	}
+	if strings.Index(text, "--- HOJA 1 ---") > strings.Index(text, "HISTORIA CLINICA EVOLUCION") || strings.Index(text, "--- HOJA 2 ---") > strings.Index(text, "890274") {
+		t.Errorf("cada hoja va tras su marcador:\n%s", text)
+	}
+}
+
+// H2: con una sola hoja todo queda como estaba: sin instrucción multipágina ni marcadores.
+func TestAnalyzeDocument_PDFTextLayerSinglePageUnchanged(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, cupsPage1)
+	withTextLayer(svc, orderText)
+
+	if _, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t)); err != nil {
+		t.Fatal(err)
+	}
+	want := "Analiza esta orden médica y extrae los datos según las reglas indicadas.\n\n" +
+		"TEXTO DEL DOCUMENTO (extraído del propio PDF, es literal y fiable):\n" + orderText
+	if got := userText(rec.bodies[0]); got != want {
+		t.Errorf("una hoja: el mensaje de siempre.\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// Las hojas convertidas se ordenan por su número, también las de texto (-t) y pasada la hoja 9.
+func TestPdfPageNum_ImagesAndTextPages(t *testing.T) {
+	cases := map[string]int{
+		"/tmp/order-123.pdf-p3.jpg":  3,
+		"/tmp/order-123.pdf-p10.jpg": 10,
+		"/tmp/order-123.pdf-t2.txt":  2,
+		"/tmp/order-123.pdf-t10.txt": 10,
+	}
+	for path, want := range cases {
+		if got := pdfPageNum(path); got != want {
+			t.Errorf("pdfPageNum(%s) = %d, quería %d", path, got, want)
+		}
 	}
 }
