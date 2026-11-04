@@ -628,9 +628,32 @@ func maskDigitRuns(s string) string { return digitRunRe.ReplaceAllString(s, "***
 // para diagnosticar, y el resto puede repetir datos del contacto.
 const warnBodyMax = 300
 
-// warnBody es el cuerpo de error de Bird tal como va a un WARN: recortado y sin dígitos largos.
+// jsonStringFieldRe captura un campo de texto de un JSON: "clave": "valor".
+var jsonStringFieldRe = regexp.MustCompile(`"([A-Za-z_]+)"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+
+// contactBodyKeys son las claves de contacto de los cuerpos de Bird que, además de las de la
+// política común (utils.IsSensitiveLogKey), llevan datos del paciente.
+var contactBodyKeys = map[string]bool{
+	"displayname": true, "firstname": true, "lastname": true, "fullname": true,
+	"identifier": true, "identifiervalue": true,
+}
+
+// maskContactFields enmascara el valor de cada campo de contacto del cuerpo, conservando la clave y
+// el resto (código y mensaje de Bird) para diagnosticar (R1-3).
+func maskContactFields(s string) string {
+	return jsonStringFieldRe.ReplaceAllStringFunc(s, func(field string) string {
+		m := jsonStringFieldRe.FindStringSubmatch(field)
+		if !utils.IsSensitiveLogKey(m[1]) && !contactBodyKeys[strings.ToLower(m[1])] {
+			return field
+		}
+		return `"` + m[1] + `":"` + utils.MaskText(m[2]) + `"`
+	})
+}
+
+// warnBody es el cuerpo de error de Bird tal como va a un WARN: sin los valores de contacto,
+// recortado y sin dígitos largos.
 func warnBody(body []byte) string {
-	r := []rune(string(body))
+	r := []rune(maskContactFields(string(body)))
 	if len(r) > warnBodyMax {
 		r = r[:warnBodyMax]
 	}

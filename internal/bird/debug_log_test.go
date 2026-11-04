@@ -124,3 +124,21 @@ func TestWarnErrorBody_Trimmed(t *testing.T) {
 		t.Errorf("el cuerpo del WARN se recorta a 300 caracteres: %s", out)
 	}
 }
+
+// R1-3: los valores de las claves de contacto del cuerpo de error se enmascaran aunque vengan al
+// principio; el código y el mensaje de Bird se conservan.
+func TestWarnBody_MasksContactValues(t *testing.T) {
+	body := `{"contact":{"displayName":"María López","firstName":"María","lastName":"López",` +
+		`"email":"maria@example.com","identifierValue":"maria.lopez"},"code":"InvalidPayload","message":"contact archived"}`
+	got := warnBody([]byte(body))
+	for _, leak := range []string{"María", "López", "maria@example.com", "maria.lopez"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("el WARN contiene %q: %s", leak, got)
+		}
+	}
+	for _, keep := range []string{"InvalidPayload", "contact archived", "displayName"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("el WARN conserva %q para diagnosticar: %s", keep, got)
+		}
+	}
+}
