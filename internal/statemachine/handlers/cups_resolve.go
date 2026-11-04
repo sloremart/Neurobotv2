@@ -42,11 +42,13 @@ import (
 // agente y emite `cups_corregido`. El paciente sigue confirmando la lista en CONFIRM_OCR_RESULT.
 
 // CupsCodeReader son las lecturas con el modelo de documento que usa VALIDATE_OCR (las implementa
-// services.OCRService): la segunda lectura del código de UN procedimiento (ReadCupsCode) y la elección
-// por nombre de un procedimiento sin código entre los candidatos del catálogo (ChooseCupsByName, solo
-// con confianza alta). Opcional: sin lector se saltan los dos pasos.
+// services.OCRService): la segunda lectura del código de UN procedimiento (ReadCupsCode, sobre las
+// imágenes de la orden que da OrderImages) y la elección por nombre de un procedimiento sin código entre
+// los candidatos del catálogo (ChooseCupsByName, solo con confianza alta). Opcional: sin lector se
+// saltan los dos pasos.
 type CupsCodeReader interface {
-	ReadCupsCode(ctx context.Context, documentURL, procedureName string) (string, error)
+	OrderImages(ctx context.Context, documentURL string) ([]string, error)
+	ReadCupsCode(ctx context.Context, images []string, procedureName string) (string, error)
 	ChooseCupsByName(ctx context.Context, readName string, candidates []services.CupsCandidate) (string, error)
 }
 
@@ -90,14 +92,18 @@ type cupsResolution struct {
 	candidates []domain.Procedure // los parecidos, de mayor a menor parecido (máx. maxCupsCandidates)
 }
 
-// cupsResolver resuelve los códigos de UNA pasada de VALIDATE_OCR. El catálogo entero se pide una
-// vez y solo si algún código lo necesita.
+// cupsResolver resuelve los códigos de UNA pasada de VALIDATE_OCR. El catálogo entero y las imágenes
+// de la orden se piden una vez y solo si algún código los necesita.
 type cupsResolver struct {
 	repo     repository.ProcedureRepository
 	reader   CupsCodeReader
 	orderURL string
 	catalog  []domain.Procedure
 	loaded   bool
+	// images: la orden ya bajada y convertida para la segunda lectura (imagesLoaded = ya se pidió con
+	// éxito). Un fallo no se guarda: el siguiente código lo vuelve a intentar, como antes.
+	images       []string
+	imagesLoaded bool
 	// firstVisits: las consultas de primera vez del catálogo, para las interconsultas (cups_name_assign.go).
 	firstVisits []domain.Procedure
 	// inOrder son los códigos (base) de la orden: los leídos y los ya corregidos.
@@ -216,7 +222,15 @@ func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
 		return ""
 	}
 	defer cancel()
-	code, err := r.reader.ReadCupsCode(ctx, r.orderURL, name)
+	if !r.imagesLoaded {
+		images, err := r.reader.OrderImages(ctx, r.orderURL)
+		if err != nil {
+			slog.Warn("segunda lectura del CUPS: no se pudo bajar la orden", "error", err)
+			return ""
+		}
+		r.images, r.imagesLoaded = images, true
+	}
+	code, err := r.reader.ReadCupsCode(ctx, r.images, name)
 	if err != nil {
 		slog.Warn("segunda lectura del CUPS falló", "error", err)
 		return ""

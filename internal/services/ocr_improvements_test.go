@@ -312,13 +312,24 @@ func jpegFileServer(t *testing.T) string {
 	return srv.URL + "/orden.jpg"
 }
 
+// readCupsCode es la segunda lectura como la hace VALIDATE_OCR: las imágenes de la orden y, con ellas,
+// la lectura del código.
+func readCupsCode(t *testing.T, svc *OCRService, documentURL, procedureName string) (string, error) {
+	t.Helper()
+	uris, err := svc.OrderImages(context.Background(), documentURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc.ReadCupsCode(context.Background(), uris, procedureName)
+}
+
 // H4: la segunda lectura pide UNA sola cosa —el código del procedimiento nombrado— con el modelo de
 // OPENAI_DOC_MODEL y la imagen en detalle alto.
 func TestReadCupsCode_DedicatedReadWithDocModel(t *testing.T) {
 	rec, svc := newRecordingOpenAI(t, `{"cups": "890274", "como_aparece": "89.02.74", "confianza": "alta"}`)
 	svc.SetDocumentModel("modelo-doc")
 
-	code, err := svc.ReadCupsCode(context.Background(), jpegFileServer(t), "CONSULTA NEUROLOGIA")
+	code, err := readCupsCode(t, svc, jpegFileServer(t), "CONSULTA NEUROLOGIA")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +353,7 @@ func TestReadCupsCode_DedicatedReadWithDocModel(t *testing.T) {
 // H4: sin modelo de documento configurado, la segunda lectura usa el modelo de siempre.
 func TestReadCupsCode_DefaultsToMainModel(t *testing.T) {
 	rec, svc := newRecordingOpenAI(t, `{"cups": "890274", "confianza": "media"}`)
-	if _, err := svc.ReadCupsCode(context.Background(), jpegFileServer(t), "X"); err != nil {
+	if _, err := readCupsCode(t, svc, jpegFileServer(t), "X"); err != nil {
 		t.Fatal(err)
 	}
 	if rec.bodies[0]["model"] != "test-model" {
@@ -358,7 +369,7 @@ func TestReadCupsCode_NeverGuesses(t *testing.T) {
 		`no es json`,
 	} {
 		_, svc := newRecordingOpenAI(t, content)
-		code, err := svc.ReadCupsCode(context.Background(), jpegFileServer(t), "X")
+		code, err := readCupsCode(t, svc, jpegFileServer(t), "X")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -373,7 +384,7 @@ func TestReadCupsCode_NeverGuesses(t *testing.T) {
 func TestReadCupsCode_PDFSendsEveryPage(t *testing.T) {
 	rec, svc := newRecordingOpenAI(t, `{"cups": "89.02.74", "confianza": "alta"}`)
 	fakePages(svc, 2)
-	code, err := svc.ReadCupsCode(context.Background(), pdfFileServer(t), "X")
+	code, err := readCupsCode(t, svc, pdfFileServer(t), "X")
 	if err != nil {
 		t.Fatal(err)
 	}

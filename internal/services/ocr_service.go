@@ -966,35 +966,41 @@ func (s *OCRService) AnalyzeText(ctx context.Context, description string) (*OCRR
 	return s.callOpenAI(ctx, messages)
 }
 
-// ReadCupsCode es la SEGUNDA LECTURA dedicada del código CUPS de UN procedimiento (tomada de hdg-bot,
-// donde el OCR general leyó 892262 donde decía 890262): se vuelve a mirar la orden con una sola tarea
-// —el código del procedimiento cuyo nombre se da— y con el modelo de docModel. Una imagen va tal cual; un
-// PDF, con todas sus hojas como en la lectura general (el procedimiento puede estar en cualquiera).
-// Devuelve solo el código; vacío = no se pudo leer con seguridad (nunca se adivina).
-func (s *OCRService) ReadCupsCode(ctx context.Context, documentURL, procedureName string) (string, error) {
+// OrderImages baja el adjunto de la orden y lo deja como lo ve Vision: una imagen va tal cual; un PDF,
+// con todas sus hojas como en la lectura general (el procedimiento puede estar en cualquiera). Vacío si
+// no es imagen ni PDF. Es la entrada de ReadCupsCode: quien lee varios códigos de la misma orden la pide
+// una vez y la reutiliza, sin volver a bajar ni a convertir el archivo.
+func (s *OCRService) OrderImages(ctx context.Context, documentURL string) ([]string, error) {
 	ctx, cancel := s.withAnalyzeBudget(ctx)
 	defer cancel()
 	fileData, err := s.downloadMedia(ctx, documentURL)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var uris []string
 	switch mimeType := http.DetectContentType(fileData); {
 	case strings.HasPrefix(mimeType, "image/"):
-		uris = []string{"data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(fileData)}
+		return []string{"data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(fileData)}, nil
 	case mimeType == "application/pdf":
 		pdfPath, err := writeTempPDF(fileData)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		defer func() { _ = os.Remove(pdfPath) }()
-		if uris, err = s.pdfToImages(ctx, pdfPath, 1, maxOCRPages); err != nil {
-			return "", err
-		}
+		return s.pdfToImages(ctx, pdfPath, 1, maxOCRPages)
 	}
+	return nil, nil
+}
+
+// ReadCupsCode es la SEGUNDA LECTURA dedicada del código CUPS de UN procedimiento (tomada de hdg-bot,
+// donde el OCR general leyó 892262 donde decía 890262): se vuelve a mirar la orden (sus imágenes, de
+// OrderImages) con una sola tarea —el código del procedimiento cuyo nombre se da— y con el modelo de
+// docModel. Devuelve solo el código; vacío = no se pudo leer con seguridad (nunca se adivina).
+func (s *OCRService) ReadCupsCode(ctx context.Context, uris []string, procedureName string) (string, error) {
 	if len(uris) == 0 {
 		return "", nil
 	}
+	ctx, cancel := s.withAnalyzeBudget(ctx)
+	defer cancel()
 	content := []map[string]interface{}{
 		{"type": "text", "text": "Transcribe el código CUPS del procedimiento: " + strings.TrimSpace(procedureName)},
 	}

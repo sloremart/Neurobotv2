@@ -15,19 +15,26 @@ import (
 
 // fakeCupsReader es la segunda lectura del código (H4) y la elección por nombre, guionizadas.
 type fakeCupsReader struct {
-	code     string
-	calls    int
-	lastURL  string
-	lastName string
+	code       string
+	calls      int
+	imageCalls int // cuántas veces se bajó y convirtió la orden (OrderImages)
+	lastURL    string
+	lastName   string
 
 	choice         string // lo que devuelve la elección por nombre ("" = sin confianza alta)
 	choiceCalls    int
 	lastCandidates []services.CupsCandidate
 }
 
-func (f *fakeCupsReader) ReadCupsCode(_ context.Context, documentURL, procedureName string) (string, error) {
+func (f *fakeCupsReader) OrderImages(_ context.Context, documentURL string) ([]string, error) {
+	f.imageCalls++
+	f.lastURL = documentURL
+	return []string{"data:image/jpeg;base64,orden"}, nil
+}
+
+func (f *fakeCupsReader) ReadCupsCode(_ context.Context, _ []string, procedureName string) (string, error) {
 	f.calls++
-	f.lastURL, f.lastName = documentURL, procedureName
+	f.lastName = procedureName
 	return f.code, nil
 }
 
@@ -152,6 +159,23 @@ func TestValidateOCR_CorrectedBySecondReading(t *testing.T) {
 	}
 	if res.UpdateCtx["ocr_skipped_count"] != "0" {
 		t.Errorf("lo corregido no cuenta como omitido: %q", res.UpdateCtx["ocr_skipped_count"])
+	}
+}
+
+// Varios códigos dudosos en la misma orden: la orden se baja y se convierte UNA vez por pasada y cada
+// segunda lectura reutiliza esas imágenes.
+func TestValidateOCR_SecondReadingReusesOrderImages(t *testing.T) {
+	reader := &fakeCupsReader{code: ""}
+	runValidate(t, []services.CUPSEntry{
+		{Code: "890279", Name: "CONSULTA PRIMERA VEZ NEUROLOGIA", Quantity: 1},
+		{Code: "883109", Name: "RESONANCIA MAGNETICA DE CEREBRO", Quantity: 1},
+	}, testOrderURL, reader)
+
+	if reader.calls != 2 {
+		t.Fatalf("una segunda lectura por código dudoso: %d", reader.calls)
+	}
+	if reader.imageCalls != 1 || reader.lastURL != testOrderURL {
+		t.Errorf("la orden se baja y se convierte una sola vez por pasada: %d veces (%q)", reader.imageCalls, reader.lastURL)
 	}
 }
 
