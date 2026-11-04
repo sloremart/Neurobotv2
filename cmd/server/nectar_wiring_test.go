@@ -53,6 +53,39 @@ func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
 	}
 }
 
+// C-18: con una URL en claro hacia un host real, la clave de servicio y la firma viajarían sin cifrar.
+func TestNectarWiring_InsecureURLDisablesBridge(t *testing.T) {
+	complete := func(url string) *config.Config {
+		return &config.Config{NectarBaseURL: url, NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n"}
+	}
+	for _, url := range []string{
+		"http://nectar.colibrixa.com",
+		"http://192.168.1.50:8080",
+		"ftp://nectar.colibrixa.com",
+		"nectar.colibrixa.com",
+		"nectar.colibrixa.com:443",
+		"https://",
+	} {
+		c, b, err := nectarBridgeFromConfig(complete(url))
+		if c != nil || b != nil || err == nil {
+			t.Errorf("%q: quería puente apagado y error: got %v %v %v", url, c, b, err)
+		}
+	}
+	for _, url := range []string{
+		"https://nectar.colibrixa.com",
+		"HTTPS://nectar.colibrixa.com",
+		"http://localhost:9999",
+		"http://127.0.0.1:9999",
+		"http://[::1]:9999",
+		"http://nectar-stub:9999", // docs/PRUEBA-LOCAL-NECTAR.md
+	} {
+		c, b, err := nectarBridgeFromConfig(complete(url))
+		if c == nil || b == nil || err != nil {
+			t.Errorf("%q: quería puente encendido: got %v %v %v", url, c, b, err)
+		}
+	}
+}
+
 func TestNectarHealth(t *testing.T) {
 	if got := nectarHealth(""); got != "none" {
 		t.Errorf("vacío = %q", got)

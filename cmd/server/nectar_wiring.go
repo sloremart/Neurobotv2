@@ -18,10 +18,14 @@ import (
 // nectarBridgeFromConfig arma el cliente y el puente de Néctar desde la configuración.
 // NECTAR_BASE_URL vacía → (nil, nil, nil): el bot sigue exactamente como con Bird. URL puesta pero
 // sin clave de servicio, sin secreto de ida o sin secreto de avisos → error y sin puente: main lo registra y sigue como
-// Bird, en vez de arrancar con un desvío que fallaría en cada envío.
+// Bird, en vez de arrancar con un desvío que fallaría en cada envío. Igual con una URL sin https que no
+// sea de un stub local: la clave de servicio viajaría en claro.
 func nectarBridgeFromConfig(cfg *config.Config) (*nectar.Client, bird.NectarBridge, error) {
 	if cfg.NectarBaseURL == "" {
 		return nil, nil, nil
+	}
+	if !nectar.SafeBaseURL(cfg.NectarBaseURL) {
+		return nil, nil, errors.New("NECTAR_BASE_URL tiene que usar https (en claro solo un host de pruebas local)")
 	}
 	client := nectar.NewClient(cfg.NectarBaseURL, cfg.NectarServiceKey, cfg.NectarRequestSecret)
 	// Sin NECTAR_NOTICE_SECRET todos los avisos de Néctar darían 401 sin que nadie se enterara.
