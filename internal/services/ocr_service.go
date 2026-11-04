@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -741,7 +742,32 @@ func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResul
 		// La primera hoja no mejora lo leído (o falló): se queda la lectura conjunta, que sí respondió.
 		return res, nil //nolint:nilerr // ferr se descarta a propósito: la lectura conjunta es válida
 	}
+	if err == nil {
+		// Gana la primera hoja, pero los procedimientos sin código que la lectura conjunta trajo de
+		// las otras hojas no se pierden: siguen a la asignación por nombre o a la nota del agente.
+		addUncodedFrom(first, res)
+	}
 	return first, ferr
+}
+
+// addUncodedFrom añade a dst los procedimientos SIN código de src que dst no trae ya por nombre
+// (CompareCupsNames, o el mismo texto cuando no hay palabras distintivas con qué comparar).
+func addUncodedFrom(dst, src *OCRResult) {
+	if dst == nil || src == nil {
+		return
+	}
+	for _, c := range src.Cups {
+		if strings.TrimSpace(c.Code) != "" || strings.TrimSpace(c.Name) == "" {
+			continue
+		}
+		known := slices.ContainsFunc(dst.Cups, func(d CUPSEntry) bool {
+			return strings.EqualFold(strings.TrimSpace(d.Name), strings.TrimSpace(c.Name)) ||
+				CompareCupsNames(d.Name, c.Name) != CupsNamesDiffer
+		})
+		if !known {
+			dst.Cups = append(dst.Cups, c)
+		}
+	}
 }
 
 // minPDFTextWords: por debajo de esto el PDF NO tiene una capa de texto útil (un escaneo trae cero o

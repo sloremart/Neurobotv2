@@ -509,6 +509,30 @@ func TestAnalyzeDocument_PDFMultiPageWithoutCodeTriesFirstPage(t *testing.T) {
 	}
 }
 
+// OCR-review R2-3: cuando gana la primera hoja, los procedimientos sin código que la lectura
+// conjunta trajo de las otras hojas no se pierden: siguen a la asignación por nombre o a la nota
+// del agente. El que la primera hoja ya trae (mismo nombre) no se duplica.
+func TestAnalyzeDocument_FirstPageWinsKeepsUncodedNamesFromOtherPages(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t)
+	rec.respond = func(body map[string]interface{}) string {
+		if len(imageParts(body)) > 1 {
+			return `{"cups": [{"cups_code": "", "cups_name": "CONSULTA NEUROLOGIA", "quantity": 1},
+				{"cups_code": "", "cups_name": "RESONANCIA CEREBRO SIMPLE", "quantity": 1}]}`
+		}
+		return cupsPage1
+	}
+	fakePages(svc, 2)
+
+	res, err := svc.AnalyzeDocument(context.Background(), pdfFileServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cups) != 2 || res.Cups[0].Code != "890274" ||
+		res.Cups[1].Code != "" || res.Cups[1].Name != "RESONANCIA CEREBRO SIMPLE" {
+		t.Fatalf("la hoja 1 más el nombre sin código de la otra hoja: %+v", res.Cups)
+	}
+}
+
 // Asignación por nombre: una llamada de SOLO TEXTO con el modelo de OPENAI_DOC_MODEL, con el nombre
 // leído y la lista corta; el código vale solo con confianza alta.
 func TestChooseCupsByName_TextOnlyWithDocModel(t *testing.T) {
