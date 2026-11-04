@@ -410,13 +410,17 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 ## OCR DE LA ORDEN (mejoras tomadas de hdg-bot, 2026-11-03; plan en `docs/PLAN-MEJORA-OCR-CUPS.md`)
 
 - Toda imagen a Vision pide `detail: "high"` (`visionImagePart`).
-- PDF: capa de texto primero (`gs -sDEVICE=txtwrite`, ≥40 palabras, sin visión); si de ahí no sale ningún CUPS con
-  código, o falla, se leen las imágenes: todas las hojas (máx. `maxOCRPages`) en UNA llamada y, si falla, solo la 1.ª.
+- PDF: capa de texto primero (`gs -sDEVICE=txtwrite`, un archivo por hoja; ≥40 palabras en total Y ≥20 en CADA
+  hoja; con varias hojas, la instrucción multipágina y «--- HOJA N ---»; el prompt avisa que puede venir del OCR del
+  escáner). Si alguna hoja no llega, o del texto no sale ningún CUPS con código, o falla: imágenes, todas las hojas
+  (máx. `maxOCRPages`) en UNA llamada y, si falla o no trae código, la 1.ª sola.
 - `OPENAI_DOC_MODEL` (por defecto `gpt-4.1`): modelo de la segunda lectura del código (`OCRService.ReadCupsCode`,
   una sola tarea; confianza baja → vacío, nunca adivina).
-- VALIDATE_OCR (`handlers/cups_resolve.go`): un código fuera del catálogo o con otra especialidad ya no se descarta
-  en silencio. Cascada: segunda lectura (con la URL de la orden, `ocr_order_url`, que vive solo en el paso
-  encadenado; sin ella o con <25 s de mensaje se salta) → nombre parecido en el catálogo con código a UN dígito
-  (único) → si hay parecidos sin ese dígito, agente (`cups_posible_mala_lectura`, nota con lo leído y los
-  candidatos) → sin parecidos, se descarta como antes. Corrige solo con dos señales; queda en
-  `ocr_cups_corrections` (resumen del agente, «CUPS corregidos») y en `agendar/cups_corregido`.
+- VALIDATE_OCR (`handlers/cups_resolve.go`): un código inactivo del catálogo se descarta sin más (es real). Uno
+  fuera del catálogo o con otra especialidad pasa por la cascada: segunda lectura (con `ocr_order_url`, que vive solo
+  en el paso encadenado; sin ella, sin nombre o con <25 s de mensaje se salta; si confirma el mismo código, se
+  descarta) → el MISMO procedimiento por nombre (`services.CupsNamesMatch`: palabras distintivas iguales en los dos
+  sentidos, números incluidos; región, lateralidad, contraste, primera vez/control… cuentan) con código a UN dígito
+  (único) → si hay mismos nombres sin ese dígito, o el código corregido ya está en la orden, agente
+  (`cups_posible_mala_lectura`) → si no, se descarta. Las correcciones (`ocr_cups_corrections`, «CUPS corregidos» en
+  el resumen del agente, `agendar/cups_corregido`) se borran al leer una orden nueva.
