@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -142,17 +143,95 @@ func TestSend_FreshKeyOutsideTheInDoubtRetry(t *testing.T) {
 	})
 }
 
-// M-1: la clave en duda se reutiliza UNA vez (el único reintento del worker). Si ese reintento
-// también queda en duda no se vuelve a guardar: un envío igual posterior es otro mensaje.
-func TestSend_InDoubtKeyIsReusedOnlyOnce(t *testing.T) {
-	f := newFakeSlowSend(t, http.StatusGatewayTimeout, http.StatusGatewayTimeout, http.StatusOK)
+// La clave en duda acompaña a los MaxSendRetries reintentos del worker aunque cada uno vuelva a quedar
+// en duda; pasado el tope ya no se guarda: un envío igual posterior es otro mensaje.
+func TestSend_InDoubtKeyCoversEveryRetry(t *testing.T) {
+	f := newFakeSlowSend(t, http.StatusGatewayTimeout, http.StatusBadGateway, http.StatusTooManyRequests, http.StatusOK)
 	c := newSlowSendClient(f)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < MaxSendRetries+2; i++ {
 		_, _ = c.SendText(context.Background(), 1234, "hola")
 	}
 	keys := f.sentKeys()
-	if len(keys) != 3 || keys[1] != keys[0] || keys[2] == keys[1] {
+	if len(keys) != MaxSendRetries+2 {
 		t.Fatalf("claves = %v", keys)
+	}
+	for i := 1; i <= MaxSendRetries; i++ {
+		if keys[i] != keys[0] {
+			t.Fatalf("el reintento %d cambió de clave: %v", i, keys)
+		}
+	}
+	if keys[MaxSendRetries+1] == keys[0] {
+		t.Fatalf("pasado el tope es otro mensaje: %v", keys)
+	}
+}
+
+// Solo es reintentable lo que pudo no salir: transporte, 5xx y 429. Un 4xx no deja clave en duda.
+func TestRetryableSend_Classification(t *testing.T) {
+	for status, want := range map[int]bool{
+		http.StatusInternalServerError: true,
+		http.StatusBadGateway:          true,
+		http.StatusServiceUnavailable:  true,
+		http.StatusGatewayTimeout:      true,
+		http.StatusTooManyRequests:     true,
+		http.StatusBadRequest:          false,
+		http.StatusForbidden:           false,
+		http.StatusConflict:            false,
+		http.StatusNotFound:            false,
+		http.StatusFound:               false,
+		http.StatusOK:                  false, // cuerpo ilegible: ya salió
+	} {
+		f := newFakeSlowSend(t, status)
+		c := newSlowSendClient(f)
+		_, err := c.SendText(context.Background(), 1234, "hola")
+		if status == http.StatusOK {
+			err = errors.New("nectar: leer respuesta")
+		}
+		if got := RetryableSend(err); got != want {
+			t.Errorf("status %d: RetryableSend = %v (err %v)", status, got, err)
+		}
+		if !want && status != http.StatusOK {
+			_, _ = c.SendText(context.Background(), 1234, "hola")
+			if keys := f.sentKeys(); keys[0] == keys[1] {
+				t.Errorf("status %d: no debía dejar clave en duda: %v", status, keys)
+			}
+		}
+	}
+	f := newFakeSlowSend(t, 0) // tarda más que el timeout del cliente
+	if _, err := newSlowSendClient(f).SendText(context.Background(), 1234, "hola"); !RetryableSend(err) {
+		t.Errorf("el timeout es reintentable: %v", err)
+	}
+}
+
+// B-04: el error del 429 expone la espera de su Retry-After, en segundos o como fecha.
+func TestRetryAfter_ExposedOn429(t *testing.T) {
+	inTwoMinutes := time.Now().Add(2 * time.Minute).UTC().Format(http.TimeFormat)
+	cases := []struct {
+		name, header string
+		status       int
+		min, max     time.Duration
+	}{
+		{"segundos", "30", http.StatusTooManyRequests, 30 * time.Second, 30 * time.Second},
+		{"fecha", inTwoMinutes, http.StatusTooManyRequests, 100 * time.Second, 2 * time.Minute},
+		{"sin cabecera", "", http.StatusTooManyRequests, 0, 0},
+		{"ilegible", "pronto", http.StatusTooManyRequests, 0, 0},
+		{"negativo", "-5", http.StatusTooManyRequests, 0, 0},
+		{"enorme", "9223372036854775807", http.StatusTooManyRequests, maxParsedRetryAfter, maxParsedRetryAfter},
+		{"un 503 no cuenta", "30", http.StatusServiceUnavailable, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+			_, err := NewClient(srv.URL, svcKey, reqSecret).SendText(context.Background(), 1234, "hola")
+			if got := RetryAfter(fmt.Errorf("envuelto: %w", err)); got < tc.min || got > tc.max {
+				t.Fatalf("RetryAfter = %v, quiero [%v, %v]", got, tc.min, tc.max)
+			}
+		})
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -71,16 +72,20 @@ type Client struct {
 	inDoubt   map[string]inDoubtKey
 }
 
-// inDoubtKey es la clave de un envío en duda y hasta cuándo se reutiliza.
+// inDoubtKey es la clave de un envío en duda, hasta cuándo se reutiliza y cuántos reintentos la llevan ya.
 type inDoubtKey struct {
 	key     string
 	expires time.Time
+	retries int
 }
 
-// inDoubtKeyTTL es cuánto se reutiliza la clave de un envío en duda. Cubre el único reintento del
-// worker (retrySend, 10 s después de un intento que puede tardar los 15 s del timeout) con margen,
+// MaxSendRetries es el tope de reintentos de un envío por conversación (los hace el worker, retrySend).
+const MaxSendRetries = 2
+
+// inDoubtKeyTTL es cuánto se reutiliza la clave de un envío en duda, contado desde el último intento
+// fallido. Cubre la mayor espera del worker entre reintentos (60 s, un Retry-After al tope) con margen,
 // y es corto para que un mensaje igual de un turno posterior salga como mensaje nuevo.
-const inDoubtKeyTTL = time.Minute
+const inDoubtKeyTTL = 90 * time.Second
 
 // NewClient arma el cliente de las rutas /api/bot/* de Néctar. baseURL es la raíz pública (se le
 // quita la barra final), serviceKey la clave de servicio y requestSecret el secreto de ida.
@@ -393,7 +398,7 @@ func (c *Client) SendTemplate(ctx context.Context, conversationID int64, tmpl Te
 // send acuña una idempotency_key por mensaje, SALVO en el reintento de un envío en duda.
 //
 // Un fallo no permanente (timeout, corte, 502/504 de un proxy) puede haber llegado a Néctar, y el
-// worker lo reintenta (retrySend) llamando de nuevo con el mismo contenido. Ese reintento viaja con
+// worker lo reintenta (retrySend) llamando de nuevo con el mismo contenido. Cada reintento viaja con
 // la MISMA clave: Néctar la encuentra en la conversación y contesta con el mensaje original sin
 // encolar otro (contrato: el índice único (conversation_id, idempotency_key) y «el reintento
 // idempotente no escribe otro»). Con una clave nueva el paciente lo recibiría dos veces. El
@@ -401,15 +406,13 @@ func (c *Client) SendTemplate(ctx context.Context, conversationID int64, tmpl Te
 // envío» es la misma conversación con el mismo cuerpo dentro de inDoubtKeyTTL.
 func (c *Client) send(ctx context.Context, conversationID int64, req sendRequest) (int64, error) {
 	fingerprint := sendFingerprint(conversationID, req)
-	key, reused := c.takeInDoubtKey(fingerprint)
+	key, retries := c.takeInDoubtKey(fingerprint)
 	req.IdempotencyKey = key
 	var out struct {
 		ID int64 `json:"id"`
 	}
 	err := c.do(ctx, http.MethodPost, c.convPath(conversationID, "messages"), req, &out)
-	if !reused {
-		c.rememberInDoubtKey(fingerprint, key, err)
-	}
+	c.rememberInDoubtKey(fingerprint, key, retries, err)
 	return out.ID, err
 }
 
@@ -425,11 +428,10 @@ func sendFingerprint(conversationID int64, req sendRequest) string {
 	return strconv.FormatInt(conversationID, 10) + ":" + hex.EncodeToString(sum[:])
 }
 
-// takeInDoubtKey CONSUME la clave en duda vigente de ese envío (reused=true) o acuña una nueva. Un
-// solo uso: es la del único reintento del worker, y si ese reintento vuelve a quedar en duda no se
-// guarda otra vez, así que un envío igual posterior sale como mensaje nuevo. De paso descarta las
-// vencidas: el mapa solo guarda fallos de los últimos inDoubtKeyTTL.
-func (c *Client) takeInDoubtKey(fingerprint string) (key string, reused bool) {
+// takeInDoubtKey CONSUME la clave en duda vigente de ese envío y dice qué reintento es este, o acuña
+// una nueva (retries=0). De paso descarta las vencidas: el mapa solo guarda fallos de los últimos
+// inDoubtKeyTTL.
+func (c *Client) takeInDoubtKey(fingerprint string) (key string, retries int) {
 	c.inDoubtMu.Lock()
 	defer c.inDoubtMu.Unlock()
 	now := c.now()
@@ -440,15 +442,16 @@ func (c *Client) takeInDoubtKey(fingerprint string) (key string, reused bool) {
 	}
 	if k, ok := c.inDoubt[fingerprint]; ok && fingerprint != "" {
 		delete(c.inDoubt, fingerprint)
-		return k.key, true
+		return k.key, k.retries + 1
 	}
-	return uuid.NewString(), false
+	return uuid.NewString(), 0
 }
 
-// rememberInDoubtKey guarda la clave de un envío con clave nueva que quedó en duda (lo que el worker
-// reintenta: todo fallo no permanente). Si salió o se rechazó para siempre no hay nada que guardar.
-func (c *Client) rememberInDoubtKey(fingerprint, key string, err error) {
-	if fingerprint == "" || err == nil || bird.IsPermanentSendError(err) {
+// rememberInDoubtKey guarda la clave de un envío que quedó en duda, para su siguiente reintento (lo
+// que el worker reintenta: RetryableSend). Si salió, se rechazó o ya agotó MaxSendRetries no hay nada
+// que guardar, así que un envío igual posterior sale como mensaje nuevo.
+func (c *Client) rememberInDoubtKey(fingerprint, key string, retries int, err error) {
+	if fingerprint == "" || retries >= MaxSendRetries || !RetryableSend(err) {
 		return
 	}
 	c.inDoubtMu.Lock()
@@ -456,7 +459,27 @@ func (c *Client) rememberInDoubtKey(fingerprint, key string, err error) {
 	if c.inDoubt == nil {
 		c.inDoubt = map[string]inDoubtKey{}
 	}
-	c.inDoubt[fingerprint] = inDoubtKey{key: key, expires: c.now().Add(inDoubtKeyTTL)}
+	c.inDoubt[fingerprint] = inDoubtKey{key: key, expires: c.now().Add(inDoubtKeyTTL), retries: retries}
+}
+
+// RetryableSend dice si vale la pena reintentar un envío: un fallo de transporte, un 5xx o un 429. Lo
+// demás (un 4xx o una respuesta 2xx ilegible) fallaría igual o ya salió.
+func RetryableSend(err error) bool {
+	var transport *transportError
+	if errors.As(err, &transport) {
+		return true
+	}
+	var status *statusError
+	return errors.As(err, &status) && (status.status >= 500 || status.status == http.StatusTooManyRequests)
+}
+
+// RetryAfter es la espera que pidió el 429 de un envío con su cabecera Retry-After (0 si no pidió).
+func RetryAfter(err error) time.Duration {
+	var status *statusError
+	if errors.As(err, &status) {
+		return status.retryAfter
+	}
+	return 0
 }
 
 // Close llama a POST /api/bot/conversations/{id}/close — cierre por inactividad del bot.
@@ -612,7 +635,7 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		if replyReason(raw) == "escalation_disabled" {
 			return ErrEscalationDisabled
 		}
-		return newStatusError(resp.status, raw,
+		return newStatusError(resp,
 			fmt.Sprintf("nectar: %s %s: status 403 %s", method, path, bodySnippet(raw)))
 	case resp.status == http.StatusConflict:
 		switch replyReason(raw) {
@@ -621,10 +644,10 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		case "idempotency_key_reused":
 			return ErrIdempotencyReused
 		}
-		return newStatusError(resp.status, raw,
+		return newStatusError(resp,
 			fmt.Sprintf("nectar: %s %s: 409 %s", method, path, bodySnippet(raw)))
 	case resp.status < 200 || resp.status > 299:
-		return newStatusError(resp.status, raw,
+		return newStatusError(resp,
 			fmt.Sprintf("nectar: %s %s: status %d %s", method, path, resp.status, bodySnippet(raw)))
 	}
 	if out != nil && len(raw) > 0 {

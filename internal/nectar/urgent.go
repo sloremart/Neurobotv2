@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -42,9 +44,10 @@ func (c *Client) SetUrgentReporter(r UrgentReporter, limits UrgentLimits) {
 // status). msg es el texto de siempre (con el cuerpo, para el log); status y reason permiten al aviso
 // urgente clasificarlo SIN copiar el cuerpo.
 type statusError struct {
-	status int
-	reason string
-	msg    string
+	status     int
+	reason     string
+	msg        string
+	retryAfter time.Duration // la espera que pidió un 429; 0 si no pidió
 }
 
 func (e *statusError) Error() string { return e.msg }
@@ -59,8 +62,29 @@ func (e *statusError) Unwrap() error {
 }
 
 // newStatusError arma el statusError de una respuesta: el motivo sale del cuerpo, el cuerpo no.
-func newStatusError(status int, raw []byte, msg string) error {
-	return &statusError{status: status, reason: replyReason(raw), msg: msg}
+func newStatusError(resp reply, msg string) error {
+	e := &statusError{status: resp.status, reason: replyReason(resp.body), msg: msg}
+	if resp.status == http.StatusTooManyRequests {
+		e.retryAfter = parseRetryAfter(resp.header.Get("Retry-After"))
+	}
+	return e
+}
+
+// maxParsedRetryAfter acota lo que se lee de la cabecera: más que suficiente para saber que es
+// demasiado, y sin desbordar la duración con un número enorme.
+const maxParsedRetryAfter = 24 * time.Hour
+
+// parseRetryAfter lee la cabecera en cualquiera de sus dos formas (segundos o fecha). 0 si no viene,
+// no se entiende o ya pasó.
+func parseRetryAfter(h string) time.Duration {
+	h = strings.TrimSpace(h)
+	if secs, err := strconv.Atoi(h); err == nil {
+		return max(0, time.Duration(min(secs, int(maxParsedRetryAfter/time.Second)))*time.Second)
+	}
+	if at, err := http.ParseTime(h); err == nil {
+		return max(0, min(time.Until(at), maxParsedRetryAfter))
+	}
+	return 0
 }
 
 // reportDown cuenta un fallo de Néctar (transporte o 5xx). class es solo la clase («timeout»,

@@ -387,6 +387,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Candado por teléfono (`internal/worker/pool.go`): un mensaje del WAL que no lo consigue no se pierde; se reencola
   en memoria (un solo worker espera por teléfono, los demás se difieren 2 s) durante hasta 10 min, y el aviso
   «Tu mensaje anterior…» sale una vez y solo tras 30 s de espera. `virtual-`/`agent-` siguen como antes.
+- Reintentos de envío (`retrySend`, solo turnos del worker, nunca aperturas ni Bird, que sigue con su único reintento
+  a los 10 s): en Néctar hasta 2 (10 s, 30 s) solo ante 5xx, transporte o 429, con la MISMA clave en duda; el 429 espera
+  su Retry-After si es mayor (≤60 s; más: no se reintenta, evento `infra/send_retry_after_too_long`). Corren fuera del
+  candado; el 2.º y el de Retry-After largo no corren si no caben en el plazo del mensaje ni si ya salió otro mensaje a ese paciente.
 - Avisos resuelta/devuelta de Néctar: su fila del WAL se cierra al procesar el comando; un aviso anterior a la
   escalación vigente (−2 min de tolerancia) se ignora.
 - Scheduler: una tarea que falla ANTES de enviar (`ErrNothingSent`) se reintenta cada 5 min, máx. 6 veces y nunca
