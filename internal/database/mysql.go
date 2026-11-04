@@ -89,6 +89,7 @@ func openSIESA(cfg *config.Config, maxOpen, maxIdle int) (*sql.DB, error) {
 	// Cifrado configurable (N-11). Default "disable" preserva el comportamiento actual; en
 	// producción usar EXTERNAL_DB_ENCRYPT=true para cifrar el canal TDS (PII de salud). Con
 	// encrypt activo se confía en el certificado del server (LAN interna sin CA propia).
+	// El aviso de canal en claro (M2, C-10) sale una vez al arrancar: config.SecurityWarnings.
 	encrypt := cfg.ExtDBEncrypt
 	if encrypt == "" {
 		encrypt = "disable"
@@ -96,12 +97,6 @@ func openSIESA(cfg *config.Config, maxOpen, maxIdle int) (*sql.DB, error) {
 	query.Set("encrypt", encrypt)
 	if encrypt != "disable" {
 		query.Set("TrustServerCertificate", "true")
-	} else {
-		// M2 (auditoría): canal TDS sin cifrar hacia la BD clínica → PII/PHI (teléfono, documento,
-		// nombre, diagnósticos) viaja en claro por la red. Se avisa fuerte para que en producción se
-		// setee EXTERNAL_DB_ENCRYPT=true. (No se fuerza por defecto para no romper servers sin TLS.)
-		slog.Warn("SIESA TDS ENCRYPTION DISABLED — PHI viaja en claro; setea EXTERNAL_DB_ENCRYPT=true en producción",
-			"host", cfg.ExtDBHost)
 	}
 
 	u := &url.URL{

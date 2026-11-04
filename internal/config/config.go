@@ -28,6 +28,9 @@ type Config struct {
 	DBDatabase string
 	DBUser     string
 	DBPassword string
+	// DBRootPassword: el bot no la usa (es del contenedor MySQL); se lee solo para el aviso de
+	// SecurityWarnings.
+	DBRootPassword string
 
 	// External DB
 	ExtDBHost     string
@@ -307,11 +310,12 @@ func Load() *Config {
 		LogMaxFileMB: getEnvInt("LOG_MAX_FILE_MB", 512),
 
 		// Local DB
-		DBHost:     getEnv("DB_HOST", "db"),
-		DBPort:     getEnv("DB_PORT", "3306"),
-		DBDatabase: getEnv("DB_DATABASE", "neuro_bot"),
-		DBUser:     getEnv("DB_USER", "botuser"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
+		DBHost:         getEnv("DB_HOST", "db"),
+		DBPort:         getEnv("DB_PORT", "3306"),
+		DBDatabase:     getEnv("DB_DATABASE", "neuro_bot"),
+		DBUser:         getEnv("DB_USER", "botuser"),
+		DBPassword:     os.Getenv("DB_PASSWORD"),
+		DBRootPassword: os.Getenv("DB_ROOT_PASSWORD"),
 
 		// External DB
 		ExtDBHost:     getEnv("EXTERNAL_DB_HOST", "host.docker.internal"),

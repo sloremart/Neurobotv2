@@ -96,6 +96,9 @@ func main() {
 		"pid", os.Getpid(),
 		"version", "1.0",
 	)
+	for _, w := range cfg.SecurityWarnings() {
+		slog.Warn("insecure configuration", "detail", w)
+	}
 
 	// Capture panics in the log file (otherwise only visible in docker logs)
 	defer func() {
