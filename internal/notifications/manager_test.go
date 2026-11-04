@@ -883,6 +883,7 @@ type mockSessionCreator struct {
 	batchSessionID   string
 	batchKVs         map[string]string
 	completedPhone   string     // teléfono cuyo cupo se liberó con CompleteActiveByPhone
+	statusCalls      []string   // "sessionID=status" de cada UpdateStatus
 	lastPatientMsgAt *time.Time // ventana de servicio WA (nil = el paciente nunca escribió)
 	lastPatientAsks  int        // cuántas veces se consultó LastPatientMessageAt
 }
@@ -929,7 +930,10 @@ func (m *mockSessionCreator) GetContext(_ context.Context, sessionID, key string
 	return m.batchKVs[key], nil
 }
 
-func (m *mockSessionCreator) UpdateStatus(ctx context.Context, sessionID, status string) error {
+func (m *mockSessionCreator) UpdateStatus(_ context.Context, sessionID, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statusCalls = append(m.statusCalls, sessionID+"="+status)
 	return nil
 }
 
