@@ -8,6 +8,7 @@ import (
 
 // maskPhones controls whether phone numbers are masked in logs.
 // Default: true (production). Set to false via LOG_MASK_PHONES=false for debugging.
+// Solo afecta a los teléfonos: documento, nombre y texto libre se redactan siempre (C-22).
 var maskPhones = true
 
 // SetMaskPhones configures whether MaskPhone masks or passes through.
@@ -28,11 +29,8 @@ func MaskPhone(phone string) string {
 }
 
 // MaskDocument masks a patient document number for logs/events (Ley 1581 PII):
-// "1000000689" → "10***89". Runa-safe. Honors the same LOG_MASK_PHONES switch as MaskPhone.
+// "1000000689" → "10***89". Runa-safe. Siempre enmascara: LOG_MASK_PHONES solo destapa teléfonos.
 func MaskDocument(doc string) string {
-	if !maskPhones {
-		return doc
-	}
 	r := []rune(doc)
 	if len(r) <= 4 {
 		return "***"
@@ -53,9 +51,9 @@ var (
 )
 
 // MaskText reemplaza el texto libre del paciente (puede traer cédula, nombres, dirección o
-// síntomas) por su largo en runas. Vacío queda vacío. Respeta el mismo LOG_MASK_PHONES.
+// síntomas) por su largo en runas. Vacío queda vacío. No depende de LOG_MASK_PHONES.
 func MaskText(text string) string {
-	if !maskPhones || text == "" {
+	if text == "" {
 		return text
 	}
 	return fmt.Sprintf("[redactado: %d caracteres]", utf8.RuneCountInString(text))
