@@ -3,7 +3,10 @@ package recovery
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // AIRecovery interpreta el input bloqueado con el LLM (gpt-4.1-nano). Devuelve un valor a inyectar
@@ -39,7 +42,40 @@ func (a *AIRecovery) Try(ctx context.Context, req Request) Result {
 	if dec.OK {
 		res.Value = strings.TrimSpace(dec.Value)
 	}
+	// El mensaje es texto libre del modelo con la voz de la clínica: si no pasa el filtro no se envía.
+	// Sin mensaje, el coordinador sigue el camino de siempre y escala con su texto fijo.
+	if !safeClarifyText(res.Message) {
+		slog.Warn("recuperación IA: el mensaje del modelo no pasa el filtro y no se envía",
+			"state", req.BlockedState, "runes", utf8.RuneCountInString(res.Message))
+		res.Message = ""
+	}
 	return res
+}
+
+// maxClarifyRunes es el largo máximo del mensaje aclaratorio (el prompt pide una respuesta breve).
+const maxClarifyRunes = 300
+
+var (
+	// Enlaces: esquema, www o un dominio con un TLD común.
+	clarifyLinkRe = regexp.MustCompile(`(?i)https?://|www\.|\b[a-z0-9-]+\.(com|co|net|org|info|io|me|ly|app|link|xyz)\b`)
+	clarifyMailRe = regexp.MustCompile(`[^\s@]+@[^\s@]+\.[^\s@]+`)
+	// Las fechas (1990-05-12, 15/03/1990) se quitan antes de buscar números largos.
+	clarifyDateRe = regexp.MustCompile(`\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b`)
+	// Un teléfono o un número largo: 7 dígitos o más, aunque vengan separados por espacios, puntos,
+	// guiones o paréntesis.
+	clarifyLongNumberRe = regexp.MustCompile(`\d(?:[\s.\-()]*\d){6,}`)
+)
+
+// safeClarifyText dice si el mensaje aclaratorio del modelo se le puede enviar al paciente: con un
+// largo razonable, sin enlaces, sin correos, sin teléfonos ni números largos (B-13).
+func safeClarifyText(msg string) bool {
+	if utf8.RuneCountInString(msg) > maxClarifyRunes {
+		return false
+	}
+	if clarifyLinkRe.MatchString(msg) || clarifyMailRe.MatchString(msg) {
+		return false
+	}
+	return !clarifyLongNumberRe.MatchString(clarifyDateRe.ReplaceAllString(msg, " "))
 }
 
 // systemPrompt enmarca la tarea como una SELECCIÓN limpia ("¿qué opción está eligiendo el
