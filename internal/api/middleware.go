@@ -15,22 +15,52 @@ import (
 // maxRequestBodySize limits the size of incoming request bodies (1 MB).
 const maxRequestBodySize = 1 << 20
 
-// RequestLogger middleware para logging de requests (skips /health to reduce noise)
+// RequestLogger middleware para logging de requests (skips /health to reduce noise). Las respuestas
+// 401 y 429 las puede provocar cualquiera sin límite, así que su línea va con el tope de logSampler;
+// las demás se registran todas.
 func RequestLogger(next http.Handler) http.Handler {
+	rejected := map[int]*logSampler{
+		http.StatusUnauthorized:    newAuthLogSampler(),
+		http.StatusTooManyRequests: newAuthLogSampler(),
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
 			return
 		}
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		slog.Info("request",
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		rejected[rec.status].Info("request", // nil (otro código) = sin tope
 			"method", r.Method,
 			"path", r.URL.Path,
+			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
 }
+
+// statusRecorder guarda el código de la respuesta para quien envuelve al handler.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.wroteHeader {
+		s.status, s.wroteHeader = code, true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.wroteHeader = true
+	return s.ResponseWriter.Write(b)
+}
+
+// Unwrap deja a http.ResponseController llegar al writer original (Flush, plazos).
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // InternalAuth middleware para endpoints internos (requiere X-API-Key header).
 // Si apiKey está vacío, rechaza TODOS los requests (fail-closed). Los WARN de rechazo van con tope.

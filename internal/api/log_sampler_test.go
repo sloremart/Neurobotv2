@@ -80,6 +80,7 @@ func TestLogSampler_ReportsSuppressedInNextWindow(t *testing.T) {
 	now := time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC)
 	s := newAuthLogSampler()
 	s.now = func() time.Time { return now }
+	s.after = func(time.Duration, func()) {} // sin resumen: aquí se prueba el arrastre a la ventana siguiente
 
 	for range authLogBurst + 5 {
 		s.Warn("rechazo A")
@@ -96,5 +97,65 @@ func TestLogSampler_ReportsSuppressedInNextWindow(t *testing.T) {
 	}
 	if got := strings.Count(logs.String(), "rechazo B"); got != 1 {
 		t.Errorf("otro mensaje no comparte el cupo: líneas de B = %d", got)
+	}
+}
+
+// TestRequestLogger_RejectedRequestsAreCapped: la línea «request» de cada 401/429 también va con tope;
+// las demás respuestas se registran todas, como siempre (A-09).
+func TestRequestLogger_RejectedRequestsAreCapped(t *testing.T) {
+	logs := captureWarnLog(t)
+	handler := RequestLogger(InternalAuth("clave-interna")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})))
+	for range 200 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/internal/sessions", nil))
+	}
+	if got := strings.Count(logs.String(), "msg=request"); got == 0 || got > authLogBurst {
+		t.Errorf("200 respuestas 401 dejaron %d líneas «request»; quiero entre 1 y %d", got, authLogBurst)
+	}
+
+	logs.Reset()
+	for range 20 {
+		req := httptest.NewRequest(http.MethodGet, "/api/internal/sessions", nil)
+		req.Header.Set("X-API-Key", "clave-interna")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if got := strings.Count(logs.String(), "msg=request"); got != 20 {
+		t.Errorf("20 respuestas autenticadas dejaron %d líneas «request»; quiero 20", got)
+	}
+	if !strings.Contains(logs.String(), "status=404") {
+		t.Errorf("la línea «request» lleva el código de la respuesta:\n%s", logs.String())
+	}
+}
+
+// TestLogSampler_SummaryAtWindowEnd: un ataque corto seguido de silencio deja su total en el log al
+// cerrar la ventana, sin esperar al próximo rechazo.
+func TestLogSampler_SummaryAtWindowEnd(t *testing.T) {
+	logs := captureWarnLog(t)
+	s := newAuthLogSampler()
+	now := time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	var flush func()
+	var waited time.Duration
+	s.after = func(d time.Duration, f func()) { waited, flush = d, f }
+
+	for range authLogBurst + 7 {
+		s.Warn("rechazo A")
+	}
+	if flush == nil {
+		t.Fatal("la primera línea callada no programó el resumen")
+	}
+	if waited != authLogWindow {
+		t.Errorf("el resumen se programó a %v, quiero el fin de la ventana (%v)", waited, authLogWindow)
+	}
+	flush()
+	if !strings.Contains(logs.String(), `msg="rechazo A" suppressed=7`) {
+		t.Errorf("el resumen debe contar las 7 calladas:\n%s", logs.String())
+	}
+	// La ventana siguiente no repite el total que ya salió en el resumen.
+	now = now.Add(authLogWindow)
+	s.Warn("rechazo A")
+	if got := strings.Count(logs.String(), "suppressed="); got != 1 {
+		t.Errorf("el total salió %d veces, quiero 1:\n%s", got, logs.String())
 	}
 }

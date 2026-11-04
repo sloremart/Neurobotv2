@@ -184,7 +184,7 @@ Mirar primero `outcome` (¿bien, bloqueado, error, escalado?) y luego `reason` (
 3. Si `consulta_valor_cero` o `orphan_slot` crecen → revisar el flujo de creación de cita (`flow=agendar`, steps `booking_*`).
 
 ### P6 — "El bot no responde a NADIE / responde a unos sí y a otros no"
-1. `GET /logs?search=invalid webhook signature&lines=500` → si hay firmas fallando, es config de webhooks en Bird (suscripción duplicada / secreto que no coincide). Mira la URL y `outbound` del log.
+1. `GET /logs?search=invalid webhook signature&lines=500` → si hay firmas fallando, es config de webhooks en Bird (suscripción duplicada / secreto que no coincide). Mira la URL y `outbound` del log. Ojo: ese WARN va muestreado; cuenta también los `suppressed=N`.
 2. `GET /health` → ¿BD arriba? `GET /health/debug` → ¿cola del worker saturada?
 
 > **¿Está desplegado un fix?** No se infiere: se lee. `GET /health/debug` devuelve `build_commit`, el
@@ -371,7 +371,7 @@ Casos reales y cómo confirmarlos. **Primero siempre:** `GET /health` (¿`extern
 ### 13.8 — Firma de webhook inválida
 - **Síntoma:** `invalid webhook signature` (WARN) con `has_signature`/`url`/`body_preview`; el webhook se rechaza (401).
 - **Por qué:** `BIRD_WEBHOOK_SECRET*` no coincide con Bird, o la URL reconstruida (host/proto) no es la que Bird firmó.
-- **Confirmar:** `/logs?search=invalid webhook signature`.
+- **Confirmar:** `/logs?search=invalid webhook signature`. El WARN va muestreado (máx. 10 líneas por mensaje y minuto, más un resumen): el volumen real es la suma de las líneas y de los `suppressed=N`, así que 10 líneas no son «pocas».
 - **Fix:** alinear el signing key en Bird, o revisar `X-Forwarded-Host/Proto` del proxy/ngrok.
 
 ---
