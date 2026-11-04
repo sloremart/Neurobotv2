@@ -417,7 +417,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   UPLOAD_EMG_ORDER (salvo la de su propia foto); `escalation_note` se borra en la escalación entregada y en la
   desviada, no en la salida a la recuperación IA.
 - Recuperación IA: el mensaje aclaratorio del modelo no se envía si pasa de 300 caracteres o trae enlace, correo,
-  teléfono o número de 7+ dígitos (fechas aparte); sin mensaje escala con el texto fijo de siempre.
+  teléfono o número de 7+ dígitos (fechas aparte; el prompt le pide describir los ejemplos con palabras). Si no
+  pasa, se reenvía el último mensaje del bot (`CtxLastBotMsg`) y cuenta como un intento; escala solo al agotar los
+  intentos, o si no hay último mensaje.
 - «¿Es correcto?» (CONFIRM_OCR_RESULT): si la lista no cabe en el cuerpo de botones (1.024), sale COMPLETA antes en
   texto (trozos ≤4.096) y los botones llevan solo el aviso de omitidos y la pregunta; nunca se recorta con «…».
 - Imagen (`docker/Dockerfile`): `alpine:3.24.3`, `ghostscript~10.08` (gs en `community`: revisar la fijación, la

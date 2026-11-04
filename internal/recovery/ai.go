@@ -42,22 +42,25 @@ func (a *AIRecovery) Try(ctx context.Context, req Request) Result {
 	if dec.OK {
 		res.Value = strings.TrimSpace(dec.Value)
 	}
-	// El mensaje es texto libre del modelo con la voz de la clínica: si no pasa el filtro no se envía.
-	// Sin mensaje, el coordinador sigue el camino de siempre y escala con su texto fijo.
+	// El mensaje es texto libre del modelo con la voz de la clínica: si no pasa el filtro no se envía y
+	// queda marcado (ReasonMessageFiltered) para que el coordinador reenvíe el último mensaje del bot.
 	if !safeClarifyText(res.Message) {
 		slog.Warn("recuperación IA: el mensaje del modelo no pasa el filtro y no se envía",
 			"state", req.BlockedState, "runes", utf8.RuneCountInString(res.Message))
-		res.Message = ""
+		res.Message, res.Reason = "", ReasonMessageFiltered
 	}
 	return res
 }
+
+// ReasonMessageFiltered es el Reason de un intento cuyo mensaje aclaratorio no pasó safeClarifyText.
+const ReasonMessageFiltered = "msg_filtered"
 
 // maxClarifyRunes es el largo máximo del mensaje aclaratorio (el prompt pide una respuesta breve).
 const maxClarifyRunes = 300
 
 var (
 	// Enlaces: esquema, www o un dominio con un TLD común.
-	clarifyLinkRe = regexp.MustCompile(`(?i)https?://|www\.|\b[a-z0-9-]+\.(com|co|net|org|info|io|me|ly|app|link|xyz)\b`)
+	clarifyLinkRe = regexp.MustCompile(`(?i)https?:?//|www\.|\b[a-z0-9-]+\.(com|co|net|org|info|io|me|ly|app|link|xyz)\b`)
 	clarifyMailRe = regexp.MustCompile(`[^\s@]+@[^\s@]+\.[^\s@]+`)
 	// Las fechas (1990-05-12, 15/03/1990) se quitan antes de buscar números largos.
 	clarifyDateRe = regexp.MustCompile(`\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b`)
@@ -105,6 +108,8 @@ func systemPrompt(req Request) string {
 	b.WriteString("- Si el mensaje NO permite obtener el dato con seguridad (se niega, pregunta otra cosa, no ")
 	b.WriteString("lo aporta o es ambiguo) → ok=false y en m escribe, como una persona real cálida y natural, ")
 	b.WriteString("una respuesta breve a lo que el paciente dijo que lo oriente a darlo. No inventes.\n")
+	b.WriteString("- En m no escribas números de teléfono, correos ni enlaces: si necesitas un ejemplo, ")
+	b.WriteString("descríbelo con palabras.\n")
 	b.WriteString("- Nunca infieras datos clínicos o de identidad que el paciente no haya dado explícitamente.\n")
 	if req.Attempt >= 1 {
 		b.WriteString("Ya se lo pediste antes y no sirvió: en m reformula distinto, con más claridad, sin repetir.\n")

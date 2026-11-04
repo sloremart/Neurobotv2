@@ -197,6 +197,11 @@ func (c *Coordinator) evaluate(ctx context.Context, sess *session.Session, cfg s
 		History:      history,
 		Attempt:      attempt,
 	})
+	// Un mensaje que no pasó el filtro (B-13) no escala: se reenvía el último mensaje del bot, que el
+	// paciente ya vio, y el intento cuenta como una aclaración más. Sin él, el camino de siempre.
+	if r.Reason == ReasonMessageFiltered {
+		r.Message = sess.GetContext(sm.CtxLastBotMsg)
+	}
 	// Diagnóstico sin PII: si formateó, código de razón, intento y tokens de salida.
 	slog.Debug("ai_recovery_llm", "state", blockedState, "attempt", attempt,
 		"formatted", r.Value != "", "reason", r.Reason, "tokens_out", r.Usage.CompletionTokens)
