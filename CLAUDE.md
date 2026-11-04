@@ -409,6 +409,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   motivo vacío o nuevo sin clasificar suma). Las que dispara el bot (orden dudosa, B-05, B-10, SANITAS, fallos)
   ni suman ni cortan; `bot_disabled` exento. Tras el corte el bot calla salvo sus botones y «menú», y lo ignorado
   no renueva la sesión.
+- «¿Es correcto?» (CONFIRM_OCR_RESULT): si la lista no cabe en el cuerpo de botones (1.024), sale COMPLETA antes en
+  texto (trozos ≤4.096) y los botones llevan solo el aviso de omitidos y la pregunta; nunca se recorta con «…».
 - Imagen (`docker/Dockerfile`): `alpine:3.21.9`, `ghostscript~10.05`; el bot corre como `bot` (UID/GID 10001), no
   root. El servicio `bot-logs-init` del compose (`chown` de `bot-logs` a 10001, en cada `up`; el watcher lo ignora)
   deja escribible el volumen creado cuando corría como root: sin él no hay logs en archivo ni `/api/internal/logs`.
@@ -453,7 +455,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (cuenta como omitido) y queda en `CtxOCRUnreadNames`; si la orden se queda sin CUPS, escala como la orden sin
   código. `/bot orden` con un procedimiento sin código se le rechaza al agente pidiendo el código. Lo asignado:
   `ocr_cups_name_assignments` («CUPS asignados por nombre»), `agendar/cups_asignado_nombre`, y el paciente ve
-  «<catálogo> (en tu orden: «<leído, ≤60>»)» (cuerpo ≤1.024). «CON Y SIN CONTRASTE» (y sin y con, con/sin, c/s,
+  «<catálogo> (en tu orden: «<leído, ≤60>»)». «CON Y SIN CONTRASTE» (y sin y con, con/sin, c/s,
   gadolinio) es contrastado: queda «SIMPLE Y CONTRASTE» antes de leer «SIN CONTRASTE»; «C/C», «C/CTE», «C/MEDIO» →
   CONTRASTE y «S/C», «S/CONTRASTE» → SIMPLE; una abreviatura con barra desconocida («C/X») no vale como silencio
   del contraste (solo asigna el nombre igual). Guarda: un CUPS CON código

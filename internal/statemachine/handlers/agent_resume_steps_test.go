@@ -191,7 +191,7 @@ func TestConfirmOCRResult_NectarResumeRepeatsWhatWasRead(t *testing.T) {
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
 
 	bm := onlyButtons(t, resumeTurn(t, m, sess, sm.StateConfirmOCRResult))
-	if bm.Text != ocrSummaryText(cups, 0) {
+	if want := ocrSummaryMessages(cups, 0)[0].(*sm.ButtonMessage); bm.Text != want.Text {
 		t.Errorf("quería el resumen de lo leído, obtuve %q", bm.Text)
 	}
 	if got := payloadsOf(bm); !slices.Equal(got, []string{"ocr_correct", "ocr_incorrect"}) {

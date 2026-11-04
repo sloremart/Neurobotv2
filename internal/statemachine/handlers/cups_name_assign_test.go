@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
@@ -214,26 +213,18 @@ func TestValidateOCR_DiscardedNoCodeIsNotedWhenTheOrderEscalatesForAnotherReason
 	}
 }
 
-// El nombre de la orden va en una línea y acotado; el cuerpo con botones no pasa de 1.024 caracteres
-// (límite de WhatsApp) aunque la orden traiga muchos procedimientos de nombre largo.
-func TestOCRSummaryText_OrderNameIsOneLineAndTheBodyFitsWhatsApp(t *testing.T) {
-	long := strings.Repeat("ULTRASONOGRAFÍA DE ABDOMEN TOTAL HIGADO PANCREAS VESICULA ", 3)
+// El nombre de la orden va en una línea y acotado.
+func TestOCRSummary_OrderNameIsOneLine(t *testing.T) {
 	cups := []services.CUPSEntry{{Code: "1", Name: "RM", OrderName: "RM DE\nRODILLA *DERECHA* " + strings.Repeat("X", 80), Quantity: 1}}
-	got := ocrSummaryText(cups, 0)
-	if strings.Contains(got, "RODILLA *DERECHA*\n") || strings.Count(got, "\n") != 4 {
-		t.Errorf("el nombre de la orden va en una línea: %q", got)
+	msgs := ocrSummaryMessages(cups, 0)
+	bm, ok := msgs[0].(*sm.ButtonMessage)
+	if len(msgs) != 1 || !ok {
+		t.Fatalf("una lista corta va en un solo mensaje con botones: %+v", msgs)
 	}
-	if !strings.Contains(got, "…»)") {
-		t.Errorf("el nombre de la orden se acota con «…»: %q", got)
+	if strings.Contains(bm.Text, "RODILLA *DERECHA*\n") || strings.Count(bm.Text, "\n") != 4 {
+		t.Errorf("el nombre de la orden va en una línea: %q", bm.Text)
 	}
-	for i := 0; i < 15; i++ {
-		cups = append(cups, services.CUPSEntry{Code: "x", Name: long, OrderName: long, Quantity: 2})
-	}
-	got = ocrSummaryText(cups, 3)
-	if n := utf8.RuneCountInString(got); n > maxButtonBodyRunes {
-		t.Errorf("cuerpo de %d caracteres, máximo %d", n, maxButtonBodyRunes)
-	}
-	if !strings.HasSuffix(got, "¿Es correcto?") || !strings.Contains(got, "omitidos") {
-		t.Errorf("la pregunta y el aviso de omitidos no se pierden: %q", got[len(got)-200:])
+	if !strings.Contains(bm.Text, "…»)") {
+		t.Errorf("el nombre de la orden se acota con «…»: %q", bm.Text)
 	}
 }

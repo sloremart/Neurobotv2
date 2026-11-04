@@ -877,27 +877,26 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 
 		// ocr_skipped_count acompaña a ocr_cups_json (lo leído ya validado): es de la ORDEN, no de un
 		// grupo, y el retorno sin dato del agente lo necesita para repetir la misma nota.
-		return sm.NewResult(sm.StateConfirmOCRResult).
+		confirm := sm.NewResult(sm.StateConfirmOCRResult).
 			WithContext("ocr_cups_json", string(cupsJSON)).
-			WithContext("ocr_skipped_count", strconv.Itoa(len(skipped))).
-			WithButtons(
-				ocrSummaryText(cups, len(skipped)),
-				sm.Button{Text: "Sí, correcto", Payload: "ocr_correct"},
-				sm.Button{Text: "No, corregir", Payload: "ocr_incorrect"},
-			), nil
+			WithContext("ocr_skipped_count", strconv.Itoa(len(skipped)))
+		confirm.Messages = append(confirm.Messages, ocrSummaryMessages(cups, len(skipped))...)
+		return confirm, nil
 	}
 }
 
-// ocrSummaryText es la pregunta de CONFIRM_OCR_RESULT: los procedimientos leídos de la orden
-// (con su cantidad) y cuántos se omitieron por no estar disponibles.
-func ocrSummaryText(cups []services.CUPSEntry, skipped int) string {
+// ocrSummaryMessages es la pregunta de CONFIRM_OCR_RESULT: los procedimientos leídos de la orden
+// (con su cantidad), cuántos se omitieron por no estar disponibles y los botones. Si todo cabe en el
+// cuerpo de un mensaje con botones (maxButtonBodyRunes) va en uno solo, como siempre; si no, la lista
+// COMPLETA sale antes en texto (en varios si pasa de maxTextRunes) y los botones llevan solo el aviso
+// de omitidos y la pregunta: el paciente confirma lo que vio entero.
+func ocrSummaryMessages(cups []services.CUPSEntry, skipped int) []sm.OutboundMessage {
 	header := "Detectamos los siguientes procedimientos en tu orden:\n\n"
-	footer := "\n¿Es correcto?"
+	question := "¿Es correcto?"
 	if skipped > 0 {
-		footer = fmt.Sprintf("\n⚠️ %d procedimiento(s) de tu orden no están disponibles y fueron omitidos.\n", skipped) + footer
+		question = fmt.Sprintf("⚠️ %d procedimiento(s) de tu orden no están disponibles y fueron omitidos.\n\n", skipped) + question
 	}
-	var items strings.Builder
-	room := maxButtonBodyRunes - utf8.RuneCountInString(header) - utf8.RuneCountInString(footer)
+	lines := make([]string, 0, len(cups))
 	for i, cup := range cups {
 		line := fmt.Sprintf("%d. *%s*", i+1, cup.Name)
 		if cup.OrderName != "" {
@@ -911,20 +910,52 @@ func ocrSummaryText(cups []services.CUPSEntry, skipped int) string {
 		if qty > 1 {
 			line += fmt.Sprintf(" — Cantidad: *%d*", qty)
 		}
-		line += "\n"
-		// El cuerpo de un mensaje con botones no puede pasar de maxButtonBodyRunes: lo que no cabe se
-		// resume en «…» (la lista completa la ve el agente si hace falta).
-		if utf8.RuneCountInString(items.String())+utf8.RuneCountInString(line) > room-2 {
-			items.WriteString("…\n")
-			break
-		}
-		items.WriteString(line)
+		lines = append(lines, line+"\n")
 	}
-	return header + items.String() + footer
+	items := strings.Join(lines, "")
+	if body := header + items + "\n" + question; utf8.RuneCountInString(body) <= maxButtonBodyRunes {
+		return []sm.OutboundMessage{&sm.ButtonMessage{Text: body, Buttons: ocrConfirmButtons()}}
+	}
+	var msgs []sm.OutboundMessage
+	for _, chunk := range splitTextByLines(append([]string{header}, lines...), maxTextRunes) {
+		msgs = append(msgs, &sm.TextMessage{Text: strings.TrimRight(chunk, "\n")})
+	}
+	return append(msgs, &sm.ButtonMessage{Text: question, Buttons: ocrConfirmButtons()})
+}
+
+// splitTextByLines junta las líneas en textos de a lo sumo limit caracteres, sin partir ninguna (una
+// línea más larga que limit, que no da la lista de la orden, se parte en trozos de limit).
+func splitTextByLines(lines []string, limit int) []string {
+	var chunks []string
+	var cur strings.Builder
+	curLen := 0
+	flush := func() {
+		if curLen > 0 {
+			chunks = append(chunks, cur.String())
+			cur.Reset()
+			curLen = 0
+		}
+	}
+	for _, line := range lines {
+		for r := []rune(line); len(r) > 0; {
+			n := min(len(r), limit)
+			if curLen+n > limit {
+				flush()
+			}
+			cur.WriteString(string(r[:n]))
+			curLen += n
+			r = r[n:]
+		}
+	}
+	flush()
+	return chunks
 }
 
 // maxButtonBodyRunes es el largo máximo del cuerpo de un mensaje con botones de WhatsApp.
 const maxButtonBodyRunes = 1024
+
+// maxTextRunes es el largo máximo de un mensaje de texto de WhatsApp.
+const maxTextRunes = 4096
 
 // maxOrderNameRunes acota el nombre de la orden que se muestra junto al del catálogo.
 const maxOrderNameRunes = 60
@@ -934,22 +965,15 @@ func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdC
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "ocr_correct", "ocr_incorrect")
 		if result != nil {
-			question := "¿Es correcto?"
+			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{Text: "¿Es correcto?", Buttons: ocrConfirmButtons()}}
 			// En el retorno sin dato del agente, «¿Es correcto?» solo no dice qué: se repite lo leído.
 			if sm.IsAgentResumeTurn(sess) {
 				var cups []services.CUPSEntry
 				if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err == nil && len(cups) > 0 {
 					skipped, _ := strconv.Atoi(sess.GetContext("ocr_skipped_count"))
-					question = ocrSummaryText(cups, skipped)
+					result.Messages = ocrSummaryMessages(cups, skipped)
 				}
 			}
-			result.Messages = []sm.OutboundMessage{&sm.ButtonMessage{
-				Text: question,
-				Buttons: []sm.Button{
-					{Text: "Sí, correcto", Payload: "ocr_correct"},
-					{Text: "No, corregir", Payload: "ocr_incorrect"},
-				},
-			}}
 			return result, nil
 		}
 
