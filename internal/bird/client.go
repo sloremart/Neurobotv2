@@ -396,7 +396,7 @@ func (c *Client) MarkConversationEscalated(phone, conversationID, teamName, pati
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		slog.Warn("mark conversation escalated failed",
-			"status", resp.StatusCode, "body", string(respBody),
+			"status", resp.StatusCode, "body", warnBody(respBody),
 			"conversation_id", conversationID)
 		return fmt.Errorf("mark escalated HTTP %d", resp.StatusCode)
 	}
@@ -623,6 +623,19 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 var digitRunRe = regexp.MustCompile(`\d{6,}`)
 
 func maskDigitRuns(s string) string { return digitRunRe.ReplaceAllString(s, "***") }
+
+// warnBodyMax acota el cuerpo de error de Bird en los WARN: el inicio (código y mensaje) basta
+// para diagnosticar, y el resto puede repetir datos del contacto.
+const warnBodyMax = 300
+
+// warnBody es el cuerpo de error de Bird tal como va a un WARN: recortado y sin dígitos largos.
+func warnBody(body []byte) string {
+	r := []rune(string(body))
+	if len(r) > warnBodyMax {
+		r = r[:warnBodyMax]
+	}
+	return maskDigitRuns(string(r))
+}
 
 func truncateForLog(s string, n int) string {
 	if len(s) <= n {
@@ -983,11 +996,16 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 		},
 	}
 
-	// Debug: log the full payload for list messages
+	// Debug: solo los ids de las filas. Títulos y texto llevan datos de salud del paciente
+	// (procedimiento, médico, fecha); las cantidades ya van en send_list_building.
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		if debugJSON, err := json.Marshal(msgBody); err == nil {
-			slog.Debug("send_list_payload", "phone", utils.MaskPhone(to), "payload", string(debugJSON))
+		var rowIDs []string
+		for _, section := range sections {
+			for _, row := range section.Rows {
+				rowIDs = append(rowIDs, row.ID)
+			}
 		}
+		slog.Debug("send_list_payload", "phone", utils.MaskPhone(to), "row_ids", rowIDs)
 	}
 
 	// Contacto sin E.164: SOLO BSUID — la LISTA real entrega por ahí; cualquier POST a
@@ -1101,10 +1119,14 @@ func (c *Client) SendTemplate(to string, tmpl TemplateConfig) (string, error) {
 	}
 
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		if debugJSON, err := json.Marshal(payload); err == nil {
-			// Los parámetros llevan el nombre del paciente: solo el largo (C-21).
-			slog.Debug("send_template_payload", "to", utils.MaskPhone(to), "payload", utils.MaskText(string(debugJSON)))
+		// Los valores de los parámetros llevan el nombre del paciente (C-21): solo la estructura,
+		// que es lo que sirve para depurar un rechazo de la plantilla.
+		keys := make([]string, len(tmpl.Params))
+		for i, p := range tmpl.Params {
+			keys[i] = p.Key
 		}
+		slog.Debug("send_template_payload", "to", utils.MaskPhone(to), "project_id", tmpl.ProjectID,
+			"version", version, "locale", tmpl.Locale, "param_keys", keys)
 	}
 
 	return c.sendMessage(c.templatesURL(), payload, to)
@@ -1863,7 +1885,7 @@ func (c *Client) CloseFeedItems(phone, conversationID string) error {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		slog.Warn("close_feed_items_search_error",
 			"status", resp.StatusCode,
-			"body", string(respBody),
+			"body", warnBody(respBody),
 			"conversation_id", conversationID)
 		return fmt.Errorf("search feed items: status %d", resp.StatusCode)
 	}
@@ -2303,7 +2325,7 @@ func (c *Client) UpdateFeedItem(conversationID, messageID string, closed bool, t
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		slog.Warn("feed item update failed", "status", resp.StatusCode, "body", string(respBody))
+		slog.Warn("feed item update failed", "status", resp.StatusCode, "body", warnBody(respBody))
 	}
 
 	return nil
@@ -2349,7 +2371,7 @@ func (c *Client) TagConversation(phone, conversationID, tag string) error {
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		slog.Warn("tag conversation failed", "status", resp.StatusCode, "body", string(respBody))
+		slog.Warn("tag conversation failed", "status", resp.StatusCode, "body", warnBody(respBody))
 	}
 
 	return nil
@@ -2387,8 +2409,6 @@ func (c *Client) sendMessage(url string, payload interface{}, phone ...string) (
 		return "", &APIError{Status: resp.StatusCode, Body: string(respBody)}
 	}
 
-	slog.Debug("bird_api_response", "status", resp.StatusCode, "body", utils.MaskText(string(respBody)))
-
 	var result struct {
 		ID             string `json:"id"`
 		ConversationID string `json:"conversationId"`
@@ -2396,6 +2416,8 @@ func (c *Client) sendMessage(url string, payload interface{}, phone ...string) (
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		slog.Debug("could not parse bird response", "body", utils.MaskText(string(respBody)))
 	}
+	// El cuerpo repite el contacto del paciente: solo los ids (C-21).
+	slog.Debug("bird_api_response", "status", resp.StatusCode, "id", result.ID, "conversation_id", result.ConversationID)
 
 	// Cache conversationId from Channels API response.
 	// This is the most reliable source: every message the bot sends returns it.
