@@ -194,6 +194,9 @@ var catalog = map[string]stepSpec{
 	// aviso_tardio_ignorado: una resuelta o devuelta de Néctar anterior a la escalación vigente
 	// (copia tardía por el replay del WAL) se ignoró para no cerrar ni devolver la escalación nueva.
 	"escalacion/aviso_tardio_ignorado": {LvMilestone, "info", ""},
+	// agent_return_window_closed: el agente devolvió la conversación con la ventana de 24 h ya
+	// cerrada y el turno no llegó al paciente (409 window_closed, sin plantilla de respaldo, D-09).
+	"escalacion/agent_return_window_closed": {LvError, "error", ""},
 	// H131-1. ack_sent: acuse al paciente de que un agente lo atenderá (sigue esperando → milestone).
 	// escalation_no_agents: el gate de disponibilidad CIERRA el intento y devuelve al paciente al menú;
 	// es terminal y es un bloqueo, no un 'info' (como milestone salía "estancado" en cada ciclo — ya

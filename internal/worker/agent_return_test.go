@@ -1175,3 +1175,46 @@ func TestProcessAgentCommand_DataNotLoggedInClear(t *testing.T) {
 		t.Fatalf("el comando se sigue registrando:\n%s", logs.String())
 	}
 }
+
+// D-09: el agente devuelve la conversación con la ventana de 24 h ya cerrada. El turno no llega al
+// paciente (409 window_closed) y no hay plantilla de respaldo: queda la traza para encontrar el caso.
+func TestHandleAgentResume_WindowClosedIsTraced(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	pool, _, sender, sess, _, _ := returnSession(t, statemachine.StateMainMenu)
+	asNectar(sess)
+	pool.machine = &mockMessageProcessor{
+		processFn: func(context.Context, *session.Session, bird.InboundMessage) (*statemachine.StateResult, error) {
+			return statemachine.NewResult(statemachine.StateMainMenu).WithText("¿En qué te ayudo?"), nil
+		},
+	}
+	sender.sendErr = nectar.ErrWindowClosed
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "resume", Phone: sess.PhoneNumber})
+	stop()
+
+	if sink.FindStep("escalacion", "agent_return_window_closed") == nil {
+		t.Fatalf("el retorno con la ventana cerrada debe quedar trazado: %+v", sink.Events())
+	}
+}
+
+// Un fallo de envío que no es la ventana cerrada no deja esa traza.
+func TestHandleAgentResume_OtherSendErrorNotTracedAsWindowClosed(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	pool, _, sender, sess, _, _ := returnSession(t, statemachine.StateMainMenu)
+	asNectar(sess)
+	pool.machine = &mockMessageProcessor{
+		processFn: func(context.Context, *session.Session, bird.InboundMessage) (*statemachine.StateResult, error) {
+			return statemachine.NewResult(statemachine.StateMainMenu).WithText("¿En qué te ayudo?"), nil
+		},
+	}
+	sender.sendErr = bird.ErrPermanentSend
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "resume", Phone: sess.PhoneNumber})
+	stop()
+
+	if sink.FindStep("escalacion", "agent_return_window_closed") != nil {
+		t.Fatal("solo la ventana cerrada deja esa traza")
+	}
+}

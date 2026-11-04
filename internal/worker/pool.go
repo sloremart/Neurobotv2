@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/nectarreports"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
@@ -1343,7 +1344,9 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			slog.Error("process virtual message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 			return
 		}
-		p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
+		if p.sendAndSave(ctx, sess, sess.PhoneNumber, result) {
+			p.traceAgentReturnWindowClosed(sess)
+		}
 	} else {
 		// No data — notify patient and trigger the state handler.
 		// For automatic states: executes immediately (e.g., CHECK_ENTITY).
@@ -1372,8 +1375,8 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		result, err := p.machine.Process(ctx, sess, virtualMsg)
 		if err != nil {
 			slog.Error("process virtual resume message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
-		} else if result != nil {
-			p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
+		} else if result != nil && p.sendAndSave(ctx, sess, sess.PhoneNumber, result) {
+			p.traceAgentReturnWindowClosed(sess)
 		}
 	}
 
@@ -1775,7 +1778,9 @@ func (p *MessageWorkerPool) PreEscalationFlush(_ context.Context, sess *session.
 }
 
 // sendAndSave sends result messages and persists state (shared between processMessage and agent commands).
-func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Session, phone string, result *statemachine.StateResult) {
+// windowClosed dice si algún mensaje no salió porque la ventana de 24 h de WhatsApp estaba cerrada
+// (nectar.ErrWindowClosed): el retorno del agente lo traza (D-09).
+func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Session, phone string, result *statemachine.StateResult) (windowClosed bool) {
 	// Coalescer: los mensajes acumulados del turno (auto-chain: texto de transición + prompt del
 	// siguiente estado) se fusionan en el mínimo de envíos — Bird cobra cada uno por separado.
 	result.Messages = statemachine.CoalesceMessages(result.Messages)
@@ -1815,6 +1820,9 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 			if bird.IsPermanentSendError(err) {
 				slog.Warn("send retry skipped (permanent error)",
 					"phone", utils.MaskPhone(phone), "type", outMsg.Type(), "error", err)
+				if errors.Is(err, nectar.ErrWindowClosed) {
+					windowClosed = true
+				}
 				// Identificador no contactable: marcar la sesión UNA vez (contexto persistido) y
 				// emitir el flow_event para que dashboard/auditoría vean al paciente inalcanzable.
 				if errors.Is(err, bird.ErrNonContactable) && sess.GetContext(ctxNonContactable) != "1" {
@@ -1972,6 +1980,7 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 		p.tracker.LogBatch(ctx, sess.ID, phone, result.Events)
 	}
 	logResultEvents(sess.ID, phone, result.Events)
+	return windowClosed
 }
 
 // logResultEvents deja en el log INFO cada evento con sus datos redactados (H2); los eventos

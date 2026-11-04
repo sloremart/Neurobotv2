@@ -50,6 +50,17 @@ func (p *MessageWorkerPool) closeNectarConversation(sess *session.Session, cmd A
 	}
 }
 
+// traceAgentReturnWindowClosed deja la traza de un retorno del agente cuyo turno no llegó al
+// paciente porque la ventana de 24 h de WhatsApp ya estaba cerrada (409 window_closed, D-09): el
+// agente devolvió la conversación tarde. No hay plantilla de respaldo (eso lo decide el dueño): el
+// paciente no ve nada y esto es lo único que permite encontrar el caso.
+func (p *MessageWorkerPool) traceAgentReturnWindowClosed(sess *session.Session) {
+	slog.Warn("agent return: ventana de 24 h cerrada, el turno no llegó al paciente",
+		"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "state", sess.CurrentState)
+	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "agent_return_window_closed",
+		observability.EmitOpts{Phone: sess.PhoneNumber, Reason: sess.CurrentState})
+}
+
 // clearNextDayQueueMark borra la marca de «escalación encolada para el próximo día hábil»
 // (statemachine.CtxEscalationNextDay) cuando esa espera TERMINA: una persona tomó el caso —lo
 // devolvió o lo resolvió— o el bot lo retomó.
