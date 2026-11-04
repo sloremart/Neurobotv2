@@ -30,7 +30,12 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(wlRepo, ocrSvc, birdClient))
 	m.Register(sm.StateSelectWaitingList, selectWaitingListHandler(wlRepo))
 	m.Register(sm.StateUploadMedicalOrder, uploadMedicalOrderHandler(ocrSvc, birdClient))
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procedureRepo))
+	// La segunda lectura del código la hace el OCR; sin él (nil) se salta ese paso.
+	var cupsReader CupsCodeReader
+	if ocrSvc != nil {
+		cupsReader = ocrSvc
+	}
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procedureRepo, cupsReader))
 	m.Register(sm.StateConfirmOCRResult, confirmOCRResultHandler(procedureRepo, birdClient))
 	m.Register(sm.StateOCRFailed, ocrFailedHandler(birdClient))
 	m.Register(sm.StateAskManualCups, askManualCupsHandler(procedureRepo))
@@ -518,6 +523,8 @@ func processStashedOrder(ctx context.Context, sess *session.Session, ocrSvc *ser
 		}
 		merged, added := mergeCupsJSON(res.UpdateCtx["ocr_cups_json"], ocrRes.Cups)
 		res.WithContext("ocr_cups_json", merged)
+		// Con CUPS de varias hojas no se sabe de cuál salió cada uno: sin segunda lectura del código.
+		delete(res.UpdateCtx, ctxOCROrderURL)
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_page_appended",
 			observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": added}})
 	}
@@ -596,6 +603,7 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 
 	r := sm.NewResult(sm.StateValidateOCR).
 		WithContext("ocr_cups_json", string(cupsJSON)).
+		WithContext(ctxOCROrderURL, mediaURL). // para la segunda lectura del código en VALIDATE_OCR
 		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames, sm.CtxOCRFailedReads).
 		WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
@@ -650,8 +658,27 @@ const maxCupsQuantity = 100
 const orderUnprocessableEscalationText = "No pudimos procesar los procedimientos de tu orden médica. Te voy a comunicar con un agente para que pueda ayudarte."
 
 // VALIDATE_OCR (automático) — muestra resultados del OCR con verificación de documento
-func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader CupsCodeReader) sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, _ bird.InboundMessage) (res *sm.StateResult, _ error) {
+		// La URL de la orden es solo de ESTA validación (cups_resolve.go): se borra en toda salida.
+		// Las correcciones se anotan, o se borran, una vez validada la lista.
+		var corrections []cupsCorrection
+		validated := false
+		defer func() {
+			if res == nil {
+				return
+			}
+			res.WithClearCtx(ctxOCROrderURL)
+			if !validated {
+				return
+			}
+			if raw, merr := json.Marshal(corrections); merr == nil && len(corrections) > 0 {
+				res.WithContext(ctxCupsCorrections, string(raw))
+			} else {
+				res.WithClearCtx(ctxCupsCorrections)
+			}
+		}()
+
 		var cups []services.CUPSEntry
 		if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err != nil {
 			return sm.NewResult(sm.StateEscalateToAgent).
@@ -662,49 +689,63 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 
 		// Validar CUPS contra la BD — filtrar inactivos, enriquecer nombres.
 		// Si el código tiene sufijo numérico (ej "891509-16"), busca el código base interno.
-		// Si el código no existe en el catálogo → se descarta; si no quedan procedimientos, pasa a agente.
-		var skipped []string
+		// Un código que no está en el catálogo, o con otra especialidad, pasa por la resolución
+		// (cups_resolve.go): se corrige, se deja en duda para un agente o se descarta como siempre.
+		var skipped, doubts []string
+		var fresh []cupsCorrection
+		resolver := newCupsResolver(procedureRepo, cupsReader, sess)
+		trace := observability.TraceSession(sess.ID)
 		valid := cups[:0]
 		for _, cup := range cups {
 			if cup.Code != "" {
-				proc, _ := procedureRepo.FindByCode(ctx, cup.Code)
-
-				// Código base sin sufijo numérico (ej "891509-16" → "891509")
-				if proc == nil || !proc.IsActive {
-					if idx := strings.LastIndex(cup.Code, "-"); idx > 0 {
-						if _, err2 := strconv.Atoi(cup.Code[idx+1:]); err2 == nil {
-							baseCode := cup.Code[:idx]
-							if p, e := procedureRepo.FindByCode(ctx, baseCode); e == nil && p != nil && p.IsActive {
-								proc = p
-								cup.Code = baseCode
-							}
-						}
-					}
-				}
-
-				if proc == nil || !proc.IsActive {
-					skipped = append(skipped, cup.Code)
-					continue
-				}
+				proc, code := findActiveProcedure(ctx, procedureRepo, cup.Code)
 
 				// Validación cruzada de especialidad: si el nombre que leyó el OCR menciona
 				// una especialidad claramente distinta a la del catálogo, es un error de dígito
-				// del OCR (ej: 890382 Otorrino leído como 890364 Fisiatría). Descartar y escalar.
-				if ocrSpecialtyMismatch(cup.Name, proc.Name) {
+				// del OCR (ej: 890382 Otorrino leído como 890364 Fisiatría).
+				mismatch := proc != nil && ocrSpecialtyMismatch(cup.Name, proc.Name)
+				if mismatch {
 					slog.Warn("validate_ocr_specialty_mismatch",
-						"cups_code", cup.Code,
+						"cups_code", code,
 						"ocr_name", cup.Name,
 						"catalog_name", proc.Name,
 					)
-					skipped = append(skipped, cup.Code)
-					continue
 				}
 
+				if proc == nil || mismatch {
+					r := resolver.resolve(ctx, cup)
+					switch {
+					case r.proc != nil:
+						observability.Emit(trace, "agendar", "cups_corregido", observability.EmitOpts{
+							Phone: sess.PhoneNumber, Reason: r.via,
+							Attrs: map[string]interface{}{"leido": cup.Code, "usado": r.proc.Code},
+						})
+						fresh = append(fresh, cupsCorrection{Read: cup.Code, Used: r.proc.Code, Via: r.via, Name: cup.Name})
+						proc, code = r.proc, r.proc.Code
+					case r.doubt:
+						codes := make([]string, 0, len(r.candidates))
+						for _, c := range r.candidates {
+							codes = append(codes, c.Code)
+						}
+						observability.Emit(trace, "agendar", "cups_duda", observability.EmitOpts{
+							Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"leido": cup.Code, "candidatos": codes},
+						})
+						doubts = append(doubts, cupsDoubtNote(cup, r.candidates))
+						continue
+					default:
+						skipped = append(skipped, code)
+						continue
+					}
+				}
+
+				cup.Code = code
 				cup.Name = proc.Name
 			}
 			valid = append(valid, cup)
 		}
 		cups = valid
+		corrections = keptCorrections(sess, fresh, cups)
+		validated = true
 
 		// Bloqueos SANITAS: por regla de negocio el bot NO agenda bloqueos (053101–053115, 048101) a
 		// pacientes SANITAS (contratos 4/5/6/7). Si la orden trae un bloqueo —aunque venga con otros
@@ -745,6 +786,15 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository) sm.StateHa
 					"La orden trae una cantidad mayor que %d, que el bot no agenda: %s. Verifica la orden y devuelve los CUPS con la cantidad correcta.",
 					maxCupsQuantity, strings.Join(overQuantity, ", "))).
 				WithEvent("cups_quantity_out_of_range", map[string]interface{}{"cups": overQuantity}), nil
+		}
+
+		// Duda de lectura (cups_resolve.go): un agente revisa la orden con lo leído y los candidatos.
+		if len(doubts) > 0 {
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText(orderUnprocessableEscalationText).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonCupsPossibleMisread).
+				WithContext("escalation_note", strings.Join(doubts, " ")).
+				WithEvent("cups_possible_misread", map[string]interface{}{"doubts": len(doubts)}), nil
 		}
 
 		if len(cups) == 0 {

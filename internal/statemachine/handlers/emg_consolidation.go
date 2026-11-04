@@ -180,6 +180,8 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 
 			return sm.NewResult(sm.StateValidateOCR).
 				WithContext("ocr_cups_json", mergedJSON).
+				// Los dependientes llegan validados: lo que no se pueda agendar sale de esta orden.
+				WithContext(ctxOCROrderURL, mediaURL).
 				WithClearCtx("emg_dep_cups_json").
 				WithEvent("emg_order_merged", map[string]interface{}{"emg_cups": emgN, "dep_cups": depN}), nil
 

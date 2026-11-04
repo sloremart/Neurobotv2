@@ -414,3 +414,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   código, o falla, se leen las imágenes: todas las hojas (máx. `maxOCRPages`) en UNA llamada y, si falla, solo la 1.ª.
 - `OPENAI_DOC_MODEL` (por defecto `gpt-4.1`): modelo de la segunda lectura del código (`OCRService.ReadCupsCode`,
   una sola tarea; confianza baja → vacío, nunca adivina).
+- VALIDATE_OCR (`handlers/cups_resolve.go`): un código fuera del catálogo o con otra especialidad ya no se descarta
+  en silencio. Cascada: segunda lectura (con la URL de la orden, `ocr_order_url`, que vive solo en el paso
+  encadenado; sin ella o con <25 s de mensaje se salta) → nombre parecido en el catálogo con código a UN dígito
+  (único) → si hay parecidos sin ese dígito, agente (`cups_posible_mala_lectura`, nota con lo leído y los
+  candidatos) → sin parecidos, se descarta como antes. Corrige solo con dos señales; queda en
+  `ocr_cups_corrections` (resumen del agente, «CUPS corregidos») y en `agendar/cups_corregido`.

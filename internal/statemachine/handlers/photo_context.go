@@ -121,6 +121,8 @@ func PhotoAppendInterceptor(ocrSvc *services.OCRService) sm.Interceptor {
 		return sm.NewResult(sm.StateValidateOCR).
 			WithContext("ocr_cups_json", merged).
 			WithContext("ocr_append_count", strconv.Itoa(appends+1)).
+			// Lo ya leído llega validado: lo que no se pueda agendar sale de ESTA hoja.
+			WithContext(ctxOCROrderURL, url).
 			WithClearCtx(sm.CtxOCRFailedReads).
 			WithEvent("ocr_page_appended", map[string]interface{}{"added": added}), true
 	}

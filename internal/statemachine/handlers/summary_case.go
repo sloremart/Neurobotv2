@@ -36,9 +36,7 @@ func oneLine(s string) string {
 // (consolidate_appt_id) lo leído son los CUPS que se agregarían a la cita: también va.
 func writeCaseGroups(doc *summaryDoc, sess *session.Session, cupsCode string) {
 	writeEntityGroup(doc, sess)
-	if cupsCode == "" || sess.GetContext("consolidate_appt_id") != "" {
-		writeOrderGroup(doc, sess)
-	}
+	writeOrderGroup(doc, sess, cupsCode == "" || sess.GetContext("consolidate_appt_id") != "")
 	writeProcedureGroupsGroup(doc, sess)
 	writeScheduleGroup(doc, sess)
 	writeAppointmentGroup(doc, sess)
@@ -61,11 +59,13 @@ func writeEntityGroup(doc *summaryDoc, sess *session.Session) {
 }
 
 // writeOrderGroup describe la lectura de la orden. `cups_leidos` va en la gramática del campo de
-// CUPS del agente (`883141:1 930810:2`): se puede copiar tal cual en lo que devuelve.
-func writeOrderGroup(doc *summaryDoc, sess *session.Session) {
+// CUPS del agente (`883141:1 930810:2`): se puede copiar tal cual en lo que devuelve. Con la orden ya
+// agrupada (read=false) solo quedan los códigos que el bot corrigió (cups_resolve.go): nunca se
+// corrige en silencio.
+func writeOrderGroup(doc *summaryDoc, sess *session.Session, read bool) {
 	g := doc.untitled("orden")
 	var cups []services.CUPSEntry
-	if err := json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups); err == nil {
+	if read && json.Unmarshal([]byte(sess.GetContext("ocr_cups_json")), &cups) == nil {
 		tokens := make([]string, 0, len(cups))
 		for _, c := range cups {
 			code := strings.TrimSpace(c.Code)
@@ -79,6 +79,10 @@ func writeOrderGroup(doc *summaryDoc, sess *session.Session) {
 			tokens = append(tokens, code+":"+strconv.Itoa(qty))
 		}
 		g.optional("cups_leidos", "CUPS leídos", strings.Join(tokens, " "))
+	}
+	g.optional("cups_corregidos", "CUPS corregidos", cupsCorrectionsLine(sess))
+	if !read {
+		return
 	}
 	g.optional("sin_codigo", "Procedimientos sin código", oneLine(sess.GetContext(sm.CtxOCRUnreadNames)))
 	g.optional("causa_ocr", "Causa del fallo de lectura", oneLine(sess.GetContext(sm.CtxOCRFailureCause)))

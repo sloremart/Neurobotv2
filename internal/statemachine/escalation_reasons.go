@@ -79,6 +79,10 @@ const (
 	// EscalationReasonOCRFailedReads: se agotaron las lecturas fallidas seguidas de la orden en la
 	// sesión (error, tiempo agotado o lectura sin procedimientos).
 	EscalationReasonOCRFailedReads = "ocr_lecturas_fallidas"
+	// EscalationReasonCupsPossibleMisread: un código de la orden no se pudo agendar tal cual y el
+	// catálogo trae procedimientos de nombre parecido, ninguno a un dígito del leído; la nota para el
+	// agente dice qué se leyó y cuáles son los candidatos.
+	EscalationReasonCupsPossibleMisread = "cups_posible_mala_lectura"
 )
 
 // EscalationReasons lista TODOS los motivos de cable: las notificaciones y los del flujo.
@@ -93,6 +97,7 @@ func EscalationReasons() []string {
 		EscalationReasonMedicationError, EscalationReasonEmgConsolidationFailed,
 		EscalationReasonEmgAskedForAgent, EscalationReasonBotDisabled, EscalationReasonAgentInputRejected,
 		EscalationReasonRescheduleNoSlots, EscalationReasonQuantityOutOfRange, EscalationReasonOCRFailedReads,
+		EscalationReasonCupsPossibleMisread,
 	}
 }
 

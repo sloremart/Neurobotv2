@@ -110,6 +110,10 @@ var catalog = map[string]stepSpec{
 	// Auditoría de seguridad 2026-11-03: topes que pasan la orden a un agente.
 	"agendar/cups_quantity_out_of_range": {LvOutcome, "escalated", ""}, // cantidad por encima del tope → agente
 	"agendar/ocr_failed_reads_cap":       {LvOutcome, "escalated", ""}, // 3.ª lectura fallida seguida → agente
+
+	// Resolución del código CUPS en VALIDATE_OCR (mejora H5 del OCR, 2026-11-03).
+	"agendar/cups_corregido": {LvMilestone, "ok", ""},      // código corregido (Reason = vía); el paciente aún confirma
+	"agendar/cups_duda":      {LvOutcome, "escalated", ""}, // posible mala lectura con candidatos → agente
 	// Sesión cortada por el tope de escalaciones: cada entrada ignorada en silencio (detalle).
 	"escalacion/escalation_cap_input_ignored": {LvFull, "info", ""},
 

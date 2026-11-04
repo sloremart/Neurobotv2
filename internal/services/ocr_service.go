@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // maxOCRPages acota cuántas páginas de un PDF se mandan a Vision en su única llamada (costo/tamaño).
@@ -911,7 +912,8 @@ func parseCupsCode(content string) string {
 		return ""
 	}
 	var b strings.Builder
-	for _, c := range strings.ToUpper(*out.Cups) {
+	// El sufijo tras el guion es cantidad, no parte del código (891509-16 → 891509).
+	for _, c := range strings.ToUpper(utils.BaseCupCode(strings.TrimSpace(*out.Cups))) {
 		if (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') {
 			b.WriteRune(c)
 		}

@@ -383,3 +383,10 @@ func TestReadCupsCode_PDFSendsEveryPage(t *testing.T) {
 		t.Errorf("las dos hojas van en la segunda lectura")
 	}
 }
+
+// H4: si el modelo devuelve el código con sufijo, queda el código base (el sufijo es cantidad).
+func TestParseCupsCode_DropsQuantitySuffix(t *testing.T) {
+	if got := parseCupsCode(`{"cups": "891509-16", "confianza": "alta"}`); got != "891509" {
+		t.Errorf("código = %q, quería 891509", got)
+	}
+}

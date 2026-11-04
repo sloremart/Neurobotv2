@@ -327,7 +327,7 @@ func TestConfirmOCRResult_NectarResumeKeepsTheSkippedNote(t *testing.T) {
 	}
 	read, _ := json.Marshal([]services.CUPSEntry{{Code: "890271", Name: "EMG", Quantity: 1}, {Code: "999999", Name: "OTRO", Quantity: 1}})
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
 	m.Register(sm.StateConfirmOCRResult, confirmOCRResultHandler(procRepo, nil))
 
 	validate := testSess(sm.StateValidateOCR)

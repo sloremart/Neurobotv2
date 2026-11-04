@@ -32,8 +32,9 @@ func newMockOCRServer(response string) *httptest.Server {
 
 // --- Mock procedure repo ---
 type mockProcedureRepo struct {
-	findByCodeFn   func(ctx context.Context, code string) (*domain.Procedure, error)
-	searchByNameFn func(ctx context.Context, name string) ([]domain.Procedure, error)
+	findByCodeFn    func(ctx context.Context, code string) (*domain.Procedure, error)
+	searchByNameFn  func(ctx context.Context, name string) ([]domain.Procedure, error)
+	findAllActiveFn func(ctx context.Context) ([]domain.Procedure, error)
 }
 
 func (m *mockProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {
@@ -55,6 +56,9 @@ func (m *mockProcedureRepo) FindByID(ctx context.Context, id int) (*domain.Proce
 }
 
 func (m *mockProcedureRepo) FindAllActive(ctx context.Context) ([]domain.Procedure, error) {
+	if m.findAllActiveFn != nil {
+		return m.findAllActiveFn(ctx)
+	}
 	return nil, nil
 }
 
@@ -645,7 +649,7 @@ func TestValidateOCR_EnrichesFromDB(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -682,7 +686,7 @@ func TestValidateOCR_BloqueoSanitas_Escalates(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -709,7 +713,7 @@ func TestValidateOCR_BloqueoNonSanitas_NoEscalate(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -735,7 +739,7 @@ func TestValidateOCR_DocumentMismatch_NoWarning(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -770,7 +774,7 @@ func TestValidateOCR_DocumentMatch(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
