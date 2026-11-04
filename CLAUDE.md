@@ -410,6 +410,14 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   tabla en `escalation_reasons.go`; motivo vacío o nuevo sin clasificar suma). Las que dispara el bot (orden dudosa,
   B-05, B-10, SANITAS, fallos) ni suman ni cortan; `bot_disabled` exento. Tras el corte el bot calla salvo sus
   botones y «menú», y lo ignorado no renueva la sesión.
+- Llamadas extra al modelo por orden (VALIDATE_OCR): máx. `maxExtraModelCallsPerOrder` (6) entre segundas lecturas
+  y elecciones por nombre; pasado el tope, lo que pediría una llamada es duda → agente (un código sin ningún
+  procedimiento de nombre parecido se descarta, como con la lectura). La orden se baja y convierte una vez por pasada
+  (`OCRService.OrderImages`). `ocr_order_url` se borra al entrar a ASK_MEDICAL_ORDER/UPLOAD_MEDICAL_ORDER/
+  UPLOAD_EMG_ORDER (salvo la de su propia foto); `escalation_note` se borra en la escalación entregada y en la
+  desviada, no en la salida a la recuperación IA.
+- Recuperación IA: el mensaje aclaratorio del modelo no se envía si pasa de 300 caracteres o trae enlace, correo,
+  teléfono o número de 7+ dígitos (fechas aparte); sin mensaje escala con el texto fijo de siempre.
 - «¿Es correcto?» (CONFIRM_OCR_RESULT): si la lista no cabe en el cuerpo de botones (1.024), sale COMPLETA antes en
   texto (trozos ≤4.096) y los botones llevan solo el aviso de omitidos y la pregunta; nunca se recorta con «…».
 - Imagen (`docker/Dockerfile`): `alpine:3.24.3`, `ghostscript~10.08` (gs en `community`: revisar la fijación, la
