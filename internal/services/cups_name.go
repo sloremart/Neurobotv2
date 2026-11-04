@@ -91,6 +91,10 @@ func canonicalOrderName(text string) string {
 	return strings.Join(out, " ")
 }
 
+// CupsNameKey es la forma canónica de un nombre de procedimiento (sin tildes, mayúsculas y abreviaturas
+// expandidas): sirve para reconocer el mismo procedimiento sin código escrito de dos maneras.
+func CupsNameKey(name string) string { return canonicalOrderName(name) }
+
 // firstVisitSuffix se suma al nombre leído de una interconsulta: es una consulta de primera vez.
 const firstVisitSuffix = " CONSULTA PRIMERA VEZ"
 

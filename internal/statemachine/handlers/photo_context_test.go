@@ -10,18 +10,22 @@ import (
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
-// La fusión de páginas dedupea por código y solo suma códigos nuevos (§8.1 #3).
+// La fusión de páginas dedupea por código (o, sin código, por nombre) y solo suma lo nuevo (§8.1 #3).
+// Un procedimiento sin código entra con su nombre: VALIDATE_OCR le asigna el código por nombre o lo
+// pasa a un agente (antes se perdía en silencio).
 func TestMergeCupsJSON(t *testing.T) {
 	existing := `[{"cups_code":"890274","cups_name":"Consulta"},{"cups_code":"883101","cups_name":"RM"}]`
 	merged, added := mergeCupsJSON(existing, []services.CUPSEntry{
 		{Code: "883101", Name: "RM repetida"}, // duplicado → no suma
 		{Code: "930860", Name: "EMG"},         // nuevo → suma
-		{Code: "", Name: "sin código"},        // sin código → no suma
+		{Code: "", Name: "Ecografía renal"},   // sin código, con nombre → suma
+		{Code: "", Name: "ECOGRAFIA RENAL"},   // el mismo nombre → no suma
+		{Code: "", Name: " "},                 // sin código ni nombre → no suma
 	})
-	if added != 1 {
-		t.Fatalf("added = %d, esperaba 1", added)
+	if added != 2 {
+		t.Fatalf("added = %d, esperaba 2", added)
 	}
-	for _, must := range []string{"890274", "883101", "930860"} {
+	for _, must := range []string{"890274", "883101", "930860", "Ecografía renal"} {
 		if !strings.Contains(merged, must) {
 			t.Errorf("merged sin %s: %s", must, merged)
 		}

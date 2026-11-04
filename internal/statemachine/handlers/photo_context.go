@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
@@ -50,21 +51,33 @@ func PhotoStartInterceptor(cfg *config.Config) sm.Interceptor {
 	}
 }
 
-// mergeCupsJSON fusiona los CUPS de una página adicional con los ya leídos (dedupe por código).
+// mergeCupsJSON fusiona los CUPS de una página adicional con los ya leídos (dedupe por código o, sin
+// código, por nombre).
 // Devuelve el JSON combinado y cuántos se agregaron. Función pura (testeable sin OCR).
 func mergeCupsJSON(existingJSON string, newCups []services.CUPSEntry) (string, int) {
 	var existing []services.CUPSEntry
 	_ = json.Unmarshal([]byte(existingJSON), &existing)
+	// Clave de deduplicación: el código o, sin código, el nombre (lo resuelve VALIDATE_OCR por nombre).
+	key := func(c services.CUPSEntry) string {
+		if code := strings.TrimSpace(c.Code); code != "" {
+			return code
+		}
+		if name := services.CupsNameKey(c.Name); name != "" {
+			return "nombre:" + name
+		}
+		return ""
+	}
 	seen := map[string]bool{}
 	for _, c := range existing {
-		seen[c.Code] = true
+		seen[key(c)] = true
 	}
 	added := 0
 	for _, c := range newCups {
-		if c.Code == "" || seen[c.Code] {
+		k := key(c)
+		if k == "" || seen[k] {
 			continue
 		}
-		seen[c.Code] = true
+		seen[k] = true
 		existing = append(existing, c)
 		added++
 	}
