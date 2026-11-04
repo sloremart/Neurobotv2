@@ -3,48 +3,54 @@ package services
 import "strings"
 
 // PARECIDO ENTRE UN CÓDIGO/NOMBRE LEÍDO POR EL OCR Y EL CATÁLOGO (tomado de hdg-bot,
-// internal/eligibility/cups_resolve.go). Lo usa la resolución de VALIDATE_OCR: un código que no se
-// puede agendar tal cual se corrige solo con DOS señales a la vez —un nombre parecido en el catálogo
-// y un código a un dígito del leído—, nunca con una sola.
+// internal/eligibility/cups_resolve.go, y endurecido tras la revisión de 2026-11-03). Lo usa la
+// resolución de VALIDATE_OCR: un código que no se puede agendar tal cual se corrige solo con DOS señales
+// a la vez —el mismo procedimiento por nombre en el catálogo y un código a un dígito del leído—.
+//
+// En el catálogo de Neuro los hermanos (superior/inferior, simple/contraste, primera vez/control,
+// transrectal/transabdominal, PET 18-FLUOR/PSMA) suelen estar justo a un dígito. Por eso el nombre no
+// puede ser «parecido» por fracción de palabras, como en hdg (allí los candidatos son una ficha
+// contratada pequeña; aquí, el catálogo entero): tiene que describir el MISMO procedimiento.
 
-// CupsNameSimilarityThreshold es la fracción de palabras distintivas del nombre leído que tienen que
-// aparecer en el nombre del catálogo para considerarlos el mismo procedimiento.
-const CupsNameSimilarityThreshold = 0.6
-
-// genericProcedureWords están en casi todo nombre del catálogo y no distinguen un procedimiento de
-// otro: no cuentan para el parecido. Sin esto, «CONSULTA DE PRIMERA VEZ POR ESPECIALISTA EN X» se
-// parecería a TODAS las consultas de primera vez.
+// genericProcedureWords no distinguen un procedimiento de otro: no cuentan al comparar nombres. NO van
+// aquí las que sí cambian el procedimiento: SIMPLE, SIN y CON CONTRASTE, PRIMERA VEZ y CONTROL o
+// SEGUIMIENTO, TOTAL, la región, la lateralidad, la vía y los marcadores.
 var genericProcedureWords = map[string]bool{
 	"DE": true, "DEL": true, "LA": true, "EL": true, "LOS": true, "LAS": true, "POR": true,
-	"PARA": true, "EN": true, "Y": true, "O": true, "A": true, "CON": true, "SIN": true, "AL": true,
+	"PARA": true, "EN": true, "Y": true, "O": true, "A": true, "CON": true, "AL": true,
 	"UN": true, "UNA": true, "U": true, "E": true,
-	"CONSULTA": true, "PRIMERA": true, "VEZ": true, "ESPECIALISTA": true, "MEDICINA": true,
-	"CONTROL": true, "SEGUIMIENTO": true, "PROCEDIMIENTO": true, "EXAMEN": true, "ESTUDIO": true,
-	"GENERAL": true, "TOTAL": true, "SIMPLE": true, "NUEVA": true, "NUEVO": true, "SOD": true,
+	"CONSULTA": true, "ESPECIALISTA": true, "MEDICINA": true, "PROCEDIMIENTO": true,
+	"EXAMEN": true, "ESTUDIO": true, "GENERAL": true, "NUEVA": true, "NUEVO": true, "SOD": true,
 }
 
 // accentFolder quita tildes y diéresis (el texto ya va en mayúsculas).
 var accentFolder = strings.NewReplacer("Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U", "Ü", "U", "Ñ", "N")
 
-// CupsNameSimilarity mide qué fracción de las palabras DISTINTIVAS del nombre leído aparecen en el
-// nombre del catálogo (igualdad, o prefijo común de 5+ letras: OTORRINO ~ OTORRINOLARINGOLOGIA). 0 si
-// el nombre leído no tiene ninguna palabra distintiva.
-func CupsNameSimilarity(read, catalogName string) float64 {
-	rt := distinctiveWords(read)
-	if len(rt) == 0 {
-		return 0
-	}
-	ct := procedureWords(catalogName)
-	matched := 0
-	for _, r := range rt {
-		for _, c := range ct {
-			if wordsMatch(r, c) {
-				matched++
+// CupsNamesMatch dice si dos nombres describen el MISMO procedimiento: cada palabra distintiva de uno
+// está en el otro, en los DOS sentidos (igualdad, o una es prefijo de la otra con 5+ letras: RODILLA ~
+// RODILLAS). Cualquier palabra distintiva de más o de menos —RODILLA frente a HOMBRO, SIMPLE frente a
+// CONTRASTE, PRIMERA VEZ frente a CONTROL, PEDIÁTRICA, SUPERIOR, TRANSRECTAL, PSMA, FUNCIONAL— hace que
+// no se parezcan. Sin palabras distintivas en alguno de los dos, no hay con qué comparar: false.
+func CupsNamesMatch(a, b string) bool {
+	aw, bw := distinctiveWords(a), distinctiveWords(b)
+	return len(aw) > 0 && len(bw) > 0 && allWordsIn(aw, bw) && allWordsIn(bw, aw)
+}
+
+// allWordsIn dice si cada palabra de words tiene su par en other.
+func allWordsIn(words, other []string) bool {
+	for _, w := range words {
+		found := false
+		for _, o := range other {
+			if wordsMatch(w, o) {
+				found = true
 				break
 			}
 		}
+		if !found {
+			return false
+		}
 	}
-	return float64(matched) / float64(len(rt))
+	return true
 }
 
 func wordsMatch(a, b string) bool {
@@ -57,14 +63,15 @@ func wordsMatch(a, b string) bool {
 	return false
 }
 
-// procedureWords parte el texto en palabras en mayúsculas y sin tildes, de 3+ caracteres.
+// procedureWords parte el texto en palabras en mayúsculas y sin tildes: las de 3+ caracteres y todos
+// los números, que también distinguen («Paq. 1 electromiografía» frente a «Paq. 2 electromiografías»).
 func procedureWords(text string) []string {
 	folded := accentFolder.Replace(strings.ToUpper(text))
 	var out []string
 	for _, w := range strings.FieldsFunc(folded, func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
 	}) {
-		if len(w) >= 3 {
+		if len(w) >= 3 || strings.Trim(w, "0123456789") == "" {
 			out = append(out, w)
 		}
 	}

@@ -36,13 +36,14 @@ var resolveCatalog = []domain.Procedure{
 	{ID: 5, Code: "881436", Name: "ECOGRAFIA OBSTETRICA CON TRASLUCENCIA NUCAL", IsActive: true},
 }
 
-// catalogRepo responde con resolveCatalog y cuenta cuántas veces se pidió el catálogo entero.
-func catalogRepo(allCalls *int) *mockProcedureRepo {
+// catalogRepo responde con ese catálogo (FindByCode ve también los inactivos, FindAllActive solo los
+// activos) y cuenta cuántas veces se pidió el catálogo entero.
+func catalogRepo(catalog []domain.Procedure, allCalls *int) *mockProcedureRepo {
 	return &mockProcedureRepo{
 		findByCodeFn: func(_ context.Context, code string) (*domain.Procedure, error) {
-			for i := range resolveCatalog {
-				if resolveCatalog[i].Code == code {
-					p := resolveCatalog[i]
+			for i := range catalog {
+				if catalog[i].Code == code {
+					p := catalog[i]
 					return &p, nil
 				}
 			}
@@ -50,7 +51,13 @@ func catalogRepo(allCalls *int) *mockProcedureRepo {
 		},
 		findAllActiveFn: func(context.Context) ([]domain.Procedure, error) {
 			*allCalls++
-			return resolveCatalog, nil
+			var active []domain.Procedure
+			for _, p := range catalog {
+				if p.IsActive {
+					active = append(active, p)
+				}
+			}
+			return active, nil
 		},
 	}
 }
@@ -59,6 +66,12 @@ const testOrderURL = "https://media.example/orden.jpg"
 
 // runValidate corre VALIDATE_OCR con esos CUPS leídos; orderURL vacío = sin imagen de la orden.
 func runValidate(t *testing.T, cups []services.CUPSEntry, orderURL string, reader CupsCodeReader) (*sm.StateResult, *observability.CaptureSink, int) {
+	t.Helper()
+	return runValidateWith(t, resolveCatalog, cups, orderURL, reader)
+}
+
+// runValidateWith es runValidate con otro catálogo.
+func runValidateWith(t *testing.T, catalog []domain.Procedure, cups []services.CUPSEntry, orderURL string, reader CupsCodeReader) (*sm.StateResult, *observability.CaptureSink, int) {
 	t.Helper()
 	raw, _ := json.Marshal(cups)
 	sess := testSess(sm.StateValidateOCR)
@@ -69,7 +82,7 @@ func runValidate(t *testing.T, cups []services.CUPSEntry, orderURL string, reade
 	allCalls := 0
 	sink := &observability.CaptureSink{}
 	stop := observability.StartCapture(sink)
-	res, err := validateOCRHandler(catalogRepo(&allCalls), reader)(context.Background(), sess, textM(""))
+	res, err := validateOCRHandler(catalogRepo(catalog, &allCalls), reader)(context.Background(), sess, textM(""))
 	stop()
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +186,7 @@ func TestValidateOCR_SpecialtyMismatchCorrectedByName(t *testing.T) {
 func TestValidateOCR_DoubtEscalatesWithCandidates(t *testing.T) {
 	res, sink, _ := runValidate(t, []services.CUPSEntry{
 		{Code: "890274", Name: "CONSULTA PRIMERA VEZ NEUROLOGIA", Quantity: 1},
-		{Code: "890999", Name: "CONSULTA NEUROLOGIA", Quantity: 1},
+		{Code: "890999", Name: "CONSULTA PRIMERA VEZ NEUROLOGIA", Quantity: 1},
 	}, "", nil)
 
 	if res.NextState != sm.StateEscalateToAgent {
@@ -183,7 +196,7 @@ func TestValidateOCR_DoubtEscalatesWithCandidates(t *testing.T) {
 		t.Errorf("motivo = %q", got)
 	}
 	note := res.UpdateCtx["escalation_note"]
-	for _, want := range []string{"890999", "890274", "890374"} {
+	for _, want := range []string{"890999", "890274"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("la nota debe traer %s: %q", want, note)
 		}
@@ -293,11 +306,30 @@ func TestValidateOCR_KeepsPreviousCorrectionsOfCodesStillInOrder(t *testing.T) {
 	sess.SetContext("ocr_cups_json", string(raw))
 	sess.SetContext(ctxCupsCorrections, string(prev))
 	allCalls := 0
-	res, err := validateOCRHandler(catalogRepo(&allCalls), nil)(context.Background(), sess, textM(""))
+	res, err := validateOCRHandler(catalogRepo(resolveCatalog, &allCalls), nil)(context.Background(), sess, textM(""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := corrections(t, res); len(got) != 1 || got[0].Used != "890274" {
 		t.Errorf("se conserva solo la corrección de un código que sigue en la orden: %+v", got)
+	}
+}
+
+// Las correcciones son de UNA orden: al leer una orden nueva se borran, para que el resumen del
+// agente no muestre como corregido un código de la orden anterior.
+func TestProcessOrderMedia_NewOrderClearsPreviousCorrections(t *testing.T) {
+	ocrSrv := newSequentialOCRServer(ocrCupsResponse("890274", "NEURO"))
+	defer ocrSrv.Close()
+	fileSrv := newMockFileServer()
+	defer fileSrv.Close()
+
+	sess := testSess(sm.StateUploadMedicalOrder)
+	sess.SetContext(ctxCupsCorrections, `[{"leido":"890279","usado":"890274","via":"nombre","nombre":"NEURO"}]`)
+	res, err := processOrderMedia(context.Background(), sess, services.NewOCRServiceForTest(ocrSrv.URL), nil, fileSrv.URL+"/p1.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(res.ClearCtx, ctxCupsCorrections) {
+		t.Errorf("una orden nueva borra las correcciones de la anterior: %v", res.ClearCtx)
 	}
 }

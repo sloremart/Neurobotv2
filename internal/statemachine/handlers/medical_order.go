@@ -604,7 +604,8 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 	r := sm.NewResult(sm.StateValidateOCR).
 		WithContext("ocr_cups_json", string(cupsJSON)).
 		WithContext(ctxOCROrderURL, mediaURL). // para la segunda lectura del código en VALIDATE_OCR
-		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames, sm.CtxOCRFailedReads).
+		// Orden nueva: las correcciones de la anterior no son suyas (las de ésta las anota VALIDATE_OCR).
+		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames, sm.CtxOCRFailedReads, ctxCupsCorrections).
 		WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
 		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})
@@ -693,12 +694,19 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 		// (cups_resolve.go): se corrige, se deja en duda para un agente o se descarta como siempre.
 		var skipped, doubts []string
 		var fresh []cupsCorrection
-		resolver := newCupsResolver(procedureRepo, cupsReader, sess)
+		resolver := newCupsResolver(procedureRepo, cupsReader, sess, cups)
 		trace := observability.TraceSession(sess.ID)
 		valid := cups[:0]
 		for _, cup := range cups {
 			if cup.Code != "" {
-				proc, code := findActiveProcedure(ctx, procedureRepo, cup.Code)
+				proc, code, exists := findActiveProcedure(ctx, procedureRepo, cup.Code)
+
+				// Un código real del catálogo que no está activo: Neuro no lo agenda. Se descarta como
+				// siempre, sin resolución (sus hermanos a un dígito son otros estudios reales).
+				if proc == nil && exists {
+					skipped = append(skipped, code)
+					continue
+				}
 
 				// Validación cruzada de especialidad: si el nombre que leyó el OCR menciona
 				// una especialidad claramente distinta a la del catálogo, es un error de dígito

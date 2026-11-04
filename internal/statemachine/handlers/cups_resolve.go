@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -22,17 +21,22 @@ import (
 // en el catálogo, o que lo estaba pero con otra especialidad (ocrSpecialtyMismatch), se descartaba en
 // silencio. Ahora, SOLO para esos códigos y en cascada:
 //
-//  1. SEGUNDA LECTURA dedicada del código (OCRService.ReadCupsCode). Si devuelve otro código activo en
-//     el catálogo que pasa la validación de especialidad, se corrige y se sigue.
-//  2. BÚSQUEDA POR NOMBRE en el catálogo: un ÚNICO procedimiento de nombre parecido cuyo código esté a
-//     un dígito del leído (sustitución o transposición) es una mala lectura: se corrige y se sigue.
-//  3. Hay nombres parecidos pero ninguno a un dígito: DUDA. La orden pasa a un agente con lo leído y
-//     los candidatos (cups_posible_mala_lectura).
-//  4. Ningún nombre parecido: la conducta de siempre, se descarta.
+//  0. Un código que EXISTE en el catálogo pero está inactivo es real y Neuro no lo agenda: se descarta,
+//     sin cascada (revisión de 2026-11-03: sus hermanos a un dígito son otros estudios reales).
+//  1. SEGUNDA LECTURA dedicada del código (OCRService.ReadCupsCode). Si devuelve el MISMO código, la
+//     lectura queda confirmada y se descarta como siempre. Si devuelve otro, activo, que pasa la
+//     validación de especialidad y cuyo nombre es el del procedimiento leído (CupsNamesMatch), se
+//     corrige y se sigue.
+//  2. BÚSQUEDA POR NOMBRE en el catálogo: un ÚNICO procedimiento con el MISMO nombre (CupsNamesMatch) y
+//     el código a un dígito del leído (sustitución o transposición) es una mala lectura: se corrige.
+//  3. Hay procedimientos con el mismo nombre pero ninguno a un dígito (o varios): DUDA. La orden pasa
+//     a un agente con lo leído y los candidatos (cups_posible_mala_lectura). También es duda una
+//     corrección a un código que YA está en la orden: la dejaría duplicada y perdería el leído.
+//  4. Ninguno con el mismo nombre: la conducta de siempre, se descarta.
 //
-// La corrección exige las DOS señales (la lectura o el nombre, y el catálogo), nunca una sola, y nunca
-// es silenciosa: queda en ctxCupsCorrections para el resumen del agente y emite `cups_corregido`. El
-// paciente sigue confirmando la lista en CONFIRM_OCR_RESULT.
+// La corrección exige las DOS señales (la lectura o el código a un dígito, y el mismo nombre en el
+// catálogo), nunca una sola, y nunca es silenciosa: queda en ctxCupsCorrections para el resumen del
+// agente y emite `cups_corregido`. El paciente sigue confirmando la lista en CONFIRM_OCR_RESULT.
 
 // CupsCodeReader es la segunda lectura dedicada del código CUPS de UN procedimiento (la implementa
 // services.OCRService.ReadCupsCode). Opcional: sin lector se salta ese paso.
@@ -85,58 +89,88 @@ type cupsResolver struct {
 	orderURL string
 	catalog  []domain.Procedure
 	loaded   bool
+	// inOrder son los códigos (base) de la orden: los leídos y los ya corregidos.
+	inOrder map[string]bool
 }
 
-func newCupsResolver(repo repository.ProcedureRepository, reader CupsCodeReader, sess *session.Session) *cupsResolver {
-	return &cupsResolver{repo: repo, reader: reader, orderURL: sess.GetContext(ctxOCROrderURL)}
+func newCupsResolver(repo repository.ProcedureRepository, reader CupsCodeReader, sess *session.Session, cups []services.CUPSEntry) *cupsResolver {
+	inOrder := make(map[string]bool, len(cups))
+	for _, c := range cups {
+		inOrder[utils.BaseCupCode(strings.TrimSpace(c.Code))] = true
+	}
+	return &cupsResolver{repo: repo, reader: reader, orderURL: sess.GetContext(ctxOCROrderURL), inOrder: inOrder}
 }
 
 // findActiveProcedure busca el código en el catálogo y, si no está activo y trae sufijo numérico
-// (ej "891509-16"), su código base. Devuelve el procedimiento (nil si no hay) y el código con el que
-// se encontró.
-func findActiveProcedure(ctx context.Context, repo repository.ProcedureRepository, code string) (*domain.Procedure, string) {
-	if p, _ := repo.FindByCode(ctx, code); p != nil && p.IsActive {
-		return p, code
+// (ej "891509-16"), su código base. Devuelve el procedimiento activo (nil si no hay), el código con el
+// que se encontró y si el código (o su base) existe en el catálogo aunque esté inactivo.
+func findActiveProcedure(ctx context.Context, repo repository.ProcedureRepository, code string) (*domain.Procedure, string, bool) {
+	p, _ := repo.FindByCode(ctx, code)
+	if p != nil && p.IsActive {
+		return p, code, true
 	}
+	exists := p != nil
 	if base := utils.BaseCupCode(code); base != code {
-		if p, err := repo.FindByCode(ctx, base); err == nil && p != nil && p.IsActive {
-			return p, base
+		if bp, err := repo.FindByCode(ctx, base); err == nil && bp != nil {
+			if bp.IsActive {
+				return bp, base, true
+			}
+			exists = true
 		}
 	}
-	return nil, code
+	return nil, code, exists
 }
 
-// resolve aplica la cascada a un código que no se puede agendar tal cual.
+// resolve aplica la cascada a un código que no se puede agendar tal cual (no está en el catálogo o
+// choca con la especialidad; los inactivos no llegan aquí).
 func (r *cupsResolver) resolve(ctx context.Context, cup services.CUPSEntry) cupsResolution {
 	read := utils.BaseCupCode(strings.TrimSpace(cup.Code))
 
 	// Paso 1: segunda lectura dedicada del código.
-	if code := r.secondReading(ctx, cup.Name); code != "" && code != read {
-		if proc, _ := findActiveProcedure(ctx, r.repo, code); proc != nil && !ocrSpecialtyMismatch(cup.Name, proc.Name) {
-			return cupsResolution{proc: proc, via: cupsCorrectedBySecondReading}
+	if code := r.secondReading(ctx, cup.Name); code == read {
+		return cupsResolution{} // confirmado: el código es el que dice la orden
+	} else if code != "" {
+		if proc, _, _ := findActiveProcedure(ctx, r.repo, code); proc != nil && r.sameProcedure(cup, *proc) {
+			return r.correct(*proc, cupsCorrectedBySecondReading)
 		}
 	}
 
-	// Pasos 2 a 4: nombres parecidos en el catálogo.
-	similar := r.similarByName(ctx, cup.Name, read)
-	if len(similar) == 0 {
+	// Pasos 2 a 4: el mismo procedimiento por nombre en el catálogo.
+	same := r.sameByName(ctx, cup, read)
+	if len(same) == 0 {
 		return cupsResolution{}
 	}
 	var oneDigit []domain.Procedure
-	for _, p := range similar {
-		if services.CupsOneDigitApart(read, utils.BaseCupCode(p.Code)) && !ocrSpecialtyMismatch(cup.Name, p.Name) {
+	for _, p := range same {
+		if services.CupsOneDigitApart(read, utils.BaseCupCode(p.Code)) {
 			oneDigit = append(oneDigit, p)
 		}
 	}
 	if len(oneDigit) == 1 {
-		return cupsResolution{proc: &oneDigit[0], via: cupsCorrectedByName}
+		return r.correct(oneDigit[0], cupsCorrectedByName)
 	}
-	return cupsResolution{doubt: true, candidates: similar[:min(len(similar), maxCupsCandidates)]}
+	return cupsResolution{doubt: true, candidates: same[:min(len(same), maxCupsCandidates)]}
+}
+
+// sameProcedure dice si el procedimiento del catálogo es el que leyó el OCR: el mismo nombre
+// (CupsNamesMatch) y sin choque de especialidad.
+func (r *cupsResolver) sameProcedure(cup services.CUPSEntry, p domain.Procedure) bool {
+	return services.CupsNamesMatch(cup.Name, p.Name) && !ocrSpecialtyMismatch(cup.Name, p.Name)
+}
+
+// correct corrige al procedimiento, salvo que su código ya esté en la orden: eso es duda.
+func (r *cupsResolver) correct(p domain.Procedure, via string) cupsResolution {
+	code := utils.BaseCupCode(p.Code)
+	if r.inOrder[code] {
+		return cupsResolution{doubt: true, candidates: []domain.Procedure{p}}
+	}
+	r.inOrder[code] = true
+	return cupsResolution{proc: &p, via: via}
 }
 
 // secondReading pide la segunda lectura si hay lector, URL de la orden y presupuesto; vacío si no.
 func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
-	if r.reader == nil || r.orderURL == "" {
+	if r.reader == nil || r.orderURL == "" || strings.TrimSpace(name) == "" {
 		return ""
 	}
 	if dl, ok := ctx.Deadline(); ok {
@@ -156,10 +190,10 @@ func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
 	return utils.BaseCupCode(strings.TrimSpace(code))
 }
 
-// similarByName devuelve los procedimientos activos de nombre parecido al leído, sin el propio código
-// leído (ya rechazado), de mayor a menor parecido. Un fallo al leer el catálogo deja la conducta de
-// siempre (se descarta).
-func (r *cupsResolver) similarByName(ctx context.Context, name, read string) []domain.Procedure {
+// sameByName devuelve los procedimientos activos que son el leído por nombre (sameProcedure), sin el
+// propio código leído (ya rechazado), en el orden del catálogo. Un fallo al leer el catálogo deja la
+// conducta de siempre (se descarta).
+func (r *cupsResolver) sameByName(ctx context.Context, cup services.CUPSEntry, read string) []domain.Procedure {
 	if !r.loaded {
 		r.loaded = true
 		all, err := r.repo.FindAllActive(ctx)
@@ -168,23 +202,11 @@ func (r *cupsResolver) similarByName(ctx context.Context, name, read string) []d
 		}
 		r.catalog = all
 	}
-	type scored struct {
-		proc  domain.Procedure
-		score float64
-	}
-	var found []scored
+	var out []domain.Procedure
 	for _, p := range r.catalog {
-		if utils.BaseCupCode(p.Code) == read {
-			continue
+		if utils.BaseCupCode(p.Code) != read && r.sameProcedure(cup, p) {
+			out = append(out, p)
 		}
-		if sc := services.CupsNameSimilarity(name, p.Name); sc >= services.CupsNameSimilarityThreshold {
-			found = append(found, scored{p, sc})
-		}
-	}
-	sort.SliceStable(found, func(i, j int) bool { return found[i].score > found[j].score })
-	out := make([]domain.Procedure, len(found))
-	for i, f := range found {
-		out[i] = f.proc
 	}
 	return out
 }
@@ -197,7 +219,7 @@ func cupsDoubtNote(cup services.CUPSEntry, candidates []domain.Procedure) string
 		parts = append(parts, fmt.Sprintf("%s «%s»", c.Code, c.Name))
 	}
 	return fmt.Sprintf("POSIBLE MALA LECTURA DEL CUPS: el OCR leyó %s «%s», que no se puede agendar tal cual. "+
-		"El catálogo trae con nombre parecido: %s. Verifica la orden y devuelve los CUPS correctos.",
+		"El catálogo trae con el mismo nombre: %s. Verifica la orden y devuelve los CUPS correctos.",
 		cup.Code, oneLine(cup.Name), strings.Join(parts, "; "))
 }
 

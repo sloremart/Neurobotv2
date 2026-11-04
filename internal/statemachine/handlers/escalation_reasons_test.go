@@ -82,7 +82,7 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 			return must(validateOCRHandler(&mockProcedureRepo{}, nil)(ctx, sess, textM("")))(t)
 		}},
 		{"cups_posible_mala_lectura", sm.EscalationReasonCupsPossibleMisread, false, func(t *testing.T) *sm.StateResult {
-			res, _, _ := runValidate(t, []services.CUPSEntry{{Code: "890999", Name: "CONSULTA NEUROLOGIA", Quantity: 1}}, "", nil)
+			res, _, _ := runValidate(t, []services.CUPSEntry{{Code: "890999", Name: "CONSULTA PRIMERA VEZ NEUROLOGIA", Quantity: 1}}, "", nil)
 			return res
 		}},
 		{"cantidad_fuera_de_rango", sm.EscalationReasonQuantityOutOfRange, false, func(t *testing.T) *sm.StateResult {
