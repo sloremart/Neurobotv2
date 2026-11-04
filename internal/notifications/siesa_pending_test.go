@@ -525,10 +525,11 @@ func TestSiesaPending_CancelWithSiesaDown_PromptsConfirmationWithoutCancelling(t
 }
 
 // Con el paciente en otra conversación con el bot no se la interrumpe: se escala una vez.
-// busySession es la conversación en curso del paciente (otro paso del bot), sin vencer.
+// busySession es la conversación en curso del paciente (otro paso del bot), sin vencer en ninguno
+// de los relojes de los tests (algunos corren la pasada al día siguiente).
 func busySession(status string) func(context.Context, string) (*session.Session, error) {
 	return func(context.Context, string) (*session.Session, error) {
-		return &session.Session{ID: "otra", Status: status, CurrentState: sm.StateMainMenu, ExpiresAt: time.Now().Add(20 * time.Minute)}, nil
+		return &session.Session{ID: "otra", Status: status, CurrentState: sm.StateMainMenu, ExpiresAt: time.Now().Add(72 * time.Hour)}, nil
 	}
 }
 
@@ -614,8 +615,8 @@ func TestSiesaPending_Nectar_BusyEnds_PromptsCancel(t *testing.T) {
 }
 
 // Néctar: vence el tope de 6 h con el paciente todavía conversando (aquí, con un agente): no se
-// escala ni se toca su sesión; la fila queda unattended con su evento.
-func TestSiesaPending_Nectar_CapWithPatientBusy_LeavesSessionAlone(t *testing.T) {
+// escala ni se toca su sesión; la fila sigue esperando y escala UNA vez cuando el paciente queda libre.
+func TestSiesaPending_Nectar_CapWithPatientBusy_WaitsThenEscalatesOnce(t *testing.T) {
 	h := newNectarSiesaHarness(t)
 	h.siesa.set(func(f *siesaFake) { f.readDown = true })
 	h.respond("cancelar")
@@ -623,23 +624,33 @@ func TestSiesaPending_Nectar_CapWithPatientBusy_LeavesSessionAlone(t *testing.T)
 
 	h.siesa.set(func(f *siesaFake) { f.readDown = false })
 	h.sess.findCurrentFn = busySession(session.StatusEscalated)
-	h.pass(time.Now())
 	h.store.rows[row.ID].PendingFor = siesaPendingMaxAge + time.Minute
 	h.pass(time.Now())
 	h.pass(time.Now())
 
 	h.untouched(t)
-	if h.store.outcomes[row.ID] != siesaOutcomeUnattended || h.escalations() != 0 {
-		t.Fatalf("desenlace=%q escalaciones=%d, want unattended y 0", h.store.outcomes[row.ID], h.escalations())
+	if _, closed := h.store.outcomes[row.ID]; closed || h.escalations() != 0 || h.logged("notification_siesa_unattended") != 0 {
+		t.Fatalf("con la cita por delante se espera: cerrada=%v escalaciones=%d", closed, h.escalations())
 	}
-	if n := h.logged("notification_siesa_unattended"); n != 1 {
-		t.Fatalf("evento notification_siesa_unattended = %d, want 1", n)
+
+	h.sess.mu.Lock()
+	h.sess.findCurrentFn = nil // la conversación terminó
+	h.sess.mu.Unlock()
+	h.pass(time.Now())
+	h.pass(time.Now())
+
+	if h.store.outcomes[row.ID] != siesaOutcomeGaveUp || h.escalations() != 1 {
+		t.Fatalf("desenlace=%q escalaciones=%d, want gave_up y 1", h.store.outcomes[row.ID], h.escalations())
+	}
+	h.bridge.only(t)
+	if len(h.wp.calls) != 0 {
+		t.Fatal("pasado el tope no se pide la confirmación: se escala")
 	}
 }
 
-// Néctar, confirmación que vence el tope con SIESA caída y el paciente con una sesión activa:
-// tampoco se le pisa (gave_up → unattended).
-func TestSiesaPending_Nectar_GaveUpWithActiveSession_LeavesSessionAlone(t *testing.T) {
+// Néctar, tope duro: la cita ya pasó y el paciente nunca quedó libre (confirmación con SIESA caída):
+// unattended UNA sola vez, con su evento, sin escalar ni tocar la sesión.
+func TestSiesaPending_Nectar_AppointmentPassedWhileBusy_UnattendedOnce(t *testing.T) {
 	h := newNectarSiesaHarness(t)
 	h.siesa.set(func(f *siesaFake) { f.readDown = true })
 	h.respond("confirm")
@@ -647,11 +658,43 @@ func TestSiesaPending_Nectar_GaveUpWithActiveSession_LeavesSessionAlone(t *testi
 	h.store.rows[row.ID].PendingFor = siesaPendingMaxAge + time.Minute
 	h.sess.findCurrentFn = busySession(session.StatusActive)
 
+	// Mientras la cita está por delante, espera.
 	h.pass(time.Now())
+	if _, closed := h.store.outcomes[row.ID]; closed {
+		t.Fatal("con la cita por delante la fila sigue esperando")
+	}
+
+	slot, err := time.ParseInLocation("200601021504", row.AppointmentSlot, time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.pass(slot.Add(time.Minute))
+	h.pass(slot.Add(2 * time.Minute))
 
 	h.untouched(t)
 	if h.store.outcomes[row.ID] != siesaOutcomeUnattended || h.escalations() != 0 || h.logged("notification_siesa_unattended") != 1 {
-		t.Fatalf("desenlace=%q escalaciones=%d", h.store.outcomes[row.ID], h.escalations())
+		t.Fatalf("desenlace=%q escalaciones=%d eventos=%d, want unattended, 0 y 1",
+			h.store.outcomes[row.ID], h.escalations(), h.logged("notification_siesa_unattended"))
+	}
+}
+
+func TestAppointmentPassed(t *testing.T) {
+	now := time.Date(2026, 11, 5, 10, 0, 0, 0, time.Local)
+	for _, c := range []struct {
+		name string
+		row  SiesaPendingRow
+		appt *domain.Appointment
+		want bool
+	}{
+		{"recordada por delante", SiesaPendingRow{AppointmentSlot: "202611051030"}, nil, false},
+		{"recordada pasada", SiesaPendingRow{AppointmentSlot: "202611050930"}, nil, true},
+		{"sin recordada, releída por delante", SiesaPendingRow{}, &domain.Appointment{TimeSlot: "202611061000"}, false},
+		{"la recordada manda sobre la releída", SiesaPendingRow{AppointmentSlot: "202611050930"}, &domain.Appointment{TimeSlot: "202611061000"}, true},
+		{"sin hora conocida", SiesaPendingRow{}, nil, true},
+	} {
+		if got := appointmentPassed(c.row, c.appt, now); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

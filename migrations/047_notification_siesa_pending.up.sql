@@ -13,7 +13,8 @@
 --   siesa_attempts       intentos fallidos del proceso de fondo
 --   siesa_last_error_at  último fallo de SIESA (el de la respuesta o el de un intento)
 --   siesa_outcome        desenlace al dejar de estar pendiente: applied | cancel_prompted |
---                        already_applied | not_applicable | gave_up | unattended
+--                        already_applied | not_applicable | gave_up | unattended (la cita pasó
+--                        con el paciente siempre conversando en Néctar: sin escalar)
 ALTER TABLE notification_pending
   ADD COLUMN appointment_slot    VARCHAR(12) NULL;
 ALTER TABLE notification_history

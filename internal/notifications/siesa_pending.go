@@ -30,7 +30,7 @@ const (
 	siesaOutcomeCancelPrompted = "cancel_prompted" // se abrió la confirmación de la cancelación
 	siesaOutcomeAlreadyApplied = "already_applied" // la cita ya estaba como pidió el paciente
 	siesaOutcomeNotApplicable  = "not_applicable"  // la cita cambió: no se tocó y se escaló
-	siesaOutcomeUnattended     = "unattended"      // venció un tope con el paciente conversando en Néctar: sin escalar, ver evento
+	siesaOutcomeUnattended     = "unattended"      // la cita pasó con el paciente siempre conversando en Néctar: sin escalar, ver evento
 	siesaOutcomeGaveUp         = "gave_up"         // venció un tope: se escaló
 )
 
@@ -191,7 +191,7 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	appt, block, err := m.apptSvc.FindBlockByAppointmentID(ctx, row.AppointmentID)
 	if err != nil {
 		if expired {
-			m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp, true, now)
+			m.handOverSiesaRow(ctx, row, pending, nil, siesaOutcomeGaveUp, true, now)
 			return
 		}
 		m.recordSiesaFailure(ctx, row, err)
@@ -204,11 +204,11 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 		return
 	case siesaOutcomeNotApplicable:
 		capped := expired || (appt != nil && startsWithin(appt, now, siesaPendingMinLead))
-		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeNotApplicable, capped, now)
+		m.handOverSiesaRow(ctx, row, pending, appt, siesaOutcomeNotApplicable, capped, now)
 		return
 	}
 	if expired || startsWithin(appt, now, siesaPendingMinLead) {
-		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp, true, now)
+		m.handOverSiesaRow(ctx, row, pending, appt, siesaOutcomeGaveUp, true, now)
 		return
 	}
 
@@ -254,7 +254,7 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 func (m *NotificationManager) promptDeferredCancel(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, appt *domain.Appointment, block []domain.Appointment, now time.Time) {
 	if m.sessionRepo == nil || m.workerPool == nil {
 		slog.Error("respuesta pendiente de SIESA: sin sesiones para pedir la confirmación de la cancelación")
-		m.handOverSiesaRow(ctx, row, pending, siesaOutcomeGaveUp, true, now)
+		m.handOverSiesaRow(ctx, row, pending, appt, siesaOutcomeGaveUp, true, now)
 		return
 	}
 	own, busy, err := m.patientSession(ctx, row, now)
@@ -392,16 +392,21 @@ func (m *NotificationManager) finishSiesaRow(ctx context.Context, row SiesaPendi
 // handOverSiesaRow pasa la fila a un agente sin pisar la conversación en curso del paciente:
 //   - si el paciente está conversando (con el bot o con un agente) y no venció ningún tope (capped),
 //     la fila sigue pendiente y se vuelve a mirar en la pasada siguiente;
-//   - vencido el tope con el paciente aún conversando en Néctar, NO se escala (leaveUnattended):
-//     escalar allí toma la conversación para un agente y deja la sesión del paciente ESCALATED a
-//     mitad de flujo (escalatedNotifSession reusa la sesión vigente), y Néctar no tiene nota interna.
-//     En Bird escalar no toca ninguna sesión, así que se escala como siempre.
+//   - vencido el tope con el paciente aún conversando en Néctar, tampoco se escala todavía: escalar
+//     allí toma la conversación para un agente y deja la sesión del paciente ESCALATED a mitad de
+//     flujo (escalatedNotifSession reusa la sesión vigente), y Néctar no tiene nota interna. Se sigue
+//     esperando y se escala en cuanto el paciente quede libre (una conversación con el bot vence a
+//     los 30 min). Tope duro: la hora de la cita (appointmentPassed); pasada esa hora con el paciente
+//     siempre ocupado, la fila se cierra como unattended (leaveUnattended);
+//   - en Bird escalar no toca ninguna sesión, así que vencido el tope se escala como siempre.
 //
 // Se cierra la fila ANTES de escalar: así la escalación sale una sola vez aunque la pasada se repita
 // (si la fila no se pudo cerrar, no se escala y la pasada siguiente lo reintenta). El precio: si la
 // escalación misma falla (Bird o Néctar caídos), solo queda el error en el log; el monitor
 // escalation_failing lo cubre.
-func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, outcome string, capped bool, now time.Time) {
+//
+// appt es la cita releída, si se pudo leer (nil con SIESA caída o si no existe).
+func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, appt *domain.Appointment, outcome string, capped bool, now time.Time) {
 	_, busy, err := m.patientSession(ctx, row, now)
 	switch {
 	case err != nil:
@@ -411,7 +416,11 @@ func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPen
 		waitForPatient(row)
 		return
 	case busy && session.IsNectarSession(row.Phone):
-		m.leaveUnattended(ctx, row, outcome)
+		if appointmentPassed(row, appt, now) {
+			m.leaveUnattended(ctx, row, outcome)
+			return
+		}
+		waitForPatient(row)
 		return
 	}
 	if !m.finishSiesaRow(ctx, row, outcome) {
@@ -427,9 +436,21 @@ func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPen
 	m.escalateToAgent(pending, reason) //nolint:contextcheck // escalateToAgent no toma ctx por diseño (su propio timeout, como desde el timer)
 }
 
-// leaveUnattended cierra la fila como unattended y lo deja a la vista sin tocar la conversación del
-// paciente: evento notification_siesa_unattended (dashboard/auditor), traza de error y una línea de
-// ERROR en el log, que el AlertHandler sube a Telegram. reason es el desenlace que habría escalado.
+// appointmentPassed dice si la hora de la cita ya pasó: la recordada (la que respondió el paciente)
+// o, sin ella, la releída. Sin hora conocida no hay a qué esperar: cuenta como pasada.
+func appointmentPassed(row SiesaPendingRow, appt *domain.Appointment, now time.Time) bool {
+	slot := row.AppointmentSlot
+	if slot == "" && appt != nil {
+		slot = appt.TimeSlot
+	}
+	start, err := time.ParseInLocation("200601021504", slot, time.Local)
+	return err != nil || !start.After(now)
+}
+
+// leaveUnattended (la cita ya pasó) cierra la fila como unattended y lo deja a la vista sin tocar la
+// conversación del paciente: evento notification_siesa_unattended (dashboard/auditor), traza de error
+// y una línea de ERROR en el log, que el AlertHandler sube a Telegram. reason es el desenlace que
+// habría escalado.
 func (m *NotificationManager) leaveUnattended(ctx context.Context, row SiesaPendingRow, reason string) {
 	if !m.finishSiesaRow(ctx, row, siesaOutcomeUnattended) {
 		return
@@ -443,7 +464,7 @@ func (m *NotificationManager) leaveUnattended(ctx context.Context, row SiesaPend
 	}
 	observability.Emit(observability.TraceNotif(row.AppointmentID), "notif_recordatorio", "siesa_unattended",
 		observability.EmitOpts{Phone: row.Phone, Reason: reason})
-	slog.Error("respuesta pendiente de SIESA sin escalar: el paciente sigue conversando en Néctar; revisar la cita a mano",
+	slog.Error("respuesta pendiente de SIESA sin escalar: la cita pasó con el paciente siempre conversando en Néctar; revisar la cita a mano",
 		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action, "reason", reason)
 }
 
