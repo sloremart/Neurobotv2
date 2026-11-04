@@ -70,7 +70,7 @@ func (c *Client) resolveBsuid(ctx context.Context, identifier string) (key, valu
 		// APIError (no un error plano) para que IsPermanentSendError distinga: un 404/422 significa
 		// "este contacto no existe" (permanente), pero un 500/429/408 es Bird teniendo un mal
 		// momento — y NO debe condenar al paciente. Ver bsuidReceiver.
-		return "", "", &APIError{Status: resp.StatusCode, Body: string(body)}
+		return "", "", &APIError{Status: resp.StatusCode, Body: warnBody(body)}
 	}
 	var contact contactIdentifiersResp
 	if err := json.Unmarshal(body, &contact); err != nil {

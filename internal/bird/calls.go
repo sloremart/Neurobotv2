@@ -52,7 +52,7 @@ func (c *Client) ListCalls(pageToken string) (*CallListPage, error) {
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("list calls: status %d, body: %s", resp.StatusCode, string(body[:min(len(body), 300)]))
+		return nil, fmt.Errorf("list calls: status %d, body: %s", resp.StatusCode, warnBody(body))
 	}
 	var page CallListPage
 	if err := json.Unmarshal(body, &page); err != nil {

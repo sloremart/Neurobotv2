@@ -43,7 +43,7 @@ var ErrLineRateLimited = errors.New("límite de peticiones de la línea (HTTP 42
 // distinguir fallos permanentes (4xx: reintentar es pagar otro envío condenado) de transitorios.
 type APIError struct {
 	Status int
-	Body   string
+	Body   string // ya enmascarado (warnBody): este error acaba en los logs
 }
 
 func (e *APIError) Error() string {
@@ -444,10 +444,12 @@ func (c *Client) sendToConversation(conversationID string, body interface{}, dra
 	slog.Debug("conversations_api_response", "status", resp.StatusCode, "conversation_id", conversationID, "body_len", len(respBody))
 
 	if resp.StatusCode == 422 {
-		return "", fmt.Errorf("%w: %s", ErrConversationNotActive, string(respBody))
+		return "", newConversationSendError(ErrConversationNotActive,
+			fmt.Sprintf("%v: %s", ErrConversationNotActive, warnBody(respBody)), respBody)
 	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("conversations api: status %d, body: %s", resp.StatusCode, string(respBody))
+		return "", newConversationSendError(nil,
+			fmt.Sprintf("conversations api: status %d, body: %s", resp.StatusCode, warnBody(respBody)), respBody)
 	}
 
 	var result struct {
@@ -574,7 +576,7 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
 		lastStatus = resp.StatusCode
-		lastBody = string(body)
+		lastBody = warnBody(body)
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			// Fallo permanente (key sin permiso de lectura de mensajes): reintentar no ayuda.
 			break
@@ -614,16 +616,27 @@ func (c *Client) FetchMessageConversationID(ctx context.Context, messageID strin
 		"message_id", messageID,
 		"attempts", fetchMsgConvTries,
 		"last_status", lastStatus,
-		"last_body", maskDigitRuns(truncateForLog(lastBody, 400)),
+		"last_body", lastBody,
 	)
 	return ""
 }
 
 // digitRunRe captura secuencias de 6+ dígitos (teléfonos/cédulas) que podrían venir embebidas en un
-// body externo de Bird (p.ej. el identifierValue del receptor) antes de loguearlo.
-var digitRunRe = regexp.MustCompile(`\d{6,}`)
+// body externo de Bird (p.ej. el identifierValue del receptor) antes de loguearlo. El prefijo
+// opcional reconoce los códigos de WhatsApp («code: 131009», «(#131009)», como waContentCodeRe).
+var digitRunRe = regexp.MustCompile(`(code"?\s*:\s*"?|#)?(\d{6,})`)
 
-func maskDigitRuns(s string) string { return digitRunRe.ReplaceAllString(s, "***") }
+// maskDigitRuns tapa las secuencias largas de dígitos salvo un código de WhatsApp (6 dígitos tras su
+// prefijo), que es lo que más orienta en un error y no identifica a nadie.
+func maskDigitRuns(s string) string {
+	return digitRunRe.ReplaceAllStringFunc(s, func(run string) string {
+		m := digitRunRe.FindStringSubmatch(run)
+		if m[1] != "" && len(m[2]) == 6 {
+			return run
+		}
+		return m[1] + "***"
+	})
+}
 
 // warnBodyMax acota el cuerpo de error de Bird en los WARN: el inicio (código y mensaje) basta
 // para diagnosticar, y el resto puede repetir datos del contacto.
@@ -636,7 +649,7 @@ var jsonStringFieldRe = regexp.MustCompile(`"([A-Za-z_]+)"\s*:\s*"((?:[^"\\]|\\.
 // política común (utils.IsSensitiveLogKey), llevan datos del paciente.
 var contactBodyKeys = map[string]bool{
 	"displayname": true, "firstname": true, "lastname": true, "fullname": true,
-	"identifier": true, "identifiervalue": true,
+	"identifier": true, "identifiervalue": true, "value": true,
 }
 
 // maskContactFields enmascara el valor de cada campo de contacto del cuerpo, conservando la clave y
@@ -651,21 +664,14 @@ func maskContactFields(s string) string {
 	})
 }
 
-// warnBody es el cuerpo de error de Bird tal como va a un WARN: sin los valores de contacto,
-// recortado y sin dígitos largos.
+// warnBody es el cuerpo de error de Bird tal como va a un log o al texto de un error: sin los
+// valores de contacto, recortado por runas y sin dígitos largos.
 func warnBody(body []byte) string {
 	r := []rune(maskContactFields(string(body)))
 	if len(r) > warnBodyMax {
 		r = r[:warnBodyMax]
 	}
 	return maskDigitRuns(string(r))
-}
-
-func truncateForLog(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }
 
 // CreateConversationForPhone crea explícitamente una conversación para el contacto del teléfono en el
@@ -746,14 +752,14 @@ func (c *Client) CreateConversationForPhone(ctx context.Context, phone string) (
 			}
 		}
 		return "", fmt.Errorf("create conversation: status %d, body: %s",
-			resp.StatusCode, maskDigitRuns(truncateForLog(string(body), 400)))
+			resp.StatusCode, warnBody(body))
 	}
 	var result struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil || result.ID == "" {
 		return "", fmt.Errorf("create conversation: parse response (status %d): %s",
-			resp.StatusCode, maskDigitRuns(truncateForLog(string(body), 400)))
+			resp.StatusCode, warnBody(body))
 	}
 	c.CacheConversationID(phone, result.ID)
 	slog.Info("conversation_created_for_escalation",
@@ -819,13 +825,38 @@ var waContentCodeRe = regexp.MustCompile(`(?:code"?\s*:\s*"?|#)(\d{3,6})`)
 // 100=parámetro inválido genérico.
 var waContentErrorCodes = map[string]bool{"131009": true, "131008": true, "100": true}
 
+// conversationSendError es el rechazo de la Conversations API. Su texto lleva el cuerpo enmascarado
+// y recortado; si es de CONTENIDO se decide antes, sobre el cuerpo crudo, que no se guarda.
+type conversationSendError struct {
+	msg         string
+	contentCode string
+	cause       error // ErrConversationNotActive en el 422; si no, nil
+}
+
+func newConversationSendError(cause error, msg string, rawBody []byte) *conversationSendError {
+	code, _ := whatsAppContentCode(string(rawBody))
+	return &conversationSendError{msg: msg, contentCode: code, cause: cause}
+}
+
+func (e *conversationSendError) Error() string { return e.msg }
+func (e *conversationSendError) Unwrap() error { return e.cause }
+
 // whatsAppContentError decide si err es un error de CONTENIDO de WhatsApp (bug del bot que afecta a
-// todos) y devuelve su código. Reconoce por código o por frases inequívocas de la Graph API.
+// todos) y devuelve su código.
 func whatsAppContentError(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
-	msg := err.Error()
+	var rejected *conversationSendError
+	if errors.As(err, &rejected) {
+		return rejected.contentCode, rejected.contentCode != ""
+	}
+	return whatsAppContentCode(err.Error())
+}
+
+// whatsAppContentCode reconoce un error de contenido por código o por frases inequívocas de la
+// Graph API.
+func whatsAppContentCode(msg string) (string, bool) {
 	if m := waContentCodeRe.FindStringSubmatch(msg); m != nil && waContentErrorCodes[m[1]] {
 		return m[1], true
 	}
@@ -1297,7 +1328,7 @@ func (c *Client) PlaceCall(to string, params map[string]string) (string, error) 
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("voice call API error %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("voice call API error %d: %s", resp.StatusCode, warnBody(respBody))
 	}
 
 	var result struct {
@@ -1358,7 +1389,7 @@ func (c *Client) SendGather(callID string) (commandID string, err error) {
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("gather API error %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("gather API error %d: %s", resp.StatusCode, warnBody(respBody))
 	}
 
 	var result struct {
@@ -1417,7 +1448,7 @@ func (c *Client) GetGatherResult(callID, commandID string) (string, error) {
 		"status", resp.StatusCode, "body_len", len(body))
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("get command API error %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("get command API error %d: %s", resp.StatusCode, warnBody(body))
 	}
 
 	var result struct {
@@ -1502,7 +1533,7 @@ func (c *Client) GetCallDetails(callID string) (*CallDetails, error) {
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("get call API error %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get call API error %d: %s", resp.StatusCode, warnBody(body))
 	}
 
 	// Sin el cuerpo crudo, por lo mismo que en GetGatherResult (B-12).
@@ -1580,7 +1611,7 @@ func (c *Client) listAgents(statusFilter string) ([]AgentInfo, error) {
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("list agents: status %d, body: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("list agents: status %d, body: %s", resp.StatusCode, warnBody(respBody))
 	}
 
 	var result AgentListResponse
@@ -1596,14 +1627,13 @@ func (c *Client) listAgents(statusFilter string) ([]AgentInfo, error) {
 // nunca reintentando la misma conversación — hay que asignar la conversación activa del contacto.
 var ErrContactHasAnotherConversation = errors.New("contact already has another active conversation")
 
-// isContactConversationConflict distingue el 409 de contacto del 409 de concurrencia leyendo el cuerpo
-// que Bird adjunta al error (doPatchFeedItem incluye "status %d, body: %s").
+// contactConflictPhrase es lo que distingue, en el cuerpo de Bird, el 409 de contacto del de concurrencia.
+const contactConflictPhrase = "another active conversation"
+
+// isContactConversationConflict distingue el 409 de contacto del 409 de concurrencia: doPatchFeedItem
+// lo marca al leer el cuerpo.
 func isContactConversationConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "another active conversation")
+	return errors.Is(err, ErrContactHasAnotherConversation)
 }
 
 // AssignFeedItem assigns a conversation to a team+agent in Bird Inbox.
@@ -1756,7 +1786,7 @@ func (c *Client) searchFeedItem(conversationID string) (feedItemID, feedID strin
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return "", "", false, fmt.Errorf("search feed items: status %d, body: %s", resp.StatusCode, string(respBody))
+		return "", "", false, fmt.Errorf("search feed items: status %d, body: %s", resp.StatusCode, warnBody(respBody))
 	}
 
 	var result struct {
@@ -1810,7 +1840,11 @@ func (c *Client) doPatchFeedItem(url string, jsonBody []byte) (int, error) {
 		if resp.StatusCode == 404 {
 			return 404, nil
 		}
-		return resp.StatusCode, fmt.Errorf("status %d, body: %s", resp.StatusCode, string(respBody))
+		// El 409 de contacto se reconoce aquí, sobre el cuerpo crudo: el recorte podría dejar fuera la frase.
+		if strings.Contains(strings.ToLower(string(respBody)), contactConflictPhrase) {
+			return resp.StatusCode, fmt.Errorf("%w: status %d, body: %s", ErrContactHasAnotherConversation, resp.StatusCode, warnBody(respBody))
+		}
+		return resp.StatusCode, fmt.Errorf("status %d, body: %s", resp.StatusCode, warnBody(respBody))
 	}
 	return resp.StatusCode, nil
 }
@@ -2114,7 +2148,7 @@ func (c *Client) LookupConversationByPhone(phone string) (string, error) {
 
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if resp.StatusCode >= 400 {
-			return "", fmt.Errorf("lookup conversation: status %d, body: %s", resp.StatusCode, string(respBody))
+			return "", fmt.Errorf("lookup conversation: status %d, body: %s", resp.StatusCode, warnBody(respBody))
 		}
 
 		var result struct {
@@ -2432,7 +2466,7 @@ func (c *Client) sendMessage(url string, payload interface{}, phone ...string) (
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
 	if resp.StatusCode >= 400 {
-		return "", &APIError{Status: resp.StatusCode, Body: string(respBody)}
+		return "", &APIError{Status: resp.StatusCode, Body: warnBody(respBody)}
 	}
 
 	var result struct {
