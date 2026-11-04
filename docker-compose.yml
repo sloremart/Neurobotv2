@@ -36,6 +36,11 @@ services:
         max-file: "7"
     environment:
       - TZ=America/Bogota
+      # Límite blando del GC de Go, ~75 % del límite de memoria de abajo (2048M). Sin él, Go puede
+      # crecer por encima del cgroup antes de recolectar (OOM-kill). No se acerca más al 100 % porque
+      # el mismo cgroup carga los procesos de Ghostscript del OCR de PDF, que no son memoria de Go.
+      # Si cambia `memory`, cambiar esto con él.
+      - GOMEMLIMIT=1536MiB
     deploy:
       resources:
         limits:

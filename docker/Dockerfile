@@ -61,9 +61,8 @@ RUN mkdir -p /app/logs && chown bot:bot /app/logs
 USER bot:bot
 
 ENV TZ=America/Bogota
-# Tell Go GC to stay under 90% of the container memory limit (1024M → ~920MiB).
-# Without this, Go can allocate beyond the cgroup limit before GC runs, causing OOM kills.
-ENV GOMEMLIMIT=920MiB
+# GOMEMLIMIT no va aquí: depende del límite de memoria del contenedor y se fija junto a él, en el
+# `environment` del servicio bot de docker-compose.yml.
 
 EXPOSE 8080
 
