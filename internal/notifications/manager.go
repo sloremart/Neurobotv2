@@ -212,6 +212,7 @@ type EligibleCupsResolver interface {
 type NotificationManager struct {
 	pending         sync.Map // phone → *PendingNotification
 	callIDMap       sync.Map // callId → phone (for IVR DTMF result correlation)
+	testCalls       sync.Map // callId → time.Time de las llamadas de prueba del IVR (RegisterTestCall)
 	contactIndex    sync.Map // ContactPhone → clave del pending (UNA por contacto, ver storePending)
 	birdClient      *bird.Client
 	apptSvc         *services.AppointmentService
@@ -997,6 +998,29 @@ func (m *NotificationManager) RegisterCallID(callID, phone string) {
 	}
 }
 
+// testCallTTL: cuánto se recuerda una llamada de prueba; de sobra para que llegue su DTMF y su cierre.
+const testCallTTL = time.Hour
+
+// RegisterTestCall marca una llamada de prueba del IVR (test-voice-call). No se ata a ningún
+// recordatorio: su DTMF y su cierre solo quedan en el log, sin tocar pendings, citas, notas de Bird
+// ni el registro de llamadas. La marca se lee, no se consume (el DTMF puede llegar por las dos vías
+// del webhook), y se olvida pasado testCallTTL.
+func (m *NotificationManager) RegisterTestCall(callID string) {
+	now := time.Now()
+	m.testCalls.Range(func(key, val any) bool {
+		if now.Sub(val.(time.Time)) > testCallTTL {
+			m.testCalls.Delete(key)
+		}
+		return true
+	})
+	m.testCalls.Store(callID, now)
+}
+
+func (m *NotificationManager) isTestCall(callID string) bool {
+	_, ok := m.testCalls.Load(callID)
+	return ok
+}
+
 // HandleVoiceGatherResult processes the DTMF result from a Bird voice IVR call.
 //
 //   - keys == "1"  → confirm in DB, internal note to Bird Inbox, clear pending (no WA to patient)
@@ -1007,6 +1031,10 @@ func (m *NotificationManager) RegisterCallID(callID, phone string) {
 // If the call was never answered: no gather webhook fires, the post-IVR timer
 // continues and eventually escalates to a human agent.
 func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
+	if m.isTestCall(callID) {
+		slog.Info("IVR test call: gather result, no appointment action", "callId", callID, "keys", keys)
+		return
+	}
 	val, ok := m.callIDMap.LoadAndDelete(callID)
 	if !ok {
 		slog.Error("voice gather result: unknown or already processed callId", "callId", callID)
@@ -1159,6 +1187,10 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 // If the callId is still in callIDMap at this point (no gather webhook was received),
 // it means the call was not answered or went to voicemail. Sends an internal note and cleans up.
 func (m *NotificationManager) HandleVoiceCallCompleted(callID string) {
+	if m.isTestCall(callID) {
+		slog.Info("IVR test call completed", "callId", callID)
+		return
+	}
 	val, ok := m.callIDMap.LoadAndDelete(callID)
 	if !ok {
 		return // Already handled by gather result

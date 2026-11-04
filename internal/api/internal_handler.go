@@ -1228,7 +1228,8 @@ func (h *InternalHandler) HandleSendReminders(w http.ResponseWriter, r *http.Req
 // --- Test Voice Call ---
 
 // HandleTestVoiceCall places a real IVR call with custom test data.
-// Useful for verifying the Bird Voice API integration and DTMF webhook flow.
+// Useful for verifying the Bird Voice API integration and DTMF webhook flow. El DTMF de la prueba
+// llega a los webhooks pero no actúa sobre ninguna cita (RegisterTestCall).
 // POST /api/internal/test-voice-call
 // Body: { "phone": "+573001234567", "patient_name": "...", "appointment_date": "...", "appointment_time": "...", "clinic_address": "..." }
 func (h *InternalHandler) HandleTestVoiceCall(w http.ResponseWriter, r *http.Request) {
@@ -1241,6 +1242,11 @@ func (h *InternalHandler) HandleTestVoiceCall(w http.ResponseWriter, r *http.Req
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Phone == "" {
 		http.Error(w, "invalid request: phone is required", http.StatusBadRequest)
+		return
+	}
+	// TESTING_WHITELIST_PHONES rige como en el resto de los envíos salientes.
+	if !h.cfg.IsPhoneWhitelisted(req.Phone) {
+		http.Error(w, "phone not in testing whitelist", http.StatusForbidden)
 		return
 	}
 
@@ -1273,9 +1279,10 @@ func (h *InternalHandler) HandleTestVoiceCall(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Register callId so the DTMF webhook can be processed
+	// Marcar la llamada como prueba: su DTMF no se ata al recordatorio real que ese teléfono pueda
+	// tener pendiente (confirmaría o cancelaría la cita en SIESA); solo queda en el log.
 	if callID != "" && h.notifyManager != nil {
-		h.notifyManager.RegisterCallID(callID, req.Phone)
+		h.notifyManager.RegisterTestCall(callID)
 	}
 
 	slog.Info("test voice call placed", "phone", utils.MaskPhone(req.Phone), "callId", callID)
