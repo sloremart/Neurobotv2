@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -129,7 +130,7 @@ func (h *AlertHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		ch:     h.ch,
 		mu:     h.mu,
 		dedup:  h.dedup,
-		attrs:  append(h.attrs, attrs...),
+		attrs:  append(slices.Clip(h.attrs), attrs...), // Clip: los hermanos no comparten el arreglo (H4)
 		group:  h.group,
 	}
 }

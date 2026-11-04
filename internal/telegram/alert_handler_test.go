@@ -289,3 +289,19 @@ func TestTrimForAlert_OnlyJSONBodies(t *testing.T) {
 		t.Errorf("un «{» que no abre JSON no se toca: %q", got)
 	}
 }
+
+// H4: dos WithAttrs sobre el mismo padre no comparten el arreglo de attrs; si lo comparten, las
+// alertas de uno salen con los attrs del otro.
+func TestAlertHandler_SiblingWithAttrsDoNotAlias(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	parent := NewAlertHandler(inner, &Client{}).
+		WithAttrs([]slog.Attr{slog.String("a1", "1"), slog.String("a2", "2")}).
+		WithAttrs([]slog.Attr{slog.String("a3", "3")})
+	first := parent.WithAttrs([]slog.Attr{slog.String("task", "reminders")}).(*AlertHandler)
+	_ = parent.WithAttrs([]slog.Attr{slog.String("task", "waiting_list")})
+
+	out := first.formatMessage(slog.NewRecord(time.Now(), slog.LevelError, "fallo", 0))
+	if !strings.Contains(out, "reminders") || strings.Contains(out, "waiting_list") {
+		t.Errorf("el handler hermano pisó los attrs: %q", out)
+	}
+}
