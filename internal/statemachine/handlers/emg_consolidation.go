@@ -156,7 +156,7 @@ func askEmgOrderHandler() sm.StateHandler {
 // dependientes de la 1ª orden → vuelve a VALIDATE_OCR para agendar UNA sola cita (ya con EMG el bloque
 // es válido y sigue el flujo normal).
 func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client) sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+	return withFreshOrderURL(func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		switch msg.MessageType {
 		case "image", "document":
 			mediaURL := msg.ImageURL
@@ -207,7 +207,7 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 			return sm.NewResult(sess.CurrentState).
 				WithText("Por favor envía una *foto* o *PDF* de la orden de la electromiografía."), nil
 		}
-	}
+	})
 }
 
 // escalateEmg construye una escalada a agente con mensaje.

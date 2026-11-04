@@ -167,7 +167,7 @@ func ocrFailureMessage(errReason string) string {
 // Para pacientes PARTICULAR: primero pregunta si tienen orden médica.
 // Si sí → sube foto y flujo normal. Si no → escala a agente y registra en lista de espera.
 func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRService, birdClient *bird.Client) sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (res *sm.StateResult, err error) {
+	return withFreshOrderURL(func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (res *sm.StateResult, err error) {
 		// El stash que NO se pudo leer debe borrarse de la BD, no solo del mapa en memoria: la sesión se
 		// recarga de BD en el mensaje siguiente y la URL rota volvería, reintentándose para siempre
 		// (auditoría ciclo 133: el mismo stash falló dos veces en sess:7cbdfb83 sin foto nueva en medio).
@@ -307,7 +307,7 @@ func askMedicalOrderHandler(wlRepo WaitingListCreator, ocrSvc *services.OCRServi
 			WithText("Envía una *foto clara* o *PDF* de tu orden médica.\n\nAsegúrate de que:\n- Se vean bien los procedimientos\n- La foto no esté borrosa\n- Se lea el texto").
 			WithEvent("order_method_selected", map[string]interface{}{"method": "photo"}).
 			WithEvent("order_photo_requested", nil), nil
-	}
+	})
 }
 
 func boolTo1(b bool) string {
@@ -421,7 +421,7 @@ func selectWaitingListHandler(wlRepo WaitingListCreator) sm.StateHandler {
 
 // UPLOAD_MEDICAL_ORDER (interactivo) — espera imagen, procesa OCR
 func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client) sm.StateHandler {
-	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+	return withFreshOrderURL(func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		switch msg.MessageType {
 		case "image", "document":
 			mediaURL := msg.ImageURL
@@ -442,7 +442,7 @@ func uploadMedicalOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Cli
 			// (el resto del switch sigue abajo)
 			return uploadNonMedia(sess, birdClient, msg)
 		}
-	}
+	})
 }
 
 // maxFailedOrderReads es cuántas lecturas fallidas SEGUIDAS de la orden aguanta una sesión antes de

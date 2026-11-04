@@ -9,10 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
+	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -116,6 +118,23 @@ func newCupsResolver(repo repository.ProcedureRepository, reader CupsCodeReader,
 		inOrder[utils.BaseCupCode(strings.TrimSpace(c.Code))] = true
 	}
 	return &cupsResolver{repo: repo, reader: reader, orderURL: sess.GetContext(ctxOCROrderURL), inOrder: inOrder}
+}
+
+// withFreshOrderURL envuelve los pasos que reciben la orden (ASK_MEDICAL_ORDER con la orden guardada,
+// UPLOAD_MEDICAL_ORDER, UPLOAD_EMG_ORDER): cada uno empieza sin ctxOCROrderURL y la borra al salir si
+// no deja la de su propia foto. Si un encadenado se cortó antes de VALIDATE_OCR, la URL quedó guardada
+// en la sesión y alimentaría la segunda lectura de los CUPS de otra imagen.
+func withFreshOrderURL(h sm.StateHandler) sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		delete(sess.Context, ctxOCROrderURL)
+		res, err := h(ctx, sess, msg)
+		if res != nil {
+			if _, set := res.UpdateCtx[ctxOCROrderURL]; !set {
+				res.WithClearCtx(ctxOCROrderURL)
+			}
+		}
+		return res, err
+	}
 }
 
 // findActiveProcedure busca el código en el catálogo y, si no está activo y trae sufijo numérico

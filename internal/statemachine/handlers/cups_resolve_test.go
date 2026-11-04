@@ -10,6 +10,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
@@ -308,6 +309,51 @@ func TestProcessOrderMedia_LeavesOrderURLForSecondReading(t *testing.T) {
 	}
 	if _, ok := res.UpdateCtx[ctxOCROrderURL]; ok {
 		t.Errorf("varias fotos: sin URL (no se sabe de cuál salió cada CUPS): %q", res.UpdateCtx[ctxOCROrderURL])
+	}
+}
+
+// Los pasos de subida empiezan sin la URL de una orden anterior: si un encadenado cortado la dejó
+// guardada, no llega a la VALIDATE_OCR de otra imagen. La que deja la foto de este paso sí sigue.
+func TestUploadSteps_DropStaleOrderURL(t *testing.T) {
+	const stale = "https://media.example/orden-anterior.jpg"
+	ctx := context.Background()
+	for name, run := range map[string]func(*session.Session) (*sm.StateResult, error){
+		"upload": func(s *session.Session) (*sm.StateResult, error) {
+			return uploadMedicalOrderHandler(nil, nil)(ctx, s, textM("hola"))
+		},
+		"upload_emg": func(s *session.Session) (*sm.StateResult, error) {
+			return uploadEmgOrderHandler(nil, nil)(ctx, s, textM("hola"))
+		},
+		"ask_order": func(s *session.Session) (*sm.StateResult, error) {
+			s.SetContext("entity_category", "PARTICULAR")
+			s.SetContext("_prompted_has_order", "1")
+			return askMedicalOrderHandler(nil, nil, nil)(ctx, s, postbackM("has_order_yes"))
+		},
+	} {
+		sess := testSess(sm.StateUploadMedicalOrder)
+		sess.SetContext(ctxOCROrderURL, stale)
+		res, err := run(sess)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !slices.Contains(res.ClearCtx, ctxOCROrderURL) || sess.GetContext(ctxOCROrderURL) != "" {
+			t.Errorf("%s: la URL anterior se borra al entrar al paso: clear=%v", name, res.ClearCtx)
+		}
+	}
+
+	ocrSrv := newSequentialOCRServer(ocrCupsResponse("890274", "NEURO"))
+	defer ocrSrv.Close()
+	fileSrv := newMockFileServer()
+	defer fileSrv.Close()
+	sess := testSess(sm.StateUploadMedicalOrder)
+	sess.SetContext(ctxOCROrderURL, stale)
+	url := fileSrv.URL + "/p1.jpg"
+	res, err := uploadMedicalOrderHandler(services.NewOCRServiceForTest(ocrSrv.URL), nil)(ctx, sess, imageMsg(url))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.UpdateCtx[ctxOCROrderURL] != url || slices.Contains(res.ClearCtx, ctxOCROrderURL) {
+		t.Errorf("la URL de la foto de este paso sigue para VALIDATE_OCR: %q clear=%v", res.UpdateCtx[ctxOCROrderURL], res.ClearCtx)
 	}
 }
 
