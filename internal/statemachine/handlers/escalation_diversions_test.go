@@ -274,3 +274,85 @@ func TestFallbackMenu_WithoutCapMarkStillReplies(t *testing.T) {
 		t.Errorf("el texto de hoy, got %+v", res.Messages[0])
 	}
 }
+
+// escalateTurnWith es escalateTurn con lo que deja el sitio que escala antes de encadenar: su
+// motivo y, si el paciente pidió la persona, la marca.
+func escalateTurnWith(t *testing.T, m *sm.Machine, stored map[string]string, reason string, asked bool) *sm.StateResult {
+	t.Helper()
+	stored[sm.CtxEscalationReason] = reason
+	if asked {
+		stored[sm.CtxPatientAskedForAgent] = "1"
+	}
+	return escalateTurn(t, m, stored)
+}
+
+// Las escalaciones que dispara el bot por una orden dudosa no son un ciclo del paciente: de noche,
+// desviadas una y otra vez, no suman al tope ni lo cortan. Después, el paciente conserva sus tres
+// pedidos.
+func TestEscalationCap_BotTriggeredDiversionsDoNotCut(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(noAgentsServer(t).URL), testEscalationConfig(), nil)
+
+	stored := map[string]string{}
+	orderDoubts := []string{
+		sm.EscalationReasonCupsPossibleMisread, sm.EscalationReasonOCRNoCode, sm.EscalationReasonOCRFailedReads,
+		sm.EscalationReasonQuantityOutOfRange, sm.EscalationReasonSanitasBlock, sm.EscalationReasonCupsPossibleMisread,
+	}
+	for i, reason := range orderDoubts {
+		if res := escalateTurnWith(t, m, stored, reason, false); !hasEvent(res, "escalation_no_agents") {
+			t.Fatalf("duda %d (%s): esperaba el aviso de «no hay asesores», got %s %+v", i+1, reason, res.NextState, res.Events)
+		}
+	}
+	if got := stored[sm.CtxEscalationCount]; got != "" {
+		t.Fatalf("las dudas de la orden no suman al tope: escalation_count = %q", got)
+	}
+	for i := 1; i <= escalationSessionCap; i++ {
+		if res := escalateTurnWith(t, m, stored, sm.EscalationReasonPatientAsked, true); !hasEvent(res, "escalation_no_agents") {
+			t.Fatalf("pedido %d del paciente tras las dudas: esperaba el aviso, got %s %+v", i, res.NextState, res.Events)
+		}
+	}
+}
+
+// Con el contador lleno por el paciente, una escalación del bot tampoco corta: escala.
+func TestEscalationCap_BotTriggeredEscalationNotCutByFullCounter(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterEscalationHandlers(m, bird.NewClientForTest(escalationTestServer(t).URL), testEscalationConfig(), nil)
+
+	stored := map[string]string{sm.CtxEscalationCount: strconv.Itoa(escalationSessionCap)}
+	res := escalateTurnWith(t, m, stored, sm.EscalationReasonOCRNoCode, false)
+	if res.NextState != sm.StateEscalated {
+		t.Fatalf("esperaba ESCALATED, got %s %+v", res.NextState, res.Events)
+	}
+	if got := stored[sm.CtxEscalationCount]; got != strconv.Itoa(escalationSessionCap) {
+		t.Errorf("la escalación del bot no suma: escalation_count = %q", got)
+	}
+}
+
+// Los ciclos del paciente sí suman: tres desvíos por entradas inválidas repetidas, o tres pedidos de
+// asesor, y el cuarto recibe el corte del tope.
+func TestEscalationCap_PatientCyclesCut(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+		asked  bool
+	}{
+		{"entradas inválidas", sm.EscalationReasonMaxRetries, false},
+		{"pidió asesor", sm.EscalationReasonPatientAsked, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := sm.NewMachine()
+			RegisterEscalationHandlers(m, bird.NewClientForTest(noAgentsServer(t).URL), testEscalationConfig(), nil)
+
+			stored := map[string]string{}
+			for i := 1; i <= escalationSessionCap; i++ {
+				if res := escalateTurnWith(t, m, stored, tc.reason, tc.asked); !hasEvent(res, "escalation_no_agents") {
+					t.Fatalf("vuelta %d: esperaba el aviso de «no hay asesores», got %s %+v", i, res.NextState, res.Events)
+				}
+			}
+			res := escalateTurnWith(t, m, stored, tc.reason, tc.asked)
+			if !hasEvent(res, "escalation_cap_reached") || res.NextState != sm.StateFallbackMenu {
+				t.Fatalf("la 4.ª vuelta recibe el corte del tope, got %s %+v", res.NextState, res.Events)
+			}
+		})
+	}
+}

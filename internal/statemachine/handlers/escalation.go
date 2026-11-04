@@ -92,9 +92,14 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 		// askedForAgent: el PACIENTE pidió la persona (palabra clave o «agente» en el menú
 		// post-acción). Decide el `reason` del sobre y, en Néctar, si se le avisa.
 		askedForAgent := sess.GetContext(sm.CtxPatientAskedForAgent) == "1"
-		// El kill switch (BOT_ENABLED=false) escala cada mensaje para mandarlo todo a los asesores:
-		// no es un lazo del bot, así que ni suma al tope anti-bucle ni lo corta.
-		countsTowardCap := sess.GetContext(sm.CtxEscalationReason) != sm.EscalationReasonBotDisabled
+		// Al tope anti-bucle solo suman los ciclos del PACIENTE: pidió la persona o agotó los
+		// reintentos (sm.EscalationCountsTowardCap). Las que dispara el bot (una orden dudosa, una
+		// regla, un fallo) ni suman ni cortan, entregadas o desviadas. El kill switch
+		// (BOT_ENABLED=false) tampoco, aunque el paciente haya pedido un asesor: escala cada mensaje
+		// para mandarlo todo a los asesores.
+		detail := sess.GetContext(sm.CtxEscalationReason)
+		countsTowardCap := detail != sm.EscalationReasonBotDisabled &&
+			(askedForAgent || sm.EscalationCountsTowardCap(detail))
 
 		// COLA DEL PRÓXIMO DÍA HÁBIL, SOLO EN NÉCTAR. En los últimos minutos antes del cierre
 		// (BUSINESS_HOURS_CLOSE_MARGIN_MIN) y con el horario cerrado, lo que se escale ya no le
@@ -141,10 +146,11 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			return escalationDiverted(preState, r), nil
 		}
 		//
-		// (2) Tope duro por sesión: a la (escalationSessionCap+1)-ésima escalación de una MISMA
-		//     sesión se corta, venga por donde venga (keyword, recovery, estado automático nuevo).
-		//     Garantiza que NINGÚN mecanismo futuro pueda cerrar un lazo de escalaciones infinitas:
-		//     el peor caso queda acotado a escalationSessionCap avisos por sesión.
+		// (2) Tope duro por sesión: a la (escalationSessionCap+1)-ésima escalación de un ciclo del
+		//     paciente (countsTowardCap: keyword, reintentos agotados, recovery agotada, o un motivo
+		//     sin clasificar) en una MISMA sesión se corta. Un mecanismo futuro sin motivo propio queda
+		//     acotado a escalationSessionCap avisos por sesión. Las que dispara el bot no lo necesitan:
+		//     cada una exige una entrada nueva del paciente (el __resume__ ya se cortó en (1)).
 		//     EXENTO mientras la sesión tenga una escalación ENCOLADA para el próximo día hábil y
 		//     su espera siga abierta (queuedWaitStillOpen): ese caso ya está en la cola de Néctar
 		//     y desviarlo al menú de recuperación lo borraría de ella. La exención caduca con la

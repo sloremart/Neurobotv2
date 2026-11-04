@@ -102,6 +102,52 @@ func EscalationReasons() []string {
 	}
 }
 
+// escalationReasonFromPatient clasifica cada motivo para el tope de escalaciones por sesión
+// (handlers/escalation.go): true = un ciclo del PACIENTE (pidió un asesor, o agotó los reintentos
+// de una respuesta, con o sin la recuperación con IA), que suma; false = una escalación que dispara
+// el BOT por la orden, una regla del negocio o un fallo del sistema, que no suma ni corta, entregada
+// o desviada: no es un lazo del paciente y cortarla lo dejaría sin respuesta. Los motivos de las
+// notificaciones no pasan por ese handler; figuran para que la lista esté completa.
+var escalationReasonFromPatient = map[string]bool{
+	EscalationReasonPatientAsked:        true,
+	EscalationReasonOCRAskedForAgent:    true,
+	EscalationReasonEmgAskedForAgent:    true,
+	EscalationReasonNoCoverage:          true, // eligió «agente» ante el procedimiento sin convenio
+	EscalationReasonMaxRetries:          true,
+	EscalationReasonAIRecoveryExhausted: true,
+
+	EscalationReasonOCRNoCode:              false,
+	EscalationReasonOCRFailedReads:         false,
+	EscalationReasonCupsPossibleMisread:    false,
+	EscalationReasonQuantityOutOfRange:     false,
+	EscalationReasonOCRInvalidJSON:         false,
+	EscalationReasonSanitasBlock:           false,
+	EscalationReasonNoValidCups:            false,
+	EscalationReasonEmptyGrouping:          false,
+	EscalationReasonSleepStudy:             false,
+	EscalationReasonParticularNoOrder:      false,
+	EscalationReasonParticularLiga:         false,
+	EscalationReasonNoEntities:             false,
+	EscalationReasonEntityUnresolved:       false,
+	EscalationReasonMedicationError:        false,
+	EscalationReasonEmgConsolidationFailed: false,
+	EscalationReasonRescheduleNoSlots:      false,
+	EscalationReasonAgentInputRejected:     false,
+	EscalationReasonBotDisabled:            false,
+	EscalationReasonNotifNoResponse:        false,
+	EscalationReasonNotifSystemFailure:     false,
+	EscalationReasonNotifFreeText:          false,
+	EscalationReasonRescheduleNoProcedure:  false,
+	EscalationReasonNotifSiesaPending:      false,
+}
+
+// EscalationCountsTowardCap dice si una escalación con este motivo suma al tope por sesión. Un motivo
+// vacío o desconocido suma: el tope es la red anti-bucle de cualquier camino que no se clasificó.
+func EscalationCountsTowardCap(reason string) bool {
+	fromPatient, known := escalationReasonFromPatient[reason]
+	return !known || fromPatient
+}
+
 // Claves de sesión de una escalación de notificación (paso NOTIF_PENDING).
 const (
 	// CtxNotifEscalationDetail guarda el motivo de la escalación de la notificación: el menú de

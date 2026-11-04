@@ -57,6 +57,9 @@ func TestEscalateFromRescheduleFallback_DivertedExitDropsTheReschedule(t *testin
 			RegisterEscalationHandlers(m, bird.NewClientForTest(escalationTestServer(t).URL), testEscalationConfig(), nil)
 			sess := rescheduleEscalationSess()
 			sess.Context["escalation_count"] = "3"
+			// El tope solo corta los ciclos del paciente: aquí escribió «asesor» en el paso.
+			sess.Context[sm.CtxEscalationReason] = sm.EscalationReasonPatientAsked
+			sess.Context[sm.CtxPatientAskedForAgent] = "1"
 			return m, sess
 		},
 	}

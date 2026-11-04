@@ -403,9 +403,12 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   cancelación de siempre. Cita movida (otro `appointment_slot`), sesión ocupada, >6 h o cita a <2 h → agente
   (`notificacion_siesa_pendiente`).
 - Topes: cantidad por CUPS >100 → agente (`cantidad_fuera_de_rango`; EMG/NC sin cambios); 3 lecturas fallidas
-  seguidas de la orden → agente (`ocr_lecturas_fallidas`); los desvíos «no hay asesores» cuentan para el tope de
-  3 escalaciones (persistido; `bot_disabled` exento; se reinicia cuando un agente atiende y devuelve). Tras el corte
-  el bot calla salvo sus botones y «menú», y lo ignorado no renueva la sesión.
+  seguidas de la orden → agente (`ocr_lecturas_fallidas`); al tope de 3 escalaciones (persistido; se reinicia
+  cuando un agente atiende y devuelve) suman SOLO los ciclos del paciente, entregados o desviados por «no hay
+  asesores»: pedir asesor y agotar reintentos (`sm.EscalationCountsTowardCap`, tabla en `escalation_reasons.go`;
+  motivo vacío o nuevo sin clasificar suma). Las que dispara el bot (orden dudosa, B-05, B-10, SANITAS, fallos)
+  ni suman ni cortan; `bot_disabled` exento. Tras el corte el bot calla salvo sus botones y «menú», y lo ignorado
+  no renueva la sesión.
 
 ## OCR DE LA ORDEN (mejoras tomadas de hdg-bot, 2026-11-03; plan en `docs/PLAN-MEJORA-OCR-CUPS.md`)
 

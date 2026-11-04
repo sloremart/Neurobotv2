@@ -113,3 +113,27 @@ func TestEscalationReasons_ListsEveryConstant(t *testing.T) {
 		t.Errorf("el fuente declara %d constantes y EscalationReasons() lista %d", found, len(listed))
 	}
 }
+
+// Cada motivo dice si es un ciclo del paciente (suma al tope de escalaciones) o una escalación que
+// dispara el bot (no suma): uno nuevo sin clasificar rompe aquí.
+func TestEscalationReasons_EveryReasonIsClassifiedForTheCap(t *testing.T) {
+	for _, reason := range EscalationReasons() {
+		if _, ok := escalationReasonFromPatient[reason]; !ok {
+			t.Errorf("el motivo %q no dice si suma al tope de escalaciones", reason)
+		}
+	}
+	if len(escalationReasonFromPatient) != len(EscalationReasons()) {
+		t.Errorf("la clasificación tiene %d motivos y EscalationReasons() %d", len(escalationReasonFromPatient), len(EscalationReasons()))
+	}
+	for reason, want := range map[string]bool{
+		EscalationReasonPatientAsked: true, EscalationReasonMaxRetries: true,
+		EscalationReasonCupsPossibleMisread: false, EscalationReasonOCRNoCode: false,
+		EscalationReasonOCRFailedReads: false, EscalationReasonQuantityOutOfRange: false,
+		EscalationReasonSanitasBlock: false, EscalationReasonBotDisabled: false,
+		"": true, "motivo_desconocido": true,
+	} {
+		if got := EscalationCountsTowardCap(reason); got != want {
+			t.Errorf("EscalationCountsTowardCap(%q) = %v, quería %v", reason, got, want)
+		}
+	}
+}

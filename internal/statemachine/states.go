@@ -382,7 +382,8 @@ const (
 	CtxOCRFailedReads = "ocr_failed_reads"
 
 	// CtxEscalationCount es el contador del tope de escalaciones por sesión: las escalaciones
-	// entregadas y los desvíos por falta de asesores o por horario (handlers/escalation.go).
+	// entregadas y los desvíos por falta de asesores o por horario (handlers/escalation.go), solo
+	// las de los ciclos del paciente (EscalationCountsTowardCap).
 	CtxEscalationCount = "escalation_count"
 
 	// CtxEscalationCapped marca la sesión cortada por ese tope: en FALLBACK_MENU el bot ya solo
