@@ -28,7 +28,7 @@ func must(res *sm.StateResult, err error) func(t *testing.T) *sm.StateResult {
 // detalle y no el `reason`), y los que son el paciente pidiendo la persona lo marcan.
 func TestEscalationSites_WriteTheirReason(t *testing.T) {
 	ctx := context.Background()
-	ocrSrv := newSequentialOCRServer(ocrCupsResponse("", "SIN CODIGO"))
+	ocrSrv := newSequentialOCRServer(ocrCupsResponse("", ""))
 	defer ocrSrv.Close()
 	fileSrv := newMockFileServer()
 	defer fileSrv.Close()
@@ -46,6 +46,10 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 			return must(askMedicalOrderHandler(nil, nil, nil)(ctx, sess, postbackM("has_order_no")))(t)
 		}},
 		{"ocr_sin_codigo", sm.EscalationReasonOCRNoCode, false, func(t *testing.T) *sm.StateResult {
+			res, _, _ := runValidate(t, []services.CUPSEntry{{Name: "SIN CODIGO", Quantity: 1}}, "", nil)
+			return res
+		}},
+		{"ocr_sin_codigo_ni_nombre", sm.EscalationReasonOCRNoCode, false, func(t *testing.T) *sm.StateResult {
 			sess := testSess(sm.StateUploadMedicalOrder)
 			return must(processOrderMedia(ctx, sess, services.NewOCRServiceForTest(ocrSrv.URL), nil, fileSrv.URL+"/p1.jpg"))(t)
 		}},

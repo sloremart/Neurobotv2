@@ -40,7 +40,8 @@ const (
 	EscalationReasonParticularNoOrder = "particular_sin_orden"
 	// EscalationReasonOCRAskedForAgent: el paciente pidió el agente al subir la orden.
 	EscalationReasonOCRAskedForAgent = "ocr_pidio_agente"
-	// EscalationReasonOCRNoCode: la orden no tenía ningún código legible.
+	// EscalationReasonOCRNoCode: un procedimiento de la orden no trae código y no se le pudo asignar
+	// uno por nombre con seguridad (o ninguno trae código ni nombre).
 	EscalationReasonOCRNoCode = "ocr_sin_codigo"
 	// EscalationReasonOCRInvalidJSON: el resultado del OCR guardado no se pudo leer.
 	EscalationReasonOCRInvalidJSON = "ocr_json_invalido"

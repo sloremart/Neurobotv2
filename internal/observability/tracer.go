@@ -114,6 +114,8 @@ var catalog = map[string]stepSpec{
 	// Resolución del código CUPS en VALIDATE_OCR (mejora H5 del OCR, 2026-11-03).
 	"agendar/cups_corregido": {LvMilestone, "ok", ""},      // código corregido (Reason = vía); el paciente aún confirma
 	"agendar/cups_duda":      {LvOutcome, "escalated", ""}, // posible mala lectura con candidatos → agente
+	// Asignación del código por nombre cuando la orden no lo trae (Reason = vía); el paciente aún confirma.
+	"agendar/cups_asignado_nombre": {LvMilestone, "ok", ""},
 	// Sesión cortada por el tope de escalaciones: cada entrada ignorada en silencio (detalle).
 	"escalacion/escalation_cap_input_ignored": {LvFull, "info", ""},
 

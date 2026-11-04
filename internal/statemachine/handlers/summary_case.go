@@ -81,6 +81,7 @@ func writeOrderGroup(doc *summaryDoc, sess *session.Session, read bool) {
 		g.optional("cups_leidos", "CUPS leídos", strings.Join(tokens, " "))
 	}
 	g.optional("cups_corregidos", "CUPS corregidos", cupsCorrectionsLine(sess))
+	g.optional("cups_asignados", "CUPS asignados por nombre", cupsAssignmentsLine(sess))
 	if !read {
 		return
 	}

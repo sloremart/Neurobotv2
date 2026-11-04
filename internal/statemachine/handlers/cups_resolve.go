@@ -41,10 +41,13 @@ import (
 // catálogo), nunca una sola, y nunca es silenciosa: queda en ctxCupsCorrections para el resumen del
 // agente y emite `cups_corregido`. El paciente sigue confirmando la lista en CONFIRM_OCR_RESULT.
 
-// CupsCodeReader es la segunda lectura dedicada del código CUPS de UN procedimiento (la implementa
-// services.OCRService.ReadCupsCode). Opcional: sin lector se salta ese paso.
+// CupsCodeReader son las lecturas con el modelo de documento que usa VALIDATE_OCR (las implementa
+// services.OCRService): la segunda lectura del código de UN procedimiento (ReadCupsCode) y la elección
+// por nombre de un procedimiento sin código entre los candidatos del catálogo (ChooseCupsByName, solo
+// con confianza alta). Opcional: sin lector se saltan los dos pasos.
 type CupsCodeReader interface {
 	ReadCupsCode(ctx context.Context, documentURL, procedureName string) (string, error)
+	ChooseCupsByName(ctx context.Context, readName string, candidates []services.CupsCandidate) (string, error)
 }
 
 const (
@@ -55,6 +58,9 @@ const (
 	// ctxCupsCorrections guarda las correcciones de la orden validada (JSON []cupsCorrection), para
 	// el resumen del agente.
 	ctxCupsCorrections = "ocr_cups_corrections"
+	// ctxCupsNameAssignments guarda los códigos asignados por nombre en la orden validada (JSON
+	// []cupsCorrection, sin Read), para el resumen del agente (cups_name_assign.go).
+	ctxCupsNameAssignments = "ocr_cups_name_assignments"
 
 	// Cómo se corrigió un código (cupsCorrection.Via y el Reason de `cups_corregido`).
 	cupsCorrectedBySecondReading = "segunda_lectura"
@@ -92,6 +98,8 @@ type cupsResolver struct {
 	orderURL string
 	catalog  []domain.Procedure
 	loaded   bool
+	// firstVisits: las consultas de primera vez del catálogo, para las interconsultas (cups_name_assign.go).
+	firstVisits []domain.Procedure
 	// inOrder son los códigos (base) de la orden: los leídos y los ya corregidos.
 	inOrder map[string]bool
 }
@@ -179,20 +187,35 @@ func (r *cupsResolver) correct(p domain.Procedure, via string) cupsResolution {
 	return cupsResolution{proc: &p, via: via}
 }
 
+// modelContext acota una llamada al modelo de documento dentro del mensaje: con menos de
+// minBudgetForExtraPage no se llama (ok=false) y, si se llama, deja siempre secondReadingReserve para
+// persistir y responder.
+func modelContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		//nolint:gosec // G118: el cancel se DEVUELVE al llamador, que lo invoca con defer
+		c, cancel := context.WithCancel(ctx)
+		return c, cancel, true
+	}
+	if time.Until(dl) <= minBudgetForExtraPage {
+		return nil, nil, false
+	}
+	//nolint:gosec // G118: el cancel se DEVUELVE al llamador, que lo invoca con defer
+	c, cancel := context.WithDeadline(ctx, dl.Add(-secondReadingReserve))
+	return c, cancel, true
+}
+
 // secondReading pide la segunda lectura si hay lector, URL de la orden y presupuesto; vacío si no.
 func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
 	if r.reader == nil || r.orderURL == "" || strings.TrimSpace(name) == "" {
 		return ""
 	}
-	if dl, ok := ctx.Deadline(); ok {
-		if time.Until(dl) <= minBudgetForExtraPage {
-			slog.Warn("segunda lectura del CUPS omitida: no queda presupuesto en el mensaje")
-			return ""
-		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, dl.Add(-secondReadingReserve))
-		defer cancel()
+	ctx, cancel, ok := modelContext(ctx)
+	if !ok {
+		slog.Warn("segunda lectura del CUPS omitida: no queda presupuesto en el mensaje")
+		return ""
 	}
+	defer cancel()
 	code, err := r.reader.ReadCupsCode(ctx, r.orderURL, name)
 	if err != nil {
 		slog.Warn("segunda lectura del CUPS falló", "error", err)
@@ -205,6 +228,17 @@ func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
 // sin el propio código leído (ya rechazado), en el orden del catálogo. Un fallo al leer el catálogo deja la
 // conducta de siempre (se descarta).
 func (r *cupsResolver) sameByName(ctx context.Context, cup services.CUPSEntry, read string) []domain.Procedure {
+	var out []domain.Procedure
+	for _, p := range r.activeCatalog(ctx) {
+		if utils.BaseCupCode(p.Code) != read && r.compare(cup, p) != services.CupsNamesDiffer {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// activeCatalog es el catálogo activo, pedido una vez por pasada y solo si algún código lo necesita.
+func (r *cupsResolver) activeCatalog(ctx context.Context) []domain.Procedure {
 	if !r.loaded {
 		r.loaded = true
 		all, err := r.repo.FindAllActive(ctx)
@@ -213,13 +247,7 @@ func (r *cupsResolver) sameByName(ctx context.Context, cup services.CUPSEntry, r
 		}
 		r.catalog = all
 	}
-	var out []domain.Procedure
-	for _, p := range r.catalog {
-		if utils.BaseCupCode(p.Code) != read && r.compare(cup, p) != services.CupsNamesDiffer {
-			out = append(out, p)
-		}
-	}
-	return out
+	return r.catalog
 }
 
 // cupsDoubtNote es la nota que lee el agente en una duda: el código y el nombre leídos y lo que el
@@ -234,11 +262,12 @@ func cupsDoubtNote(cup services.CUPSEntry, candidates []domain.Procedure) string
 		cup.Code, oneLine(cup.Name), strings.Join(parts, "; "))
 }
 
-// keptCorrections junta las correcciones anteriores que siguen en la orden (una página añadida vuelve
-// a pasar por VALIDATE_OCR con los códigos ya corregidos) con las de esta pasada.
-func keptCorrections(sess *session.Session, fresh []cupsCorrection, cups []services.CUPSEntry) []cupsCorrection {
+// keptCorrections junta las correcciones (o asignaciones) anteriores de la clave key que siguen en la
+// orden (una página añadida vuelve a pasar por VALIDATE_OCR con los códigos ya resueltos) con las de esta
+// pasada.
+func keptCorrections(sess *session.Session, key string, fresh []cupsCorrection, cups []services.CUPSEntry) []cupsCorrection {
 	var prev []cupsCorrection
-	_ = json.Unmarshal([]byte(sess.GetContext(ctxCupsCorrections)), &prev)
+	_ = json.Unmarshal([]byte(sess.GetContext(key)), &prev)
 	codes := make([]string, 0, len(cups))
 	for _, c := range cups {
 		codes = append(codes, c.Code)

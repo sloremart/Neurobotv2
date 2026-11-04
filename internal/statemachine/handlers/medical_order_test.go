@@ -35,6 +35,7 @@ type mockProcedureRepo struct {
 	findByCodeFn    func(ctx context.Context, code string) (*domain.Procedure, error)
 	searchByNameFn  func(ctx context.Context, name string) ([]domain.Procedure, error)
 	findAllActiveFn func(ctx context.Context) ([]domain.Procedure, error)
+	subjectTypeFn   func(ctx context.Context, code string) (int, error)
 }
 
 func (m *mockProcedureRepo) FindByCode(ctx context.Context, code string) (*domain.Procedure, error) {
@@ -63,6 +64,9 @@ func (m *mockProcedureRepo) FindAllActive(ctx context.Context) ([]domain.Procedu
 }
 
 func (m *mockProcedureRepo) FindSubjectTypeForCups(ctx context.Context, cupsCode string) (int, error) {
+	if m.subjectTypeFn != nil {
+		return m.subjectTypeFn(ctx, cupsCode)
+	}
 	return 0, nil
 }
 
@@ -906,7 +910,8 @@ func TestProcessOrderMedia_FailureKeepsCauseAndSuccessClearsIt(t *testing.T) {
 	}
 }
 
-// Un procedimiento leído sin código llega al agente con su nombre, que es lo único que hay.
+// Un procedimiento leído sin código sigue con su nombre a VALIDATE_OCR, que le asigna el código por
+// nombre; si no puede, llega al agente con el nombre, que es lo único que hay.
 func TestProcessOrderMedia_NoCodeKeepsUnreadNames(t *testing.T) {
 	srv := newMockOCRServer(`{"choices":[{"message":{"content":"{\"cups\":[{\"cups_code\":\"\",\"cups_name\":\"RESONANCIA DE CEREBRO\",\"quantity\":1},{\"cups_code\":\"\",\"cups_name\":\"POTENCIALES\",\"quantity\":1}],\"entity\":\"\",\"error\":\"\"}"}}]}`)
 	defer srv.Close()
@@ -917,6 +922,12 @@ func TestProcessOrderMedia_NoCodeKeepsUnreadNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if res.NextState != sm.StateValidateOCR {
+		t.Fatalf("estado = %s", res.NextState)
+	}
+	var cups []services.CUPSEntry
+	_ = json.Unmarshal([]byte(res.UpdateCtx["ocr_cups_json"]), &cups)
+	res, _, _ = runValidate(t, cups, "", nil)
 	if res.NextState != sm.StateEscalateToAgent {
 		t.Fatalf("estado = %s", res.NextState)
 	}

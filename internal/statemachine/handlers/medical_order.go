@@ -565,38 +565,26 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 			WithEvent("ocr_failed", map[string]interface{}{"error": ocrResult.Error}), nil
 	}
 
-	// GUARDA (el CÓDIGO CUPS es prioridad para agendar): quedarse solo con los CUPS que traen
-	// código. Un CUP sin código NO debe llegar al gate de cobertura, que lo interpretaría como
-	// "sin convenio" y mandaría a particular (bug reportado: orden multipágina cuyo código quedó
-	// vacío al leer solo la 1ª hoja). Si tras leer todas las hojas NINGÚN CUP trae código,
-	// escalar a un agente (que sí puede leer la orden) en vez de mandar a particular.
-	validCups := make([]services.CUPSEntry, 0, len(ocrResult.Cups))
-	var unreadNames []string
+	// GUARDA (el CÓDIGO CUPS es prioridad para agendar): un CUP sin código NO debe llegar al gate de
+	// cobertura, que lo interpretaría como "sin convenio" y mandaría a particular. Los que traen el
+	// nombre siguen a VALIDATE_OCR, que les asigna el código por nombre o los pasa a un agente
+	// (cups_name_assign.go); si no queda ninguno con código ni nombre, se escala aquí.
+	readable := make([]services.CUPSEntry, 0, len(ocrResult.Cups))
 	for _, c := range ocrResult.Cups {
-		if strings.TrimSpace(c.Code) != "" {
-			validCups = append(validCups, c)
-		} else if name := strings.TrimSpace(c.Name); name != "" {
-			unreadNames = append(unreadNames, name)
+		if strings.TrimSpace(c.Code) != "" || strings.TrimSpace(c.Name) != "" {
+			readable = append(readable, c)
 		}
 	}
-	unread := strings.Join(unreadNames, "; ")
-	if len(validCups) == 0 {
+	if len(readable) == 0 {
 		observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_no_cups_code",
 			observability.EmitOpts{Phone: sess.PhoneNumber})
-		res := sm.NewResult(sm.StateEscalateToAgent).
+		return sm.NewResult(sm.StateEscalateToAgent).
 			WithText(ocrUnreadEscalationText).
 			WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
-			WithClearCtx(sm.CtxOCRFailureCause).
-			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
-		if unread != "" {
-			// El nombre es lo único que el agente tiene de lo que no tenía código.
-			res.WithContext(sm.CtxOCRUnreadNames, unread)
-		} else {
-			res.WithClearCtx(sm.CtxOCRUnreadNames)
-		}
-		return res, nil
+			WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames).
+			WithEvent("ocr_no_cups_code", map[string]interface{}{"cups_count": len(ocrResult.Cups)}), nil
 	}
-	ocrResult.Cups = validCups
+	ocrResult.Cups = readable
 
 	// OCR exitoso — guardar CUPS en contexto
 	cupsJSON, _ := json.Marshal(ocrResult.Cups)
@@ -604,8 +592,8 @@ func processOrderMedia(ctx context.Context, sess *session.Session, ocrSvc *servi
 	r := sm.NewResult(sm.StateValidateOCR).
 		WithContext("ocr_cups_json", string(cupsJSON)).
 		WithContext(ctxOCROrderURL, mediaURL). // para la segunda lectura del código en VALIDATE_OCR
-		// Orden nueva: las correcciones de la anterior no son suyas (las de ésta las anota VALIDATE_OCR).
-		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames, sm.CtxOCRFailedReads, ctxCupsCorrections).
+		// Orden nueva: las correcciones y asignaciones de la anterior no son suyas (las anota VALIDATE_OCR).
+		WithClearCtx(sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames, sm.CtxOCRFailedReads, ctxCupsCorrections, ctxCupsNameAssignments).
 		WithEvent("ocr_success", map[string]interface{}{"cups_count": len(ocrResult.Cups)})
 	observability.Emit(observability.TraceSession(sess.ID), "agendar", "ocr_ok",
 		observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(ocrResult.Cups)}})
@@ -662,8 +650,8 @@ const orderUnprocessableEscalationText = "No pudimos procesar los procedimientos
 func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader CupsCodeReader) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, _ bird.InboundMessage) (res *sm.StateResult, _ error) {
 		// La URL de la orden es solo de ESTA validación (cups_resolve.go): se borra en toda salida.
-		// Las correcciones se anotan, o se borran, una vez validada la lista.
-		var corrections []cupsCorrection
+		// Las correcciones y las asignaciones por nombre se anotan, o se borran, una vez validada la lista.
+		var corrections, assignments []cupsCorrection
 		validated := false
 		defer func() {
 			if res == nil {
@@ -673,10 +661,12 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 			if !validated {
 				return
 			}
-			if raw, merr := json.Marshal(corrections); merr == nil && len(corrections) > 0 {
-				res.WithContext(ctxCupsCorrections, string(raw))
-			} else {
-				res.WithClearCtx(ctxCupsCorrections)
+			for key, list := range map[string][]cupsCorrection{ctxCupsCorrections: corrections, ctxCupsNameAssignments: assignments} {
+				if raw, merr := json.Marshal(list); merr == nil && len(list) > 0 {
+					res.WithContext(key, string(raw))
+				} else {
+					res.WithClearCtx(key)
+				}
 			}
 		}()
 
@@ -696,6 +686,36 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 		var fresh []cupsCorrection
 		resolver := newCupsResolver(procedureRepo, cupsReader, sess, cups)
 		trace := observability.TraceSession(sess.ID)
+
+		// Sin código: asignación por nombre (cups_name_assign.go). Lo que no se asigna con seguridad
+		// queda para el agente; nunca llega a la cobertura un CUPS sin código.
+		var unreadNames, unreadNotes []string
+		var freshAssigned []cupsCorrection
+		withCode := make([]services.CUPSEntry, 0, len(cups))
+		for _, cup := range cups {
+			if strings.TrimSpace(cup.Code) != "" {
+				withCode = append(withCode, cup)
+				continue
+			}
+			name := strings.TrimSpace(cup.Name)
+			if name == "" {
+				continue
+			}
+			r := resolver.assignByName(ctx, cup)
+			if r.Code == "" {
+				unreadNames = append(unreadNames, name)
+				unreadNotes = append(unreadNotes, cupsNameDoubtNote(name, r.Candidates))
+				continue
+			}
+			observability.Emit(trace, "agendar", "cups_asignado_nombre", observability.EmitOpts{
+				Phone: sess.PhoneNumber, Reason: r.Via, Attrs: map[string]interface{}{"usado": r.Code},
+			})
+			freshAssigned = append(freshAssigned, cupsCorrection{Used: r.Code, Via: r.Via, Name: name})
+			cup.Code, cup.OrderName = r.Code, name
+			withCode = append(withCode, cup)
+		}
+		cups = withCode
+
 		valid := cups[:0]
 		for _, cup := range cups {
 			if cup.Code != "" {
@@ -744,6 +764,16 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 						skipped = append(skipped, code)
 						continue
 					}
+				} else if cup.OrderName == "" && services.CupsNamesConflict(cup.Name, proc.Name) {
+					// Guarda: el nombre leído CONTRADICE el del catálogo de su código (SIMPLE frente a
+					// CONTRASTE, primera vez frente a control, lado, región…). Solo una contradicción
+					// explícita: un nombre abreviado o que no dice nada no escala.
+					observability.Emit(trace, "agendar", "cups_duda", observability.EmitOpts{
+						Phone: sess.PhoneNumber, Reason: "contradiccion",
+						Attrs: map[string]interface{}{"leido": cup.Code},
+					})
+					doubts = append(doubts, cupsConflictNote(cup, proc.Name))
+					continue
 				}
 
 				cup.Code = code
@@ -752,7 +782,8 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 			valid = append(valid, cup)
 		}
 		cups = valid
-		corrections = keptCorrections(sess, fresh, cups)
+		corrections = keptCorrections(sess, ctxCupsCorrections, fresh, cups)
+		assignments = keptCorrections(sess, ctxCupsNameAssignments, freshAssigned, cups)
 		validated = true
 
 		// Bloqueos SANITAS: por regla de negocio el bot NO agenda bloqueos (053101–053115, 048101) a
@@ -796,6 +827,19 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 				WithEvent("cups_quantity_out_of_range", map[string]interface{}{"cups": overQuantity}), nil
 		}
 
+		// Procedimientos sin código que no se pudieron asignar: un agente los lee de la orden. El nombre
+		// es lo único que tiene de ellos; la nota trae además los candidatos y las otras dudas.
+		if len(unreadNames) > 0 {
+			observability.Emit(trace, "agendar", "ocr_no_cups_code",
+				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(unreadNames)}})
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText(ocrUnreadEscalationText).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
+				WithContext(sm.CtxOCRUnreadNames, strings.Join(unreadNames, "; ")).
+				WithContext("escalation_note", strings.Join(append(unreadNotes, doubts...), " ")).
+				WithEvent("ocr_no_cups_code", map[string]interface{}{"unassigned": len(unreadNames)}), nil
+		}
+
 		// Duda de lectura (cups_resolve.go): un agente revisa la orden con lo leído y los candidatos.
 		if len(doubts) > 0 {
 			return sm.NewResult(sm.StateEscalateToAgent).
@@ -836,6 +880,10 @@ func ocrSummaryText(cups []services.CUPSEntry, skipped int) string {
 	summary := "Detectamos los siguientes procedimientos en tu orden:\n\n"
 	for i, cup := range cups {
 		summary += fmt.Sprintf("%d. *%s*", i+1, cup.Name)
+		if cup.OrderName != "" {
+			// Asignado por nombre: el paciente ve también cómo lo decía su orden.
+			summary += fmt.Sprintf(" (en tu orden: «%s»)", cup.OrderName)
+		}
 		qty := cup.Quantity
 		if qty < 1 {
 			qty = 1

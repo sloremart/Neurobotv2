@@ -13,18 +13,28 @@ import (
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
-// fakeCupsReader es la segunda lectura del código (H4) guionizada.
+// fakeCupsReader es la segunda lectura del código (H4) y la elección por nombre, guionizadas.
 type fakeCupsReader struct {
 	code     string
 	calls    int
 	lastURL  string
 	lastName string
+
+	choice         string // lo que devuelve la elección por nombre ("" = sin confianza alta)
+	choiceCalls    int
+	lastCandidates []services.CupsCandidate
 }
 
 func (f *fakeCupsReader) ReadCupsCode(_ context.Context, documentURL, procedureName string) (string, error) {
 	f.calls++
 	f.lastURL, f.lastName = documentURL, procedureName
 	return f.code, nil
+}
+
+func (f *fakeCupsReader) ChooseCupsByName(_ context.Context, _ string, candidates []services.CupsCandidate) (string, error) {
+	f.choiceCalls++
+	f.lastCandidates = candidates
+	return f.choice, nil
 }
 
 // resolveCatalog es un catálogo pequeño con nombres como los de cups_procedimientos.
