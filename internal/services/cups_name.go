@@ -1,6 +1,7 @@
 package services
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -13,8 +14,10 @@ import (
 //  1. Un único procedimiento del catálogo con el nombre IGUAL (CompareCupsNames sobre los nombres
 //     canónicos: sin tildes, con las abreviaturas de las órdenes expandidas) → se asigna.
 //  2. Si no, hasta maxNameCandidates candidatos por parecido amplio de palabras; un modelo de solo texto
-//     elige uno, y se acepta solo con confianza alta, si está en la lista y si su nombre no contradice
-//     las palabras distintivas del leído (CupsCandidateFits).
+//     elige uno, y se acepta solo con confianza alta, si está en la lista, si su nombre no contradice
+//     las palabras distintivas del leído (candidateFits) y si es el ÚNICO de los parecidos que encaja:
+//     cuando el nombre leído no distingue entre dos («POTENCIALES VISUALES EVOCADOS» frente a
+//     monofocales y multifocales), la elección sería una adivinanza.
 //  3. Cualquier otra cosa es duda para un agente.
 
 // CupsCandidate es un procedimiento del catálogo que puede corresponder a un nombre leído.
@@ -72,10 +75,14 @@ var retrievalStopWords = map[string]bool{
 	"SOLICITUD": true, "ORDEN": true, "REFERENTE": true,
 }
 
+// quantityMark es la cantidad de las órdenes («(#4)», «#16»): no es parte del nombre.
+var quantityMark = regexp.MustCompile(`#\s*\d+`)
+
 // canonicalOrderName deja un nombre de procedimiento en la forma común de las órdenes y el catálogo:
 // mayúsculas, sin tildes, con las frases y abreviaturas de orderPhrases y orderAbbreviations.
 func canonicalOrderName(text string) string {
 	folded := orderPhrases.Replace(accentFolder.Replace(strings.ToUpper(text)))
+	folded = quantityMark.ReplaceAllString(folded, " ")
 	var out []string
 	for _, w := range strings.FieldsFunc(folded, func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
@@ -114,7 +121,10 @@ func ResolveCupsByName(
 	read string, catalog []CupsCandidate, interconsulta bool,
 	choose func(read string, candidates []CupsCandidate) string,
 ) CupsNameResolution {
-	canonRead := canonicalOrderName(read)
+	// La búsqueda de candidatos usa solo lo leído; el sufijo de primera vez de una interconsulta cuenta
+	// para el nombre igual y para encajar, no para encontrar candidatos de otra especialidad.
+	retrievalRead := canonicalOrderName(read)
+	canonRead := retrievalRead
 	if interconsulta {
 		canonRead += firstVisitSuffix
 	}
@@ -127,22 +137,36 @@ func ResolveCupsByName(
 	if len(equal) == 1 {
 		return CupsNameResolution{Code: equal[0].Code, Name: equal[0].Name, Via: CupsNameViaEqual, Candidates: equal}
 	}
-	shortlist := nameCandidates(canonRead, catalog)
-	res := CupsNameResolution{Candidates: shortlist}
-	if len(shortlist) == 0 || choose == nil {
+	similar := nameCandidates(retrievalRead, catalog)
+	res := CupsNameResolution{Candidates: similar[:min(len(similar), maxNameCandidates)]}
+	if len(res.Candidates) == 0 || choose == nil {
 		return res
 	}
-	code := strings.TrimSpace(choose(read, shortlist))
-	for _, c := range shortlist {
-		if c.Code == code && candidateFits(canonRead, canonicalOrderName(c.Name)) {
-			res.Code, res.Name, res.Via = c.Code, c.Name, CupsNameViaModel
+	var fitting []CupsCandidate
+	for _, c := range similar {
+		if candidateFits(canonRead, canonicalOrderName(c.Name)) {
+			fitting = append(fitting, c)
 		}
+	}
+	code := strings.TrimSpace(choose(read, res.Candidates))
+	if len(fitting) == 1 && fitting[0].Code == code && containsCode(res.Candidates, code) {
+		res.Code, res.Name, res.Via = fitting[0].Code, fitting[0].Name, CupsNameViaModel
 	}
 	return res
 }
 
-// nameCandidates es la lista corta: los del catálogo con al menos minCandidateScore de las palabras
-// distintivas del leído, de mayor a menor parecido (y, a igual parecido, el de menos palabras de más).
+func containsCode(list []CupsCandidate, code string) bool {
+	for _, c := range list {
+		if c.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// nameCandidates son los del catálogo con al menos minCandidateScore de las palabras distintivas del
+// leído, de mayor a menor parecido (y, a igual parecido, el de menos palabras de más). Los primeros
+// maxNameCandidates son la lista corta que ve el modelo.
 func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 	var readWords []string
 	for _, w := range distinctiveWords(canonRead) {
@@ -181,9 +205,9 @@ func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 		}
 		return found[i].precision > found[j].precision
 	})
-	out := make([]CupsCandidate, 0, min(len(found), maxNameCandidates))
-	for i := 0; i < len(found) && i < maxNameCandidates; i++ {
-		out = append(out, found[i].c)
+	out := make([]CupsCandidate, 0, len(found))
+	for _, f := range found {
+		out = append(out, f.c)
 	}
 	return out
 }
@@ -204,6 +228,12 @@ type qualifierGroup struct {
 	// readMayAdd: en la comparación estricta, el leído puede precisar el grupo sin que el candidato lo
 	// diga (lateralidad: el catálogo tiene un solo código para los dos lados).
 	readMayAdd bool
+	// readSilentOK: en la comparación estricta, si el leído no dice nada del grupo no se compara (la
+	// modalidad: «SILLA TURCA» a secas puede ser RX o TAC, y eso lo decide que encaje un solo candidato).
+	readSilentOK bool
+	// numbers: el grupo son los números del nombre (cantidad de un paquete: «Paq. 1» frente a «Paq. 2»).
+	// Solo cuenta cuando los dos nombres traen números: el catálogo arrastra números sueltos («(62)»).
+	numbers bool
 }
 
 func words(values ...string) map[string]string {
@@ -219,6 +249,10 @@ func words(values ...string) map[string]string {
 }
 
 var qualifierGroups = []qualifierGroup{
+	{numbers: true},
+	{values: words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
+		"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA"), readSilentOK: true},
+	{values: words("DOPPLER")},
 	{values: words("SIMPLE", "CONTRASTE"), silentAs: "SIMPLE"},
 	{values: words("PRIMERA=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL")},
 	{values: words("PEDIATRICA")},
@@ -234,7 +268,7 @@ var qualifierGroups = []qualifierGroup{
 		"ANTEBRAZO", "MUNECA", "MANO", "DEDOS", "CADERA", "MUSLO", "FEMUR", "RODILLA", "PIERNA", "TIBIA",
 		"TOBILLO", "PIE", "CALCANEO", "MAXILAR", "MANDIBULA", "PROSTATA", "TIROIDES", "MAMA", "RENAL",
 		"RINON", "HIGADO", "VESICULA", "ESCROTO", "TESTICULO", "SACROILIACA", "CLAVICULA", "ESTERNON",
-		"COSTILLAS", "PARRILLA", "TEMPOROMANDIBULAR",
+		"COSTILLAS", "PARRILLA", "TEMPOROMANDIBULAR", "PIES=PIE",
 	)},
 }
 
@@ -242,6 +276,12 @@ var qualifierGroups = []qualifierGroup{
 func (g qualifierGroup) groupValues(canon string) map[string]bool {
 	out := map[string]bool{}
 	for _, w := range strings.Fields(canon) {
+		if g.numbers {
+			if strings.Trim(w, "0123456789") == "" {
+				out[w] = true
+			}
+			continue
+		}
 		if v, ok := g.values[w]; ok {
 			out[v] = true
 			continue
@@ -255,9 +295,12 @@ func (g qualifierGroup) groupValues(canon string) map[string]bool {
 			}
 		}
 	}
-	// SIMPLE Y CON CONTRASTE es un estudio contrastado.
+	// SIMPLE Y CON CONTRASTE es un estudio contrastado, y el PET-TC es un PET.
 	if out["CONTRASTE"] && out["SIMPLE"] {
 		delete(out, "SIMPLE")
+	}
+	if out["PET"] {
+		delete(out, "TC")
 	}
 	return out
 }
@@ -289,6 +332,9 @@ func disjoint(a, b map[string]bool) bool {
 func CupsNamesConflict(read, catalog string) bool {
 	r, c := canonicalOrderName(read), canonicalOrderName(catalog)
 	for _, g := range qualifierGroups {
+		if g.numbers {
+			continue // la cantidad de la orden («(#4)») no contradice al catálogo
+		}
 		rv, cv := g.groupValues(r), g.groupValues(c)
 		if len(rv) > 0 && len(cv) > 0 && disjoint(rv, cv) {
 			return true
@@ -312,7 +358,10 @@ func candidateFits(canonRead, canonCand string) bool {
 				cv = map[string]bool{g.silentAs: true}
 			}
 		}
-		if g.readMayAdd && len(cv) == 0 {
+		if g.readMayAdd && len(cv) == 0 || g.readSilentOK && len(rv) == 0 {
+			continue
+		}
+		if g.numbers && (len(rv) == 0 || len(cv) == 0) {
 			continue
 		}
 		if !sameSet(rv, cv) {

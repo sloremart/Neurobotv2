@@ -125,3 +125,67 @@ func TestCupsNamesConflict(t *testing.T) {
 		}
 	}
 }
+
+// Si el nombre leído no distingue entre dos candidatos que encajan, la elección del modelo sería una
+// adivinanza: es duda (simulación adversarial: «POTENCIALES VISUALES EVOCADOS» entre monofocales y
+// multifocales; «CONSULTA PRIMERA VEZ» sin especialidad; paquetes que solo cambian en el número).
+func TestResolveCupsByName_AmbiguousReadIsADoubtEvenIfTheModelChooses(t *testing.T) {
+	catalog := []CupsCandidate{
+		{"952302", "POTENCIALES VISUALES EVOCADOS MONOFOCALES"},
+		{"952303", "POTENCIALES VISUALES EVOCADOS MULTIFOCALES"},
+		{"000005", "Paq. 2 electromiografias + 2 neuroconducciones"},
+		{"000006", "Paq. 1 electromiografia + 1 neuroconduccion"},
+	}
+	catalog = append(catalog, nameCatalog[:3]...)
+	cases := []struct{ read, choice string }{
+		{"POTENCIALES VISUALES EVOCADOS", "952302"},
+		{"CONSULTA PRIMERA VEZ", "890274"},
+		{"PAQ 1 EMG", "000005"},
+	}
+	for _, c := range cases {
+		if res := ResolveCupsByName(c.read, catalog, false, chooseCode(c.choice)); res.Code != "" {
+			t.Errorf("%q: ambiguo, no se asigna: %+v", c.read, res)
+		}
+	}
+}
+
+// Una interconsulta a una especialidad que el catálogo no tiene no tiene candidatos: el sufijo de
+// primera vez no cuenta para buscarlos.
+func TestResolveCupsByName_InterconsultaToAnotherSpecialtyHasNoCandidates(t *testing.T) {
+	if res := ResolveCupsByName("OTORRINOLARINGOLOGIA", nameCatalog[:3], true, chooseCode("890274")); res.Code != "" || len(res.Candidates) != 0 {
+		t.Errorf("sin candidatos: %+v", res)
+	}
+}
+
+// La cantidad «(#N)» de la orden no es parte del nombre: no estorba al nombre igual.
+func TestResolveCupsByName_IgnoresQuantityMark(t *testing.T) {
+	if res := ResolveCupsByName("RM DE RODILLA (#2)", nameCatalog, false, nil); res.Code != "883511" {
+		t.Errorf("con (#2): %+v", res)
+	}
+}
+
+// La modalidad también distingue (simulación adversarial: «TAC SILLA TURCA» no es la radiografía de silla
+// turca; «ECO VIAS URINARIAS» no es la urotomografía), y el doppler.
+func TestResolveCupsByName_ModalityAndDopplerMustFit(t *testing.T) {
+	catalog := []CupsCandidate{
+		{"870004", "RADIOGRAFIA DE SILLA TURCA"},
+		{"879430", "TOMOGRAFÍA COMPUTADA DE VÍAS URINARIAS [UROTC]"},
+		{"881362", "ULTRASONOGRAFIA DE MASAS DE TEJIDOS BLANDOS DE ABDOMEN CON ANALISIS DOPPLER"},
+	}
+	cases := []struct{ read, choice string }{
+		{"TAC SILLA TURCA", "870004"},
+		{"ECO VIAS URINARIAS", "879430"},
+		{"ECO TEJIDOS BLANDOS PARED ABDOMINAL", "881362"},
+	}
+	for _, c := range cases {
+		if res := ResolveCupsByName(c.read, catalog, false, chooseCode(c.choice)); res.Code != "" {
+			t.Errorf("%q: no puede asignarse %s: %+v", c.read, c.choice, res)
+		}
+	}
+	if !CupsNamesConflict("TAC DE SILLA TURCA", "RADIOGRAFIA DE SILLA TURCA") {
+		t.Error("guarda: TAC frente a radiografía es contradicción")
+	}
+	if CupsNamesConflict("PET CT CON FDG", "TOMOGRAFIA POR EMISION DE POSITRONES(PET-TC) CON 18-FLUOR") {
+		t.Error("guarda: PET-CT es la misma modalidad que PET-TC")
+	}
+}
