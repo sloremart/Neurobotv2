@@ -72,7 +72,8 @@ type WebhookHandler struct {
 	inboxRepo       InboxPersister  // WAL for crash recovery (optional)
 	deliveryTracker DeliveryTracker // fallos de entrega WA por teléfono (optional)
 	// voiceGatherCmds maps callId → gatherEntry so we can query the DTMF result
-	// from GET /calls/{callId}/commands/{commandId} when the call completes.
+	// from GET /calls/{callId}/commands/{commandId} when the call completes. Una entrada sin
+	// commandID marca un gather ya enviado (o en vuelo) del que no hay resultado que consultar.
 	voiceGatherCmds sync.Map
 	// outboundSeen dedupea por Payload.ID: la suscripción con eventos de ESTADO entrega 4-5
 	// eventos por mensaje (accepted→processing→sent→delivered/read); el trabajo caro (fetch del
@@ -741,12 +742,19 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 			callID := event.Payload.ID
 			switch event.Payload.Status {
 			case "ongoing":
-				// Call is active — send mid-call gather command (two-phase IVR)
+				// Call is active — send mid-call gather command (two-phase IVR). Una reentrega del
+				// mismo «ongoing» no manda otro gather (cada uno se cobra): la entrada sin commandID
+				// lo reserva mientras el primero está en vuelo, y se libera si ese envío falla.
+				if _, sent := h.voiceGatherCmds.LoadOrStore(callID, gatherEntry{storedAt: time.Now()}); sent {
+					slog.Info("voice call ongoing again, gather already sent", "callId", callID)
+					break
+				}
 				slog.Info("voice call ongoing, sending gather", "callId", callID)
 				go func() {
 					defer recoverLog("voice-gather-send")
 					commandID, err := h.birdClient.SendGather(callID)
 					if err != nil {
+						h.voiceGatherCmds.Delete(callID)
 						slog.Error("send gather failed", "callId", callID, "error", err)
 						return
 					}
@@ -759,12 +767,15 @@ func (h *WebhookHandler) HandleVoiceWebhook(w http.ResponseWriter, r *http.Reque
 				go func() {
 					defer recoverLog("voice-gather-result")
 					val, hasCmd := h.voiceGatherCmds.LoadAndDelete(callID)
-					if !hasCmd {
-						// Gather command never ran (call not answered, or gather failed)
+					commandID := ""
+					if hasCmd {
+						commandID = val.(gatherEntry).commandID
+					}
+					if commandID == "" {
+						// Gather command never ran (call not answered, or gather failed or got no id)
 						h.notifyManager.HandleVoiceCallCompleted(callID)
 						return
 					}
-					commandID := val.(gatherEntry).commandID
 					keys, err := h.birdClient.GetGatherResult(callID, commandID)
 					if err != nil {
 						slog.Error("get gather result failed", "callId", callID, "commandId", commandID, "error", err)
