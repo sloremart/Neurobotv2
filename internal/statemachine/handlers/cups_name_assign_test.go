@@ -261,3 +261,22 @@ func TestValidateOCR_ExtraModelCallsAreCappedPerOrder(t *testing.T) {
 		t.Errorf("la nota trae los 4 procedimientos sin código: %d", n)
 	}
 }
+
+// Con el tope alcanzado, un código sin ningún procedimiento de nombre parecido se descarta como con la
+// lectura (que no podía corregirlo ni dejarlo en duda): no es duda y no gasta llamada.
+func TestValidateOCR_CapReachedWithoutCandidatesDiscards(t *testing.T) {
+	reader := &fakeCupsReader{choice: ""}
+	var cups []services.CUPSEntry
+	for range maxExtraModelCallsPerOrder {
+		cups = append(cups, noCode("RNM CEREBRAL SIMPLE"))
+	}
+	cups = append(cups, services.CUPSEntry{Code: "999999", Name: "COLONOSCOPIA TOTAL", Quantity: 1})
+	res, _, _ := runValidateWith(t, nameAssignCatalog, cups, testOrderURL, reader)
+
+	if reader.choiceCalls != maxExtraModelCallsPerOrder || reader.calls != 0 {
+		t.Fatalf("elecciones=%d lecturas=%d", reader.choiceCalls, reader.calls)
+	}
+	if strings.Contains(res.UpdateCtx["escalation_note"], "999999") {
+		t.Errorf("sin candidatos no es duda: %q", res.UpdateCtx["escalation_note"])
+	}
+}

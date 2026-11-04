@@ -286,6 +286,10 @@ func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
 		}
 		r.images, r.imagesLoaded = images, true
 	}
+	// Sin imágenes (ni imagen ni PDF) no hay qué leer: ni llamada ni gasto del tope.
+	if len(r.images) == 0 {
+		return ""
+	}
 	r.modelCalls++
 	code, err := r.reader.ReadCupsCode(ctx, r.images, name)
 	if err != nil {

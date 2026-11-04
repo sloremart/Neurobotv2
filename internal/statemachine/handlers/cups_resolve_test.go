@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -18,7 +19,9 @@ import (
 type fakeCupsReader struct {
 	code       string
 	calls      int
-	imageCalls int // cuántas veces se bajó y convirtió la orden (OrderImages)
+	imageCalls int   // cuántas veces se bajó y convirtió la orden (OrderImages)
+	noImages   bool  // OrderImages no da imágenes (ni imagen ni PDF)
+	imagesErr  error // OrderImages falla
 	lastURL    string
 	lastName   string
 
@@ -30,6 +33,9 @@ type fakeCupsReader struct {
 func (f *fakeCupsReader) OrderImages(_ context.Context, documentURL string) ([]string, error) {
 	f.imageCalls++
 	f.lastURL = documentURL
+	if f.imagesErr != nil || f.noImages {
+		return nil, f.imagesErr
+	}
 	return []string{"data:image/jpeg;base64,orden"}, nil
 }
 
@@ -177,6 +183,29 @@ func TestValidateOCR_SecondReadingReusesOrderImages(t *testing.T) {
 	}
 	if reader.imageCalls != 1 || reader.lastURL != testOrderURL {
 		t.Errorf("la orden se baja y se convierte una sola vez por pasada: %d veces (%q)", reader.imageCalls, reader.lastURL)
+	}
+}
+
+// Un fallo al bajar la orden no se guarda: el código siguiente vuelve a intentarlo, como antes.
+func TestValidateOCR_OrderImagesFailureIsRetried(t *testing.T) {
+	reader := &fakeCupsReader{imagesErr: errors.New("descarga caída")}
+	runValidate(t, []services.CUPSEntry{
+		{Code: "890279", Name: "CONSULTA PRIMERA VEZ NEUROLOGIA", Quantity: 1},
+		{Code: "883109", Name: "RESONANCIA MAGNETICA DE CEREBRO", Quantity: 1},
+	}, testOrderURL, reader)
+	if reader.imageCalls != 2 || reader.calls != 0 {
+		t.Errorf("cada código reintenta la descarga y no lee sin imágenes: descargas=%d lecturas=%d", reader.imageCalls, reader.calls)
+	}
+}
+
+// Si la orden no dio imágenes no hay lectura ni se gasta una llamada del tope.
+func TestValidateOCR_NoOrderImagesSpendsNoModelCall(t *testing.T) {
+	reader := &fakeCupsReader{noImages: true}
+	runValidate(t, []services.CUPSEntry{
+		{Code: "890279", Name: "CONSULTA PRIMERA VEZ NEUROLOGIA", Quantity: 1},
+	}, testOrderURL, reader)
+	if reader.imageCalls != 1 || reader.calls != 0 {
+		t.Errorf("sin imágenes no se llama al modelo: descargas=%d lecturas=%d", reader.imageCalls, reader.calls)
 	}
 }
 
