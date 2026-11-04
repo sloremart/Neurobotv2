@@ -444,6 +444,12 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   externo (keyword `"status":"ok"` cada 1 min): `docs/MONITOREO-EXTERNO.md`; el watcher solo ve eventos de Docker.
 - Aviso del mismo día: tras leer SIESA se descartan las citas cuya hora no es posterior a la hora real (la franja
   sigue saliendo de la hora programada).
+- Despliegue: al arrancar, `WARN insecure configuration` (no fatal, sin valores) si `DB_PASSWORD`/`DB_ROOT_PASSWORD`
+  son las de `.env.example` (root vacía también), `INTERNAL_API_KEY` < 32 caracteres o `EXTERNAL_DB_ENCRYPT` ≠ `true`
+  (`config.SecurityWarnings`). `GOMEMLIMIT=1536MiB` va en el compose junto a `memory: 2048M` (cambiar los dos). La
+  zona horaria se fija antes de la primera goroutine. Cerrar el MySQL publicado (13308; el dashboard entra por él),
+  activar el cifrado a SIESA, el riesgo aceptado de la API interna por el túnel y cómo comprobar en logs si Bird firma
+  el DTMF: `docs/MONITOREO-EXTERNO.md` («Revisiones de despliegue»).
 
 ## OCR DE LA ORDEN (mejoras tomadas de hdg-bot, 2026-11-03; plan en `docs/PLAN-MEJORA-OCR-CUPS.md`)
 
