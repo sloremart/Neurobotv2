@@ -75,7 +75,13 @@ func (r *cupsResolver) firstVisitCatalog(ctx context.Context) []domain.Procedure
 		if !strings.Contains(strings.ToUpper(p.Name), "CONSULTA") {
 			continue
 		}
-		if subject, err := r.repo.FindSubjectTypeForCups(ctx, p.Code); err == nil && firstVisitSubjects[subject] {
+		subject, err := r.repo.FindSubjectTypeForCups(ctx, p.Code)
+		if err != nil {
+			// Sin el asunto esa consulta no se ofrece y la interconsulta puede quedar en duda: que se vea.
+			slog.Warn("asignación por nombre: no se pudo leer el asunto de una consulta", "cups_code", p.Code, "error", err)
+			continue
+		}
+		if firstVisitSubjects[subject] {
 			r.firstVisits = append(r.firstVisits, p)
 		}
 	}

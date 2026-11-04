@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -890,29 +891,43 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 // ocrSummaryText es la pregunta de CONFIRM_OCR_RESULT: los procedimientos leídos de la orden
 // (con su cantidad) y cuántos se omitieron por no estar disponibles.
 func ocrSummaryText(cups []services.CUPSEntry, skipped int) string {
-	summary := "Detectamos los siguientes procedimientos en tu orden:\n\n"
+	header := "Detectamos los siguientes procedimientos en tu orden:\n\n"
+	footer := "\n¿Es correcto?"
+	if skipped > 0 {
+		footer = fmt.Sprintf("\n⚠️ %d procedimiento(s) de tu orden no están disponibles y fueron omitidos.\n", skipped) + footer
+	}
+	var items strings.Builder
+	room := maxButtonBodyRunes - utf8.RuneCountInString(header) - utf8.RuneCountInString(footer)
 	for i, cup := range cups {
-		summary += fmt.Sprintf("%d. *%s*", i+1, cup.Name)
+		line := fmt.Sprintf("%d. *%s*", i+1, cup.Name)
 		if cup.OrderName != "" {
 			// Asignado por nombre: el paciente ve también cómo lo decía su orden.
-			summary += fmt.Sprintf(" (en tu orden: «%s»)", cup.OrderName)
+			line += fmt.Sprintf(" (en tu orden: «%s»)", truncate(oneLine(cup.OrderName), maxOrderNameRunes))
 		}
 		qty := cup.Quantity
 		if qty < 1 {
 			qty = 1
 		}
 		if qty > 1 {
-			summary += fmt.Sprintf(" — Cantidad: *%d*", qty)
+			line += fmt.Sprintf(" — Cantidad: *%d*", qty)
 		}
-		summary += "\n"
+		line += "\n"
+		// El cuerpo de un mensaje con botones no puede pasar de maxButtonBodyRunes: lo que no cabe se
+		// resume en «…» (la lista completa la ve el agente si hace falta).
+		if utf8.RuneCountInString(items.String())+utf8.RuneCountInString(line) > room-2 {
+			items.WriteString("…\n")
+			break
+		}
+		items.WriteString(line)
 	}
-
-	if skipped > 0 {
-		summary += fmt.Sprintf("\n⚠️ %d procedimiento(s) de tu orden no están disponibles y fueron omitidos.\n", skipped)
-	}
-
-	return summary + "\n¿Es correcto?"
+	return header + items.String() + footer
 }
+
+// maxButtonBodyRunes es el largo máximo del cuerpo de un mensaje con botones de WhatsApp.
+const maxButtonBodyRunes = 1024
+
+// maxOrderNameRunes acota el nombre de la orden que se muestra junto al del catálogo.
+const maxOrderNameRunes = 60
 
 // CONFIRM_OCR_RESULT (interactivo) — usuario confirma o corrige
 func confirmOCRResultHandler(procedureRepo repository.ProcedureRepository, birdClient *bird.Client) sm.StateHandler {
