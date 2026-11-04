@@ -84,7 +84,7 @@ func (c *Client) GetSchedule(ctx context.Context, channelID int64, version strin
 		return Schedule{}, ErrUnauthorized
 	case resp.status != http.StatusOK:
 		return Schedule{}, fmt.Errorf("nectar: GET %s: status %d %s", path, resp.status,
-			strings.TrimSpace(string(resp.body)))
+			bodySnippet(resp.body))
 	}
 	var out Schedule
 	if err := json.Unmarshal(resp.body, &out); err != nil {

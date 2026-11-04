@@ -7,8 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -519,5 +522,39 @@ func TestGetState_Contact(t *testing.T) {
 	st, err = c.GetState(context.Background(), 1234)
 	if err != nil || st.Contact != nil {
 		t.Fatalf("sin bloque contact: %+v err=%v", st.Contact, err)
+	}
+}
+
+// B-16: el cuerpo de un código fuera de contrato entra recortado al texto del error, que sale en
+// el log de ERROR y en Telegram. El principio (el motivo) se conserva y el corte no parte una runa.
+func TestDo_ErrorMessageTruncatesBody(t *testing.T) {
+	huge := `{"reason":"motivo_x","detalle":"` + strings.Repeat("ñ", 100_000) + `"}`
+	for _, status := range []int{http.StatusForbidden, http.StatusConflict, http.StatusInternalServerError} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(huge))
+		}))
+		c := NewClient(srv.URL, svcKey, reqSecret)
+		_, err := c.GetState(context.Background(), 1234)
+		srv.Close()
+		if err == nil {
+			t.Fatalf("status %d: quería error", status)
+		}
+		msg := err.Error()
+		if len(msg) >= 1024 {
+			t.Errorf("status %d: el error mide %d bytes", status, len(msg))
+		}
+		if !strings.Contains(msg, "motivo_x") || !strings.Contains(msg, strconv.Itoa(status)) {
+			t.Errorf("status %d: se perdió lo que sirve para diagnosticar: %q", status, msg)
+		}
+		if !utf8.ValidString(msg) {
+			t.Errorf("status %d: el corte partió una runa", status)
+		}
+	}
+}
+
+func TestBodySnippet_ShortBodyUnchanged(t *testing.T) {
+	if got := bodySnippet([]byte("  corto \n")); got != "corto" {
+		t.Errorf("bodySnippet = %q", got)
 	}
 }

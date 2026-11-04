@@ -613,7 +613,7 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 			return ErrEscalationDisabled
 		}
 		return newStatusError(resp.status, raw,
-			fmt.Sprintf("nectar: %s %s: status 403 %s", method, path, strings.TrimSpace(string(raw))))
+			fmt.Sprintf("nectar: %s %s: status 403 %s", method, path, bodySnippet(raw)))
 	case resp.status == http.StatusConflict:
 		switch replyReason(raw) {
 		case "window_closed":
@@ -622,10 +622,10 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 			return ErrIdempotencyReused
 		}
 		return newStatusError(resp.status, raw,
-			fmt.Sprintf("nectar: %s %s: 409 %s", method, path, strings.TrimSpace(string(raw))))
+			fmt.Sprintf("nectar: %s %s: 409 %s", method, path, bodySnippet(raw)))
 	case resp.status < 200 || resp.status > 299:
 		return newStatusError(resp.status, raw,
-			fmt.Sprintf("nectar: %s %s: status %d %s", method, path, resp.status, strings.TrimSpace(string(raw))))
+			fmt.Sprintf("nectar: %s %s: status %d %s", method, path, resp.status, bodySnippet(raw)))
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -633,6 +633,16 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		}
 	}
 	return nil
+}
+
+// errorBodyMaxRunes acota el cuerpo que entra al texto de un error: el principio (código y motivo)
+// basta para diagnosticar, y ese texto sale en el log de ERROR y en Telegram.
+const errorBodyMaxRunes = 200
+
+// bodySnippet es el cuerpo de una respuesta tal como entra al texto de un error (B-16): una página
+// HTML de un proxy o un rechazo que repite lo enviado no llegan enteros.
+func bodySnippet(raw []byte) string {
+	return truncateForLog(strings.TrimSpace(string(raw)), errorBodyMaxRunes)
 }
 
 // replyReason saca el `reason` de un cuerpo de rechazo de Néctar ("" si no lo hay).

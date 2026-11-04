@@ -120,7 +120,7 @@ func (c *Client) getReport(ctx context.Context, path string, query url.Values, o
 	case resp.status == http.StatusForbidden && strings.Contains(string(resp.body), "account_key_required"):
 		return ErrAccountKeyRequired
 	case resp.status != http.StatusOK:
-		return fmt.Errorf("nectar: GET %s: status %d %s", path, resp.status, strings.TrimSpace(string(resp.body)))
+		return fmt.Errorf("nectar: GET %s: status %d %s", path, resp.status, bodySnippet(resp.body))
 	}
 	if err := json.Unmarshal(resp.body, out); err != nil {
 		return fmt.Errorf("nectar: leer respuesta de %s: %w", path, err)
