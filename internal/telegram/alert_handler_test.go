@@ -2,9 +2,11 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -162,5 +164,58 @@ func TestAlertHandler_BelowError_NotSent(t *testing.T) {
 
 	if len(handler.ch) != 0 {
 		t.Errorf("expected 0 messages for WARN level, got %d", len(handler.ch))
+	}
+}
+
+// m11: la alerta lleva la hora al pie, pero la deduplicación no debe depender de ella; si no,
+// el mismo error repetido un segundo después vuelve a salir a Telegram.
+func TestAlertHandler_DedupIgnoresTime(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	handler := NewAlertHandler(inner, &Client{})
+
+	first := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		record := slog.NewRecord(first.Add(time.Duration(i)*time.Second), slog.LevelError, "pass deadline exceeded", 0)
+		record.Add("task", "reminders")
+		_ = handler.Handle(context.Background(), record)
+	}
+	if len(handler.ch) != 1 {
+		t.Fatalf("el mismo error en segundos distintos debe salir una vez, salieron %d", len(handler.ch))
+	}
+	if msg := <-handler.ch; !strings.Contains(msg, "2026-11-04 10:00:00") {
+		t.Errorf("la alerta enviada conserva la hora al pie: %q", msg)
+	}
+
+	// Alertas distintas (otro attr) no se pierden.
+	other := slog.NewRecord(first, slog.LevelError, "pass deadline exceeded", 0)
+	other.Add("task", "waiting_list")
+	_ = handler.Handle(context.Background(), other)
+	if len(handler.ch) != 1 {
+		t.Errorf("una alerta con otros detalles es distinta y debe salir, en cola %d", len(handler.ch))
+	}
+}
+
+// Los loggers derivados (slog.With → WithAttrs) comparten el mapa de dedup: deben compartir
+// también su cerrojo, o dos goroutines escriben el mapa a la vez (lo detecta -race).
+func TestAlertHandler_DerivedHandlersShareDedupLock(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	base := NewAlertHandler(inner, &Client{})
+	derived := []slog.Handler{base.WithAttrs([]slog.Attr{slog.String("component", "a")}), base.WithGroup("g")}
+
+	var wg sync.WaitGroup
+	for i, h := range derived {
+		wg.Add(1)
+		go func(i int, h slog.Handler) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				r := slog.NewRecord(time.Now(), slog.LevelError, fmt.Sprintf("error %d-%d", i, j), 0)
+				_ = h.Handle(context.Background(), r)
+				<-base.ch
+			}
+		}(i, h)
+	}
+	wg.Wait()
+	if len(base.dedup) != 100 {
+		t.Errorf("las 100 alertas distintas quedan en el mismo mapa de dedup, hay %d", len(base.dedup))
 	}
 }

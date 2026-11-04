@@ -24,7 +24,9 @@ type AlertHandler struct {
 	client *Client
 	ch     chan string
 
-	mu    sync.Mutex
+	// mu y dedup se comparten con los handlers derivados (WithAttrs/WithGroup): el cerrojo es un
+	// puntero para que todos protejan el mismo mapa.
+	mu    *sync.Mutex
 	dedup map[string]time.Time
 
 	// attrs and group collected via WithAttrs/WithGroup
@@ -39,6 +41,7 @@ func NewAlertHandler(inner slog.Handler, client *Client) *AlertHandler {
 		inner:  inner,
 		client: client,
 		ch:     make(chan string, channelSize),
+		mu:     &sync.Mutex{},
 		dedup:  make(map[string]time.Time),
 	}
 }
@@ -86,13 +89,14 @@ func (h *AlertHandler) Handle(ctx context.Context, r slog.Record) error {
 		return err
 	}
 
-	msg := h.formatMessage(r)
-	if msg == "" {
+	body := h.formatBody(r)
+	if body == "" {
 		return err
 	}
 
-	// Dedup check
-	hash := h.hashMessage(msg)
+	// Dedup check: sobre la alerta sin la hora, para que el mismo error repetido segundos después
+	// no vuelva a salir. Otro mensaje u otros detalles dan otro hash y sí salen.
+	hash := h.hashMessage(body)
 	h.mu.Lock()
 	if lastSent, ok := h.dedup[hash]; ok && time.Since(lastSent) < dedupWindow {
 		h.mu.Unlock()
@@ -103,7 +107,7 @@ func (h *AlertHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	// Non-blocking send to channel
 	select {
-	case h.ch <- msg:
+	case h.ch <- withTimestamp(body, r.Time):
 	default:
 		// Channel full, drop alert (don't block the application).
 		// Use log.Println instead of slog to avoid infinite recursion (this IS the slog handler).
@@ -119,6 +123,7 @@ func (h *AlertHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		inner:  h.inner.WithAttrs(attrs),
 		client: h.client,
 		ch:     h.ch,
+		mu:     h.mu,
 		dedup:  h.dedup,
 		attrs:  append(h.attrs, attrs...),
 		group:  h.group,
@@ -131,13 +136,25 @@ func (h *AlertHandler) WithGroup(name string) slog.Handler {
 		inner:  h.inner.WithGroup(name),
 		client: h.client,
 		ch:     h.ch,
+		mu:     h.mu,
 		dedup:  h.dedup,
 		attrs:  h.attrs,
 		group:  name,
 	}
 }
 
+// formatMessage es la alerta completa, tal como sale a Telegram.
 func (h *AlertHandler) formatMessage(r slog.Record) string {
+	return withTimestamp(h.formatBody(r), r.Time)
+}
+
+// withTimestamp añade la hora del record al pie de la alerta.
+func withTimestamp(body string, t time.Time) string {
+	return body + "\n<i>" + t.Format("2006-01-02 15:04:05") + "</i>"
+}
+
+// formatBody arma la alerta sin la hora: es lo que se deduplica.
+func (h *AlertHandler) formatBody(r slog.Record) string {
 	var b strings.Builder
 
 	b.WriteString("<b>ERROR | neuro-bot</b>\n")
@@ -177,10 +194,6 @@ func (h *AlertHandler) formatMessage(r slog.Record) string {
 			b.WriteString("\n")
 		}
 	}
-
-	b.WriteString("\n<i>")
-	b.WriteString(r.Time.Format("2006-01-02 15:04:05"))
-	b.WriteString("</i>")
 
 	return b.String()
 }
