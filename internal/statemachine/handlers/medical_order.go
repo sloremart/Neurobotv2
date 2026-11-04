@@ -652,6 +652,9 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 		// La URL de la orden es solo de ESTA validación (cups_resolve.go): se borra en toda salida.
 		// Las correcciones y las asignaciones por nombre se anotan, o se borran, una vez validada la lista.
 		var corrections, assignments []cupsCorrection
+		// unreadNames: los procedimientos sin código que no se asignaron (con duda o descartados). Quedan
+		// para el agente en CtxOCRUnreadNames en toda salida, también si la orden escala por otro motivo.
+		var unreadNames []string
 		validated := false
 		defer func() {
 			if res == nil {
@@ -660,6 +663,9 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 			res.WithClearCtx(ctxOCROrderURL)
 			if !validated {
 				return
+			}
+			if len(unreadNames) > 0 {
+				res.WithContext(sm.CtxOCRUnreadNames, strings.Join(unreadNames, "; "))
 			}
 			for key, list := range map[string][]cupsCorrection{ctxCupsCorrections: corrections, ctxCupsNameAssignments: assignments} {
 				if raw, merr := json.Marshal(list); merr == nil && len(list) > 0 {
@@ -687,9 +693,10 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 		resolver := newCupsResolver(procedureRepo, cupsReader, sess, cups)
 		trace := observability.TraceSession(sess.ID)
 
-		// Sin código: asignación por nombre (cups_name_assign.go). Lo que no se asigna con seguridad
-		// queda para el agente; nunca llega a la cobertura un CUPS sin código.
-		var unreadNames, unreadNotes []string
+		// Sin código: asignación por nombre (cups_name_assign.go). Nunca llega a la cobertura un CUPS sin
+		// código. Con candidatos pero sin asignación segura es duda para un agente; sin ningún candidato
+		// se descarta como siempre (como el paso 4 de H5) y queda anotado en CtxOCRUnreadNames.
+		var unreadNotes, discardNotes []string
 		var freshAssigned []cupsCorrection
 		withCode := make([]services.CUPSEntry, 0, len(cups))
 		for _, cup := range cups {
@@ -704,7 +711,12 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 			r := resolver.assignByName(ctx, cup)
 			if r.Code == "" {
 				unreadNames = append(unreadNames, name)
-				unreadNotes = append(unreadNotes, cupsNameDoubtNote(name, r.Candidates))
+				if len(r.Candidates) == 0 {
+					skipped = append(skipped, name)
+					discardNotes = append(discardNotes, cupsNameDoubtNote(name, nil))
+				} else {
+					unreadNotes = append(unreadNotes, cupsNameDoubtNote(name, r.Candidates))
+				}
 				continue
 			}
 			observability.Emit(trace, "agendar", "cups_asignado_nombre", observability.EmitOpts{
@@ -827,16 +839,17 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 				WithEvent("cups_quantity_out_of_range", map[string]interface{}{"cups": overQuantity}), nil
 		}
 
-		// Procedimientos sin código que no se pudieron asignar: un agente los lee de la orden. El nombre
-		// es lo único que tiene de ellos; la nota trae además los candidatos y las otras dudas.
-		if len(unreadNames) > 0 {
+		// Procedimientos sin código con candidatos que no se pudieron asignar: un agente los lee de la
+		// orden. El nombre es lo único que tiene de ellos; la nota trae además los candidatos y las otras
+		// dudas. Si la orden se quedó sin ningún CUPS por los descartados, escala como siempre la orden
+		// sin código.
+		if len(unreadNotes) > 0 || len(cups) == 0 && len(unreadNames) > 0 {
 			observability.Emit(trace, "agendar", "ocr_no_cups_code",
 				observability.EmitOpts{Phone: sess.PhoneNumber, Attrs: map[string]interface{}{"n": len(unreadNames)}})
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithText(ocrUnreadEscalationText).
 				WithContext(sm.CtxEscalationReason, sm.EscalationReasonOCRNoCode).
-				WithContext(sm.CtxOCRUnreadNames, strings.Join(unreadNames, "; ")).
-				WithContext("escalation_note", strings.Join(append(unreadNotes, doubts...), " ")).
+				WithContext("escalation_note", strings.Join(slices.Concat(unreadNotes, discardNotes, doubts), " ")).
 				WithEvent("ocr_no_cups_code", map[string]interface{}{"unassigned": len(unreadNames)}), nil
 		}
 

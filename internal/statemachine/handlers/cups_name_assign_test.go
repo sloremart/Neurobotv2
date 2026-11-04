@@ -116,11 +116,30 @@ func TestValidateOCR_NoCodeMediumConfidenceIsADoubt(t *testing.T) {
 	}
 }
 
-func TestValidateOCR_NoCodeWithoutCandidatesIsADoubt(t *testing.T) {
+// Sin ningún candidato no es duda (como el paso 4 de H5): se descarta como hoy, no escala la orden y
+// queda anotado para el agente por si la orden escala por otro motivo.
+func TestValidateOCR_NoCodeWithoutCandidatesIsDiscardedAndNoted(t *testing.T) {
 	res, _ := runNameAssign(t, []services.CUPSEntry{
 		{Code: "883511", Name: "RM RODILLA", Quantity: 1},
 		noCode("COLONOSCOPIA TOTAL"),
 	}, &fakeCupsReader{choice: "883101"})
+	if res.NextState != sm.StateConfirmOCRResult {
+		t.Fatalf("no escala la orden: %s / %q", res.NextState, res.UpdateCtx[sm.CtxEscalationReason])
+	}
+	if got := validatedCodes(t, res); !slices.Equal(got, []string{"883511"}) {
+		t.Errorf("CUPS = %v", got)
+	}
+	if res.UpdateCtx["ocr_skipped_count"] != "1" {
+		t.Errorf("se omite como hoy: %q", res.UpdateCtx["ocr_skipped_count"])
+	}
+	if res.UpdateCtx[sm.CtxOCRUnreadNames] != "COLONOSCOPIA TOTAL" {
+		t.Errorf("queda anotado para el agente: %q", res.UpdateCtx[sm.CtxOCRUnreadNames])
+	}
+}
+
+// Si la orden se queda sin ningún CUPS, se aplica la escalación de siempre de la orden sin código.
+func TestValidateOCR_OnlyNoCodeWithoutCandidatesEscalatesAsBefore(t *testing.T) {
+	res, _ := runNameAssign(t, []services.CUPSEntry{noCode("COLONOSCOPIA TOTAL")}, nil)
 	assertNameDoubt(t, res, "COLONOSCOPIA TOTAL")
 }
 
@@ -177,5 +196,19 @@ func TestValidateOCR_CodedCupsWhoseNameContradictsIsADoubt(t *testing.T) {
 	}, nil)
 	if res.NextState != sm.StateConfirmOCRResult {
 		t.Errorf("una abreviatura no escala: %s / %q", res.NextState, res.UpdateCtx[sm.CtxEscalationReason])
+	}
+}
+
+// Un descartado sin código queda anotado aunque la orden escale por otro motivo (aquí, el tope B-10).
+func TestValidateOCR_DiscardedNoCodeIsNotedWhenTheOrderEscalatesForAnotherReason(t *testing.T) {
+	res, _ := runNameAssign(t, []services.CUPSEntry{
+		{Code: "883511", Name: "RM RODILLA", Quantity: maxCupsQuantity + 1},
+		noCode("COLONOSCOPIA TOTAL"),
+	}, nil)
+	if res.UpdateCtx[sm.CtxEscalationReason] != sm.EscalationReasonQuantityOutOfRange {
+		t.Fatalf("escala por el tope: %q", res.UpdateCtx[sm.CtxEscalationReason])
+	}
+	if res.UpdateCtx[sm.CtxOCRUnreadNames] != "COLONOSCOPIA TOTAL" {
+		t.Errorf("el agente ve el descartado: %q", res.UpdateCtx[sm.CtxOCRUnreadNames])
 	}
 }
