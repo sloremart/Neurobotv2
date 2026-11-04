@@ -139,6 +139,10 @@ func TestNotificationRepo_SiesaPendingLifecycle(t *testing.T) {
 	if again, err := repo.MarkSiesaPending(ctx, row, "confirmed"); err != nil || !again {
 		t.Fatalf("segunda marca = %v, %v; want ya pendiente antes", again, err)
 	}
+	// Con otra respuesta, el acuse que recibió no era de esta (M-2).
+	if again, err := repo.MarkSiesaPending(ctx, row, "cancel_requested"); err != nil || again {
+		t.Fatalf("marca de otra respuesta = %v, %v; want false", again, err)
+	}
 }
 
 // Sin la fila de Resolve (la BD falló justo ahí) la marca inserta una, para no perder la respuesta.

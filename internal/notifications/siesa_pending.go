@@ -74,8 +74,9 @@ type SiesaPendingRow struct {
 type SiesaPendingStore interface {
 	// MarkSiesaPending marca como pendiente la última fila del historial de ese teléfono y cita, con
 	// la conversación si llega; si no hay fila (el Resolve falló) inserta una con status.
-	// alreadyDeferred: esa fila ya había quedado pendiente antes, así que el paciente ya recibió el
-	// acuse (el agente reintenta desde NOTIF_PENDING y SIESA vuelve a fallar).
+	// alreadyDeferred: esa fila ya había quedado pendiente antes con esta misma respuesta (status), así
+	// que el paciente ya recibió ese acuse (el agente reintenta desde NOTIF_PENDING y SIESA vuelve a
+	// fallar). No prueba que el envío saliera: si no salió, se entera cuando el proceso de fondo aplique.
 	MarkSiesaPending(ctx context.Context, row SiesaPendingRow, status string) (alreadyDeferred bool, err error)
 	// FindSiesaPending devuelve hasta limit respuestas pendientes, la más vieja primero.
 	FindSiesaPending(ctx context.Context, limit int) ([]SiesaPendingRow, error)
@@ -124,7 +125,7 @@ func (m *NotificationManager) deferToSiesa(ctx context.Context, phone, action st
 	slog.Warn("respuesta al recordatorio pendiente de SIESA", "phone", utils.MaskPhone(phone),
 		"appointment_id", pending.AppointmentID, "action", action, "already_deferred", alreadyDeferred, "error", cause)
 	if alreadyDeferred {
-		// El paciente ya recibió el acuse la primera vez: el reintento del agente desde NOTIF_PENDING
+		// El paciente ya recibió este acuse la primera vez: el reintento del agente desde NOTIF_PENDING
 		// no se lo repite. Se le dice al agente con una nota interna (en Néctar no tiene destino; el
 		// proceso de fondo escala de nuevo si se agota).
 		_, _ = m.birdClient.SendInternalText(phone, pending.ConversationID, siesaStillDownAgentNote) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)

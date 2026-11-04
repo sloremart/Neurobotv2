@@ -78,13 +78,13 @@ type memSiesaStore struct {
 	nextID    int64
 	finishErr error // simula la BD caída al cerrar la fila
 	markErr   error
-	marked    map[string]bool // teléfono+cita ya marcados alguna vez (la fila ya quedó pendiente antes)
+	marked    map[string]int64 // teléfono+cita → fila: como el repo real, volver a marcar reusa la fila y su status
 }
 
 func newMemSiesaStore() *memSiesaStore {
 	return &memSiesaStore{
 		rows: map[int64]*SiesaPendingRow{}, outcomes: map[int64]string{}, statuses: map[int64]string{},
-		marked: map[string]bool{},
+		marked: map[string]int64{},
 	}
 }
 
@@ -95,13 +95,18 @@ func (s *memSiesaStore) MarkSiesaPending(_ context.Context, row SiesaPendingRow,
 		return false, s.markErr
 	}
 	key := row.Phone + "|" + row.AppointmentID
-	already := s.marked[key]
-	s.marked[key] = true
+	if id, ok := s.marked[key]; ok {
+		row.ID = id
+		s.rows[id] = &row
+		delete(s.outcomes, id)
+		return s.statuses[id] == status, nil
+	}
 	s.nextID++
 	row.ID = s.nextID
+	s.marked[key] = row.ID
 	s.rows[row.ID] = &row
 	s.statuses[row.ID] = status
-	return already, nil
+	return false, nil
 }
 
 func (s *memSiesaStore) FindSiesaPending(_ context.Context, limit int) ([]SiesaPendingRow, error) {
@@ -982,7 +987,27 @@ func TestSiesaPending_AgentRetryStillDown_NoSecondAckToPatient(t *testing.T) {
 	if got := h.bird.count(siesaStillDownAgentNote); got != 1 {
 		t.Fatalf("la nota al agente salió %d veces, want 1", got)
 	}
-	if len(h.store.pending()) != 2 {
-		t.Fatalf("el reintento sigue pendiente de SIESA: %+v", h.store.pending())
+	if rows := h.store.pending(); len(rows) != 1 || rows[0].Action != siesaActionConfirm {
+		t.Fatalf("el reintento sigue pendiente en la misma fila: %+v", rows)
+	}
+}
+
+// M-2: si el agente reintenta OTRA acción, el acuse que el paciente recibió no era de esta: sí se le
+// avisa. Pendiente «Cancelar» y el agente reintenta «Confirmar» con SIESA caída.
+func TestSiesaPending_AgentRetryOtherAction_AcksPatient(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("cancel")
+	if got := h.bird.count(siesaCancelDeferredText); got != 1 {
+		t.Fatalf("acuse de la cancelación enviado %d veces, want 1", got)
+	}
+
+	h.mgr.HandleNotifPendingCommand(h.phone, "confirm", h.conv, "APT001", "confirmation", "")
+
+	if got := h.bird.count(siesaConfirmDeferredText); got != 1 {
+		t.Fatalf("el paciente debe oír la confirmación: %d envíos", got)
+	}
+	if got := h.bird.count(siesaStillDownAgentNote); got != 0 {
+		t.Fatalf("no es un reintento de lo mismo: %d notas", got)
 	}
 }

@@ -147,8 +147,9 @@ func (r *NotificationRepo) queryRows(ctx context.Context, query string) ([]notif
 // fecha y hora de la cita si llegan (la fila puede no tenerlas). Si no hay fila (Resolve falló)
 // inserta una con status, para que la respuesta no se pierda. Volver a marcar una fila ya cerrada
 // (p. ej. el agente reintenta y SIESA vuelve a fallar) reabre la espera y borra su desenlace.
-// alreadyDeferred dice si esa fila ya había quedado pendiente antes (siesa_pending_since puesto): el
-// paciente ya recibió el acuse.
+// alreadyDeferred dice si esa fila ya había quedado pendiente antes con esta misma respuesta
+// (siesa_pending_since puesto y el mismo status): el paciente ya recibió ese acuse, o al menos se
+// intentó. No consta si el envío salió: saberlo pediría una columna nueva.
 func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notifications.SiesaPendingRow, status string) (alreadyDeferred bool, err error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -157,8 +158,9 @@ func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notificatio
 	defer func() { _ = tx.Rollback() }()
 	var id int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, siesa_pending_since IS NOT NULL FROM notification_history WHERE phone = ? AND appointment_id = ?
-		 ORDER BY id DESC LIMIT 1 FOR UPDATE`, row.Phone, row.AppointmentID).Scan(&id, &alreadyDeferred)
+		`SELECT id, siesa_pending_since IS NOT NULL AND status = ? FROM notification_history
+		 WHERE phone = ? AND appointment_id = ?
+		 ORDER BY id DESC LIMIT 1 FOR UPDATE`, status, row.Phone, row.AppointmentID).Scan(&id, &alreadyDeferred)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = tx.ExecContext(ctx,
