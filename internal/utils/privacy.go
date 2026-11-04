@@ -65,10 +65,17 @@ func MaskText(text string) string {
 	return fmt.Sprintf("[redactado: %d caracteres]", utf8.RuneCountInString(text))
 }
 
+// IsSensitiveLogKey dice si la clave de log porta PII según la política común. El handler de
+// Telegram la consulta para redactar las mismas claves con su propio formato (y sin depender de
+// LOG_MASK_PHONES: un chat externo nunca recibe el teléfono en claro).
+func IsSensitiveLogKey(key string) bool {
+	k := strings.ToLower(key)
+	return sensitiveDocKeys[k] || sensitivePhoneKeys[k] || sensitiveTextKeys[k]
+}
+
 // RedactLogAttr devuelve el valor enmascarado si la clave es PII (documento/nombre → MaskDocument,
-// teléfono → MaskPhone, texto del mensaje → MaskText); si no, lo devuelve igual. Centraliza la
-// política de redacción para todos los sinks de logs (stdout/archivo vía ReplaceAttr global, y el
-// handler de Telegram).
+// teléfono → MaskPhone, texto libre → MaskText); si no, lo devuelve igual. La usa el ReplaceAttr
+// global de stdout/archivo; Telegram usa IsSensitiveLogKey con su propio formato.
 func RedactLogAttr(key, value string) string {
 	k := strings.ToLower(key)
 	switch {

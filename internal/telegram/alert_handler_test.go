@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 func TestAlertHandler_ChannelFull_DoesNotBlock(t *testing.T) {
@@ -238,5 +240,22 @@ func TestFormatAttr_OmitsHTTPBodyInErrors(t *testing.T) {
 	}
 	if n := utf8.RuneCountInString(long); n > maxAttrRunes+60 {
 		t.Errorf("el valor recortado ocupa %d runas", n)
+	}
+}
+
+// m5: Telegram redacta toda clave que la política común de logs considera PII, aunque no figure
+// en su lista propia, y lo hace también con LOG_MASK_PHONES=false (un chat externo no se destapa).
+func TestFormatAttr_FollowsCommonLogPolicy(t *testing.T) {
+	utils.SetMaskPhones(false)
+	defer utils.SetMaskPhones(true)
+	for _, a := range []slog.Attr{
+		slog.String("email", "maria@example.com"),
+		slog.String("correo", "maria@example.com"),
+		slog.String("phone", "+573103343616"),
+		slog.String("patient_name", "María López"),
+	} {
+		if out := formatAttr(a); strings.Contains(out, a.Value.String()) {
+			t.Errorf("la clave %q salió en claro a Telegram: %q", a.Key, out)
+		}
 	}
 }

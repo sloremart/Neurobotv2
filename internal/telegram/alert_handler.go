@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 const (
@@ -199,18 +201,14 @@ func (h *AlertHandler) formatBody(r slog.Record) string {
 	return b.String()
 }
 
-// sensitiveAttrKeys son claves de log con PII de salud (Ley 1581) que NO deben salir en
-// claro a un chat externo de Telegram. Se redactan antes de enviar. Es el mismo criterio
-// que utils.MaskPhone para teléfonos, extendido a documento/nombre.
-var sensitiveAttrKeys = map[string]bool{
-	"doc": true, "cedula": true, "cédula": true, "document": true, "documento": true,
-	"num_id": true, "numid": true, "numero_documento": true, "patient_doc": true,
-	"name": true, "nombre": true, "nombres": true, "patient_name": true, "paciente": true,
-	"phone": true, "telefono": true, "teléfono": true, "celular": true, "patient_phone": true,
-	// K3: claves de texto libre que suelen arrastrar PII (Ley 1581).
-	"observacion": true, "observaciones": true, "observations": true, "direccion": true,
-	"dirección": true, "address": true, "input": true, "last_input": true, "text": true,
-	"content": true, "body": true,
+// alertOnlySensitiveKeys son las claves que, además de las de la política común
+// (utils.IsSensitiveLogKey), no salen en claro a Telegram: cuerpos que en stdout se conservan
+// para diagnosticar los errores de Bird y Néctar (Ley 1581, K3).
+var alertOnlySensitiveKeys = map[string]bool{"content": true, "body": true}
+
+// isSensitiveAlertKey dice si el valor de la clave se redacta entero antes de enviarlo.
+func isSensitiveAlertKey(key string) bool {
+	return utils.IsSensitiveLogKey(key) || alertOnlySensitiveKeys[strings.ToLower(key)]
 }
 
 // digitRunRe captura secuencias de 6+ dígitos (cédulas, teléfonos) que podrían ser PII,
@@ -251,7 +249,7 @@ func trimForAlert(s string) string {
 func formatAttr(a slog.Attr) string {
 	val := a.Value.String()
 	switch {
-	case sensitiveAttrKeys[strings.ToLower(a.Key)]:
+	case isSensitiveAlertKey(a.Key):
 		// Clave reconocida como sensible → redactar el valor completo.
 		val = redactValue(val)
 	default:
