@@ -453,7 +453,7 @@ func (c *Client) sendToConversation(conversationID string, body interface{}, dra
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		slog.Debug("could not parse conversation response", "body", string(respBody))
+		slog.Debug("could not parse conversation response", "body", utils.MaskText(string(respBody)))
 	}
 	c.rememberOwnMessage(result.ID)
 	return result.ID, nil
@@ -1102,7 +1102,8 @@ func (c *Client) SendTemplate(to string, tmpl TemplateConfig) (string, error) {
 
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		if debugJSON, err := json.Marshal(payload); err == nil {
-			slog.Debug("send_template_payload", "to", to, "payload", string(debugJSON))
+			// Los parámetros llevan el nombre del paciente: solo el largo (C-21).
+			slog.Debug("send_template_payload", "to", utils.MaskPhone(to), "payload", utils.MaskText(string(debugJSON)))
 		}
 	}
 
@@ -2386,14 +2387,14 @@ func (c *Client) sendMessage(url string, payload interface{}, phone ...string) (
 		return "", &APIError{Status: resp.StatusCode, Body: string(respBody)}
 	}
 
-	slog.Debug("bird_api_response", "status", resp.StatusCode, "body", string(respBody))
+	slog.Debug("bird_api_response", "status", resp.StatusCode, "body", utils.MaskText(string(respBody)))
 
 	var result struct {
 		ID             string `json:"id"`
 		ConversationID string `json:"conversationId"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		slog.Debug("could not parse bird response", "body", string(respBody))
+		slog.Debug("could not parse bird response", "body", utils.MaskText(string(respBody)))
 	}
 
 	// Cache conversationId from Channels API response.
