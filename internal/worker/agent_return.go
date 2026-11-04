@@ -50,11 +50,14 @@ func (p *MessageWorkerPool) closeNectarConversation(sess *session.Session, cmd A
 	}
 }
 
-// traceAgentReturnWindowClosed deja la traza de un retorno del agente cuyo turno no llegó al
-// paciente porque la ventana de 24 h de WhatsApp ya estaba cerrada (409 window_closed, D-09): el
-// agente devolvió la conversación tarde. No hay plantilla de respaldo (eso lo decide el dueño): el
-// paciente no ve nada y esto es lo único que permite encontrar el caso.
-func (p *MessageWorkerPool) traceAgentReturnWindowClosed(sess *session.Session) {
+// sendReturnTurn envía el turno con que el bot retoma tras un retorno del agente. Si no llegó al
+// paciente porque la ventana de 24 h de WhatsApp ya estaba cerrada (409 window_closed, D-09), deja la
+// traza: el agente devolvió la conversación tarde. No hay plantilla de respaldo (eso lo decide el
+// dueño): el paciente no ve nada y esto es lo único que permite encontrar el caso.
+func (p *MessageWorkerPool) sendReturnTurn(ctx context.Context, sess *session.Session, result *statemachine.StateResult) {
+	if !p.sendAndSave(ctx, sess, sess.PhoneNumber, result) {
+		return
+	}
 	slog.Warn("agent return: ventana de 24 h cerrada, el turno no llegó al paciente",
 		"session_id", sess.ID, "phone", utils.MaskPhone(sess.PhoneNumber), "state", sess.CurrentState)
 	observability.Emit(observability.TraceSession(sess.ID), "escalacion", "agent_return_window_closed",

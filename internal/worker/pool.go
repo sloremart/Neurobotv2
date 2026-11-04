@@ -1344,9 +1344,7 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 			slog.Error("process virtual message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 			return
 		}
-		if p.sendAndSave(ctx, sess, sess.PhoneNumber, result) {
-			p.traceAgentReturnWindowClosed(sess)
-		}
+		p.sendReturnTurn(ctx, sess, result)
 	} else {
 		// No data — notify patient and trigger the state handler.
 		// For automatic states: executes immediately (e.g., CHECK_ENTITY).
@@ -1375,8 +1373,8 @@ func (p *MessageWorkerPool) handleAgentResume(ctx context.Context, sess *session
 		result, err := p.machine.Process(ctx, sess, virtualMsg)
 		if err != nil {
 			slog.Error("process virtual resume message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
-		} else if result != nil && p.sendAndSave(ctx, sess, sess.PhoneNumber, result) {
-			p.traceAgentReturnWindowClosed(sess)
+		} else if result != nil {
+			p.sendReturnTurn(ctx, sess, result)
 		}
 	}
 
@@ -1422,7 +1420,7 @@ func (p *MessageWorkerPool) handleAgentReset(ctx context.Context, sess *session.
 		// N-26: loguear el error descartado en lugar de tragarlo silenciosamente.
 		slog.Error("process virtual reset message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 	} else if result != nil {
-		p.sendAndSave(ctx, sess, sess.PhoneNumber, result)
+		p.sendReturnTurn(ctx, sess, result)
 	}
 
 	if p.tracker != nil {
@@ -1607,7 +1605,7 @@ func (p *MessageWorkerPool) handleAgentOrder(ctx context.Context, sess *session.
 		// N-26: loguear el error descartado en lugar de tragarlo silenciosamente.
 		slog.Error("process virtual orden message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 	} else if r != nil {
-		p.sendAndSave(ctx, sess, sess.PhoneNumber, r)
+		p.sendReturnTurn(ctx, sess, r)
 	}
 
 	if p.tracker != nil {
@@ -1733,7 +1731,7 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		// N-26: loguear el error descartado en lugar de tragarlo silenciosamente.
 		slog.Error("process virtual cups message failed", "error", err, "phone", utils.MaskPhone(cmd.Phone), "session_id", sess.ID, "conversation_id", sess.ConversationID)
 	} else if r != nil {
-		p.sendAndSave(ctx, sess, sess.PhoneNumber, r)
+		p.sendReturnTurn(ctx, sess, r)
 	}
 
 	if p.tracker != nil {

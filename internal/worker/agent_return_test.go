@@ -1218,3 +1218,38 @@ func TestHandleAgentResume_OtherSendErrorNotTracedAsWindowClosed(t *testing.T) {
 		t.Fatal("solo la ventana cerrada deja esa traza")
 	}
 }
+
+// M-4: los retornos por reiniciar, `orden` y `cups` también dejan la traza de la ventana cerrada.
+func TestAgentReturns_WindowClosedIsTraced(t *testing.T) {
+	for name, cmd := range map[string]AgentCommand{
+		"reiniciar": {Action: "reset"},
+		"cups":      {Action: "cups", Data: "883141:1"},
+		"orden":     {Action: "orden", Data: "883141 RESONANCIA MAGNETICA"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := &observability.CaptureSink{}
+			stop := observability.StartCapture(sink)
+			pool, sm, sender, sess := escalatedPool(t)
+			asNectar(sess)
+			sm.resumeFn = func(_ context.Context, s *session.Session, target string) error {
+				s.Status, s.CurrentState = session.StatusActive, target
+				return nil
+			}
+			pool.machine = &mockMessageProcessor{
+				processFn: func(context.Context, *session.Session, bird.InboundMessage) (*statemachine.StateResult, error) {
+					return statemachine.NewResult(statemachine.StateMainMenu).WithText("¿En qué te ayudo?"), nil
+				},
+			}
+			pool.SetOCRService(&mockOCRAnalyzer{})
+			sender.sendErr = nectar.ErrWindowClosed
+			cmd.Phone = sess.PhoneNumber
+
+			pool.processAgentCommand(context.Background(), cmd)
+			stop()
+
+			if sink.FindStep("escalacion", "agent_return_window_closed") == nil {
+				t.Fatalf("el retorno debe quedar trazado: %+v", sink.Events())
+			}
+		})
+	}
+}
