@@ -1,6 +1,9 @@
 package services
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -73,13 +76,85 @@ func TestReadPageImages_NormalPagesAreRead(t *testing.T) {
 // Ghostscript corre con -dSAFER y con el tope explícito del raster por banda (no depende del valor por
 // defecto de la versión instalada).
 func TestJPEGRenderArgs_SafeAndBounded(t *testing.T) {
-	args := jpegRenderArgs(1, maxOCRPages, "/tmp/x.pdf-p%d.jpg", "/tmp/x.pdf")
-	for _, want := range []string{"-dSAFER", "-dMaxBitmap=10000000", "-dFirstPage=1", "-dLastPage=10"} {
+	args := jpegRenderArgs(1, maxOCRPages, 300, "/tmp/x.pdf-p%d.jpg", "/tmp/x.pdf")
+	for _, want := range []string{"-dSAFER", "-r300", "-dMaxBitmap=10000000", "-dFirstPage=1", "-dLastPage=10"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("falta %s en %v", want, args)
 		}
 	}
 	if args[len(args)-1] != "/tmp/x.pdf" {
 		t.Errorf("el PDF debe ir al final: %v", args)
+	}
+}
+
+// fakeGhostscript simula gs: deja una hoja (p1) del tamaño que diga sizeAt para la resolución pedida y
+// anota las resoluciones en el orden en que se pidieron.
+func fakeGhostscript(sizeAt func(dpi string) int64, dpis *[]string) gsRunner {
+	return func(_ context.Context, args []string) ([]byte, error) {
+		var dpi, out string
+		for _, a := range args {
+			if strings.HasPrefix(a, "-r") {
+				dpi = a
+			}
+			if v, ok := strings.CutPrefix(a, "-sOutputFile="); ok {
+				out = v
+			}
+		}
+		*dpis = append(*dpis, dpi)
+		f, err := os.Create(fmt.Sprintf(out, 1))
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = f.Close() }()
+		return nil, f.Truncate(sizeAt(dpi))
+	}
+}
+
+// Una hoja carta u oficio cabe a 300 DPI: una sola conversión, igual que siempre.
+func TestRenderPDFPages_NormalPageStaysAt300(t *testing.T) {
+	var dpis []string
+	pdf := filepath.Join(t.TempDir(), "order.pdf")
+	uris, err := renderPDFPages(context.Background(), fakeGhostscript(func(string) int64 { return 2 << 20 }, &dpis), pdf, 1, maxOCRPages)
+	if err != nil || len(uris) != 1 {
+		t.Fatalf("uris=%d err=%v", len(uris), err)
+	}
+	if !slices.Equal(dpis, []string{"-r300"}) {
+		t.Errorf("resoluciones = %v, esperaba solo -r300", dpis)
+	}
+}
+
+// Una hoja que a 300 DPI pasa el tope (la foto de celular pasada a PDF, página = píxeles) se vuelve a
+// convertir a menos DPI y se lee; no se rechaza de entrada.
+func TestRenderPDFPages_OversizedPageRetriesAtLowerDPI(t *testing.T) {
+	var dpis []string
+	pdf := filepath.Join(t.TempDir(), "order.pdf")
+	size := func(dpi string) int64 {
+		if dpi == "-r300" {
+			return 24 << 20
+		}
+		return 6 << 20
+	}
+	uris, err := renderPDFPages(context.Background(), fakeGhostscript(size, &dpis), pdf, 1, maxOCRPages)
+	if err != nil || len(uris) != 1 {
+		t.Fatalf("la hoja debía leerse a menor resolución: uris=%d err=%v", len(uris), err)
+	}
+	if !slices.Equal(dpis, []string{"-r300", "-r150"}) {
+		t.Errorf("resoluciones = %v, esperaba -r300 y -r150", dpis)
+	}
+	if left, _ := filepath.Glob(pdf + "-p*.jpg"); len(left) != 0 {
+		t.Errorf("quedaron temporales: %v", left)
+	}
+}
+
+// Si ni a la menor resolución cabe, se rechaza.
+func TestRenderPDFPages_RejectsWhenNoResolutionFits(t *testing.T) {
+	var dpis []string
+	pdf := filepath.Join(t.TempDir(), "order.pdf")
+	_, err := renderPDFPages(context.Background(), fakeGhostscript(func(string) int64 { return maxOCRPageImageBytes + 1 }, &dpis), pdf, 1, maxOCRPages)
+	if !errors.Is(err, errPageImagesTooLarge) {
+		t.Fatalf("err = %v, esperaba errPageImagesTooLarge", err)
+	}
+	if !slices.Equal(dpis, []string{"-r300", "-r150", "-r100"}) {
+		t.Errorf("resoluciones = %v", dpis)
 	}
 }
