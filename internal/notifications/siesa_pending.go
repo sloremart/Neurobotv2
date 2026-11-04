@@ -40,6 +40,11 @@ const (
 	siesaCancelDeferredText  = "Recibimos tu solicitud de cancelación. Te escribiremos en unos minutos para confirmarla."
 )
 
+// siesaStillDownAgentNote es la nota al agente cuando su reintento desde NOTIF_PENDING vuelve a
+// quedar pendiente de SIESA. ASCII como el resto de las notas internas.
+const siesaStillDownAgentNote = "SIESA sigue sin responder: la respuesta del paciente queda pendiente y el bot la " +
+	"aplicara cuando SIESA vuelva. Al paciente no se le repitio el aviso."
+
 // Topes de la espera: pasado cualquiera de ellos el bot deja de reintentar y escala a un agente.
 const (
 	// siesaPendingMaxAge: una respuesta que lleva más de esto pendiente ya no se aplica sola. Queda
@@ -69,7 +74,9 @@ type SiesaPendingRow struct {
 type SiesaPendingStore interface {
 	// MarkSiesaPending marca como pendiente la última fila del historial de ese teléfono y cita, con
 	// la conversación si llega; si no hay fila (el Resolve falló) inserta una con status.
-	MarkSiesaPending(ctx context.Context, row SiesaPendingRow, status string) error
+	// alreadyDeferred: esa fila ya había quedado pendiente antes, así que el paciente ya recibió el
+	// acuse (el agente reintenta desde NOTIF_PENDING y SIESA vuelve a fallar).
+	MarkSiesaPending(ctx context.Context, row SiesaPendingRow, status string) (alreadyDeferred bool, err error)
 	// FindSiesaPending devuelve hasta limit respuestas pendientes, la más vieja primero.
 	FindSiesaPending(ctx context.Context, limit int) ([]SiesaPendingRow, error)
 	// RecordSiesaAttempt suma un intento fallido a una respuesta que sigue pendiente.
@@ -105,21 +112,29 @@ func (m *NotificationManager) deferToSiesa(ctx context.Context, phone, action st
 	if row.AppointmentSlot == "" && appt != nil {
 		row.AppointmentSlot = appt.TimeSlot
 	}
-	if err := m.siesaPending.MarkSiesaPending(markCtx, row, responseStatus(action)); err != nil {
+	alreadyDeferred, err := m.siesaPending.MarkSiesaPending(markCtx, row, responseStatus(action))
+	if err != nil {
 		slog.Error("respuesta al recordatorio: SIESA no respondió y la respuesta no quedó pendiente",
 			"phone", utils.MaskPhone(phone), "appointment_id", pending.AppointmentID, "action", action,
 			"siesa_error", cause, "error", err)
 		return false
+	}
+	observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "siesa_pending",
+		observability.EmitOpts{Phone: phone, Reason: action})
+	slog.Warn("respuesta al recordatorio pendiente de SIESA", "phone", utils.MaskPhone(phone),
+		"appointment_id", pending.AppointmentID, "action", action, "already_deferred", alreadyDeferred, "error", cause)
+	if alreadyDeferred {
+		// El paciente ya recibió el acuse la primera vez: el reintento del agente desde NOTIF_PENDING
+		// no se lo repite. Se le dice al agente con una nota interna (en Néctar no tiene destino; el
+		// proceso de fondo escala de nuevo si se agota).
+		_, _ = m.birdClient.SendInternalText(phone, pending.ConversationID, siesaStillDownAgentNote) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)
+		return true
 	}
 	text := siesaConfirmDeferredText
 	if action == siesaActionCancel {
 		text = siesaCancelDeferredText
 	}
 	_, _ = m.birdClient.SendText(phone, pending.ConversationID, text) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)
-	observability.Emit(observability.TraceNotif(pending.AppointmentID), "notif_recordatorio", "siesa_pending",
-		observability.EmitOpts{Phone: phone, Reason: action})
-	slog.Warn("respuesta al recordatorio pendiente de SIESA",
-		"phone", utils.MaskPhone(phone), "appointment_id", pending.AppointmentID, "action", action, "error", cause)
 	return true
 }
 

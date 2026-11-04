@@ -24,12 +24,12 @@ type siesaRows struct {
 	outcomes map[int64]string
 }
 
-func (s *siesaRows) MarkSiesaPending(_ context.Context, row notifications.SiesaPendingRow, _ string) error {
+func (s *siesaRows) MarkSiesaPending(_ context.Context, row notifications.SiesaPendingRow, _ string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	row.ID = int64(len(s.rows) + len(s.outcomes) + 1)
 	s.rows = append(s.rows, row)
-	return nil
+	return false, nil
 }
 
 func (s *siesaRows) FindSiesaPending(_ context.Context, _ int) ([]notifications.SiesaPendingRow, error) {

@@ -87,8 +87,8 @@ func TestNotificationRepo_SiesaPendingLifecycle(t *testing.T) {
 	}
 
 	row := notifications.SiesaPendingRow{Phone: phone, Type: "confirmation", AppointmentID: apptID, ConversationID: "conv-webhook", Action: "confirm"}
-	if err := repo.MarkSiesaPending(ctx, row, "confirmed"); err != nil {
-		t.Fatalf("mark: %v", err)
+	if again, err := repo.MarkSiesaPending(ctx, row, "confirmed"); err != nil || again {
+		t.Fatalf("mark = %v, %v; want primera vez", again, err)
 	}
 	var historyRows int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM notification_history WHERE phone = ?", phone).Scan(&historyRows); err != nil {
@@ -134,6 +134,11 @@ func TestNotificationRepo_SiesaPendingLifecycle(t *testing.T) {
 	if got := findSiesaPendingFor(t, repo, phone); len(got) != 0 {
 		t.Fatalf("la fila aplicada sigue pendiente: %+v", got)
 	}
+
+	// Volver a marcar la misma fila avisa que el paciente ya recibió el acuse (f5).
+	if again, err := repo.MarkSiesaPending(ctx, row, "confirmed"); err != nil || !again {
+		t.Fatalf("segunda marca = %v, %v; want ya pendiente antes", again, err)
+	}
 }
 
 // Sin la fila de Resolve (la BD falló justo ahí) la marca inserta una, para no perder la respuesta.
@@ -148,7 +153,7 @@ func TestNotificationRepo_MarkSiesaPending_InsertsWithoutHistoryRow(t *testing.T
 	t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DELETE FROM notification_history WHERE phone = ?", phone) })
 
 	row := notifications.SiesaPendingRow{Phone: phone, Type: "confirmation", AppointmentID: "APT-SP-INS", AppointmentSlot: "202611050800", ContactPhone: "+573001112233", Action: "cancel"}
-	if err := repo.MarkSiesaPending(ctx, row, "cancel_requested"); err != nil {
+	if _, err := repo.MarkSiesaPending(ctx, row, "cancel_requested"); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	got := findSiesaPendingFor(t, repo, phone)
