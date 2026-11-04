@@ -246,9 +246,41 @@ func trimForAlert(s string) string {
 	return s
 }
 
+const (
+	// modulePrefix identifica los frames del propio bot en un stack de Go.
+	modulePrefix = "github.com/neuro-bot/neuro-bot/"
+	// maxStackRunes acota el stack de un PANIC; el cliente corta además el mensaje entero.
+	maxStackRunes = 1500
+)
+
+// stackForAlert reduce el stack de un PANIC a la cabecera de la goroutine y los frames del módulo
+// (función + archivo:línea), que es lo que ubica el fallo. Sin frames del módulo lo deja entero.
+// No lleva PII: son rutas y direcciones (H1).
+func stackForAlert(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	kept := lines[:1]
+	for i := 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], modulePrefix) {
+			kept = append(kept, lines[i])
+			if i+1 < len(lines) {
+				kept = append(kept, lines[i+1])
+			}
+		}
+	}
+	if len(kept) > 1 {
+		s = strings.Join(kept, "\n")
+	}
+	if r := []rune(s); len(r) > maxStackRunes {
+		s = string(r[:maxStackRunes]) + "…"
+	}
+	return s
+}
+
 func formatAttr(a slog.Attr) string {
 	val := a.Value.String()
 	switch {
+	case a.Key == "stack":
+		val = redactPII(stackForAlert(val))
 	case isSensitiveAlertKey(a.Key):
 		// Clave reconocida como sensible → redactar el valor completo.
 		val = redactValue(val)

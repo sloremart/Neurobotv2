@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -257,5 +258,21 @@ func TestFormatAttr_FollowsCommonLogPolicy(t *testing.T) {
 		if out := formatAttr(a); strings.Contains(out, a.Value.String()) {
 			t.Errorf("la clave %q salió en claro a Telegram: %q", a.Key, out)
 		}
+	}
+}
+
+// H1: el stack de un PANIC llega a Telegram con la ubicación del fallo (función y archivo del
+// módulo), no cortado en el primer «{» de los argumentos de un frame.
+func TestFormatMessage_PanicKeepsStackLocation(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	h := NewAlertHandler(inner, &Client{})
+	record := slog.NewRecord(time.Now(), slog.LevelError, "PANIC in worker", 0)
+	record.Add("stack", string(debug.Stack()))
+	out := h.formatMessage(record)
+	if !strings.Contains(out, "TestFormatMessage_PanicKeepsStackLocation") || !strings.Contains(out, "alert_handler_test.go") {
+		t.Errorf("la alerta del pánico perdió la ubicación del fallo: %q", out)
+	}
+	if strings.Contains(out, "cuerpo omitido") {
+		t.Errorf("el stack no es un cuerpo HTTP: %q", out)
 	}
 }
