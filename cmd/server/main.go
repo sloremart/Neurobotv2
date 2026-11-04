@@ -569,7 +569,8 @@ func main() {
 		nectarHealthURL = cfg.NectarBaseURL
 	}
 	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, nectarHealthURL))
-	mux.Handle("GET /health/debug", api.InternalAuth(cfg.InternalAPIKey)(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg, nectarBridge != nil))))
+	guard := internalGuard(cfg)
+	mux.Handle("GET /health/debug", guard(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg, nectarBridge != nil))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -620,14 +621,7 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/siesa/bot-share", internalHandler.HandleSiesaBotShare)
 		internalMux.HandleFunc("GET /api/internal/siesa/conciliacion", internalHandler.HandleSiesaConciliacion)
 		internalMux.HandleFunc("GET /api/internal/siesa/slot-recovery", internalHandler.HandleSiesaSlotRecovery)
-		mux.Handle(
-			"/api/internal/",
-			api.RateLimiter(30, time.Minute, api.NewTrustedProxies(cfg.TrustedProxyHosts))(
-				api.MaxBodySize(
-					api.InternalAuth(cfg.InternalAPIKey)(internalMux),
-				),
-			),
-		)
+		mux.Handle("/api/internal/", guard(internalMux))
 	}
 
 	srv := &http.Server{
@@ -774,6 +768,17 @@ type healthCache struct {
 
 // healthHandler responde el estado del bot. nectarBaseURL se publica como `nectar_host` (SOLO el host:
 // ni claves ni ruta), o "none".
+// internalGuard protege lo que pide INTERNAL_API_KEY (la API interna y /health/debug) con un solo
+// límite de intentos: las dos rutas comparten el cupo de cada cliente, así que alternarlas no
+// duplica los intentos de adivinar la clave.
+func internalGuard(cfg *config.Config) func(http.Handler) http.Handler {
+	limit := api.RateLimiter(30, time.Minute, api.NewTrustedProxies(cfg.TrustedProxyHosts))
+	auth := api.InternalAuth(cfg.InternalAPIKey)
+	return func(next http.Handler) http.Handler {
+		return limit(api.MaxBodySize(auth(next)))
+	}
+}
+
 func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.HandlerFunc {
 	cache := &healthCache{}
 
@@ -786,11 +791,15 @@ func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.Handl
 
 			// El resultado se comparte con todos durante healthCacheTTL: el Ping no hereda la
 			// cancelación de quien pregunta (un cliente que corta no deja cacheado un «critical»),
-			// solo su propio timeout.
-			pingCtx, cancelPing := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
-			defer cancelPing()
+			// solo su propio timeout. Cada BD tiene el suyo: una colgada no deja a la otra sin plazo.
+			base := context.WithoutCancel(r.Context())
+			ping := func(ctx context.Context, db *sql.DB) error {
+				ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				return db.PingContext(ctx)
+			}
 
-			if err := localDB.PingContext(pingCtx); err != nil {
+			if err := ping(base, localDB); err != nil {
 				health["local_db"] = "error"
 				health["status"] = "critical"
 				critical = true
@@ -803,7 +812,7 @@ func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.Handl
 				if health["status"] == "ok" {
 					health["status"] = "degraded"
 				}
-			} else if err := externalDB.PingContext(pingCtx); err != nil {
+			} else if err := ping(base, externalDB); err != nil {
 				health["external_db"] = "error"
 				if health["status"] == "ok" {
 					health["status"] = "degraded"

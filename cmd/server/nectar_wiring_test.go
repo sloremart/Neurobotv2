@@ -135,6 +135,58 @@ func TestHealth_SiesaDownIsDegradedNot503(t *testing.T) {
 	}
 }
 
+// TestInternalGuard_LimitsDebugAttempts: /health/debug pide la misma clave que la API interna, así que
+// también tiene su límite de intentos, y con el MISMO cupo: alternar rutas no duplica los intentos (A-03).
+func TestInternalGuard_LimitsDebugAttempts(t *testing.T) {
+	guard := internalGuard(&config.Config{InternalAPIKey: "clave-de-prueba"})
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	debug, internal := guard(ok), guard(ok)
+
+	codes := map[int]int{}
+	for i := range 31 {
+		target, path := debug, "/health/debug"
+		if i%2 == 1 {
+			target, path = internal, "/api/internal/sessions"
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "203.0.113.7:40001"
+		req.Header.Set("X-API-Key", "mala")
+		rec := httptest.NewRecorder()
+		target.ServeHTTP(rec, req)
+		codes[rec.Code]++
+	}
+	if codes[http.StatusUnauthorized] != 30 || codes[http.StatusTooManyRequests] != 1 {
+		t.Fatalf("31 claves malas alternando /health/debug y /api/internal: quiero 30×401 y 1×429, got %v", codes)
+	}
+}
+
+// hangConnector simula una BD colgada: su Ping no vuelve hasta que vence el plazo.
+type hangConnector struct{}
+
+func (hangConnector) Connect(context.Context) (driver.Conn, error) { return hangConn{}, nil }
+func (hangConnector) Driver() driver.Driver                        { return nil }
+
+type hangConn struct{ pingConn }
+
+func (hangConn) Ping(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestHealth_HungLocalDBDoesNotFailSiesa: cada Ping tiene su propio plazo. Con la BD local colgada,
+// SIESA sana sigue saliendo «ok» en vez de heredar un plazo ya vencido.
+func TestHealth_HungLocalDBDoesNotFailSiesa(t *testing.T) {
+	localDB := sql.OpenDB(hangConnector{})
+	externalDB := sql.OpenDB(pingConnector{})
+	t.Cleanup(func() { _ = localDB.Close(); _ = externalDB.Close() })
+
+	rec := httptest.NewRecorder()
+	healthHandler(localDB, externalDB, "").ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if body := rec.Body.String(); body != `{"external_db":"ok","local_db":"error","nectar_host":"none","status":"critical"}`+"\n" {
+		t.Errorf("cuerpo inesperado: %s", body)
+	}
+}
+
 // Puente puesto sin canal de apertura: arranca (el resto de Néctar funciona), pero lo dice en ERROR —
 // ninguna plantilla proactiva (recordatorios, lista de espera, avisos) va a salir.
 func TestNectarWiring_NoChannelLogsError(t *testing.T) {
