@@ -1363,7 +1363,9 @@ func (c *Client) GetGatherResult(callID, commandID string) (string, error) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	slog.Info("get gather command result", "callId", callID, "commandId", commandID, "raw", string(body))
+	// Sin el cuerpo crudo: trae los teléfonos en claro y, si existe, el enlace a la grabación (B-12).
+	slog.Info("get gather command result", "callId", callID, "commandId", commandID,
+		"status", resp.StatusCode, "body_len", len(body))
 
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("get command API error %d: %s", resp.StatusCode, string(body))
@@ -1454,8 +1456,8 @@ func (c *Client) GetCallDetails(callID string) (*CallDetails, error) {
 		return nil, fmt.Errorf("get call API error %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Log the full raw response so we can discover the exact structure Bird returns
-	slog.Info("get call details response", "callId", callID, "raw", string(body))
+	// Sin el cuerpo crudo, por lo mismo que en GetGatherResult (B-12).
+	slog.Info("get call details response", "callId", callID, "status", resp.StatusCode, "body_len", len(body))
 
 	var details CallDetails
 	if err := json.Unmarshal(body, &details); err != nil {
