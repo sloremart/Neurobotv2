@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/nectarreports"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -51,10 +52,6 @@ const (
 	// teléfono, contado desde su primer intento fallido, antes de cerrar su fila del WAL sin procesarlo
 	// (B-01). Mismo margen que staleReplayMinutes: cubre una ráfaga de ~8 hojas con OCR de 75 s.
 	maxPhoneLockWait = staleReplayMinutes * time.Minute
-	// noticeClockTolerance: holgura de reloj entre Néctar (occurred_at) y la BD del bot
-	// (sessions.escalated_at) al decidir si un aviso es anterior a la escalación vigente. Son
-	// servidores distintos; mismo margen que nectarreports.ClockTolerance (D-02).
-	noticeClockTolerance = 2 * time.Minute
 	// phoneLockRetryDelay: pausa antes de reencolar un mensaje cuyo teléfono ya tiene un worker
 	// esperando el candado; así una ráfaga de un teléfono ocupa a lo sumo un worker en espera (B-01).
 	phoneLockRetryDelay = 2 * time.Second
@@ -1056,7 +1053,9 @@ func isStaleNectarNotice(cmd AgentCommand, sess *session.Session) bool {
 	if cmd.EventID == "" || cmd.OccurredAt.IsZero() || sess.EscalatedAt == nil {
 		return false
 	}
-	return cmd.OccurredAt.Before(sess.EscalatedAt.Add(-noticeClockTolerance))
+	// La holgura de reloj entre Néctar (occurred_at) y la BD del bot (escalated_at) es la misma
+	// que usan los informes al emparejar: son servidores distintos.
+	return cmd.OccurredAt.Before(sess.EscalatedAt.Add(-nectarreports.ClockTolerance))
 }
 
 // ResumeEscalationNoShow implementa session.EscalationResumer: lo invoca el checker de escalaciones
