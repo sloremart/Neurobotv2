@@ -37,12 +37,17 @@ func (r *cupsResolver) assignByName(ctx context.Context, cup services.CUPSEntry)
 	var choose func(string, []services.CupsCandidate) string
 	if r.reader != nil {
 		choose = func(read string, shortlist []services.CupsCandidate) string {
+			// Sin llamadas extra que gastar en la orden, el procedimiento queda en duda con sus candidatos.
+			if r.modelCapReached() {
+				return ""
+			}
 			mctx, cancel, ok := modelContext(ctx)
 			if !ok {
 				slog.Warn("asignación por nombre omitida: no queda presupuesto en el mensaje")
 				return ""
 			}
 			defer cancel()
+			r.modelCalls++
 			code, err := r.reader.ChooseCupsByName(mctx, read, shortlist)
 			if err != nil {
 				slog.Warn("asignación por nombre: el modelo falló", "error", err)

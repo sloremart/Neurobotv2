@@ -228,3 +228,36 @@ func TestOCRSummary_OrderNameIsOneLine(t *testing.T) {
 		t.Errorf("el nombre de la orden se acota con «…»: %q", bm.Text)
 	}
 }
+
+// Tope de llamadas extra al modelo por orden: una orden con muchos procedimientos dudosos no pasa de
+// maxExtraModelCallsPerOrder entre elecciones por nombre y segundas lecturas. Los que faltan van a un
+// agente por el camino de duda de siempre, con su nota.
+func TestValidateOCR_ExtraModelCallsAreCappedPerOrder(t *testing.T) {
+	reader := &fakeCupsReader{code: "", choice: ""}
+	var cups []services.CUPSEntry
+	unknown := []string{"999991", "999992", "999993", "999994"}
+	for _, code := range unknown {
+		cups = append(cups, services.CUPSEntry{Code: code, Name: "RESONANCIA MAGNETICA DE RODILLA", Quantity: 1})
+	}
+	for range 4 {
+		cups = append(cups, noCode("RNM CEREBRAL SIMPLE"))
+	}
+	res, _, _ := runValidateWith(t, nameAssignCatalog, cups, testOrderURL, reader)
+
+	if got := reader.calls + reader.choiceCalls; got != maxExtraModelCallsPerOrder {
+		t.Fatalf("llamadas extra al modelo = %d (lecturas %d, elecciones %d), tope %d",
+			got, reader.calls, reader.choiceCalls, maxExtraModelCallsPerOrder)
+	}
+	if res.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("la orden va a un agente: %s", res.NextState)
+	}
+	note := res.UpdateCtx["escalation_note"]
+	for _, code := range unknown {
+		if !strings.Contains(note, code) {
+			t.Errorf("la nota trae la duda de %s, también los que no alcanzaron llamada: %q", code, note)
+		}
+	}
+	if n := strings.Count(note, "RNM CEREBRAL SIMPLE"); n != 4 {
+		t.Errorf("la nota trae los 4 procedimientos sin código: %d", n)
+	}
+}

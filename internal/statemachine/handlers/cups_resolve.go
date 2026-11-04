@@ -76,6 +76,11 @@ const (
 	// responder: corre dentro del mismo mensaje que ya gastó la lectura de la orden (mismo modo de
 	// fallo que el bug de presupuesto del OCR de 2026-07-27).
 	secondReadingReserve = 20 * time.Second
+	// maxExtraModelCallsPerOrder es cuántas llamadas EXTRA al modelo de documento hace una pasada de
+	// VALIDATE_OCR, entre segundas lecturas del código y elecciones por nombre (decisión del dueño): la
+	// lectura de la orden ya se hizo, y sin tope una orden con muchos procedimientos dudosos hacía una
+	// por cada uno. Los que necesitarían una llamada después del tope van a un agente como duda.
+	maxExtraModelCallsPerOrder = 6
 )
 
 // cupsCorrection es una corrección hecha en la orden.
@@ -106,6 +111,9 @@ type cupsResolver struct {
 	// éxito). Un fallo no se guarda: el siguiente código lo vuelve a intentar, como antes.
 	images       []string
 	imagesLoaded bool
+	// modelCalls: las llamadas extra al modelo hechas en esta pasada (maxExtraModelCallsPerOrder).
+	modelCalls int
+	capLogged  bool
 	// firstVisits: las consultas de primera vez del catálogo, para las interconsultas (cups_name_assign.go).
 	firstVisits []domain.Procedure
 	// inOrder son los códigos (base) de la orden: los leídos y los ya corregidos.
@@ -161,6 +169,16 @@ func findActiveProcedure(ctx context.Context, repo repository.ProcedureRepositor
 // choca con la especialidad; los inactivos no llegan aquí).
 func (r *cupsResolver) resolve(ctx context.Context, cup services.CUPSEntry) cupsResolution {
 	read := utils.BaseCupCode(strings.TrimSpace(cup.Code))
+
+	// Sin llamadas extra que gastar, el código que pedía la segunda lectura es duda con los candidatos
+	// del mismo nombre. Si no hay ninguno se descarta, como con la lectura: sin un procedimiento de
+	// nombre parecido en el catálogo, ni la corrección ni la duda eran posibles.
+	if r.canReadSecond(cup.Name) && r.modelCapReached() {
+		if same := r.sameByName(ctx, cup, read); len(same) > 0 {
+			return cupsResolution{doubt: true, candidates: same[:min(len(same), maxCupsCandidates)]}
+		}
+		return cupsResolution{}
+	}
 
 	// Paso 1: segunda lectura dedicada del código.
 	if code := r.secondReading(ctx, cup.Name); code == read {
@@ -230,9 +248,28 @@ func modelContext(ctx context.Context) (context.Context, context.CancelFunc, boo
 	return c, cancel, true
 }
 
+// canReadSecond dice si hay con qué pedir la segunda lectura: lector, URL de la orden y nombre.
+func (r *cupsResolver) canReadSecond(name string) bool {
+	return r.reader != nil && r.orderURL != "" && strings.TrimSpace(name) != ""
+}
+
+// modelCapReached dice si la pasada ya gastó sus maxExtraModelCallsPerOrder llamadas extra al modelo
+// (se registra una vez por pasada).
+func (r *cupsResolver) modelCapReached() bool {
+	if r.modelCalls < maxExtraModelCallsPerOrder {
+		return false
+	}
+	if !r.capLogged {
+		r.capLogged = true
+		slog.Warn("tope de llamadas extra al modelo en la orden: lo que falta pasa a un agente",
+			"max", maxExtraModelCallsPerOrder)
+	}
+	return true
+}
+
 // secondReading pide la segunda lectura si hay lector, URL de la orden y presupuesto; vacío si no.
 func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
-	if r.reader == nil || r.orderURL == "" || strings.TrimSpace(name) == "" {
+	if !r.canReadSecond(name) {
 		return ""
 	}
 	ctx, cancel, ok := modelContext(ctx)
@@ -249,6 +286,7 @@ func (r *cupsResolver) secondReading(ctx context.Context, name string) string {
 		}
 		r.images, r.imagesLoaded = images, true
 	}
+	r.modelCalls++
 	code, err := r.reader.ReadCupsCode(ctx, r.images, name)
 	if err != nil {
 		slog.Warn("segunda lectura del CUPS falló", "error", err)
