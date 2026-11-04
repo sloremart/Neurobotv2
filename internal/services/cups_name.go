@@ -41,8 +41,18 @@ const (
 )
 
 // orderPhrases se reemplazan antes de partir en palabras (frases de las órdenes con un solo sentido).
+// strings.Replacer toma, en cada posición, la primera frase de la lista que coincide: «CON Y SIN
+// CONTRASTE» y sus variantes van ANTES de «SIN CONTRASTE», que si no se comería su CONTRASTE. Son un estudio
+// simple y contrastado: quedan como «SIMPLE Y CONTRASTE» (el grupo del contraste lo lee como CONTRASTE y el
+// nombre igual distingue el «simple y con contraste» del «con contraste»).
 var orderPhrases = strings.NewReplacer(
-	"SIN MEDIO DE CONTRASTE", " SIMPLE ", "SIN CONTRASTE", " SIMPLE ",
+	"CON Y SIN MEDIO DE CONTRASTE", " SIMPLE Y CONTRASTE ", "SIN Y CON MEDIO DE CONTRASTE", " SIMPLE Y CONTRASTE ",
+	"CON Y SIN CONTRASTE", " SIMPLE Y CONTRASTE ", "SIN Y CON CONTRASTE", " SIMPLE Y CONTRASTE ",
+	"CON/SIN CONTRASTE", " SIMPLE Y CONTRASTE ", "SIN/CON CONTRASTE", " SIMPLE Y CONTRASTE ",
+	"CON / SIN CONTRASTE", " SIMPLE Y CONTRASTE ", "C/S CONTRASTE", " SIMPLE Y CONTRASTE ",
+	"CON Y SIN GADOLINIO", " SIMPLE Y CONTRASTE ", "SIN Y CON GADOLINIO", " SIMPLE Y CONTRASTE ",
+	"SIMPLE Y CON MEDIO DE CONTRASTE", " SIMPLE Y CONTRASTE ",
+	"SIN MEDIO DE CONTRASTE", " SIMPLE ", "SIN CONTRASTE", " SIMPLE ", "MEDIO DE CONTRASTE", " CONTRASTE ",
 	"TOMOGRAFIA POR EMISION DE POSITRONES", " PET ",
 	"VASOS ARTERIALES", " ARTERIAL ", "VASOS VENOSOS", " VENOSO ", "COXO-FEMORAL", " CADERA ", "COXO FEMORAL", " CADERA ",
 	"1A VEZ", " PRIMERA VEZ ", "1RA VEZ", " PRIMERA VEZ ", "1ª VEZ", " PRIMERA VEZ ", "1° VEZ", " PRIMERA VEZ ",
@@ -77,6 +87,11 @@ var orderAbbreviations = map[string]string{
 	"TORACICA": "DORSAL", "LUMBOSACRA": "LUMBAR", "COXOFEMORAL": "CADERA", "HIPOFISIS": "SILLA TURCA",
 	"CONTRASTADA": "CONTRASTE", "CONTRASTADO": "CONTRASTE", "GADOLINIO": "CONTRASTE",
 	"PEDIATRICO": "PEDIATRICA", "PEDIATRIA": "PEDIATRICA", "MAMARIA": "MAMA", "MAMAS": "MAMA",
+	// Sinónimos anatómicos de las órdenes (revisión, ronda 2): sin ellos la guarda de región escalaría
+	// órdenes correctas.
+	"TIBIA": "PIERNA", "PERONE": "PIERNA", "HUMERO": "BRAZO", "FEMUR": "MUSLO",
+	"ESCROTO": "TESTICULO", "ESCROTAL": "TESTICULO", "ESCROTALES": "TESTICULO", "TESTICULAR": "TESTICULO",
+	"PUNO": "MUNECA", "RENAL": "RINON", "RENALES": "RINON", "RINONES": "RINON",
 }
 
 // retrievalStopWords no aportan a la búsqueda de candidatos (encabezados de remisiones e interconsultas).
@@ -275,8 +290,9 @@ type qualifierGroup struct {
 	// Solo cuenta cuando los dos nombres traen números: el catálogo arrastra números sueltos («(62)»).
 	numbers bool
 	// exclusive: sus valores se excluyen de verdad (contraste, primera vez/control, pediátrica/adultos,
-	// lado, superior/inferior, vía, marcador del PET). Solo estos cuentan para la guarda de los CUPS con
-	// código: la región o la columna tienen sinónimos (CRÁNEO/CEREBRO, LUMBAR/LUMBOSACRA) y la decide H5.
+	// lado, superior/inferior, vía, marcador del PET, nivel de columna y región). Solo estos cuentan para
+	// la guarda de los CUPS con código, y solo si los dos nombres traen el grupo y no comparten ningún
+	// valor: los sinónimos (CRÁNEO/CEREBRO, LUMBAR/LUMBOSACRA, TIBIA/PIERNA…) se igualan antes.
 	exclusive bool
 }
 
@@ -308,13 +324,13 @@ var qualifierGroups = []qualifierGroup{
 	{values: words("TRANSFONTANELAR", "TRANSCRANEAL")},
 	{values: words("FLUOR=FDG", "FDG", "FLUORODESOXIGLUCOSA=FDG", "PSMA", "COLINA", "DOTATATE"), exclusive: true},
 	{values: words("FUNCIONAL", "TRACTOGRAFIA", "ESPECTROSCOPIA", "PERFUSION")},
-	{values: words("CERVICAL", "DORSAL", "LUMBAR", "LUMBOSACRA", "SACRA", "SACRO=SACRA", "COCCIX")},
-	{prefix: true, values: words(
+	{values: words("CERVICAL", "DORSAL", "LUMBAR", "SACRA", "SACRO=SACRA", "COCCIX"), exclusive: true},
+	{prefix: true, exclusive: true, values: words(
 		"CEREBRO", "CARA", "ORBITA", "SENOS", "OIDO", "MASTOIDES", "SILLA",
-		"CUELLO", "COLUMNA", "TORAX", "ABDOMEN", "PELVIS", "HOMBRO", "BRAZO", "HUMERO", "CODO",
-		"ANTEBRAZO", "MUNECA", "MANO", "DEDOS", "CADERA", "MUSLO", "FEMUR", "RODILLA", "PIERNA", "TIBIA",
-		"TOBILLO", "PIE", "CALCANEO", "MAXILAR", "MANDIBULA", "PROSTATA", "TIROIDES", "MAMA", "RENAL",
-		"RINON", "HIGADO", "VESICULA", "ESCROTO", "TESTICULO", "SACROILIACA", "CLAVICULA", "ESTERNON",
+		"CUELLO", "COLUMNA", "TORAX", "ABDOMEN", "PELVIS", "HOMBRO", "BRAZO", "CODO",
+		"ANTEBRAZO", "MUNECA", "MANO", "DEDOS", "CADERA", "MUSLO", "RODILLA", "PIERNA",
+		"TOBILLO", "PIE", "CALCANEO", "MAXILAR", "MANDIBULA", "PROSTATA", "TIROIDES", "MAMA",
+		"RINON", "HIGADO", "VESICULA", "TESTICULO", "SACROILIACA", "CLAVICULA", "ESTERNON",
 		"COSTILLAS", "PARRILLA", "TEMPOROMANDIBULAR", "PIES=PIE",
 	)},
 }
@@ -375,8 +391,8 @@ func disjoint(a, b map[string]bool) bool {
 
 // CupsNamesConflict dice si dos nombres se contradicen EXPLÍCITAMENTE: los dos mencionan un mismo grupo
 // excluyente (contraste, primera vez/control, pediátrica/adultos, lado, superior/inferior, vía,
-// marcador del PET) con valores distintos. Un nombre que no dice nada de un grupo no lo contradice (las
-// órdenes abrevian), y la región, la columna o la modalidad no cuentan: tienen sinónimos.
+// marcador del PET, nivel de columna, región) sin compartir ningún valor. Un nombre que no dice nada de
+// un grupo no lo contradice (las órdenes abrevian); la modalidad, el doppler y los números no cuentan.
 func CupsNamesConflict(read, catalog string) bool {
 	r, c := canonicalOrderName(read), canonicalOrderName(catalog)
 	for _, g := range qualifierGroups {
