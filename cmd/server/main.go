@@ -664,35 +664,27 @@ func main() {
 		slog.Error("shutdown error", "error", err)
 	}
 
-	// 2. Wait for worker pool goroutines to finish (before DB close via defers). En paralelo, las
-	// respuestas a plantillas en vuelo (D-10): su fila del WAL ya se cerró y nadie las repetiría.
-	responsesDone := make(chan struct{})
+	// 2. Drenar tareas del scheduler en vuelo (N-37) antes de cerrar conexiones (DB se cierra en los
+	// defers al retornar). El ctx ya fue cancelado, así que las tareas paran rápido (N-38); las que
+	// terminan persisten su last-run para no re-ejecutarse en el arranque. Corre a la par del paso 3:
+	// no dependen entre sí, y así la espera de las respuestas no alarga el apagado.
+	schedDone := make(chan struct{})
 	go func() {
-		if notifyManager != nil {
-			notifyManager.WaitResponses(20 * time.Second)
+		defer close(schedDone)
+		if sched != nil {
+			sched.Wait(20 * time.Second)
 		}
-		close(responsesDone)
-	}()
-	stopDone := make(chan struct{})
-	go func() {
-		workerPool.Stop()
-		close(stopDone)
 	}()
 
-	select {
-	case <-stopDone:
+	// 3. Respuestas a plantillas en vuelo y, después, el pool de workers (stopWorkers, D-10).
+	waitResponses := func(time.Duration) {}
+	if notifyManager != nil {
+		waitResponses = notifyManager.WaitResponses
+	}
+	if stopWorkers(waitResponses, workerPool.Stop, responsesWaitTimeout, workersStopTimeout) {
 		slog.Info("shutdown complete")
-	case <-time.After(20 * time.Second):
-		slog.Error("shutdown timeout: worker pool did not stop within 20s")
 	}
-	<-responsesDone // acotado por su propio plazo, que corrió a la par del de arriba
-
-	// 3. Drenar tareas del scheduler en vuelo (N-37) antes de cerrar conexiones (DB se cierra en
-	// los defers al retornar). El ctx ya fue cancelado, así que las tareas paran rápido (N-38);
-	// las que terminan persisten su last-run para no re-ejecutarse en el arranque.
-	if sched != nil {
-		sched.Wait(20 * time.Second)
-	}
+	<-schedDone
 
 	// 4. #33: esperar a las auditorías SIESA fire-and-forget en vuelo ANTES de que los defer cierren
 	// el pool externo (si no, una auditoría a medio camino falla con "sql: database is closed"). El

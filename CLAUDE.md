@@ -381,8 +381,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 
 ## ROBUSTEZ (auditoría 2026-11-03)
 
-- Apagado: el contenedor `bot` tiene `stop_grace_period: 75s` (el apagado ordenado suma hasta 60 s); se aplica al
-  recrearlo (`docker compose up -d bot`).
+- Apagado: el contenedor `bot` tiene `stop_grace_period: 75s` (el apagado ordenado suma hasta 65 s, `cmd/server/shutdown.go`); se aplica al
+  recrearlo (`docker compose up -d bot`). Espera primero las respuestas a plantillas en vuelo (hasta 32 s: cubre `ConfirmBlock`, no 30 s
+  más de candado del teléfono) y luego para el pool, cuyo drenado toma los mensajes virtuales que encolaron.
 - Candado por teléfono (`internal/worker/pool.go`): un mensaje del WAL que no lo consigue no se pierde; se reencola
   en memoria (un solo worker espera por teléfono, los demás se difieren 2 s) durante hasta 10 min, y el aviso
   «Tu mensaje anterior…» sale una vez y solo tras 30 s de espera. `virtual-`/`agent-` siguen como antes.
