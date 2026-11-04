@@ -1912,13 +1912,19 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 	if p.tracker != nil && len(result.Events) > 0 {
 		p.tracker.LogBatch(ctx, sess.ID, phone, result.Events)
 	}
-	for _, event := range result.Events {
+	logResultEvents(sess.ID, phone, result.Events)
+}
+
+// logResultEvents deja en el log INFO cada evento con sus datos redactados (H2); los eventos
+// que van a chat_events no cambian.
+func logResultEvents(sessionID, phone string, events []statemachine.Event) {
+	for _, event := range events {
 		slog.Info(
 			"event",
-			"session_id", sess.ID,
+			"session_id", sessionID,
 			"phone", utils.MaskPhone(phone),
 			"type", event.Type,
-			"data", event.Data,
+			"data", utils.RedactLogMap(event.Data),
 		)
 	}
 }

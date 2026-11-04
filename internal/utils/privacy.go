@@ -44,7 +44,7 @@ var (
 	sensitiveDocKeys = map[string]bool{
 		"doc": true, "cedula": true, "cédula": true, "document": true, "documento": true,
 		"num_id": true, "numid": true, "numero_documento": true, "patient_doc": true,
-		"name": true, "nombre": true, "nombres": true, "patient_name": true, "paciente": true,
+		"name": true, "nombre": true, "nombres": true, "patient_name": true, "paciente": true, "patient": true,
 	}
 	sensitivePhoneKeys = map[string]bool{
 		"phone": true, "telefono": true, "teléfono": true, "celular": true, "patient_phone": true,
@@ -87,4 +87,29 @@ func RedactLogAttr(key, value string) string {
 		return MaskText(value)
 	}
 	return value
+}
+
+// RedactLogMap devuelve una copia del mapa con cada valor redactado según su clave (también en
+// mapas anidados), para loguear datos de eventos: el ReplaceAttr global solo ve attrs string de
+// primer nivel, no las claves de un mapa. El original no se toca (es el que se persiste).
+func RedactLogMap(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			out[k] = RedactLogAttr(k, val)
+		case map[string]interface{}:
+			out[k] = RedactLogMap(val)
+		default:
+			if IsSensitiveLogKey(k) {
+				out[k] = RedactLogAttr(k, fmt.Sprint(val))
+			} else {
+				out[k] = v
+			}
+		}
+	}
+	return out
 }

@@ -89,3 +89,42 @@ func TestRedactLogAttr_FreeTextAndContactKeys(t *testing.T) {
 		}
 	}
 }
+
+// H2: los datos de un evento son un mapa y el ReplaceAttr global no recorre sus claves. RedactLogMap
+// devuelve una copia redactada clave por clave (también anidada) y no toca el original, que es el
+// que se guarda en la BD.
+func TestRedactLogMap(t *testing.T) {
+	SetMaskPhones(true)
+	original := map[string]interface{}{
+		"phone":  "+573103343616",
+		"email":  "maria@example.com",
+		"doc":    "1000000689",
+		"count":  2,
+		"state":  "ASK_DOCUMENT",
+		"nested": map[string]interface{}{"patient_name": "José Núñez", "cups": "890274"},
+	}
+	got := RedactLogMap(original)
+	want := map[string]interface{}{
+		"phone": "+573***3616", "email": "[redactado: 17 caracteres]", "doc": "10***89",
+		"count": 2, "state": "ASK_DOCUMENT",
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("RedactLogMap[%q] = %v, want %v", k, got[k], w)
+		}
+	}
+	nested, _ := got["nested"].(map[string]interface{})
+	if nested["patient_name"] != "Jo***ez" || nested["cups"] != "890274" {
+		t.Errorf("el mapa anidado se redacta clave por clave: %v", nested)
+	}
+	if original["phone"] != "+573103343616" || original["nested"].(map[string]interface{})["patient_name"] != "José Núñez" {
+		t.Errorf("el mapa original no se modifica: %v", original)
+	}
+	// El nombre del paciente también viaja con la clave "patient" (llamada IVR de prueba).
+	if got := RedactLogAttr("patient", "José Núñez"); got != "Jo***ez" {
+		t.Errorf("RedactLogAttr(patient) = %q", got)
+	}
+	if RedactLogMap(nil) != nil {
+		t.Error("un mapa nil sigue nil")
+	}
+}
