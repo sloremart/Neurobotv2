@@ -25,7 +25,8 @@ type nectarReplayer interface {
 // respuesta a una notificación proactiva.
 type replayNotifier interface {
 	HasPending(phone string) bool
-	HandleResponse(phone, payload, conversationID string)
+	// GoHandleResponse corre la respuesta en segundo plano, registrada para el apagado (D-10).
+	GoHandleResponse(phone, payload, conversationID string)
 	HandleInvalidInput(phone, conversationID string) bool
 	AcceptsPostback(phone, payload string) bool
 }
@@ -104,7 +105,7 @@ func replayPendingRows(ctx context.Context, rows []localrepo.InboxRow, deps repl
 				deps.notify.AcceptsPostback(msg.Phone, msg.PostbackPayload) {
 				slog.Info("WAL replay: notification postback routed to handler",
 					"id", row.ID, "phone", msg.Phone, "payload", msg.PostbackPayload)
-				go deps.notify.HandleResponse(msg.Phone, msg.PostbackPayload, msg.ConversationID)
+				deps.notify.GoHandleResponse(msg.Phone, msg.PostbackPayload, msg.ConversationID)
 				_ = deps.inbox.MarkDone(ctx, row.ID)
 				continue
 			}

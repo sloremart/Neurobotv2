@@ -252,10 +252,7 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 				"phone", utils.MaskPhone(msg.Phone),
 				"payload", msg.PostbackPayload,
 			)
-			go func() {
-				defer recoverLog("notification-response")
-				h.notifyManager.HandleResponse(msg.Phone, msg.PostbackPayload, msg.ConversationID)
-			}()
+			h.notifyManager.GoHandleResponse(msg.Phone, msg.PostbackPayload, msg.ConversationID) //nolint:contextcheck // corre tras acusar el webhook: no depende del ctx de la petición
 			return
 		}
 		// Patient sent free text instead of pressing a button — retry the prompt. Con un recordatorio

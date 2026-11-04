@@ -657,7 +657,15 @@ func main() {
 		slog.Error("shutdown error", "error", err)
 	}
 
-	// 2. Wait for worker pool goroutines to finish (before DB close via defers)
+	// 2. Wait for worker pool goroutines to finish (before DB close via defers). En paralelo, las
+	// respuestas a plantillas en vuelo (D-10): su fila del WAL ya se cerró y nadie las repetiría.
+	responsesDone := make(chan struct{})
+	go func() {
+		if notifyManager != nil {
+			notifyManager.WaitResponses(20 * time.Second)
+		}
+		close(responsesDone)
+	}()
 	stopDone := make(chan struct{})
 	go func() {
 		workerPool.Stop()
@@ -670,6 +678,7 @@ func main() {
 	case <-time.After(20 * time.Second):
 		slog.Error("shutdown timeout: worker pool did not stop within 20s")
 	}
+	<-responsesDone // acotado por su propio plazo, que corrió a la par del de arriba
 
 	// 3. Drenar tareas del scheduler en vuelo (N-37) antes de cerrar conexiones (DB se cierra en
 	// los defers al retornar). El ctx ya fue cancelado, así que las tareas paran rápido (N-38);

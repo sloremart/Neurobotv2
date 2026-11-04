@@ -63,7 +63,7 @@ func (f *fakeReplay) MarkDone(_ context.Context, id string) error {
 
 func (f *fakeReplay) HasPending(string) bool { return f.pending }
 
-func (f *fakeReplay) HandleResponse(_, payload, _ string) { f.responded <- payload }
+func (f *fakeReplay) GoHandleResponse(_, payload, _ string) { f.responded <- payload }
 
 func (f *fakeReplay) HandleInvalidInput(string, string) bool {
 	f.mu.Lock()

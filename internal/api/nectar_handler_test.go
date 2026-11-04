@@ -1084,7 +1084,7 @@ func (f *fakeNectarNotifier) HasPending(phone string) bool {
 	return f.pending[phone]
 }
 
-func (f *fakeNectarNotifier) HandleResponse(phone, payload, conversationID string) {
+func (f *fakeNectarNotifier) GoHandleResponse(phone, payload, conversationID string) {
 	f.responses <- [3]string{phone, payload, conversationID}
 }
 

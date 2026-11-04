@@ -247,6 +247,13 @@ type NotificationManager struct {
 
 	// passTimeout acota cada pasada del checker de expiraciones (0 = utils.BackgroundPassTimeout).
 	passTimeout time.Duration
+
+	// responses rastrea las respuestas a plantillas lanzadas en segundo plano (GoHandleResponse)
+	// para que el apagado las espere (WaitResponses, D-10). responsesMu y responsesClosed cierran la
+	// carrera Add/Wait como closeMu en el worker pool: tras WaitResponses no se registra ninguna.
+	responses       sync.WaitGroup
+	responsesMu     sync.RWMutex
+	responsesClosed bool
 }
 
 // notifLockTimeout acota la ESPERA por el candado de un teléfono (no cuánto se sostiene).
@@ -489,6 +496,55 @@ func (m *NotificationManager) RegisterPending(notif PendingNotification) bool {
 
 	slog.Info("pending notification registered", "phone", utils.MaskPhone(notif.Phone), "type", notif.Type)
 	return true
+}
+
+// GoHandleResponse corre HandleResponse en segundo plano, registrada para el apagado (D-10). Quien
+// la llama ya acusó el webhook y cerró la fila del WAL, así que ni Bird ni el replay la repetirían:
+// si un deploy la cortara a medias (el pending ya salió de la BD), la pulsación se perdería. El
+// apagado la espera con WaitResponses antes de cerrar las BD. Si el apagado ya empezó a esperar,
+// corre en el llamador.
+func (m *NotificationManager) GoHandleResponse(phone, payload, conversationID string) {
+	m.responsesMu.RLock()
+	if m.responsesClosed {
+		m.responsesMu.RUnlock()
+		m.handleResponseRecovered(phone, payload, conversationID)
+		return
+	}
+	m.responses.Add(1)
+	m.responsesMu.RUnlock()
+	go func() {
+		defer m.responses.Done()
+		m.handleResponseRecovered(phone, payload, conversationID)
+	}()
+}
+
+// handleResponseRecovered es HandleResponse con un pánico registrado en vez de tumbar el proceso.
+func (m *NotificationManager) handleResponseRecovered(phone, payload, conversationID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("PANIC in background goroutine", "goroutine", "notification-response",
+				"phone", utils.MaskPhone(phone), "error", fmt.Sprintf("%v", r), "stack", string(debug.Stack()))
+		}
+	}()
+	m.HandleResponse(phone, payload, conversationID)
+}
+
+// WaitResponses espera, hasta timeout, las respuestas en vuelo de GoHandleResponse (D-10). Se llama
+// en el apagado, antes de cerrar las BD. Best-effort: si vence, el apagado sigue.
+func (m *NotificationManager) WaitResponses(timeout time.Duration) {
+	m.responsesMu.Lock()
+	m.responsesClosed = true
+	m.responsesMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		m.responses.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("apagado: timeout esperando respuestas a plantillas en vuelo", "timeout", timeout)
+	}
 }
 
 // HandleResponse processes a patient's response to a proactive template.

@@ -46,7 +46,8 @@ type nectarDispatcher interface {
 // para poder probar el enrutamiento con un fake; solo la usa el camino de Néctar.
 type nectarNotifier interface {
 	HasPending(phone string) bool
-	HandleResponse(phone, payload, conversationID string)
+	// GoHandleResponse corre la respuesta en segundo plano, registrada para el apagado (D-10).
+	GoHandleResponse(phone, payload, conversationID string)
 	HandleInvalidInput(phone, conversationID string) bool
 	AdoptPhonePending(contactPhone, sessionKey, conversationID, payload string) bool
 	AcceptsPostback(phone, payload string) bool
@@ -670,10 +671,7 @@ func (h *WebhookHandler) routeNectarInbound(msg bird.InboundMessage, contact bir
 	if notifPostback && notify.AcceptsPostback(msg.Phone, payload) {
 		slog.Info("nectar: notification postback received",
 			"phone", utils.MaskPhone(msg.Phone), "payload", payload)
-		go func() {
-			defer recoverLog("notification-response")
-			notify.HandleResponse(msg.Phone, payload, msg.ConversationID)
-		}()
+		notify.GoHandleResponse(msg.Phone, payload, msg.ConversationID)
 		return true
 	}
 	return notify.HandleInvalidInput(msg.Phone, msg.ConversationID)
