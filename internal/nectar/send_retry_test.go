@@ -3,6 +3,7 @@ package nectar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -152,5 +153,37 @@ func TestSend_InDoubtKeyIsReusedOnlyOnce(t *testing.T) {
 	keys := f.sentKeys()
 	if len(keys) != 3 || keys[1] != keys[0] || keys[2] == keys[1] {
 		t.Fatalf("claves = %v", keys)
+	}
+}
+
+// m13: un 429 de una ruta de mensajes llega marcado como bird.ErrLineRateLimited, también el de la
+// plantilla que sale por el already_open mine=true de una apertura; sigue sin ser permanente.
+func TestSend429_MarkedAsLineRateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == openPath {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"reason":"already_open","conversation_id":55,"mine":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	bridge := NewBridge(NewClient(srv.URL, svcKey, reqSecret), map[string]string{"p": "plantilla"})
+	bridge.ChannelID = 7
+	bc := bird.NewClientForTest(srv.URL)
+	bc.SetNectar(bridge)
+
+	_, err := bc.SendProactiveTemplate(context.Background(), "+573001234567", bird.TemplateConfig{ProjectID: "p"})
+	if !errors.Is(err, bird.ErrLineRateLimited) {
+		t.Fatalf("el 429 de la plantilla tras already_open va marcado: %v", err)
+	}
+	if bird.IsPermanentSendError(err) {
+		t.Fatalf("un 429 no es permanente: %v", err)
+	}
+
+	_, err = NewClient(srv.URL, svcKey, reqSecret).SendText(context.Background(), 1234, "hola")
+	if !errors.Is(err, bird.ErrLineRateLimited) {
+		t.Fatalf("el 429 del envío va marcado: %v", err)
 	}
 }

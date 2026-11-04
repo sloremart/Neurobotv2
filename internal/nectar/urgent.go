@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/monitor"
 )
 
@@ -46,6 +48,15 @@ type statusError struct {
 }
 
 func (e *statusError) Error() string { return e.msg }
+
+// Unwrap marca el 429 como límite de la línea, igual que el de la apertura (decodeOpen): quien recorre
+// una lista lo cuenta aparte, también si la plantilla salió por el already_open mine=true.
+func (e *statusError) Unwrap() error {
+	if e.status == http.StatusTooManyRequests {
+		return bird.ErrLineRateLimited
+	}
+	return nil
+}
 
 // newStatusError arma el statusError de una respuesta: el motivo sale del cuerpo, el cuerpo no.
 func newStatusError(status int, raw []byte, msg string) error {
