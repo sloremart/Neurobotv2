@@ -262,6 +262,38 @@ func TestAgentCommand_Cups(t *testing.T) {
 	}
 }
 
+// `/bot cups` en Bird con una cantidad por encima del tope se le rechaza al agente, igual que el
+// campo de CUPS de Néctar: nota interna con el motivo, la sesión sigue escalada y no se inyecta nada.
+func TestAgentCommand_CupsQuantityAboveMaxIsRejected(t *testing.T) {
+	pool, sm, sender, sess := escalatedPool(t)
+	resumed := false
+	sm.resumeFn = func(_ context.Context, _ *session.Session, _ string) error { resumed = true; return nil }
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "cups", Data: "883141:1 930810:150", Phone: "+573001234567",
+	})
+
+	if resumed {
+		t.Error("con la cantidad fuera de rango la sesión no se retoma")
+	}
+	if got := sess.Context["ocr_cups_json"]; got != "" {
+		t.Errorf("no se inyecta nada, got %q", got)
+	}
+	if n := countSent(sender, "text"); n != 0 {
+		t.Errorf("al paciente no le llega nada, got %d", n)
+	}
+	const want = "La cantidad máxima por CUPS es 100 (930810 tiene 150)."
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	found := false
+	for _, m := range sender.sent {
+		found = found || (m.msgType == "internal" && m.text == want)
+	}
+	if !found {
+		t.Errorf("el agente recibe %q como nota interna, got %+v", want, sender.sent)
+	}
+}
+
 func TestIsBotInterstitialMessage(t *testing.T) {
 	botMsgs := []string{
 		"Te voy a conectar con un agente. Un momento por favor...",

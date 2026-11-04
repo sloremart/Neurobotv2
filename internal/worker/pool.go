@@ -1593,6 +1593,11 @@ func (p *MessageWorkerPool) handleAgentCups(ctx context.Context, sess *session.S
 		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, "No se encontraron codigos CUPS validos en el comando.")
 		return services.AgentCupsNoCodesProblem
 	}
+	// Mismo tope que el campo de CUPS de Néctar: se le rechaza al asesor y la sesión sigue con él.
+	if problem := services.AgentCupsQuantityProblem(cups); problem != "" {
+		_, _ = p.birdClient.SendInternalText(sess.PhoneNumber, sess.ConversationID, problem)
+		return problem
+	}
 
 	// En Néctar, en UPLOAD_EMG_ORDER lo escrito es la orden de EMG: se SUMA a los dependientes de
 	// la 1ª orden, como hace el handler con la foto (C5). En Bird, y fuera de ese paso, lo escrito

@@ -402,7 +402,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (`SIESA_PENDING_RETRY_MIN`, 5) las aplica al volver: confirma con el mensaje de siempre o abre la confirmación de
   cancelación de siempre. Cita movida (otro `appointment_slot`), sesión ocupada, >6 h o cita a <2 h → agente
   (`notificacion_siesa_pendiente`).
-- Topes: cantidad por CUPS >100 → agente (`cantidad_fuera_de_rango`; EMG/NC sin cambios); 3 lecturas fallidas
+- Topes: cantidad por CUPS >100 → agente (`cantidad_fuera_de_rango`; EMG/NC sin cambios; `/bot cups` de Bird y el
+  campo de CUPS de Néctar se le rechazan al asesor con `services.AgentCupsQuantityProblem`); 3 lecturas fallidas
   seguidas de la orden (también la de la EMG, UPLOAD_EMG_ORDER) → agente (`ocr_lecturas_fallidas`); al tope de 3
   escalaciones (persistido; se reinicia cuando un agente atiende y devuelve) suman SOLO los ciclos del paciente,
   entregados o desviados por «no hay asesores»: pedir asesor y agotar reintentos (`sm.EscalationCountsTowardCap`,

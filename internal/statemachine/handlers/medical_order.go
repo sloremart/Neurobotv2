@@ -115,10 +115,8 @@ func agentCupsReturnInput() sm.ReturnInput {
 			}
 			// Mismo tope que VALIDATE_OCR: rechazada aquí, el agente la corrige en el formulario en
 			// vez de que el bot se la vuelva a escalar.
-			for _, c := range cups {
-				if c.Quantity > maxCupsQuantity {
-					return sm.Reject(fmt.Sprintf("La cantidad máxima por CUPS es %d (%s tiene %d).", maxCupsQuantity, c.Code, c.Quantity))
-				}
+			if problem := services.AgentCupsQuantityProblem(cups); problem != "" {
+				return sm.Reject(problem)
 			}
 			return sm.InputRejection{}
 		},
@@ -638,12 +636,6 @@ func uploadNonMedia(sess *session.Session, birdClient *bird.Client, msg bird.Inb
 	return sm.RetryOrEscalate(sess, "Estoy esperando una *foto o PDF* de tu orden médica. Por favor envía el archivo."), nil
 }
 
-// maxCupsQuantity es la cantidad máxima de un CUPS que el bot agenda solo. La cantidad la extrae
-// el LLM de la orden (el «(#N)» tal cual) y cada unidad suma espacios en la agenda: sin tope, una
-// orden manipulada o mal leída bloquearía media jornada de un técnico. Ninguna orden real se acerca
-// a 100; por encima la revisa un agente. EMG/NC conservan además su propio tope (applyFisiatriaRules).
-const maxCupsQuantity = 100
-
 // orderUnprocessableEscalationText es el aviso al paciente cuando VALIDATE_OCR pasa la orden a un
 // agente porque lo leído no se puede agendar tal cual.
 const orderUnprocessableEscalationText = "No pudimos procesar los procedimientos de tu orden médica. Te voy a comunicar con un agente para que pueda ayudarte."
@@ -825,7 +817,7 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 		// resumen y de agendar. No se recorta: el agente ve qué CUPS y qué cantidad trajo la orden.
 		var overQuantity []string
 		for _, cup := range cups {
-			if cup.Quantity > maxCupsQuantity {
+			if cup.Quantity > services.MaxCupsQuantity {
 				overQuantity = append(overQuantity, fmt.Sprintf("%s (cantidad %d)", cup.Code, cup.Quantity))
 			}
 		}
@@ -837,7 +829,7 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 				WithContext(sm.CtxEscalationReason, sm.EscalationReasonQuantityOutOfRange).
 				WithContext("escalation_note", fmt.Sprintf(
 					"La orden trae una cantidad mayor que %d, que el bot no agenda: %s. Verifica la orden y devuelve los CUPS con la cantidad correcta.",
-					maxCupsQuantity, strings.Join(overQuantity, ", "))).
+					services.MaxCupsQuantity, strings.Join(overQuantity, ", "))).
 				WithEvent("cups_quantity_out_of_range", map[string]interface{}{"cups": overQuantity}), nil
 		}
 

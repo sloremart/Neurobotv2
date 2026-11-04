@@ -90,7 +90,7 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 			return res
 		}},
 		{"cantidad_fuera_de_rango", sm.EscalationReasonQuantityOutOfRange, false, func(t *testing.T) *sm.StateResult {
-			return validateCups(t, []services.CUPSEntry{{Code: "883141", Name: "RM", Quantity: maxCupsQuantity + 1}})
+			return validateCups(t, []services.CUPSEntry{{Code: "883141", Name: "RM", Quantity: services.MaxCupsQuantity + 1}})
 		}},
 		{"ocr_lecturas_fallidas", sm.EscalationReasonOCRFailedReads, false, func(*testing.T) *sm.StateResult {
 			sess := testSess(sm.StateUploadMedicalOrder)

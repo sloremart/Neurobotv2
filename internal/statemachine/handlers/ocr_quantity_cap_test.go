@@ -36,7 +36,7 @@ func validateCups(t *testing.T, cups []services.CUPSEntry) *sm.StateResult {
 func TestValidateOCR_QuantityAboveMaxIsEscalated(t *testing.T) {
 	res := validateCups(t, []services.CUPSEntry{
 		{Code: "883141", Name: "RM", Quantity: 1},
-		{Code: "883210", Name: "RM columna", Quantity: maxCupsQuantity + 1},
+		{Code: "883210", Name: "RM columna", Quantity: services.MaxCupsQuantity + 1},
 	})
 	if res.NextState != sm.StateEscalateToAgent {
 		t.Fatalf("esperaba ESCALATE_TO_AGENT, got %s", res.NextState)
@@ -58,13 +58,13 @@ func TestValidateOCR_QuantityAboveMaxIsEscalated(t *testing.T) {
 
 // El tope es inclusivo: 100 sigue al resumen «¿Es correcto?» como hoy.
 func TestValidateOCR_QuantityAtMaxIsAccepted(t *testing.T) {
-	res := validateCups(t, []services.CUPSEntry{{Code: "883141", Name: "RM", Quantity: maxCupsQuantity}})
+	res := validateCups(t, []services.CUPSEntry{{Code: "883141", Name: "RM", Quantity: services.MaxCupsQuantity}})
 	if res.NextState != sm.StateConfirmOCRResult {
 		t.Fatalf("esperaba CONFIRM_OCR_RESULT, got %s", res.NextState)
 	}
 	var cups []services.CUPSEntry
 	_ = json.Unmarshal([]byte(res.UpdateCtx["ocr_cups_json"]), &cups)
-	if len(cups) != 1 || cups[0].Quantity != maxCupsQuantity {
+	if len(cups) != 1 || cups[0].Quantity != services.MaxCupsQuantity {
 		t.Errorf("la cantidad no se toca: %+v", cups)
 	}
 }
@@ -73,10 +73,10 @@ func TestValidateOCR_QuantityAtMaxIsAccepted(t *testing.T) {
 // VALIDATE_OCR la volvería a escalar como si fuera un lazo del bot.
 func TestAgentCupsReturnInput_RejectsQuantityAboveMax(t *testing.T) {
 	in := agentCupsReturnInput()
-	if rej := in.Validate(nil, "883141:"+strconv.Itoa(maxCupsQuantity+1)); rej.Reason == "" {
+	if rej := in.Validate(nil, "883141:"+strconv.Itoa(services.MaxCupsQuantity+1)); rej.Reason == "" {
 		t.Error("una cantidad mayor que el tope debe rechazarse")
 	}
-	if rej := in.Validate(nil, "883141:"+strconv.Itoa(maxCupsQuantity)); rej.Reason != "" {
+	if rej := in.Validate(nil, "883141:"+strconv.Itoa(services.MaxCupsQuantity)); rej.Reason != "" {
 		t.Errorf("la cantidad del tope se acepta, got %q", rej.Reason)
 	}
 }

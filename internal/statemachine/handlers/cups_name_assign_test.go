@@ -202,7 +202,7 @@ func TestValidateOCR_CodedCupsWhoseNameContradictsIsADoubt(t *testing.T) {
 // Un descartado sin código queda anotado aunque la orden escale por otro motivo (aquí, el tope B-10).
 func TestValidateOCR_DiscardedNoCodeIsNotedWhenTheOrderEscalatesForAnotherReason(t *testing.T) {
 	res, _ := runNameAssign(t, []services.CUPSEntry{
-		{Code: "883511", Name: "RM RODILLA", Quantity: maxCupsQuantity + 1},
+		{Code: "883511", Name: "RM RODILLA", Quantity: services.MaxCupsQuantity + 1},
 		noCode("COLONOSCOPIA TOTAL"),
 	}, nil)
 	if res.UpdateCtx[sm.CtxEscalationReason] != sm.EscalationReasonQuantityOutOfRange {
