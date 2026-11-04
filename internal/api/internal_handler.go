@@ -2394,7 +2394,8 @@ func (h *InternalHandler) HandleSessions(w http.ResponseWriter, r *http.Request)
 	if id := r.URL.Query().Get("id"); id != "" {
 		sess, err := h.sessionReader.FindByID(ctx, id)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("sessions query failed", "error", err)
+			http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 			return
 		}
 		if sess == nil {
@@ -2424,7 +2425,8 @@ func (h *InternalHandler) HandleSessions(w http.ResponseWriter, r *http.Request)
 
 	sessions, err := h.sessionReader.FindRecentByPhone(ctx, phone, limit)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("sessions query failed", "error", err)
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -2457,7 +2459,8 @@ func (h *InternalHandler) HandleSessionContext(w http.ResponseWriter, r *http.Re
 
 	ctxMap, err := h.sessionReader.GetAllContext(r.Context(), id)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("session context query failed", "error", err)
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 		return
 	}
 
