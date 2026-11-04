@@ -22,10 +22,21 @@ const (
 	channelSize = 100
 )
 
-// dedupEntry es el último envío de una alerta y cuántas repeticiones se suprimieron desde entonces.
+// dedupEntry es el último envío de una alerta (su cuerpo, para poder publicar después el conteo) y
+// cuántas repeticiones se suprimieron desde entonces.
 type dedupEntry struct {
 	sent       time.Time
+	body       string
 	suppressed int
+}
+
+// withRepeatCount añade al cuerpo cuántas repeticiones se suprimieron desde el aviso anterior.
+func withRepeatCount(body string, suppressed int) string {
+	times := "veces"
+	if suppressed == 1 {
+		times = "vez"
+	}
+	return fmt.Sprintf("%s\n<i>(se repitió %d %s más desde el aviso anterior)</i>", body, suppressed, times)
 }
 
 // AlertHandler wraps another slog.Handler and dispatches ERROR-level logs
@@ -116,15 +127,16 @@ func (h *AlertHandler) Handle(ctx context.Context, r slog.Record) error {
 		h.dedup[hash] = entry
 		return err
 	}
+	msg := body
 	if entry.suppressed > 0 {
-		body += fmt.Sprintf("\n<i>(se repitió %d veces más desde el aviso anterior)</i>", entry.suppressed)
+		msg = withRepeatCount(body, entry.suppressed)
 	}
 
 	// Non-blocking send to channel. La marca de dedup solo se escribe si la alerta se encola: una
 	// descartada por el canal lleno no silencia las siguientes (H7).
 	select {
-	case h.ch <- withTimestamp(body, r.Time):
-		h.dedup[hash] = dedupEntry{sent: time.Now()}
+	case h.ch <- withTimestamp(msg, r.Time):
+		h.dedup[hash] = dedupEntry{sent: time.Now(), body: body}
 	default:
 		// Channel full, drop alert (don't block the application).
 		// Use log.Println instead of slog to avoid infinite recursion (this IS the slog handler).
@@ -366,13 +378,23 @@ func (h *AlertHandler) hashMessage(msg string) string {
 	return fmt.Sprintf("%x", sum[:8])
 }
 
+// cleanupDedup borra las entradas vencidas. Si un error se repitió y no volvió, publica antes el
+// conteo pendiente; con el canal lleno conserva la entrada para la próxima limpieza (R1-4).
 func (h *AlertHandler) cleanupDedup() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()
 	for k, e := range h.dedup {
-		if now.Sub(e.sent) > dedupWindow {
-			delete(h.dedup, k)
+		if now.Sub(e.sent) <= dedupWindow {
+			continue
 		}
+		if e.suppressed > 0 {
+			select {
+			case h.ch <- withTimestamp(withRepeatCount(e.body, e.suppressed), now):
+			default:
+				continue
+			}
+		}
+		delete(h.dedup, k)
 	}
 }
