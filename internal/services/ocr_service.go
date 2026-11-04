@@ -149,6 +149,12 @@ type CUPSEntry struct {
 	IsSedated    bool   `json:"is_sedated"`
 	IsContrasted bool   `json:"is_contrasted"`
 	Observations string `json:"observations"`
+	// IsInterconsulta: el OCR lo leyó de una solicitud de interconsulta o remisión (sin tabla de CUPS);
+	// la asignación por nombre solo le ofrece consultas de primera vez.
+	IsInterconsulta bool `json:"is_interconsulta,omitempty"`
+	// OrderName es el nombre tal como venía en la orden cuando el código se asignó por nombre (Name pasa
+	// a ser el del catálogo); vacío si la orden traía el código.
+	OrderName string `json:"order_name,omitempty"`
 }
 
 type CUPSGroup struct {
@@ -950,6 +956,48 @@ func (s *OCRService) ReadCupsCode(ctx context.Context, documentURL, procedureNam
 	}
 	return parseCupsCode(raw), nil
 }
+
+// ChooseCupsByName es la elección por nombre de la asignación de código (cups_name.go): una llamada de
+// SOLO TEXTO con el modelo de docModel que recibe el nombre leído y la lista corta del catálogo y
+// devuelve el código elegido SOLO con confianza alta; vacío en cualquier otro caso (nunca se adivina).
+// Quien llama comprueba además que el código esté en la lista y que no contradiga el nombre leído.
+func (s *OCRService) ChooseCupsByName(ctx context.Context, readName string, candidates []CupsCandidate) (string, error) {
+	ctx, cancel := s.withAnalyzeBudget(ctx)
+	defer cancel()
+	var b strings.Builder
+	fmt.Fprintf(&b, "Procedimiento leído en la orden: %s\n\nCandidatos del catálogo:\n", strings.TrimSpace(readName))
+	for _, c := range candidates {
+		fmt.Fprintf(&b, "- %s: %s\n", c.Code, c.Name)
+	}
+	model := s.docModel
+	if model == "" {
+		model = s.model
+	}
+	raw, err := s.callOpenAIRaw(ctx, model, []map[string]interface{}{
+		{"role": "system", "content": cupsChoicePrompt},
+		{"role": "user", "content": b.String()},
+	})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Cups      *string `json:"cups"`
+		Confianza string  `json:"confianza"`
+	}
+	if json.Unmarshal([]byte(extractJSON(raw)), &out) != nil || out.Cups == nil ||
+		!strings.EqualFold(strings.TrimSpace(out.Confianza), "alta") {
+		return "", nil
+	}
+	return strings.TrimSpace(*out.Cups), nil
+}
+
+// cupsChoicePrompt: elegir de una lista cerrada o no elegir.
+const cupsChoicePrompt = `Eres un asistente que relaciona procedimientos de órdenes médicas colombianas con el catálogo de una clínica.
+Te doy el nombre de UN procedimiento tal como aparece en la orden (puede venir abreviado: RM, TAC, ECO, RX, EMG, NC) y una lista de candidatos del catálogo con su código.
+Elige el candidato que es EXACTAMENTE ese procedimiento. Si ninguno lo es, o dudas, no elijas.
+- No elijas un candidato que difiera en contraste (simple / con contraste), primera vez / control, pediátrica, lado, superior / inferior, región del cuerpo, vía (transrectal / transabdominal) o marcador del PET.
+- Solo puedes responder un código de la lista.
+Responde SOLO con JSON válido: {"cups": "<código de la lista>" o null, "confianza": "alta|media|baja"}.`
 
 // cupsCodePrompt: una sola tarea, con las trampas típicas de una orden colombiana.
 const cupsCodePrompt = `Eres un lector de órdenes médicas colombianas.

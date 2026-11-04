@@ -497,3 +497,47 @@ func TestAnalyzeDocument_PDFMultiPageWithoutCodeTriesFirstPage(t *testing.T) {
 		t.Fatalf("se prueba la primera hoja y gana la que trae código: %d llamadas, %+v", len(rec.bodies), res.Cups)
 	}
 }
+
+// Asignación por nombre: una llamada de SOLO TEXTO con el modelo de OPENAI_DOC_MODEL, con el nombre
+// leído y la lista corta; el código vale solo con confianza alta.
+func TestChooseCupsByName_TextOnlyWithDocModel(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, `{"cups": "883101", "confianza": "alta"}`)
+	svc.SetDocumentModel("modelo-doc")
+	candidates := []CupsCandidate{{"883101", "RESONANCIA NUCLEAR MAGNETICA DE CEREBRO"}, {"883104", "RESONANCIA MAGNETICA DE CEREBRO FUNCIONAL"}}
+
+	code, err := svc.ChooseCupsByName(context.Background(), "RNM CEREBRAL SIMPLE", candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != "883101" {
+		t.Fatalf("código = %q", code)
+	}
+	body := rec.bodies[0]
+	if body["model"] != "modelo-doc" || len(imageParts(body)) != 0 {
+		t.Errorf("solo texto y con el modelo de documento: %v, %d imágenes", body["model"], len(imageParts(body)))
+	}
+	raw, _ := json.Marshal(body["messages"])
+	for _, want := range []string{"RNM CEREBRAL SIMPLE", "883101", "883104", "FUNCIONAL"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("el mensaje debe traer %q", want)
+		}
+	}
+}
+
+func TestChooseCupsByName_OnlyHighConfidence(t *testing.T) {
+	for _, content := range []string{
+		`{"cups": "883101", "confianza": "media"}`,
+		`{"cups": "883101", "confianza": "baja"}`,
+		`{"cups": null, "confianza": "alta"}`,
+		`no es json`,
+	} {
+		_, svc := newRecordingOpenAI(t, content)
+		code, err := svc.ChooseCupsByName(context.Background(), "X", []CupsCandidate{{"883101", "RM"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != "" {
+			t.Errorf("%s → %q, quería vacío", content, code)
+		}
+	}
+}
