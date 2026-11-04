@@ -440,7 +440,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   código. `/bot orden` con un procedimiento sin código se le rechaza al agente pidiendo el código. Lo asignado:
   `ocr_cups_name_assignments` («CUPS asignados por nombre»), `agendar/cups_asignado_nombre`, y el paciente ve
   «<catálogo> (en tu orden: «<leído, ≤60>»)» (cuerpo ≤1.024). «CON Y SIN CONTRASTE» (y sin y con, con/sin, c/s,
-  gadolinio) es contrastado: queda «SIMPLE Y CONTRASTE» antes de leer «SIN CONTRASTE». Guarda: un CUPS CON código
+  gadolinio) es contrastado: queda «SIMPLE Y CONTRASTE» antes de leer «SIN CONTRASTE»; «C/C», «C/CTE», «C/MEDIO» →
+  CONTRASTE y «S/C», «S/CONTRASTE» → SIMPLE; una abreviatura con barra desconocida («C/X») no vale como silencio
+  del contraste (solo asigna el nombre igual). Guarda: un CUPS CON código
   cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
   vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos
   lo mencionan y no comparten ningún valor tras los sinónimos; NO modalidad) → agente (`cups_posible_mala_lectura`).

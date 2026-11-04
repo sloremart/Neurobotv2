@@ -123,13 +123,23 @@ var catalogNoise = map[string]bool{
 // MUSCULOS)», «(CADA NERVIO)», «[CARPOGRAMA]». No obliga al nombre leído a traerlo.
 var catalogAnnotation = regexp.MustCompile(`\([^)]*\)|\[[^\]]*\]`)
 
+// slashContrast son las abreviaturas con barra del contraste: «C/C», «C/ CONTRASTE», «C/CTE», «C/MEDIO»
+// (con contraste) y «S/C», «S/CONTRASTE» (sin contraste). Van antes de partir en palabras, porque la
+// partición descarta las palabras de una letra y el contraste se leería como silencio (SIMPLE). Con
+// límites de palabra, para no tocar «TAC/C…».
+var slashContrast = regexp.MustCompile(`\b([CS]) ?/ ?(C|CTE|CONTRASTE|MEDIO)\b`)
+
+// unknownSlash son letras sueltas pegadas a una barra que no son una abreviatura conocida («C/X»): su
+// sentido se pierde al partir en palabras.
+var unknownSlash = regexp.MustCompile(`\b[A-Z] ?/|/ ?[A-Z]\b`)
+
 // quantityMark es la cantidad de las órdenes («(#4)», «#16»): no es parte del nombre.
 var quantityMark = regexp.MustCompile(`#\s*\d+`)
 
 // canonicalOrderName deja un nombre de procedimiento en la forma común de las órdenes y el catálogo:
 // mayúsculas, sin tildes, con las frases y abreviaturas de orderPhrases y orderAbbreviations.
 func canonicalOrderName(text string) string {
-	folded := orderPhrases.Replace(accentFolder.Replace(strings.ToUpper(text)))
+	folded := foldOrderName(text)
 	folded = quantityMark.ReplaceAllString(folded, " ")
 	var out []string
 	for _, w := range strings.FieldsFunc(folded, func(r rune) bool {
@@ -144,6 +154,23 @@ func canonicalOrderName(text string) string {
 		out = append(out, w)
 	}
 	return strings.Join(out, " ")
+}
+
+// foldOrderName pasa a mayúsculas sin tildes y reemplaza las frases y abreviaturas con barra del contraste.
+func foldOrderName(text string) string {
+	folded := orderPhrases.Replace(accentFolder.Replace(strings.ToUpper(text)))
+	return slashContrast.ReplaceAllStringFunc(folded, func(m string) string {
+		if strings.HasPrefix(m, "S") {
+			return " SIMPLE "
+		}
+		return " CONTRASTE "
+	})
+}
+
+// hasUnknownSlash dice si el nombre trae letras sueltas con barra que no se entendieron («C/X»): entonces
+// el contraste no se puede dar por silencio.
+func hasUnknownSlash(text string) bool {
+	return unknownSlash.MatchString(foldOrderName(text))
 }
 
 // CupsNameKey es la forma canónica de un nombre de procedimiento (sin tildes, mayúsculas y abreviaturas
@@ -187,9 +214,12 @@ func ResolveCupsByName(
 	}
 	// La lista corta pone primero los que encajan: un nombre de catálogo con muchas anotaciones (la EMG
 	// «en cada extremidad (uno o más músculos)») puede quedar lejos por parecido y ser el único que encaja.
+	// Una abreviatura con barra que no se entendió («C/X») puede decir algo del contraste: no vale como
+	// silencio (SIMPLE) y nada encaja por ese lado; solo el nombre igual, arriba, asigna.
+	contrastUnknown := hasUnknownSlash(read)
 	var fitting, rest []CupsCandidate
 	for _, c := range nameCandidates(retrievalRead, catalog) {
-		if candidateFits(canonRead, c.Name) {
+		if candidateFits(canonRead, c.Name, contrastUnknown) {
 			fitting = append(fitting, c)
 		} else {
 			rest = append(rest, c)
@@ -416,11 +446,15 @@ func CupsNamesConflict(read, catalog string) bool {
 //     FIBRA ÚNICA, CERVICO DORSAL, PÍLORO), salvo sus anotaciones (catalogNoise y lo que va entre
 //     paréntesis);
 //   - en cada grupo de calificadores los dos dicen lo mismo: el leído puede precisar el lado o
-//     superior/inferior, el silencio en el contraste vale SIMPLE y en la pediatría, adultos.
-func candidateFits(canonRead, candName string) bool {
+//     superior/inferior, el silencio en el contraste vale SIMPLE (salvo contrastUnknown: el leído traía
+//     una abreviatura con barra que no se entendió) y en la pediatría, adultos.
+func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
 	canonCand := canonicalOrderName(candName)
 	for _, g := range qualifierGroups {
 		rv, cv := g.groupValues(canonRead), g.groupValues(canonCand)
+		if contrastUnknown && g.values["CONTRASTE"] != "" && len(rv) == 0 {
+			return false
+		}
 		if g.silentAs != "" {
 			if len(rv) == 0 {
 				rv = map[string]bool{g.silentAs: true}

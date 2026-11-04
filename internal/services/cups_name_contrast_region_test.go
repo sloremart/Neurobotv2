@@ -109,3 +109,54 @@ func TestCupsNamesConflict_RegionPairsOfTheReview(t *testing.T) {
 		t.Error("lumbar frente a cervical es contradicción")
 	}
 }
+
+// R2-1: «C/C» es «con contraste» y «S/C», «sin contraste». Antes la palabra de una letra se descartaba,
+// el contraste se leía como silencio (SIMPLE) y el modelo podía confirmar el estudio simple.
+func TestResolveCupsByName_SlashContrastAbbreviations(t *testing.T) {
+	for _, read := range []string{
+		"TAC CRANEO C/C", "TAC DE CRANEO C/C", "RM COLUMNA LUMBAR C/C", "TAC CRANEO C/ CONTRASTE",
+		"TAC CRANEO C/CONTRASTE", "TAC CRANEO C/CTE", "TAC CRANEO C/MEDIO DE CONTRASTE",
+		// Abreviatura con barra desconocida: el contraste no es silencio (salvo nombre igual).
+		"TAC CRANEO C/X", "RM COLUMNA LUMBAR X/C",
+	} {
+		for _, code := range acceptedByAdversary(read, contrastCatalog, false) {
+			if simpleCodes[code] {
+				t.Errorf("%q: se asignaría el estudio SIMPLE %s", read, code)
+			}
+		}
+	}
+	if res := ResolveCupsByName("TAC CRANEO C/C", contrastCatalog, false, nil); res.Code != "879112" {
+		t.Errorf("TAC cráneo C/C es el con contraste: %+v", res)
+	}
+	for _, read := range []string{"TAC CRANEO S/C", "TAC CRANEO S/CONTRASTE"} {
+		if res := ResolveCupsByName(read, contrastCatalog, false, nil); res.Code != "879111" {
+			t.Errorf("%q es el simple: %+v", read, res)
+		}
+	}
+	// Las palabras con barra que ya existían no cambian: la TAC no pierde su «C» (TAC/C…).
+	if got := canonicalOrderName("TAC/CONTRASTE"); !strings.Contains(got, "TOMOGRAFIA") {
+		t.Errorf("TAC/CONTRASTE: %q", got)
+	}
+}
+
+func TestCupsNamesConflict_SlashContrastAbbreviations(t *testing.T) {
+	for _, c := range []struct{ read, catalog string }{
+		{"TAC CRANEO C/C", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO CON CONTRASTE"},
+		{"TAC CRANEO S/C", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE"},
+		{"TAC CRANEO DOBLE FASE", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO CON CONTRASTE"},
+		{"TAC CRANEO SIMPLE + CONTRASTE", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE Y CON CONTRASTE"},
+		{"TAC CRANEO CONTRASTE EV", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO CON CONTRASTE"},
+		{"RM COLUMNA LUMBAR CON GADOLINIO", "RESONANCIA MAGNETICA DE COLUMNA LUMBAR CON CONTRASTE"},
+		{"RM COLUMNA LUMBAR SIMPLE + CONTRASTE", "RESONANCIA MAGNETICA DE COLUMNA LUMBAR CON CONTRASTE"},
+		{"TAC CRANEO SIMPLE Y CONTRASTADO", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO CON CONTRASTE"},
+		{"TAC CRANEO CONTRASTADO", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE Y CON CONTRASTE"},
+		{"TAC CRANEO SIN CONTRASTE Y CON CONTRASTE", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE Y CON CONTRASTE"},
+	} {
+		if CupsNamesConflict(c.read, c.catalog) {
+			t.Errorf("CupsNamesConflict(%q, %q) = true", c.read, c.catalog)
+		}
+	}
+	if !CupsNamesConflict("TAC CRANEO C/C", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE") {
+		t.Error("C/C frente al simple es contradicción")
+	}
+}
