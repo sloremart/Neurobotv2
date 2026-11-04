@@ -1454,3 +1454,62 @@ func TestDispatchNectarNotice_RealPoolSkipsInFlight(t *testing.T) {
 		t.Fatalf("no se enruta: %d respuestas", len(notify.responses))
 	}
 }
+
+// blockingSink deja el despacho colgado en la cola hasta release.
+type blockingSink struct {
+	*sinkRecorder
+	release chan struct{}
+}
+
+func (s blockingSink) Enqueue(m bird.InboundMessage) bool {
+	<-s.release
+	return s.sinkRecorder.Enqueue(m)
+}
+
+// unwrapOnlyWriter es un middleware futuro que envuelve la respuesta sin reexportar Flush.
+type unwrapOnlyWriter struct{ http.ResponseWriter }
+
+func (w unwrapOnlyWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// R2-2: el acuse de un aviso sale antes de terminar el despacho por la cadena real de main, también con
+// un envoltorio que no reexporta Flush: Néctar no espera el GET …/state ni la cola.
+func TestHandleNectarNotice_AckCrossesMiddlewareChain(t *testing.T) {
+	sink := blockingSink{sinkRecorder: &sinkRecorder{}, release: make(chan struct{})}
+	h := newNectarHandler(nil, sink.sinkRecorder)
+	h.SetNectarSink(sink)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST "+nectarPath, func(w http.ResponseWriter, r *http.Request) {
+		h.HandleNectarNotice(unwrapOnlyWriter{w}, r)
+	})
+	srv := httptest.NewServer(SecurityHeaders(RequestLogger(mux)))
+	t.Cleanup(srv.Close)
+	defer close(sink.release)
+
+	body := inboundBody("e-ack")
+	signed := signedNotice(nectarTestSecret, body)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+nectarPath, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header = signed.Header
+	req.Host = nectarHost
+
+	got := make(chan int, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			got <- 0
+			return
+		}
+		_ = resp.Body.Close()
+		got <- resp.StatusCode
+	}()
+	select {
+	case code := <-got:
+		if code != http.StatusOK {
+			t.Fatalf("código %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("el acuse no salió hasta que terminó el despacho")
+	}
+}

@@ -15,16 +15,15 @@ import (
 // maxRequestBodySize limits the size of incoming request bodies (1 MB).
 const maxRequestBodySize = 1 << 20
 
-// RequestLogger middleware para logging de requests (skips /health to reduce noise). Una respuesta de
-// error (>= 400: 401, 404 de una ruta inventada, 405, 429…) la puede provocar cualquiera sin límite,
-// así que su línea va con el tope de logSampler, con una cuenta por código; las 2xx y 3xx se
-// registran todas.
+// RequestLogger middleware para logging de requests (skips /health to reduce noise). Una respuesta 4xx
+// (401, 404 de una ruta inventada, 405, 429…) la puede provocar cualquiera sin límite, así que su línea
+// va con el tope de logSampler, con una cuenta por código; las demás se registran todas.
 func RequestLogger(next http.Handler) http.Handler {
 	var mu sync.Mutex
 	errorLogs := map[int]*logSampler{} // por código: el conjunto está acotado (enteros de estado HTTP)
 	samplerFor := func(status int) *logSampler {
-		if status < http.StatusBadRequest {
-			return nil // sin tope
+		if status < http.StatusBadRequest || status >= http.StatusInternalServerError {
+			return nil // sin tope: un 5xx no se provoca a voluntad y es lo que se mira en una caída
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -71,8 +70,8 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-// Flush delega en el writer original: los handlers que acusan antes de terminar (avisos de Néctar)
-// hacen w.(http.Flusher) y no pasan por http.ResponseController.
+// Flush delega en el writer original: el acuse inmediato de los avisos de Néctar sale antes de terminar
+// el handler (http.ResponseController lo encuentra aquí, o sigue por Unwrap).
 func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		s.wroteHeader = true

@@ -441,9 +441,7 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 	// El acuse sale YA: el despacho de un mensaje puede preguntar el contacto a Néctar (GET …/state)
 	// y Néctar no tiene por qué esperar esa vuelta para dar el aviso por entregado.
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
+	_ = http.NewResponseController(w).Flush() // sin soporte de Flush, el acuse sale al terminar
 	// La whitelist de teléfonos no va aquí sino en dispatchNectar: el aviso no trae el número
 	// (ámbito mínimo de Néctar), hay que preguntarlo, y así el replay del WAL la aplica también.
 	if n.Kind == nectar.KindInboundMessage && h.birdClient != nil {

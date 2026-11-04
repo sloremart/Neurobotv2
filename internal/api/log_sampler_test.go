@@ -161,7 +161,7 @@ func TestLogSampler_SummaryAtWindowEnd(t *testing.T) {
 	}
 }
 
-// TestRequestLogger_ErrorFloodIsCapped: cualquier código >= 400 se puede provocar sin límite (404 de rutas
+// TestRequestLogger_ErrorFloodIsCapped: cualquier código 4xx se puede provocar sin límite (404 de rutas
 // inventadas, 405…): su línea «request» va con tope, una cuenta por código.
 func TestRequestLogger_ErrorFloodIsCapped(t *testing.T) {
 	logs := captureWarnLog(t)
@@ -176,5 +176,21 @@ func TestRequestLogger_ErrorFloodIsCapped(t *testing.T) {
 		if got := strings.Count(logs.String(), code); got == 0 || got > authLogBurst {
 			t.Errorf("200 respuestas %s dejaron %d líneas; quiero entre 1 y %d", code, got, authLogBurst)
 		}
+	}
+}
+
+// R2-1: los 5xx no los provoca un anónimo a voluntad y son lo que se mira en una caída: todos dejan su
+// línea «request».
+func TestRequestLogger_ServerErrorsAreNotCapped(t *testing.T) {
+	logs := captureWarnLog(t)
+	handler := RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	const n = 3 * authLogBurst
+	for range n {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/internal/x", nil))
+	}
+	if got := strings.Count(logs.String(), "status=500"); got != n {
+		t.Fatalf("%d respuestas 500 dejaron %d líneas", n, got)
 	}
 }
