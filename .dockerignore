@@ -1,0 +1,31 @@
+# Contexto de build de docker/Dockerfile (bot) y docker/Dockerfile.ngrok. El build solo necesita
+# go.mod, go.sum, cmd/, internal/, migrations/ y .git (sella el commit en el binario; ver el
+# Dockerfile). Todo lo demás queda fuera: sin esto `COPY . .` metía el .env (todos los secretos) y los
+# backups de BD en la capa del builder, que queda en la caché del servidor.
+
+# Secretos y configuración local: se cargan en tiempo de ejecución (env_file), nunca en la imagen.
+.env
+.env.*
+
+# Datos, salidas y material local que no compila.
+backups/
+auditoria/
+seed-kpis
+bin/
+/server
+*.exe
+**/*.log
+**/*.bak
+**/*.sql.gz
+# Los .sql sueltos (volcados) fuera; las migraciones sí entran.
+**/*.sql
+!migrations/*.sql
+
+# Herramientas y documentación.
+.claude/
+.superpowers/
+.idea/
+.vscode/
+docs/
+postman/
+docker-compose*.yml
