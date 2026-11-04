@@ -219,3 +219,62 @@ func TestProcessAgentCommand_NoticeWithoutEscalatedAtApplies(t *testing.T) {
 		t.Fatalf("got %d", sm.completeCalls)
 	}
 }
+
+// m1: la resuelta o devuelta que pierde el candado se reencola en memoria (como un mensaje, B-01) y
+// se aplica apenas se libera, sin esperar los 10-15 min del replay de atascados. Mientras tanto su
+// fila sigue 'pending' y el pool la reporta en vuelo.
+func TestProcessAgentCommand_LockMissRequeuesInMemory(t *testing.T) {
+	pool, sm, inbox, _ := nectarEscalatedPool(t)
+	pool.lockTimeout = 50 * time.Millisecond
+	if err := sm.mutex.Lock(context.Background(), nectarTestKey); err != nil {
+		t.Fatal(err)
+	}
+	cmd := AgentCommand{Action: "close", Phone: nectarTestKey, EventID: "e-requeue", Reason: CloseReasonResolved}
+	pool.processAgentCommand(context.Background(), cmd)
+
+	if len(pool.agentCmds) != 1 {
+		t.Fatalf("el comando debía reencolarse, buffer = %d", len(pool.agentCmds))
+	}
+	if inbox.doneCount() != 0 || !pool.IsInFlight("e-requeue") {
+		t.Fatalf("la fila sigue pendiente y en vuelo: done=%v inflight=%v", inbox.done, pool.IsInFlight("e-requeue"))
+	}
+
+	sm.mutex.Unlock(nectarTestKey)
+	pool.processAgentCommand(context.Background(), <-pool.agentCmds)
+	if sm.completeCalls != 1 || inbox.doneCount() != 1 {
+		t.Fatalf("el reintento aplica y cierra la fila: completes=%d done=%v", sm.completeCalls, inbox.done)
+	}
+	if pool.IsInFlight("e-requeue") {
+		t.Fatal("aplicado, ya no está en vuelo")
+	}
+}
+
+// Pasado maxPhoneLockWait desde el primer intento fallido deja de reencolarse: la fila queda para el
+// replay, como antes. Un comando sin fila (Bird, no_show) no se reencola.
+func TestProcessAgentCommand_LockMissStopsRequeuing(t *testing.T) {
+	t.Run("espera agotada", func(t *testing.T) {
+		pool, sm, inbox, _ := nectarEscalatedPool(t)
+		pool.lockTimeout = 20 * time.Millisecond
+		if err := sm.mutex.Lock(context.Background(), nectarTestKey); err != nil {
+			t.Fatal(err)
+		}
+		defer sm.mutex.Unlock(nectarTestKey)
+		pool.agentCmdMisses.Store("e-old", time.Now().Add(-maxPhoneLockWait-time.Second))
+		pool.processAgentCommand(context.Background(), AgentCommand{Action: "close", Phone: nectarTestKey, EventID: "e-old"})
+		if len(pool.agentCmds) != 0 || pool.IsInFlight("e-old") || inbox.doneCount() != 0 {
+			t.Fatalf("no se reencola y la fila queda pendiente: buffer=%d done=%v", len(pool.agentCmds), inbox.done)
+		}
+	})
+	t.Run("sin fila", func(t *testing.T) {
+		pool, sm, _, _ := nectarEscalatedPool(t)
+		pool.lockTimeout = 20 * time.Millisecond
+		if err := sm.mutex.Lock(context.Background(), nectarTestKey); err != nil {
+			t.Fatal(err)
+		}
+		defer sm.mutex.Unlock(nectarTestKey)
+		pool.processAgentCommand(context.Background(), AgentCommand{Action: "no_show", Phone: nectarTestKey})
+		if len(pool.agentCmds) != 0 {
+			t.Fatalf("un comando sin fila no se reencola, buffer=%d", len(pool.agentCmds))
+		}
+	})
+}

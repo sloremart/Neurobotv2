@@ -212,6 +212,7 @@ type MessageWorkerPool struct {
 	recentMessages sync.Map     // messageID -> time.Time (dedup)
 	lockMisses     sync.Map     // messageID -> lockMiss: primer intento fallido por el candado del teléfono (B-01)
 	lockWaiters    sync.Map     // phone -> struct{}: ya hay un worker esperando el candado de ese teléfono (B-01)
+	agentCmdMisses sync.Map     // event_id -> time.Time: primer intento fallido por el candado de un comando de Néctar
 	dedupCount     atomic.Int64 // approximate count for safety cap
 	workers        int
 	activeOverflow atomic.Int32
@@ -623,6 +624,52 @@ func (p *MessageWorkerPool) requeueLockMiss(msg bird.InboundMessage) {
 	}
 }
 
+// requeueAgentCmdLockMiss reencola en memoria, como handleLockMiss a un mensaje (B-01), el comando de
+// una resuelta o devuelta de Néctar que no consiguió el candado de su teléfono: se aplica apenas se
+// libere, y no 10-15 min tarde por el replay de atascados. Su fila del WAL sigue 'pending' mientras
+// tanto (la cierra el intento que lo aplique). El reencolado es inmediato: el intento fallido ya
+// esperó lockTimeout. Pasado maxPhoneLockWait desde el primer intento fallido deja de reencolarlo y
+// la fila queda para el replay, como antes; con el pool apagándose o el buffer lleno, igual
+// (EnqueueAgentCommand). Un comando sin fila (Bird, no_show) se descarta, como siempre.
+func (p *MessageWorkerPool) requeueAgentCmdLockMiss(appCtx context.Context, cmd AgentCommand, attemptStart time.Time) {
+	if p.inboxRepo == nil || cmd.EventID == "" {
+		return
+	}
+	first := attemptStart
+	if v, retried := p.agentCmdMisses.Load(cmd.EventID); retried {
+		first = v.(time.Time)
+	}
+	if waited := time.Since(first); waited >= maxPhoneLockWait {
+		p.agentCmdMisses.Delete(cmd.EventID)
+		slog.Warn("phone lock timeout (agent cmd): se deja de reencolar, la fila queda para el replay",
+			"event_id", cmd.EventID, "phone", utils.MaskPhone(cmd.Phone), "waited", waited.Round(time.Second))
+		return
+	}
+	if appCtx.Err() != nil {
+		return // apagándose: la fila queda para el replay de arranque
+	}
+	p.agentCmdMisses.Store(cmd.EventID, first) // antes del reencolado: quien lo tome ya lo ve como reintento
+	if !p.EnqueueAgentCommand(cmd) {
+		// No quedó en memoria: el replay de atascados no debe verlo en vuelo (IsInFlight).
+		p.agentCmdMisses.Delete(cmd.EventID)
+		return
+	}
+	slog.Info("phone lock timeout (agent cmd): comando reencolado", "event_id", cmd.EventID,
+		"phone", utils.MaskPhone(cmd.Phone))
+}
+
+// IsInFlight dice si el pool tiene en memoria el mensaje o el comando de esa fila del WAL: un mensaje
+// con el claim de dedup vivo (B-01 lo renueva en cada reencolado) o un comando que se reencola por el
+// candado. El replay de atascados salta esas filas: si no, repetiría el enrutado de una fila de
+// Néctar antes del dedup y podría reenviar botones pagados.
+func (p *MessageWorkerPool) IsInFlight(id string) bool {
+	if _, ok := p.recentMessages.Load(id); ok {
+		return true
+	}
+	_, ok := p.agentCmdMisses.Load(id)
+	return ok
+}
+
 // renewDedupClaim refresca el claim de dedup de un mensaje reencolado: su reencolado puede durar más
 // que dedupTTL y, sin renovarlo, el replay de atascados metería una segunda copia en vuelo (B-01).
 // Un reenvío del webhook no llega aquí: el WAL ya lo rechaza en InsertIfNotExists.
@@ -639,6 +686,13 @@ func (p *MessageWorkerPool) purgeStaleLockMisses(now time.Time) {
 	p.lockMisses.Range(func(key, value interface{}) bool {
 		if now.Sub(value.(lockMiss).first) > 2*maxPhoneLockWait {
 			p.lockMisses.Delete(key)
+		}
+		return true
+	})
+	// Lo mismo para los comandos de Néctar reencolados que nunca se aplicaron (p. ej. un pánico).
+	p.agentCmdMisses.Range(func(key, value interface{}) bool {
+		if now.Sub(value.(time.Time)) > 2*maxPhoneLockWait {
+			p.agentCmdMisses.Delete(key)
 		}
 		return true
 	})
@@ -948,6 +1002,7 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd AgentCommand) {
 	// BUG-004: desacoplar del ctx de apagado (igual que processMessage) para no abortar a medias el
 	// comando del agente (resume/close/etc.) si el redeploy cancela el app-ctx en vuelo.
+	appCtx := parentCtx // el reencolado tras perder el candado sí mira el apagado
 	parentCtx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), processMsgTimeout)
 	defer cancel()
 
@@ -973,6 +1028,7 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 	}
 
 	// 1. Acquire phone lock
+	attemptStart := time.Now()
 	lockCtx, lockCancel := context.WithTimeout(parentCtx, p.lockTimeout)
 	defer lockCancel()
 
@@ -981,9 +1037,13 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 		observability.Emit("infra:phone_lock_timeout", "infra", "phone_lock_timeout",
 			observability.EmitOpts{Phone: cmd.Phone, Reason: "agent_cmd"})
 		keepPending = true
+		p.requeueAgentCmdLockMiss(appCtx, cmd, attemptStart)
 		return
 	}
 	defer p.sessionManager.PhoneMutex().Unlock(cmd.Phone)
+	if cmd.EventID != "" {
+		p.agentCmdMisses.Delete(cmd.EventID)
+	}
 
 	// 2. Find escalated session — NUNCA FindOrCreate: un comando de agente no crea sesión, y la
 	// escalada puede estar VENCIDA (invisible para FindOrCreate pero bloqueante para el Create →
