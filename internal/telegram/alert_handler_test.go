@@ -346,3 +346,15 @@ func TestAlertHandler_DedupMarksOnlySentAndCountsRepeats(t *testing.T) {
 		t.Errorf("la alerta dice cuántas repeticiones se suprimieron: %q", msg)
 	}
 }
+
+// R1-2: un cuerpo JSON recortado (p. ej. a 400 caracteres antes de incrustarlo en el error) no es
+// JSON válido, pero sigue siendo un cuerpo: se omite igual, con su código si se ve.
+func TestTrimForAlert_TruncatedJSONBody(t *testing.T) {
+	got := trimForAlert(`create conversation: status 422: {"code":"InvalidContact","contact":{"displayName":"María López","identifierValue":"+57`)
+	if strings.Contains(got, "María") || strings.Contains(got, "displayName") {
+		t.Errorf("el cuerpo JSON recortado salió a la alerta: %q", got)
+	}
+	if !strings.Contains(got, "status 422") || !strings.Contains(got, "code=InvalidContact") {
+		t.Errorf("se conservan el contexto y el código: %q", got)
+	}
+}

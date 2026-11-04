@@ -248,12 +248,13 @@ func redactValue(s string) string {
 // maxAttrRunes es el largo máximo de un valor en la alerta; el valor entero queda en el log.
 const maxAttrRunes = 160
 
-// errorCodeRe reconoce un código de error corto (p. ej. "already_open") que vale la pena conservar.
-var errorCodeRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,40}$`)
+// jsonCodeRe captura un código de error corto (p. ej. "already_open") que vale la pena conservar.
+var jsonCodeRe = regexp.MustCompile(`"(code|error)"\s*:\s*"([A-Za-z0-9_.-]{1,40})"`)
 
-// omitJSONBody sustituye el primer objeto JSON del texto (el cuerpo que Bird y Néctar incrustan en
-// sus errores, que puede repetir el contacto con su nombre) por su largo y su código de error. Un
-// «{» que no abre un objeto JSON válido (p. ej. un struct impreso con %v) se deja como está (H6).
+// omitJSONBody sustituye el primer cuerpo JSON del texto (el que Bird y Néctar incrustan en sus
+// errores, que puede repetir el contacto con su nombre) por su largo y su código de error. Un JSON
+// que empieza bien pero no cierra es un cuerpo recortado y se omite hasta el final (R1-2); un «{»
+// que no abre un objeto JSON (p. ej. un struct impreso con %v) se deja como está (H6).
 func omitJSONBody(s string) string {
 	for start := 0; start < len(s); {
 		i := strings.Index(s[start:], "{")
@@ -261,19 +262,18 @@ func omitJSONBody(s string) string {
 			return s
 		}
 		i += start
+		end := len(s)
 		var body map[string]interface{}
 		dec := json.NewDecoder(strings.NewReader(s[i:]))
-		if err := dec.Decode(&body); err != nil {
+		if err := dec.Decode(&body); err == nil {
+			end = i + int(dec.InputOffset())
+		} else if !strings.HasPrefix(s[i:], `{"`) {
 			start = i + 1
 			continue
 		}
-		end := i + int(dec.InputOffset())
 		label := fmt.Sprintf("[cuerpo omitido: %d caracteres", utf8.RuneCountInString(s[i:end]))
-		for _, key := range []string{"code", "error"} {
-			if v, ok := body[key].(string); ok && errorCodeRe.MatchString(v) {
-				label += ", " + key + "=" + v
-				break
-			}
+		if m := jsonCodeRe.FindStringSubmatch(s[i:end]); m != nil {
+			label += ", " + m[1] + "=" + m[2]
 		}
 		return s[:i] + label + "]" + s[end:]
 	}
