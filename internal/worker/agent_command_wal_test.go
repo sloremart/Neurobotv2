@@ -278,3 +278,26 @@ func TestProcessAgentCommand_LockMissStopsRequeuing(t *testing.T) {
 		}
 	})
 }
+
+// m24: escalated_at llega de la BD en la hora de Bogotá y occurred_at de Néctar en UTC: se comparan
+// como instantes. El mismo instante (o uno posterior) se aplica; uno 10 min anterior se ignora.
+func TestProcessAgentCommand_NoticeComparesBogotaAgainstUTC(t *testing.T) {
+	bogota := time.FixedZone("America/Bogota", -5*60*60)
+	escalatedAt := time.Date(2026, 11, 3, 10, 0, 0, 0, bogota) // 15:00 UTC
+	for _, c := range []struct {
+		occurredAt time.Time
+		wantApply  bool
+	}{
+		{time.Date(2026, 11, 3, 15, 0, 30, 0, time.UTC), true},
+		{time.Date(2026, 11, 3, 14, 50, 0, 0, time.UTC), false},
+	} {
+		pool, sm, _, sess := nectarEscalatedPool(t)
+		sess.EscalatedAt = &escalatedAt
+		pool.processAgentCommand(context.Background(), AgentCommand{
+			Action: "close", Phone: nectarTestKey, EventID: "e-tz", OccurredAt: c.occurredAt, Reason: CloseReasonResolved,
+		})
+		if (sm.completeCalls == 1) != c.wantApply {
+			t.Fatalf("occurred_at %s: aplicado=%d, quiero %v", c.occurredAt, sm.completeCalls, c.wantApply)
+		}
+	}
+}
