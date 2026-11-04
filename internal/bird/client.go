@@ -877,6 +877,11 @@ func whatsAppContentCode(msg string) (string, bool) {
 // If conversationID is provided, routes via Conversations API (WhatsApp + Inbox).
 // Falls back to Channels API (WhatsApp only) if conversationID is empty or Conversations API fails.
 func (c *Client) SendText(to, conversationID, text string) (string, error) {
+	return c.SendTextCtx(context.Background(), to, conversationID, text)
+}
+
+// SendTextCtx es SendText con un plazo que rige solo el desvío a Néctar: el camino de Bird no cambia.
+func (c *Client) SendTextCtx(ctx context.Context, to, conversationID, text string) (string, error) {
 	if c.nectarKeyWithoutBridge(to) {
 		return "", ErrNectarBridgeOff
 	}
@@ -884,7 +889,7 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 		return "", ErrSendRateLimited
 	}
 	if id, ok := c.nectarConversation(to, conversationID); ok {
-		return c.nectar.SendText(context.Background(), id, text)
+		return c.nectar.SendText(ctx, id, text)
 	}
 	body := map[string]interface{}{
 		"type": "text",
@@ -921,6 +926,11 @@ func (c *Client) SendText(to, conversationID, text string) (string, error) {
 // SendButtons envía un mensaje con botones postback (máx 3).
 // Routes via Conversations API when conversationID is available.
 func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) (string, error) {
+	return c.SendButtonsCtx(context.Background(), to, conversationID, text, buttons)
+}
+
+// SendButtonsCtx es SendButtons con un plazo que rige solo el desvío a Néctar.
+func (c *Client) SendButtonsCtx(ctx context.Context, to, conversationID, text string, buttons []Button) (string, error) {
 	if c.nectarKeyWithoutBridge(to) {
 		return "", ErrNectarBridgeOff
 	}
@@ -949,7 +959,7 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 		for i, btn := range buttons {
 			truncated[i] = Button{Text: truncateWhatsApp(btn.Text, waButtonLabelMax), Payload: btn.Payload}
 		}
-		return c.nectar.SendButtons(context.Background(), id, text, truncated)
+		return c.nectar.SendButtons(ctx, id, text, truncated)
 	}
 
 	body := map[string]interface{}{
@@ -980,12 +990,17 @@ func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) 
 	for i, btn := range buttons {
 		textFallback += fmt.Sprintf("\n%d. %s", i+1, btn.Text)
 	}
-	return c.SendText(to, conversationID, textFallback)
+	return c.SendTextCtx(ctx, to, conversationID, textFallback)
 }
 
 // SendList envía un mensaje con lista interactiva.
 // Routes via Conversations API when conversationID is available.
 func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections []ListSection) (string, error) {
+	return c.SendListCtx(context.Background(), to, conversationID, body, buttonLabel, sections)
+}
+
+// SendListCtx es SendList con un plazo que rige solo el desvío a Néctar.
+func (c *Client) SendListCtx(ctx context.Context, to, conversationID, body, buttonLabel string, sections []ListSection) (string, error) {
 	if c.nectarKeyWithoutBridge(to) {
 		return "", ErrNectarBridgeOff
 	}
@@ -1038,7 +1053,7 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 			}
 			out[i] = ListSection{Title: truncateWhatsApp(section.Title, waSectionTitle), Rows: rows}
 		}
-		return c.nectar.SendList(context.Background(), id, body, button, out)
+		return c.nectar.SendList(ctx, id, body, button, out)
 	}
 
 	msgBody := map[string]interface{}{
@@ -1093,7 +1108,7 @@ func (c *Client) SendList(to, conversationID, body, buttonLabel string, sections
 			idx++
 		}
 	}
-	return c.SendText(to, conversationID, textFallback)
+	return c.SendTextCtx(ctx, to, conversationID, textFallback)
 }
 
 // SendInternalText sends a text message visible only in Bird Inbox (not delivered to WhatsApp).

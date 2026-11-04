@@ -391,6 +391,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   a los 10 s): en Néctar hasta 2 (10 s, 30 s) solo ante 5xx, transporte o 429, con la MISMA clave en duda; el 429 espera
   su Retry-After si es mayor (≤60 s; más: no se reintenta, evento `infra/send_retry_after_too_long`). Corren fuera del
   candado; el 2.º y el de Retry-After largo no corren si no caben en el plazo del mensaje ni si ya salió otro mensaje a ese paciente.
+  Los envíos del turno por Néctar llevan el plazo que le queda al mensaje (mínimo 5 s, para que un turno que lo gastó aún
+  responda); abandonado por plazo no se reintenta y su clave queda en duda. Quedan sin plazo propio (15 s del cliente):
+  `SendTemplate`, `Available` y los envíos directos con `SendText`.
 - Avisos resuelta/devuelta de Néctar: su fila del WAL se cierra al procesar el comando; un aviso anterior a la
   escalación vigente (−2 min de tolerancia) se ignora.
 - Scheduler: una tarea que falla ANTES de enviar (`ErrNothingSent`) se reintenta cada 5 min, máx. 6 veces y nunca

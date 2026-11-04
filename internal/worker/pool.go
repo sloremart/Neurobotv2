@@ -40,8 +40,11 @@ const (
 	maxSendRetryAfter = 60 * time.Second
 	// sendAttemptBudget es lo que puede tardar un intento de envío (el timeout del cliente de Néctar).
 	sendAttemptBudget = 15 * time.Second
-	agentCmdQueueSize = 50
-	maxDedupEntries   = 100000 // safety cap; fail-open if exceeded (allow potential dups)
+	// defaultMinSendBudget es el plazo de un envío de un turno que ya gastó el suyo: la respuesta que
+	// decidió el turno todavía sale si Néctar contesta rápido (ver sendDeadline).
+	defaultMinSendBudget = 5 * time.Second
+	agentCmdQueueSize    = 50
+	maxDedupEntries      = 100000 // safety cap; fail-open if exceeded (allow potential dups)
 
 	// ctxNonContactable: clave de contexto de sesión — el identificador del contacto no es un
 	// teléfono E.164 y ningún envío por Channels API puede entregársele.
@@ -129,6 +132,16 @@ type MessageSender interface {
 	GetCachedConversationID(phone string) string
 	LookupConversationByPhone(phone string) (string, error)
 }
+
+// contextSender es el envío con plazo del puente a Néctar. Va aparte de MessageSender para no ensanchar
+// esa interfaz: quien no lo implementa (los dobles de prueba) envía sin plazo.
+type contextSender interface {
+	SendTextCtx(ctx context.Context, phone, conversationID, text string) (string, error)
+	SendButtonsCtx(ctx context.Context, phone, conversationID, text string, buttons []bird.Button) (string, error)
+	SendListCtx(ctx context.Context, phone, conversationID, body, title string, sections []bird.ListSection) (string, error)
+}
+
+var _ contextSender = (*bird.Client)(nil)
 
 // MessageProcessor abstracts state machine processing for testability.
 type MessageProcessor interface {
@@ -238,6 +251,8 @@ type MessageWorkerPool struct {
 	// lastNectarSend: teléfono → cuándo salió su último mensaje de Néctar (ver retrySend). La limpieza
 	// periódica purga las entradas viejas.
 	lastNectarSend sync.Map
+	// minSendBudget: ver defaultMinSendBudget.
+	minSendBudget time.Duration
 	// passTimeout acota cada pasada del replay de atascados (0 = utils.BackgroundPassTimeout).
 	passTimeout time.Duration
 	// lockTimeout: espera máxima por el candado del teléfono (phoneLockTimeout; los tests lo acortan).
@@ -276,6 +291,7 @@ func NewMessageWorkerPool(workers, queueSize int) *MessageWorkerPool {
 		workers:        workers,
 		ctx:            context.Background(),
 		retryDelay:     10 * time.Second,
+		minSendBudget:  defaultMinSendBudget,
 		lockTimeout:    phoneLockTimeout,
 		lockRetryDelay: phoneLockRetryDelay,
 	}
@@ -1809,7 +1825,11 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 			}
 		}
 		slog.Debug("sending_message", "phone", utils.MaskPhone(phone), "type", outMsg.Type(), "conversation_id", convID)
-		birdMsgID, err := p.sendMessage(phone, convID, outMsg)
+		sendCtx, sendCancel := context.WithDeadline(context.WithoutCancel(ctx), p.sendDeadline(ctx))
+		birdMsgID, err := p.sendMessageCtx(sendCtx, phone, convID, outMsg)
+		// B-07: el envío a Néctar se abandonó por el plazo del turno, no por un fallo suyo.
+		abandoned := session.IsNectarSession(phone) && sendCtx.Err() != nil
+		sendCancel()
 		if err != nil {
 			slog.Error("send message error", "phone", utils.MaskPhone(phone), "session_id", sess.ID, "conversation_id", convID, "type", outMsg.Type(), "error", err)
 			// Clear convID for remaining messages so they route via Channels API
@@ -1842,6 +1862,13 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 					observability.Emit(observability.TraceSession(sess.ID), "infra", "non_contactable_identifier",
 						observability.EmitOpts{Phone: phone})
 				}
+				continue
+			}
+			// B-07: abandonado por plazo no se reintenta. Si Néctar sí lo recibió, la clave queda en duda
+			// (B-02): un envío igual posterior la reutiliza y no sale dos veces.
+			if abandoned {
+				slog.Error("send message abandoned: se agotó el plazo del mensaje",
+					"phone", utils.MaskPhone(phone), "session_id", sess.ID, "type", outMsg.Type(), "error", err)
 				continue
 			}
 			// E6: async retry (retryDelay) via Channels API para errores transitorios
@@ -2006,9 +2033,24 @@ func logResultEvents(sessionID, phone string, events []statemachine.Event) {
 	}
 }
 
-// sendMessage envía un mensaje saliente y, si es de Néctar, anota cuándo salió (ver retrySend).
+// sendDeadline es el plazo de un envío del turno: el que le queda al mensaje, con un mínimo para que un
+// turno que ya lo gastó aún mande su respuesta.
+func (p *MessageWorkerPool) sendDeadline(ctx context.Context) time.Time {
+	deadline := retryDeadline(ctx)
+	if floor := time.Now().Add(p.minSendBudget); deadline.Before(floor) {
+		return floor
+	}
+	return deadline
+}
+
+// sendMessage envía un mensaje saliente sin más plazo que el del cliente.
 func (p *MessageWorkerPool) sendMessage(phone, conversationID string, msg statemachine.OutboundMessage) (string, error) {
-	id, err := p.deliverMessage(phone, conversationID, msg)
+	return p.sendMessageCtx(context.Background(), phone, conversationID, msg)
+}
+
+// sendMessageCtx envía un mensaje saliente y, si es de Néctar, anota cuándo salió (ver retrySend).
+func (p *MessageWorkerPool) sendMessageCtx(ctx context.Context, phone, conversationID string, msg statemachine.OutboundMessage) (string, error) {
+	id, err := p.deliverMessage(ctx, phone, conversationID, msg)
 	if err == nil && session.IsNectarSession(phone) {
 		p.lastNectarSend.Store(phone, time.Now())
 	}
@@ -2017,14 +2059,21 @@ func (p *MessageWorkerPool) sendMessage(phone, conversationID string, msg statem
 
 // deliverMessage envía un mensaje saliente vía Bird API.
 // Routes via Conversations API when conversationID is available.
-func (p *MessageWorkerPool) deliverMessage(phone, conversationID string, msg statemachine.OutboundMessage) (string, error) {
+func (p *MessageWorkerPool) deliverMessage(ctx context.Context, phone, conversationID string, msg statemachine.OutboundMessage) (string, error) {
+	withCtx, hasCtx := p.birdClient.(contextSender)
 	switch m := msg.(type) {
 	case *statemachine.TextMessage:
+		if hasCtx {
+			return withCtx.SendTextCtx(ctx, phone, conversationID, m.Text)
+		}
 		return p.birdClient.SendText(phone, conversationID, m.Text)
 	case *statemachine.ButtonMessage:
 		buttons := make([]bird.Button, len(m.Buttons))
 		for i, b := range m.Buttons {
 			buttons[i] = bird.Button{Text: b.Text, Payload: b.Payload}
+		}
+		if hasCtx {
+			return withCtx.SendButtonsCtx(ctx, phone, conversationID, m.Text, buttons)
 		}
 		return p.birdClient.SendButtons(phone, conversationID, m.Text, buttons)
 	case *statemachine.ListMessage:
@@ -2035,6 +2084,9 @@ func (p *MessageWorkerPool) deliverMessage(phone, conversationID string, msg sta
 				rows[j] = bird.ListRow{ID: r.ID, Title: r.Title, Description: r.Description}
 			}
 			sections[i] = bird.ListSection{Title: s.Title, Rows: rows}
+		}
+		if hasCtx {
+			return withCtx.SendListCtx(ctx, phone, conversationID, m.Body, m.Title, sections)
 		}
 		return p.birdClient.SendList(phone, conversationID, m.Body, m.Title, sections)
 	default:
@@ -2080,7 +2132,11 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 				"phone", utils.MaskPhone(phone), "type", msg.Type(), "attempt", attempt)
 			return
 		}
-		if _, err = p.sendMessage(phone, "", msg); err == nil {
+		// Ligado al app-ctx: el apagado corta el intento en vuelo en vez de esperarlo.
+		attemptCtx, attemptCancel := context.WithTimeout(p.ctx, sendAttemptBudget)
+		_, err = p.sendMessageCtx(attemptCtx, phone, "", msg)
+		attemptCancel()
+		if err == nil {
 			slog.Info(
 				"send_message_retry_succeeded",
 				"phone", utils.MaskPhone(phone),
