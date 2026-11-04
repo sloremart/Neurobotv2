@@ -148,8 +148,11 @@ func ResolveCupsByName(
 			fitting = append(fitting, c)
 		}
 	}
-	code := strings.TrimSpace(choose(read, res.Candidates))
-	if len(fitting) == 1 && fitting[0].Code == code && containsCode(res.Candidates, code) {
+	// Sin un único candidato que encaje no hay nada que confirmar: no se gasta la llamada.
+	if len(fitting) != 1 || !containsCode(res.Candidates, fitting[0].Code) {
+		return res
+	}
+	if code := strings.TrimSpace(choose(read, res.Candidates)); code == fitting[0].Code {
 		res.Code, res.Name, res.Via = fitting[0].Code, fitting[0].Name, CupsNameViaModel
 	}
 	return res

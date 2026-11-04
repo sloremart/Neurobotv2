@@ -189,3 +189,17 @@ func TestResolveCupsByName_ModalityAndDopplerMustFit(t *testing.T) {
 		t.Error("guarda: PET-CT es la misma modalidad que PET-TC")
 	}
 }
+
+// Sin un único candidato que encaje no se llama al modelo (no hay nada que confirmar).
+func TestResolveCupsByName_NoModelCallWhenNothingToConfirm(t *testing.T) {
+	calls := 0
+	choose := func(string, []CupsCandidate) string { calls++; return "952302" }
+	catalog := []CupsCandidate{
+		{"952302", "POTENCIALES VISUALES EVOCADOS MONOFOCALES"},
+		{"952303", "POTENCIALES VISUALES EVOCADOS MULTIFOCALES"},
+	}
+	ResolveCupsByName("POTENCIALES VISUALES EVOCADOS", catalog, false, choose)
+	if calls != 0 {
+		t.Errorf("llamadas al modelo = %d, quería 0", calls)
+	}
+}
