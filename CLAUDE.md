@@ -425,3 +425,14 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   hay mismos nombres sin ese dígito, solo por prefijo, o el código corregido ya está en la orden, agente
   (`cups_posible_mala_lectura`) → si no, se descarta. Las correcciones (`ocr_cups_corrections`, «CUPS corregidos» en
   el resumen del agente, `agendar/cups_corregido`) se borran al leer una orden nueva.
+- Sin código en la orden (decisión del dueño, 2026-11-03): el prompt de visión YA NO lleva el catálogo ni elige
+  códigos; devuelve `cups_code` vacío con el nombre tal cual (y `is_interconsulta`). VALIDATE_OCR, al inicio,
+  asigna por nombre (`handlers/cups_name_assign.go` + `services/cups_name.go`): nombre canónico (sin tildes,
+  abreviaturas RM/TAC/ECO/RX/EMG/NC/PET… expandidas) IGUAL a un único procedimiento → se asigna; si no, el modelo
+  de `OPENAI_DOC_MODEL` (solo texto, `ChooseCupsByName`) confirma entre ≤5 candidatos, y vale solo con confianza
+  alta y si es el ÚNICO candidato que encaja (sin contradecir contraste, primera vez/control, pediatría, lado,
+  superior/inferior, vía, marcador PET, modalidad, doppler, región ni números). Interconsulta → solo consultas de
+  primera vez (asuntos 1, 8, 10). Lo demás → agente (`ocr_sin_codigo`, nota con nombre y candidatos). Lo asignado:
+  `ocr_cups_name_assignments` («CUPS asignados por nombre»), `agendar/cups_asignado_nombre`, y el paciente ve
+  «<catálogo> (en tu orden: «<leído>»)». Guarda: un CUPS CON código cuyo nombre leído contradice EXPLÍCITAMENTE el
+  del catálogo → agente (`cups_posible_mala_lectura`).
