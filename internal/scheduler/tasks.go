@@ -412,6 +412,19 @@ func sameDayWindowCandidates(now time.Time, appts []domain.Appointment) []domain
 	return out
 }
 
+// notStartedBy deja las citas cuya hora es posterior a t (las de TimeSlot no parseable ya las descartó
+// la franja).
+func notStartedBy(t time.Time, appts []domain.Appointment) []domain.Appointment {
+	var out []domain.Appointment
+	for _, a := range appts {
+		slot, err := time.ParseInLocation("200601021504", a.TimeSlot, t.Location())
+		if err == nil && slot.After(t) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // sendSameDayReminders envía el recordatorio a citas de HOY que nunca recibieron el del día antes
 // (agendadas después de la corrida de las 07:00). Es ADITIVO al flujo existente: misma plantilla,
 // mismo mecanismo de respuesta (RegisterPending), pero de un solo disparo (SameDay=true → al vencer
@@ -437,7 +450,9 @@ func (t *Tasks) sendSameDayReminders(ctx context.Context) error {
 		return nothingSent(fmt.Errorf("fetch today appointments: %w", err))
 	}
 
-	candidates := sameDayWindowCandidates(now, appointments)
+	// La franja sale de la hora de la corrida, pero si la lectura de SIESA se colgó más de una hora ya
+	// incluye citas que empezaron: esas se descartan contra la hora real, de fin de lectura.
+	candidates := notStartedBy(time.Now(), sameDayWindowCandidates(now, appointments))
 	if len(candidates) == 0 {
 		return nil
 	}

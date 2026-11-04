@@ -1716,6 +1716,56 @@ func TestSendSameDayReminders_RepoError_MarkedNothingSent(t *testing.T) {
 	}
 }
 
+// La franja sale de la hora programada de la corrida (M-7), pero si la lectura de SIESA se colgó más de
+// una hora, esa franja ya incluye citas que empezaron. Una cita cuya hora pasó al terminar la lectura no
+// recibe aviso; una de la misma franja que todavía no empieza, sí.
+func TestSendSameDayReminders_SkipsAppointmentAlreadyStarted(t *testing.T) {
+	var sendCount atomic.Int32
+	countSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			sendCount.Add(1)
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"msg-sd-late"}`))
+	}))
+	defer countSrv.Close()
+
+	birdClient := bird.NewClientForTest(countSrv.URL)
+	cfg := testConfig()
+	cfg.SameDayRemindersEnabled = true
+
+	// La corrida es de hace 100 min y su franja es [hace 40 min, dentro de 20 min).
+	scheduledAt := time.Now().Truncate(time.Minute).Add(-100 * time.Minute)
+	started := domain.Appointment{
+		ID: "apt-started", PatientID: "P012", PatientName: "Ana Ruiz",
+		PatientPhone: "3001112233", DoctorName: "Dr. Garcia",
+		Date: scheduledAt, TimeSlot: scheduledAt.Add(70 * time.Minute).Format("200601021504"),
+		Procedures: []domain.AppointmentProcedure{{CupCode: "890274", CupName: "Consulta Neurologia", Quantity: 1}},
+	}
+	upcoming := started
+	upcoming.ID, upcoming.PatientID, upcoming.PatientPhone = "apt-upcoming", "P013", "3004445566"
+	upcoming.TimeSlot = scheduledAt.Add(115 * time.Minute).Format("200601021504")
+
+	tasks := &Tasks{
+		AppointmentRepo: &testutil.MockAppointmentRepo{
+			FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+				return []domain.Appointment{started, upcoming}, nil
+			},
+		},
+		BirdClient:    birdClient,
+		NotifyManager: notifications.NewNotificationManager(birdClient, nil, cfg),
+		Cfg:           cfg,
+		NotifHistory:  &mockNotifHistory{},
+	}
+	ctx := context.WithValue(context.Background(), runAtKey{}, scheduledAt)
+	if err := tasks.sendSameDayReminders(ctx); err != nil {
+		t.Fatalf("no esperaba error, got %v", err)
+	}
+	if got := sendCount.Load(); got != 1 {
+		t.Errorf("envíos = %d, esperaba 1 (solo la cita que no ha empezado)", got)
+	}
+}
+
 // M-7: el reintento calcula la franja desde la hora programada de su corrida, no desde la suya.
 // Una corrida de «las 10:00» que falla y sale bien en el reintento de «las 10:30» avisa a la cita
 // de «las 11:15» (su franja es [11:00, 12:00)); antes la franja salía desde las 10:30 y la perdía.
