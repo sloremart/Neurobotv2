@@ -117,4 +117,8 @@ ORDER BY primera DESC;
 
 | Fecha | Casos que la motivan | Ajuste | Resultado medido |
 |---|---|---|---|
-| — | — | — | — |
+| 2026-11-03 | F1, F2, F6 (medido en hdg-bot, conv. 57) | **H1** `detail: "high"` en toda imagen enviada a Vision (`visionImagePart`) — f43f7f5 | Pendiente de medir en producción; sin casos propios aún |
+| 2026-11-03 | F3, F7 | **H3** todas las hojas del PDF (máx. `maxOCRPages`) en UNA llamada; si falla, solo la 1.ª — 5f54fef | Pendiente de medir; tests: hoja 1 y hoja 2 con CUPS distintos → se leen los dos |
+| 2026-11-03 | F1, F2, F5 en PDFs generados por sistema | **H2** capa de texto primero (`gs txtwrite`, ≥40 palabras); sin CUPS con código o con fallo → imágenes (salvaguarda del dueño) — 637c7bd | Pendiente de medir |
+| 2026-11-03 | F1, F6 | **H4** segunda lectura dedicada del código (`ReadCupsCode`, `OPENAI_DOC_MODEL`=gpt-4.1) — 550967b | Solo corre dentro de H5 |
+| 2026-11-03 | F1 (códigos descartados en silencio en VALIDATE_OCR) | **H5** cascada en VALIDATE_OCR: segunda lectura → nombre parecido a un dígito → duda al agente (`cups_posible_mala_lectura`) → descarte — 8e9ab3c | Medir con `agendar/cups_corregido` y `agendar/cups_duda` en `flow_events` |
