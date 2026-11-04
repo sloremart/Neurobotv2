@@ -191,9 +191,10 @@ type CUPSEntry struct {
 	// OrderName es el nombre tal como venía en la orden cuando el código se asignó por nombre (Name pasa
 	// a ser el del catálogo); vacío si la orden traía el código.
 	OrderName string `json:"order_name,omitempty"`
-	// ReadDoubtWith es el nombre de otra hoja de la misma orden al que este se parece solo por prefijo
-	// (MIEMBRO frente a MIEMBROS: en CUPS es unilateral frente a bilateral). No se sabe si es el mismo
-	// procedimiento: VALIDATE_OCR lo manda a un agente, sin asignarle código.
+	// ReadDoubtWith es el nombre de otra hoja de la misma orden al que este se parece sin ser igual: solo por
+	// prefijo (MIEMBRO frente a MIEMBROS: en CUPS es unilateral frente a bilateral) o con un calificador en
+	// silencio (RX TORAX frente a TORAX). No se sabe si es el mismo procedimiento: VALIDATE_OCR lo manda a un
+	// agente, sin asignarle código.
 	ReadDoubtWith string `json:"read_doubt_with,omitempty"`
 }
 
@@ -755,9 +756,9 @@ func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResul
 }
 
 // addUncodedFrom añade a dst los procedimientos SIN código de src que dst no trae ya (compareReadNames).
-// El mismo procedimiento con otra redacción no se añade: la asignación por nombre lo vería como un
-// código repetido y mandaría la orden a un agente. El parecido solo por prefijo se añade marcado como
-// duda (ReadDoubtWith), para que no se descarte en silencio ni se le asigne un código.
+// Solo no se añade lo estrictamente igual: la asignación por nombre lo vería como un código repetido y
+// mandaría la orden a un agente. Lo parecido se añade marcado como duda (ReadDoubtWith), para que no se
+// descarte en silencio ni se le asigne un código; lo distinto se añade tal cual.
 func addUncodedFrom(dst, src *OCRResult) {
 	if dst == nil || src == nil {
 		return

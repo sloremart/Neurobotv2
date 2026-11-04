@@ -608,7 +608,7 @@ func TestAnalyzeImage_ParsesInterconsultaMark(t *testing.T) {
 }
 
 // OCR-review R2-3 y revisión del lote C: de la lectura conjunta solo se añade lo que la primera hoja no
-// trae. El mismo procedimiento con otra redacción no entra; el parecido solo por prefijo queda en duda.
+// trae. Lo estrictamente igual con otra redacción no entra; lo parecido entra como duda.
 func TestAddUncodedFrom_ComparesReadNames(t *testing.T) {
 	cases := []struct {
 		name, first, joint string
@@ -617,7 +617,10 @@ func TestAddUncodedFrom_ComparesReadNames(t *testing.T) {
 	}{
 		{"abreviatura", "RESONANCIA MAGNETICA DE CEREBRO", "RM CEREBRO", false, false},
 		{"sigla y artículo", "TOMOGRAFIA COMPUTADA DE CRANEO SIMPLE", "TAC DE CRANEO SIMPLE", false, false},
-		{"contraste en silencio vale simple", "RESONANCIA MAGNETICA DE COLUMNA LUMBAR SIMPLE", "RNM COLUMNA LUMBAR", false, false},
+		{"contraste en silencio es duda", "RESONANCIA MAGNETICA DE COLUMNA LUMBAR SIMPLE", "RNM COLUMNA LUMBAR", true, true},
+		{"contraste frente a simple y contraste es duda", "TAC CRANEO CON CONTRASTE", "TAC CRANEO SIMPLE Y CONTRASTADO", true, true},
+		{"modalidad en silencio es duda", "RX TORAX", "TORAX", true, true},
+		{"sin palabra distintiva no descarta otro procedimiento", "CONSULTA ESPECIALISTA", "POLISOMNOGRAFIA", true, false},
 		{"unilateral y bilateral", "EMG MIEMBRO INFERIOR", "EMG MIEMBROS INFERIORES", true, true},
 		{"por prefijo con otro calificador en silencio", "RM MIEMBRO INFERIOR SIMPLE", "RM MIEMBROS INFERIORES", true, true},
 		{"contraste distinto es otro", "RM CEREBRO", "RM CEREBRO CON CONTRASTE", true, false},

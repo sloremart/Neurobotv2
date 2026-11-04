@@ -2,7 +2,6 @@ package services
 
 import (
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -178,33 +177,44 @@ func hasUnknownSlash(text string) bool {
 // expandidas): sirve para reconocer el mismo procedimiento sin código escrito de dos maneras.
 func CupsNameKey(name string) string { return canonicalOrderName(name) }
 
-// compareReadNames compara dos nombres leídos de la misma orden sobre su forma canónica. Además de lo que
-// ve CompareCupsNames, cuenta como el mismo procedimiento lo que encaja salvo calificadores en silencio
-// (candidateFits: «RNM COLUMNA LUMBAR» y «RESONANCIA … LUMBAR SIMPLE»); si en eso alguna palabra solo
-// coincide por prefijo, sigue siendo duda.
+// compareReadNames compara dos nombres leídos de la misma orden, para decidir si uno se descarta. Es más
+// estricta que la asignación por nombre, porque aquí un error pierde un procedimiento sin que nadie lo vea:
+//   - CupsNamesEqual (se descarta): tras quitar el ruido, las mismas palabras en los dos sentidos. Los
+//     calificadores y la modalidad también son palabras, así que callar uno no vale por decirlo: «RX TORAX»
+//     no es «TORAX», ni «SIMPLE Y CONTRASTE» es «CONTRASTE».
+//   - CupsNamesByPrefix (duda, va al agente): coinciden solo por prefijo, o encajan salvo un calificador en
+//     silencio (candidateFits sirve para sospechar, no para descartar).
+//   - CupsNamesDiffer (se conserva sin código): lo demás, también un nombre sin palabras que lo distingan:
+//     «CONSULTA ESPECIALISTA» no dice con qué comparar.
 func compareReadNames(a, b string) CupsNameMatch {
 	ca, cb := canonicalOrderName(a), canonicalOrderName(b)
-	if m := CompareCupsNames(ca, cb); m != CupsNamesDiffer {
-		return m
-	}
-	if !candidateFits(ca, b, hasUnknownSlash(a)) && !candidateFits(cb, a, hasUnknownSlash(b)) {
+	wa, wb := readNameWords(ca), readNameWords(cb)
+	if len(wa) == 0 || len(wb) == 0 {
 		return CupsNamesDiffer
 	}
-	wa, wb := distinctiveWords(ca), distinctiveWords(cb)
-	if prefixOnlyWord(wa, wb) || prefixOnlyWord(wb, wa) {
+	if CompareCupsNames(ca, cb) == CupsNamesByPrefix {
 		return CupsNamesByPrefix
 	}
-	return CupsNamesEqual
+	unknownA, unknownB := hasUnknownSlash(a), hasUnknownSlash(b)
+	if !unknownA && !unknownB && allWordsIn(wa, wb, sameWord) && allWordsIn(wb, wa, sameWord) {
+		return CupsNamesEqual
+	}
+	if candidateFits(ca, b, unknownA) || candidateFits(cb, a, unknownB) {
+		return CupsNamesByPrefix
+	}
+	return CupsNamesDiffer
 }
 
-// prefixOnlyWord dice si alguna palabra de words solo tiene par en other por prefijo.
-func prefixOnlyWord(words, other []string) bool {
-	for _, w := range words {
-		if !slices.Contains(other, w) && allWordsIn([]string{w}, other, prefixWord) {
-			return true
+// readNameWords son las palabras de un nombre canónico que cuentan al compararlo con otro leído: las
+// distintivas, sin encabezados ni ruido de la orden. Calificadores y números sí cuentan.
+func readNameWords(canon string) []string {
+	var out []string
+	for _, w := range distinctiveWords(canon) {
+		if !retrievalStopWords[w] && !orderNoise[w] {
+			out = append(out, w)
 		}
 	}
-	return false
+	return out
 }
 
 // firstVisitSuffix se suma al nombre leído de una interconsulta: es una consulta de primera vez.
