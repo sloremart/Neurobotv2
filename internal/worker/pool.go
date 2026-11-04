@@ -1018,7 +1018,7 @@ func (p *MessageWorkerPool) processAgentCommand(parentCtx context.Context, cmd A
 		"phone", utils.MaskPhone(cmd.Phone),
 		"action", cmd.Action,
 		"state", cmd.State,
-		"data", cmd.Data,
+		"data", utils.MaskText(cmd.Data), // el dato corregido puede ser la cédula o el nombre
 	)
 
 	switch cmd.Action {

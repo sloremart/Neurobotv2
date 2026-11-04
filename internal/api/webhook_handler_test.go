@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -196,6 +197,39 @@ func TestHandleWhatsAppOutbound_AgentCommand(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}
+
+// El dato corregido que escribe el agente (cédula, nombre, teléfono) no sale en claro en el
+// registro del comando recibido.
+func TestHandleWhatsAppOutbound_AgentCommandDataNotLoggedInClear(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	secret := "test-secret"
+	birdClient := &bird.Client{WebhookSecret: secret, WebhookSecretOutbound: secret}
+	h := NewWebhookHandler(birdClient, worker.NewMessageWorkerPool(1, 50), nil, &config.Config{})
+	event := bird.WebhookEvent{
+		Payload: bird.WebhookPayload{
+			ID:        "msg-out-data",
+			Direction: "outgoing",
+			Receiver:  bird.ReceiverInfo{Connector: bird.Contact{IdentifierValue: "+573001234567"}},
+			Body: bird.MessageBody{
+				Type: "text",
+				Text: bird.TextBody{Text: "/bot resume ASK_DOCUMENT 1000000001"},
+			},
+		},
+	}
+	body, _ := json.Marshal(event)
+	h.HandleWhatsAppOutbound(httptest.NewRecorder(), signedRequest("POST", "/api/webhooks/whatsapp/outbound", body, secret))
+
+	if !strings.Contains(logs.String(), "agent command received") {
+		t.Fatalf("el comando se sigue registrando:\n%s", logs.String())
+	}
+	if strings.Contains(logs.String(), "1000000001") {
+		t.Fatalf("el dato del agente no puede aparecer en el registro:\n%s", logs.String())
 	}
 }
 

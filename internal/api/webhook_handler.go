@@ -441,7 +441,7 @@ func (h *WebhookHandler) handleOutbound(event bird.WebhookEvent) {
 		"phone", utils.MaskPhone(phone),
 		"action", cmd.Action,
 		"state", cmd.State,
-		"data", cmd.Data,
+		"data", utils.MaskText(cmd.Data), // el dato corregido puede ser la cédula o el nombre
 	)
 
 	h.workerPool.EnqueueAgentCommand(cmd)

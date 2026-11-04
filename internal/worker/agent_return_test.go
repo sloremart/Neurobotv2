@@ -1159,3 +1159,19 @@ func TestHandleAgentResume_BirdNoMarker(t *testing.T) {
 		t.Fatal("Bird nunca lleva la marca")
 	}
 }
+
+// El dato que escribe el agente (cédula, nombre, teléfono) no sale en claro en el registro del
+// comando: solo su largo. El valor que entra al flujo no cambia.
+func TestProcessAgentCommand_DataNotLoggedInClear(t *testing.T) {
+	logs := captureLogs(t)
+	pool, _, _, sess := escalatedPool(t)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "info", Phone: sess.PhoneNumber, Data: "1000000001"})
+
+	if strings.Contains(logs.String(), "1000000001") {
+		t.Fatalf("el dato del agente no puede aparecer en el registro:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "processing agent command") {
+		t.Fatalf("el comando se sigue registrando:\n%s", logs.String())
+	}
+}
