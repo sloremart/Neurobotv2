@@ -169,10 +169,22 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 			}
 			ocrResult, err := ocrSvc.AnalyzeDocument(ctx, mediaURL)
 			if err != nil || !ocrResult.Success || len(ocrResult.Cups) == 0 {
+				// Cuenta para el tope de lecturas fallidas de la orden (B-05), con la causa que guardaría
+				// processOrderMedia: a la maxFailedOrderReads-ésima se escala en vez de re-pedir la foto.
+				cause := sm.OCRFailureNoProcedures
+				switch {
+				case errors.Is(err, context.DeadlineExceeded):
+					cause = "ocr_timeout"
+				case err != nil:
+					cause = "ocr_error"
+				case ocrResult.Error != "":
+					cause = ocrResult.Error
+				}
 				//nolint:nilerr // el fallo de OCR se maneja re-pidiendo la foto, no se propaga a la FSM.
-				return sm.NewResult(sess.CurrentState).
+				return capFailedOrderReads(sess, sm.NewResult(sess.CurrentState).
 					WithButtons("No pudimos leer la orden de la EMG. ¿Qué deseas hacer?", ocrRetryButtons(birdClient, sess)...). //nolint:contextcheck // el cliente de mensajería no toma ctx (patrón existente: HasAvailableAgents)
-					WithEvent("emg_ocr_failed", nil), nil
+					WithContext(sm.CtxOCRFailureCause, cause).
+					WithEvent("emg_ocr_failed", nil)), nil
 			}
 
 			// Fusionar EMG (2ª orden) + dependientes (1ª orden).
@@ -182,7 +194,7 @@ func uploadEmgOrderHandler(ocrSvc *services.OCRService, birdClient *bird.Client)
 				WithContext("ocr_cups_json", mergedJSON).
 				// Los dependientes llegan validados: lo que no se pueda agendar sale de esta orden.
 				WithContext(ctxOCROrderURL, mediaURL).
-				WithClearCtx("emg_dep_cups_json").
+				WithClearCtx("emg_dep_cups_json", sm.CtxOCRFailureCause, sm.CtxOCRFailedReads).
 				WithEvent("emg_order_merged", map[string]interface{}{"emg_cups": emgN, "dep_cups": depN}), nil
 
 		default:

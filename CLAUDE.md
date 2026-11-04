@@ -403,12 +403,12 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   cancelación de siempre. Cita movida (otro `appointment_slot`), sesión ocupada, >6 h o cita a <2 h → agente
   (`notificacion_siesa_pendiente`).
 - Topes: cantidad por CUPS >100 → agente (`cantidad_fuera_de_rango`; EMG/NC sin cambios); 3 lecturas fallidas
-  seguidas de la orden → agente (`ocr_lecturas_fallidas`); al tope de 3 escalaciones (persistido; se reinicia
-  cuando un agente atiende y devuelve) suman SOLO los ciclos del paciente, entregados o desviados por «no hay
-  asesores»: pedir asesor y agotar reintentos (`sm.EscalationCountsTowardCap`, tabla en `escalation_reasons.go`;
-  motivo vacío o nuevo sin clasificar suma). Las que dispara el bot (orden dudosa, B-05, B-10, SANITAS, fallos)
-  ni suman ni cortan; `bot_disabled` exento. Tras el corte el bot calla salvo sus botones y «menú», y lo ignorado
-  no renueva la sesión.
+  seguidas de la orden (también la de la EMG, UPLOAD_EMG_ORDER) → agente (`ocr_lecturas_fallidas`); al tope de 3
+  escalaciones (persistido; se reinicia cuando un agente atiende y devuelve) suman SOLO los ciclos del paciente,
+  entregados o desviados por «no hay asesores»: pedir asesor y agotar reintentos (`sm.EscalationCountsTowardCap`,
+  tabla en `escalation_reasons.go`; motivo vacío o nuevo sin clasificar suma). Las que dispara el bot (orden dudosa,
+  B-05, B-10, SANITAS, fallos) ni suman ni cortan; `bot_disabled` exento. Tras el corte el bot calla salvo sus
+  botones y «menú», y lo ignorado no renueva la sesión.
 - «¿Es correcto?» (CONFIRM_OCR_RESULT): si la lista no cabe en el cuerpo de botones (1.024), sale COMPLETA antes en
   texto (trozos ≤4.096) y los botones llevan solo el aviso de omitidos y la pregunta; nunca se recorta con «…».
 - Imagen (`docker/Dockerfile`): `alpine:3.21.9`, `ghostscript~10.05`; el bot corre como `bot` (UID/GID 10001), no

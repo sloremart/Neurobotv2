@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -209,5 +210,82 @@ func TestConfirmOCR_CorrectClearsFailedReads(t *testing.T) {
 	}
 	if !hasClear(res, sm.CtxOCRFailedReads) {
 		t.Errorf("ocr_correct debe borrar CtxOCRFailedReads: %v", res.ClearCtx)
+	}
+}
+
+// La orden de la EMG (UPLOAD_EMG_ORDER) tiene el mismo tope: a la 3.ª lectura fallida seguida se
+// escala con el motivo y el texto de B-05, sin otro «Enviar de nuevo».
+func TestUploadEmgOrder_ThirdFailedReadEscalates(t *testing.T) {
+	var calls int32
+	ocrSrv := scriptedOCRServer(t, &calls, "error", ocrNoCupsResponse, ocrNoCupsResponse)
+	fileSrv := newMockFileServer()
+	defer fileSrv.Close()
+	handler := uploadEmgOrderHandler(services.NewOCRServiceForTest(ocrSrv.URL), nil)
+
+	sess := testSess(sm.StateUploadEmgOrder)
+	sess.Context["emg_dep_cups_json"] = `[{"cups_code":"891509","cups_name":"NEUROCONDUCCION","quantity":4}]`
+	for i := 1; i <= 2; i++ {
+		res, err := handler(context.Background(), sess, imageMsg(fileSrv.URL+"/emg.jpg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.NextState != sm.StateUploadEmgOrder || !hasRetryButton(res) {
+			t.Fatalf("lectura fallida %d: esperaba «Enviar de nuevo» en el mismo paso, got %s", i, res.NextState)
+		}
+		persist(sess, res)
+	}
+
+	res, err := handler(context.Background(), sess, imageMsg(fileSrv.URL+"/emg.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NextState != sm.StateEscalateToAgent || hasRetryButton(res) {
+		t.Fatalf("3.ª lectura fallida: esperaba ESCALATE_TO_AGENT sin reintento, got %s", res.NextState)
+	}
+	if got := res.UpdateCtx[sm.CtxEscalationReason]; got != sm.EscalationReasonOCRFailedReads {
+		t.Errorf("motivo = %q, quería %q", got, sm.EscalationReasonOCRFailedReads)
+	}
+	if len(res.Messages) != 1 || res.Messages[0].(*sm.TextMessage).Text != ocrUnreadEscalationText {
+		t.Errorf("texto al paciente: %+v", res.Messages)
+	}
+	if res.UpdateCtx[sm.CtxOCRFailureCause] != sm.OCRFailureNoProcedures {
+		t.Errorf("causa de la última lectura = %q", res.UpdateCtx[sm.CtxOCRFailureCause])
+	}
+	persist(sess, escalationExit(res))
+	if got := sess.GetContext(sm.CtxOCRFailedReads); got != "" {
+		t.Errorf("la escalación reinicia el contador: %q", got)
+	}
+}
+
+// Una lectura buena de la orden de la EMG borra el contador y sigue a VALIDATE_OCR con la fusión de
+// siempre.
+func TestUploadEmgOrder_SuccessfulReadResetsFailedReads(t *testing.T) {
+	var calls int32
+	ocrSrv := scriptedOCRServer(t, &calls, "error", ocrNoCupsResponse, ocrCupsResponse("930810", "ELECTROMIOGRAFIA"))
+	fileSrv := newMockFileServer()
+	defer fileSrv.Close()
+	handler := uploadEmgOrderHandler(services.NewOCRServiceForTest(ocrSrv.URL), nil)
+
+	sess := testSess(sm.StateUploadEmgOrder)
+	sess.Context["emg_dep_cups_json"] = `[{"cups_code":"891509","cups_name":"NEUROCONDUCCION","quantity":4}]`
+	var res *sm.StateResult
+	for i := 1; i <= 3; i++ {
+		var err error
+		if res, err = handler(context.Background(), sess, imageMsg(fileSrv.URL+"/emg.jpg")); err != nil {
+			t.Fatal(err)
+		}
+		if i < 3 {
+			persist(sess, res)
+		}
+	}
+	if res.NextState != sm.StateValidateOCR {
+		t.Fatalf("la lectura buena sigue a VALIDATE_OCR, got %s", res.NextState)
+	}
+	persist(sess, res)
+	if got := sess.GetContext(sm.CtxOCRFailedReads); got != "" {
+		t.Errorf("la lectura buena borra el contador: %q", got)
+	}
+	if got := sess.GetContext("ocr_cups_json"); !strings.Contains(got, "930810") || !strings.Contains(got, "891509") {
+		t.Errorf("la fusión EMG + dependientes no cambia: %s", got)
 	}
 }

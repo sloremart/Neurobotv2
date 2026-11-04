@@ -465,7 +465,8 @@ func failedOrderReads(sess *session.Session) int {
 // ofrecen «Enviar de nuevo»: error, tiempo agotado, lectura sin éxito o sin procedimientos; todas
 // dejan CtxOCRFailureCause) y, a la maxFailedOrderReads-ésima, escala en vez de ofrecer otro intento.
 // Toda escalación borra el contador (escalationExit): si el agente pide la foto otra vez, el paciente
-// vuelve a tener sus intentos. Una lectura buena lo borra en processOrderMedia. Solo lo usa el paso de subida: la orden
+// vuelve a tener sus intentos. Una lectura buena lo borra en processOrderMedia. Lo usan el paso de subida y
+// el de la orden de la EMG (UPLOAD_EMG_ORDER, que borra el contador con su lectura buena); la orden
 // guardada es un intento único que, si falla, pide la foto como siempre.
 func capFailedOrderReads(sess *session.Session, res *sm.StateResult) *sm.StateResult {
 	if res == nil || res.NextState != sess.CurrentState || res.UpdateCtx[sm.CtxOCRFailureCause] == "" {
