@@ -454,4 +454,47 @@ func TestRateLimiter_IPv6GroupedBy64(t *testing.T) {
 	if hits("198.51.100.1:40001", "")+hits("198.51.100.2:40001", "") != 0 {
 		t.Error("dos IPv4 distintas comparten el cupo")
 	}
+	// Las IPv4 mapeadas en IPv6 siguen por dirección: su /64 sería TODO el espacio IPv4.
+	for range 5 {
+		hits("[::ffff:198.51.100.7]:40001", "")
+	}
+	if hits("[::ffff:198.51.100.8]:40001", "")+hits("172.18.0.4:51234", "::ffff:198.51.100.9") != 0 {
+		t.Error("dos IPv4 mapeadas distintas comparten el cupo")
+	}
+}
+
+// TestAuthFailureLimiter_ParallelGuessesDoNotExceedQuota: cada intento reserva su cupo antes de
+// evaluarse, así que una ráfaga en paralelo no evalúa más claves que el límite.
+func TestAuthFailureLimiter_ParallelGuessesDoNotExceedQuota(t *testing.T) {
+	release := make(chan struct{})
+	handler := AuthFailureLimiter(30, time.Minute, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release // la clave tarda en evaluarse: todas las peticiones están en vuelo a la vez
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/api/internal/sessions", nil)
+			req.RemoteAddr = "203.0.113.7:40001"
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			mu.Lock()
+			codes[rec.Code]++
+			mu.Unlock()
+		}()
+	}
+	waitFor(t, "70 rechazos 429 sin evaluar la clave", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return codes[http.StatusTooManyRequests] == 70
+	})
+	close(release)
+	wg.Wait()
+	if codes[http.StatusUnauthorized] != 30 {
+		t.Fatalf("100 intentos en paralelo con límite 30: quiero 30×401 y 70×429, got %v", codes)
+	}
 }

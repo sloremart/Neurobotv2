@@ -569,8 +569,6 @@ func main() {
 		nectarHealthURL = cfg.NectarBaseURL
 	}
 	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, nectarHealthURL))
-	guard := internalGuard(cfg)
-	mux.Handle("GET /health/debug", guard(http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg, nectarBridge != nil))))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -582,6 +580,7 @@ func main() {
 	mux.HandleFunc("POST /api/webhooks/nectar", webhookHandler.HandleNectarNotice)
 	mux.HandleFunc(api.NectarCapabilitiesPattern, webhookHandler.HandleNectarCapabilities)
 
+	var internalRoutes http.Handler
 	if internalHandler != nil {
 		internalMux := http.NewServeMux()
 		internalMux.HandleFunc("POST /api/internal/cancel-agenda", internalHandler.HandleCancelAgenda)
@@ -621,8 +620,10 @@ func main() {
 		internalMux.HandleFunc("GET /api/internal/siesa/bot-share", internalHandler.HandleSiesaBotShare)
 		internalMux.HandleFunc("GET /api/internal/siesa/conciliacion", internalHandler.HandleSiesaConciliacion)
 		internalMux.HandleFunc("GET /api/internal/siesa/slot-recovery", internalHandler.HandleSiesaSlotRecovery)
-		mux.Handle("/api/internal/", guard(internalMux))
+		internalRoutes = internalMux
 	}
+	mountProtected(mux, internalGuard(cfg),
+		http.HandlerFunc(debugHandler(localDB, externalDB, workerPool, cfg, nectarBridge != nil)), internalRoutes)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -766,19 +767,28 @@ type healthCache struct {
 	critical  bool
 }
 
-// healthHandler responde el estado del bot. nectarBaseURL se publica como `nectar_host` (SOLO el host:
-// ni claves ni ruta), o "none".
 // internalGuard protege lo que pide INTERNAL_API_KEY (la API interna y /health/debug) con un solo
-// límite de intentos: las dos rutas comparten el cupo de cada cliente, así que alternarlas no
-// duplica los intentos de adivinar la clave.
+// límite de intentos FALLIDOS: las dos rutas comparten el cupo de cada cliente, así que alternarlas
+// no duplica los intentos de adivinar la clave; las peticiones con la clave buena no lo gastan.
 func internalGuard(cfg *config.Config) func(http.Handler) http.Handler {
-	limit := api.RateLimiter(30, time.Minute, api.NewTrustedProxies(cfg.TrustedProxyHosts))
+	limit := api.AuthFailureLimiter(30, time.Minute, api.NewTrustedProxies(cfg.TrustedProxyHosts))
 	auth := api.InternalAuth(cfg.InternalAPIKey)
 	return func(next http.Handler) http.Handler {
 		return limit(api.MaxBodySize(auth(next)))
 	}
 }
 
+// mountProtected registra las rutas que piden INTERNAL_API_KEY, todas tras el mismo guard: /health/debug
+// y, si hay handler interno, /api/internal/.
+func mountProtected(mux *http.ServeMux, guard func(http.Handler) http.Handler, debug, internal http.Handler) {
+	mux.Handle("GET /health/debug", guard(debug))
+	if internal != nil {
+		mux.Handle("/api/internal/", guard(internal))
+	}
+}
+
+// healthHandler responde el estado del bot. nectarBaseURL se publica como `nectar_host` (SOLO el host:
+// ni claves ni ruta), o "none".
 func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.HandlerFunc {
 	cache := &healthCache{}
 

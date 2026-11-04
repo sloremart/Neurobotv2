@@ -135,28 +135,65 @@ func TestHealth_SiesaDownIsDegradedNot503(t *testing.T) {
 	}
 }
 
+// protectedMux monta /health/debug y la API interna como main, con un handler que responde 200.
+func protectedMux() *http.ServeMux {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux := http.NewServeMux()
+	mountProtected(mux, internalGuard(&config.Config{InternalAPIKey: "clave-de-prueba"}), ok, ok)
+	return mux
+}
+
+// guardHit manda una petición desde una IP fija con la clave dada y devuelve el código.
+func guardHit(mux http.Handler, path, key string) int {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.RemoteAddr = "203.0.113.7:40001"
+	req.Header.Set("X-API-Key", key)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec.Code
+}
+
 // TestInternalGuard_LimitsDebugAttempts: /health/debug pide la misma clave que la API interna, así que
 // también tiene su límite de intentos, y con el MISMO cupo: alternar rutas no duplica los intentos (A-03).
 func TestInternalGuard_LimitsDebugAttempts(t *testing.T) {
-	guard := internalGuard(&config.Config{InternalAPIKey: "clave-de-prueba"})
-	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	debug, internal := guard(ok), guard(ok)
-
+	mux := protectedMux()
 	codes := map[int]int{}
 	for i := range 31 {
-		target, path := debug, "/health/debug"
+		path := "/health/debug"
 		if i%2 == 1 {
-			target, path = internal, "/api/internal/sessions"
+			path = "/api/internal/sessions"
 		}
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.RemoteAddr = "203.0.113.7:40001"
-		req.Header.Set("X-API-Key", "mala")
-		rec := httptest.NewRecorder()
-		target.ServeHTTP(rec, req)
-		codes[rec.Code]++
+		codes[guardHit(mux, path, "mala")]++
 	}
 	if codes[http.StatusUnauthorized] != 30 || codes[http.StatusTooManyRequests] != 1 {
 		t.Fatalf("31 claves malas alternando /health/debug y /api/internal: quiero 30×401 y 1×429, got %v", codes)
+	}
+	// Agotado el cupo, la IP queda cerrada también para la clave buena: si pasara, el 429/200 diría
+	// cuándo se acertó y el límite dejaría de frenar la adivinación.
+	if got := guardHit(mux, "/api/internal/sessions", "clave-de-prueba"); got != http.StatusTooManyRequests {
+		t.Fatalf("clave buena tras agotar el cupo: código %d, quiero 429", got)
+	}
+}
+
+// TestInternalGuard_AuthenticatedRequestsDoNotSpendQuota: el límite frena a quien adivina la clave, no
+// al uso legítimo: las peticiones con la clave buena no gastan cupo (el auditor y el dashboard pasan
+// de 30 por minuto sin tocarlo).
+func TestInternalGuard_AuthenticatedRequestsDoNotSpendQuota(t *testing.T) {
+	mux := protectedMux()
+	for i := range 50 {
+		path := "/api/internal/sessions"
+		if i%5 == 0 {
+			path = "/health/debug"
+		}
+		if got := guardHit(mux, path, "clave-de-prueba"); got != http.StatusOK {
+			t.Fatalf("petición autenticada n.º %d: código %d, quiero 200", i+1, got)
+		}
+	}
+	// Las autenticadas no dejaron cupo gastado: los 30 intentos fallidos siguen disponibles.
+	for i := range 30 {
+		if got := guardHit(mux, "/health/debug", "mala"); got != http.StatusUnauthorized {
+			t.Fatalf("intento fallido n.º %d tras 50 autenticadas: código %d, quiero 401", i+1, got)
+		}
 	}
 }
 

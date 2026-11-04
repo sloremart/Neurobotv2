@@ -101,6 +101,19 @@ func MaxBodySize(next http.Handler) http.Handler {
 // RateLimiter middleware que limita requests por IP con token bucket simple.
 // maxRequests por ventana de tiempo. proxies decide de quién se cree el X-Forwarded-For (ver clientIP).
 func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies) func(http.Handler) http.Handler {
+	return newRateLimiter(maxRequests, window, proxies, false)
+}
+
+// AuthFailureLimiter es RateLimiter contando solo los intentos fallidos (respuesta 401): frena a quien
+// adivina la clave sin gastar el cupo del uso legítimo. Agotado el cupo, el cliente recibe 429 sin que
+// se mire su clave, también si es la buena: si pasara, la diferencia 429/200 delataría el acierto y el
+// límite dejaría de frenar la adivinación. Cada petición reserva su intento ANTES de evaluarse y lo
+// devuelve si no fue un 401, así que ni las peticiones en paralelo pasan del cupo.
+func AuthFailureLimiter(maxFailures int, window time.Duration, proxies *TrustedProxies) func(http.Handler) http.Handler {
+	return newRateLimiter(maxFailures, window, proxies, true)
+}
+
+func newRateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies, failuresOnly bool) func(http.Handler) http.Handler {
 	type client struct {
 		count   int
 		resetAt time.Time
@@ -134,20 +147,28 @@ func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies)
 			c, exists := clients[key]
 			now := time.Now()
 			if !exists || now.After(c.resetAt) {
-				clients[key] = &client{count: 1, resetAt: now.Add(window)}
-				mu.Unlock()
-				next.ServeHTTP(w, r)
-				return
+				c = &client{resetAt: now.Add(window)}
+				clients[key] = c
 			}
-			c.count++
-			if c.count > maxRequests {
+			if c.count >= maxRequests {
 				mu.Unlock()
 				exceededLog.Warn("rate limit exceeded", "ip", ip, "key", key, "path", r.URL.Path)
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 				return
 			}
+			c.count++
 			mu.Unlock()
-			next.ServeHTTP(w, r)
+			if !failuresOnly {
+				next.ServeHTTP(w, r)
+				return
+			}
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
+			if rec.status != http.StatusUnauthorized {
+				mu.Lock()
+				c.count--
+				mu.Unlock()
+			}
 		})
 	}
 }
