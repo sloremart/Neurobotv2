@@ -98,12 +98,13 @@ func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := clientIP(r, proxies)
+			key := rateLimitKey(ip)
 
 			mu.Lock()
-			c, exists := clients[ip]
+			c, exists := clients[key]
 			now := time.Now()
 			if !exists || now.After(c.resetAt) {
-				clients[ip] = &client{count: 1, resetAt: now.Add(window)}
+				clients[key] = &client{count: 1, resetAt: now.Add(window)}
 				mu.Unlock()
 				next.ServeHTTP(w, r)
 				return
@@ -111,7 +112,7 @@ func RateLimiter(maxRequests int, window time.Duration, proxies *TrustedProxies)
 			c.count++
 			if c.count > maxRequests {
 				mu.Unlock()
-				exceededLog.Warn("rate limit exceeded", "ip", ip, "path", r.URL.Path)
+				exceededLog.Warn("rate limit exceeded", "ip", ip, "key", key, "path", r.URL.Path)
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 				return
 			}
@@ -261,6 +262,21 @@ func clientIP(r *http.Request, proxies *TrustedProxies) string {
 		return client.Unmap().String()
 	}
 	return host
+}
+
+// rateLimitKey agrupa las IPv6 por su /64: a un cliente se le suele asignar el prefijo entero y rotar
+// la parte baja de la dirección no le da cupos nuevos. Las IPv4 (también las mapeadas en IPv6) quedan
+// por dirección.
+func rateLimitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	return netip.PrefixFrom(addr, 64).Masked().String()
 }
 
 // SecurityHeaders adds standard security headers to all responses.

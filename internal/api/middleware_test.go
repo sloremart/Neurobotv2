@@ -420,3 +420,38 @@ func TestTrustedProxies_SlowLookupDoesNotBlock(t *testing.T) {
 		})
 	}
 }
+
+// TestRateLimiter_IPv6GroupedBy64: un cliente IPv6 suele tener un /64 entero; rotar la parte baja de
+// la dirección no le da cupos nuevos. Otro /64 sí es otro cliente, y las IPv4 siguen por dirección.
+func TestRateLimiter_IPv6GroupedBy64(t *testing.T) {
+	handler := RateLimiter(3, time.Minute, ngrokProxies())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	hits := func(remoteAddr, xff string) int {
+		req := httptest.NewRequest("GET", "/api/internal/sessions", nil)
+		req.RemoteAddr = remoteAddr
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			return 1
+		}
+		return 0
+	}
+	got := 0
+	for i := 1; i <= 5; i++ {
+		got += hits(fmt.Sprintf("[2001:db8:1:2::%x]:40001", i), "")
+		got += hits("172.18.0.4:51234", fmt.Sprintf("[2001:db8:1:2:aaaa::%x]:4711", i))
+	}
+	if got != 7 {
+		t.Errorf("10 peticiones desde un mismo /64 (directas y por el túnel), límite 3: esperaba 7 respuestas 429, got %d", got)
+	}
+	if hits("[2001:db8:1:3::1]:40001", "") != 0 {
+		t.Error("otro /64 comparte el cupo")
+	}
+	if hits("198.51.100.1:40001", "")+hits("198.51.100.2:40001", "") != 0 {
+		t.Error("dos IPv4 distintas comparten el cupo")
+	}
+}
