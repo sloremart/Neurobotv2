@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -232,6 +233,21 @@ func redactValue(s string) string {
 	return string(r[:2]) + "***" + string(r[len(r)-2:])
 }
 
+// maxAttrRunes es el largo máximo de un valor en la alerta; el valor entero queda en el log.
+const maxAttrRunes = 160
+
+// trimForAlert quita el cuerpo HTTP que algunos errores incrustan (Bird y Néctar responden JSON que
+// puede repetir el contacto con su nombre) y recorta el resto a maxAttrRunes (C-16).
+func trimForAlert(s string) string {
+	if i := strings.Index(s, "{"); i >= 0 {
+		s = s[:i] + fmt.Sprintf("[cuerpo omitido: %d caracteres]", utf8.RuneCountInString(s[i:]))
+	}
+	if r := []rune(s); len(r) > maxAttrRunes {
+		s = string(r[:maxAttrRunes]) + "…"
+	}
+	return s
+}
+
 func formatAttr(a slog.Attr) string {
 	val := a.Value.String()
 	switch {
@@ -241,7 +257,7 @@ func formatAttr(a slog.Attr) string {
 	default:
 		// K3: claves no listadas todavía pueden traer PII embebida (p.ej. un documento dentro
 		// de un mensaje de error) → enmascarar secuencias largas de dígitos por si acaso.
-		val = redactPII(val)
+		val = redactPII(trimForAlert(val))
 	}
 	return fmt.Sprintf("<code>%s</code>: %s", escapeHTML(a.Key), escapeHTML(val))
 }

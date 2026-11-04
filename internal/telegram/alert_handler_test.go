@@ -219,3 +219,24 @@ func TestAlertHandler_DerivedHandlersShareDedupLock(t *testing.T) {
 		t.Errorf("las 100 alertas distintas quedan en el mismo mapa de dedup, hay %d", len(base.dedup))
 	}
 }
+
+// C-16: el cuerpo HTTP incrustado en un error (Bird o Néctar devuelven el contacto con su nombre)
+// no sale a Telegram; se conservan el contexto y el status, y el resto se recorta.
+func TestFormatAttr_OmitsHTTPBodyInErrors(t *testing.T) {
+	out := formatAttr(slog.String("error",
+		`bird api error: status 422, body: {"code":"InvalidPayload","contact":{"displayName":"María López"}}`))
+	if strings.Contains(out, "María") || strings.Contains(out, "displayName") {
+		t.Errorf("el cuerpo del error salió a Telegram: %q", out)
+	}
+	if !strings.Contains(out, "status 422") {
+		t.Errorf("el contexto y el status se conservan: %q", out)
+	}
+
+	long := formatAttr(slog.String("error", strings.Repeat("contexto ", 60)+"María López"))
+	if strings.Contains(long, "María") {
+		t.Errorf("un valor largo se recorta antes de salir a Telegram: %q", long)
+	}
+	if n := utf8.RuneCountInString(long); n > maxAttrRunes+60 {
+		t.Errorf("el valor recortado ocupa %d runas", n)
+	}
+}
