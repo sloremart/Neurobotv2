@@ -433,9 +433,11 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (arrastra el init); 3) `docker compose exec bot id -u` = 10001 y `/api/internal/logs` con líneas de hoy. Tras un
   rollback a la imagen vieja (root), volver adelante con `docker compose up -d bot`, NUNCA `restart`: solo `up`
   corre el init y la vieja deja el log del día de root.
-- Ghostscript (OCR del PDF): `-dSAFER`, `-dMaxBitmap=10000000`, `-dLastPage=maxOCRPages`, tiempo acotado por
-  `defaultAnalyzeTimeout`. Si un JPEG convertido pasa 10 MB, o el total 32 MB, se reconvierte a 150 y luego 100 DPI
-  (la foto pasada a PDF a 72-96 DPI); solo si ni así cabe se rechaza. Carta/oficio siguen a 300 DPI.
+- Ghostscript (OCR del PDF): `-dSAFER`, `-dMaxBitmap=10000000`, `-dLastPage=maxOCRPages`, toda la conversión
+  de un documento (todos sus intentos) acotada a `pdfRenderBudget` (20 s; agotado = fallo de gs, el resto de
+  `defaultAnalyzeTimeout` queda para Vision). Si un JPEG convertido pasa 10 MB, o el total 32 MB, se reconvierte a
+  la resolución que el tamaño medido a 300 dice que cabe (150 o directo a 100; la foto pasada a PDF a 72-96 DPI);
+  solo si ni así cabe se rechaza. Carta/oficio siguen a 300 DPI, una sola conversión.
 - `/health`: SIESA caído = 200 `degraded` (Docker no lo marca unhealthy); BD local caída = 503 `critical`. Monitor
   externo (keyword `"status":"ok"` cada 1 min): `docs/MONITOREO-EXTERNO.md`; el watcher solo ve eventos de Docker.
 - Aviso del mismo día: tras leer SIESA se descartan las citas cuya hora no es posterior a la hora real (la franja

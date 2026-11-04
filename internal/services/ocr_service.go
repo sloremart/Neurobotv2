@@ -29,7 +29,7 @@ const maxOCRPages = 10
 // Topes de los JPEG que deja Ghostscript, antes de leerlos a memoria y pasarlos a base64. Una hoja
 // carta escaneada a 300 DPI pesa 1-3 MB; una con un MediaBox desmesurado (200" son 60.000 × 60.000 px)
 // deja decenas de MB aun en blanco, y diez de ellas tumbarían al bot por memoria. Pasarse de cualquiera
-// de los dos repite la conversión a menor resolución (ocrRenderDPIs) y, si ni así cabe, la rechaza igual
+// de los dos repite la conversión a la resolución que cabe (ocrRenderDPIs) y, si ni así cabe, la rechaza igual
 // que un fallo de Ghostscript. El total (32 MB, ~43 MB en base64) queda bajo el límite de 50 MB por
 // petición de OpenAI y sobre los ~24 MB de diez hojas escaneadas con ruido.
 const (
@@ -39,6 +39,23 @@ const (
 
 // errPageImagesTooLarge: los JPEG convertidos pasan maxOCRPageImageBytes o maxOCRImagesTotalBytes.
 var errPageImagesTooLarge = errors.New("pdf page images too large")
+
+// pageImagesTooLargeError es errPageImagesTooLarge con lo que midieron las imágenes: la hoja más pesada
+// y el total, para elegir la resolución del intento siguiente.
+type pageImagesTooLargeError struct {
+	page, total int64
+}
+
+func (e *pageImagesTooLargeError) Error() string {
+	return fmt.Sprintf("%v (page %d bytes, total %d bytes)", errPageImagesTooLarge, e.page, e.total)
+}
+
+func (e *pageImagesTooLargeError) Unwrap() error { return errPageImagesTooLarge }
+
+// overflow dice cuántas veces pasan las imágenes el más apretado de los dos topes.
+func (e *pageImagesTooLargeError) overflow() float64 {
+	return max(float64(e.page)/maxOCRPageImageBytes, float64(e.total)/maxOCRImagesTotalBytes)
+}
 
 // gsMaxBitmap fija el raster que Ghostscript tiene en memoria por banda (10 MB): una hoja más grande se
 // pinta por bandas en vez de entera. Ghostscript 10.05 ya divide por bandas por defecto (medido: unos
@@ -845,24 +862,64 @@ func execGhostscript(ctx context.Context, args []string) ([]byte, error) {
 	return exec.CommandContext(ctx, "gs", args...).CombinedOutput()
 }
 
-// ocrRenderDPIs son las resoluciones de conversión en orden de intento. Las hojas carta u oficio caben a
+// ocrRenderDPIs son las resoluciones de conversión, de mayor a menor. Las hojas carta u oficio caben a
 // 300 DPI y salen igual que siempre. Una foto pasada a PDF con la página del tamaño de los píxeles (72-96
 // DPI: hojas de 40-56") deja a 300 DPI un JPEG de 15-45 MB; se vuelve a convertir más bajo en vez de
 // rechazarla, sin perder nada: Vision baja toda imagen a 2048 px de lado mayor.
 var ocrRenderDPIs = []int{300, 150, 100}
 
-// renderPDFPages convierte a la primera resolución de ocrRenderDPIs cuyas imágenes quepan en los topes;
-// si ninguna cabe, devuelve errPageImagesTooLarge.
+// pdfRenderBudget acota TODA la conversión de un documento con Ghostscript, con todos sus intentos. Lo
+// legítimo más lento medido tarda 5,9 s (foto con ruido duro, tres pasadas); sin este límite, una hoja
+// desmesurada se comía hasta el plazo entero del análisis (defaultAnalyzeTimeout) y a Vision no le
+// quedaba tiempo. Agotado, la conversión falla como un fallo de Ghostscript.
+const pdfRenderBudget = 20 * time.Second
+
+// renderPDFPages convierte las hojas dentro de pdfRenderBudget (ver renderPDFPagesWithin).
 func renderPDFPages(ctx context.Context, run gsRunner, pdfPath string, first, last int) ([]string, error) {
-	var err error
-	for _, dpi := range ocrRenderDPIs {
-		var uris []string
-		if uris, err = renderPDFPagesAt(ctx, run, pdfPath, first, last, dpi); !errors.Is(err, errPageImagesTooLarge) {
+	return renderPDFPagesWithin(ctx, run, pdfRenderBudget, pdfPath, first, last)
+}
+
+// renderPDFPagesWithin convierte a 300 DPI y, si las imágenes no caben en los topes, vuelve a convertir
+// a la resolución que el tamaño medido dice que cabe (nextRenderDPI), sin probar las intermedias. Si ni
+// a la menor cabe, devuelve errPageImagesTooLarge.
+func renderPDFPagesWithin(ctx context.Context, run gsRunner, budget time.Duration, pdfPath string, first, last int) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	dpi := ocrRenderDPIs[0]
+	for {
+		uris, err := renderPDFPagesAt(ctx, run, pdfPath, first, last, dpi)
+		var tooLarge *pageImagesTooLargeError
+		if !errors.As(err, &tooLarge) {
 			return uris, err
 		}
-		slog.Info("ocr: imágenes del pdf fuera de tope; se convierte a menor resolución", "dpi", dpi)
+		next, ok := nextRenderDPI(dpi, tooLarge.overflow())
+		if !ok {
+			return nil, err
+		}
+		slog.Info("ocr: imágenes del pdf fuera de tope; se convierte a menor resolución", "dpi", dpi, "next_dpi", next)
+		dpi = next
 	}
-	return nil, err
+}
+
+// nextRenderDPI elige, entre las resoluciones menores que dpi, la mayor en la que las imágenes caben si
+// su peso baja con el cuadrado de la resolución (overflow = cuántas veces se pasaron del tope a dpi). Si
+// ninguna cabe según esa cuenta, la menor. ok=false: no queda ninguna menor.
+func nextRenderDPI(dpi int, overflow float64) (int, bool) {
+	var lower []int
+	for _, d := range ocrRenderDPIs {
+		if d < dpi {
+			lower = append(lower, d)
+		}
+	}
+	if len(lower) == 0 {
+		return 0, false
+	}
+	for _, d := range lower {
+		if scale := float64(d) / float64(dpi); overflow*scale*scale <= 1 {
+			return d, true
+		}
+	}
+	return lower[len(lower)-1], true
 }
 
 // renderPDFPagesAt convierte a la resolución dpi; los JPEG temporales se borran al salir, pase lo que pase.
@@ -881,7 +938,7 @@ func renderPDFPagesAt(ctx context.Context, run gsRunner, pdfPath string, first, 
 }
 
 // jpegRenderArgs arma los argumentos de Ghostscript para pasar las hojas [first,last] a JPEG. El tiempo
-// lo acota el contexto (defaultAnalyzeTimeout) y las hojas, last (maxOCRPages).
+// lo acota el contexto (pdfRenderBudget) y las hojas, last (maxOCRPages).
 func jpegRenderArgs(first, last, dpi int, outPattern, pdfPath string) []string {
 	args := []string{"-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=jpeg", fmt.Sprintf("-r%d", dpi), gsMaxBitmap}
 	if first > 0 {
@@ -896,17 +953,18 @@ func jpegRenderArgs(first, last, dpi int, outPattern, pdfPath string) []string {
 // readPageImages lee los JPEG ya convertidos (en orden) como data URIs base64. Mira los tamaños antes
 // de leer nada: con una hoja o un total fuera de tope no carga ninguna.
 func readPageImages(paths []string) ([]string, error) {
-	var total int64
+	var page, total int64
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
 			continue
 		}
 		total += info.Size()
-		if info.Size() > maxOCRPageImageBytes || total > maxOCRImagesTotalBytes {
-			slog.Warn("ocr: imagen del pdf fuera de tope; no se lee", "page_bytes", info.Size(), "total_bytes", total)
-			return nil, fmt.Errorf("%w (page %d bytes, total %d bytes)", errPageImagesTooLarge, info.Size(), total)
-		}
+		page = max(page, info.Size())
+	}
+	if page > maxOCRPageImageBytes || total > maxOCRImagesTotalBytes {
+		slog.Warn("ocr: imagen del pdf fuera de tope; no se lee", "page_bytes", page, "total_bytes", total)
+		return nil, &pageImagesTooLargeError{page: page, total: total}
 	}
 	uris := make([]string, 0, len(paths))
 	for _, p := range paths {

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeSizedFile crea un archivo de n bytes (disperso: no ocupa disco) para simular la salida de gs.
@@ -156,5 +157,64 @@ func TestRenderPDFPages_RejectsWhenNoResolutionFits(t *testing.T) {
 	}
 	if !slices.Equal(dpis, []string{"-r300", "-r150", "-r100"}) {
 		t.Errorf("resoluciones = %v", dpis)
+	}
+}
+
+// Una hoja gigante (el MediaBox de 200") sale a 300 DPI muchas veces por encima del tope: se salta
+// directo a la resolución menor, sin pasar por 150.
+func TestRenderPDFPages_HugePageJumpsStraightTo100(t *testing.T) {
+	var dpis []string
+	pdf := filepath.Join(t.TempDir(), "order.pdf")
+	size := func(dpi string) int64 {
+		if dpi == "-r300" {
+			return 9 * maxOCRPageImageBytes
+		}
+		return 1 << 20
+	}
+	uris, err := renderPDFPages(context.Background(), fakeGhostscript(size, &dpis), pdf, 1, maxOCRPages)
+	if err != nil || len(uris) != 1 {
+		t.Fatalf("uris=%d err=%v", len(uris), err)
+	}
+	if !slices.Equal(dpis, []string{"-r300", "-r100"}) {
+		t.Errorf("resoluciones = %v, esperaba -r300 y -r100", dpis)
+	}
+}
+
+// Toda la conversión de un documento, con todos sus intentos, tiene su propio límite
+// (pdfRenderBudget), más corto que el del análisis: lo que sobra queda para Vision.
+func TestRenderPDFPages_HasItsOwnBudget(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), defaultAnalyzeTimeout)
+	defer cancel()
+	var left time.Duration
+	run := func(ctx context.Context, _ []string) ([]byte, error) {
+		dl, _ := ctx.Deadline()
+		left = time.Until(dl)
+		return nil, errors.New("gs falso")
+	}
+	if _, err := renderPDFPages(parent, run, filepath.Join(t.TempDir(), "order.pdf"), 1, maxOCRPages); err == nil {
+		t.Fatal("el fallo de gs se devuelve")
+	}
+	if pdfRenderBudget != 20*time.Second || left <= 0 || left > pdfRenderBudget {
+		t.Errorf("plazo de la conversión = %v, límite %v", left, pdfRenderBudget)
+	}
+}
+
+// Si gs no termina dentro del límite, la conversión falla como un fallo de gs y no espera al plazo
+// del análisis.
+func TestRenderPDFPages_BudgetExhaustedFailsLikeGhostscript(t *testing.T) {
+	var calls int
+	run := func(ctx context.Context, _ []string) ([]byte, error) {
+		calls++
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	start := time.Now()
+	_, err := renderPDFPagesWithin(context.Background(), run, 50*time.Millisecond,
+		filepath.Join(t.TempDir(), "order.pdf"), 1, maxOCRPages)
+	if err == nil || !strings.Contains(err.Error(), "pdf to image conversion failed") || errors.Is(err, errPageImagesTooLarge) {
+		t.Fatalf("err = %v, esperaba el fallo de gs", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second || calls != 1 {
+		t.Errorf("agotado el límite no se reintenta: %v, %d conversiones", elapsed, calls)
 	}
 }
