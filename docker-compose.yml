@@ -17,6 +17,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      bot-logs-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${PORT:-8080}/health || exit 1"]
       interval: 15s
@@ -44,6 +46,20 @@ services:
           cpus: '2.0'
         reservations:
           memory: 256M
+
+  # Paso de arranque mínimo: el bot corre sin root (UID 10001, docker/Dockerfile) y el volumen bot-logs
+  # creado cuando corría como root quedó con dueño root. Sin esto el bot no puede escribir sus logs (sigue
+  # solo por stdout) y /api/internal/logs queda vacío. Corre en cada `up`, tarda un instante y termina; el
+  # watcher lo ignora para no avisar de su salida.
+  bot-logs-init:
+    image: alpine:3.21.9
+    container_name: neuro_bot_logs_init
+    user: "0:0"
+    command: ["chown", "-R", "10001:10001", "/app/logs"]
+    volumes:
+      - bot-logs:/app/logs
+    network_mode: none
+    restart: "no"
 
   db:
     image: mysql:8.0
@@ -140,7 +156,7 @@ services:
     environment:
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TG_CHAT_IDS: ${TG_CHAT_IDS:-}
-      IGNORE_CONTAINERS: "neuro_bot_watcher"
+      IGNORE_CONTAINERS: "neuro_bot_watcher,neuro_bot_logs_init"
       VERBOSE: "0"
       # Solo los contenedores de ESTE proyecto. El servidor aloja varios stacks y `docker events` sin
       # filtro reporta todo el demonio: alertas de contenedores ajenos indistinguibles de las del bot.

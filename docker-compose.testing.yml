@@ -20,6 +20,9 @@ services:
       - .env.testing
     container_name: neuro_bot_db_testing
 
+  bot-logs-init:
+    container_name: neuro_bot_logs_init_testing
+
   ngrok:
     container_name: neuro_bot_ngrok_testing
     command:
@@ -30,4 +33,4 @@ services:
 
   watcher:
     environment:
-      IGNORE_CONTAINERS: "neuro_bot_watcher,neuro_bot_testing,neuro_bot_db_testing,neuro_bot_ngrok_testing"
+      IGNORE_CONTAINERS: "neuro_bot_watcher,neuro_bot_testing,neuro_bot_db_testing,neuro_bot_ngrok_testing,neuro_bot_logs_init_testing"

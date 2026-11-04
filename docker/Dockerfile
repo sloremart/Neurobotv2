@@ -28,14 +28,26 @@ RUN git config --global --add safe.directory /app && \
       -o neuro-bot ./cmd/server
 
 # === Stage 2: Runtime ===
-FROM alpine:3.21
+# Versión fija de la base. Ghostscript abre los PDF que mandan los pacientes: se fija la rama 10.05 (`~`
+# admite los parches -rN que Alpine publica en esa rama, que son justo los de seguridad). Si Alpine la
+# retira, el build falla a la vista en vez de cambiar de versión en silencio.
+FROM alpine:3.21.9
 
-RUN apk --no-cache add ca-certificates tzdata wget ghostscript
+RUN apk --no-cache add ca-certificates tzdata wget 'ghostscript~10.05'
+
+# El bot corre sin root: un PDF que lograra evadir -dSAFER no ejecuta como root dentro del contenedor.
+# UID/GID fijos (10001): el servicio bot-logs-init del compose deja el volumen de logs con ese dueño.
+RUN addgroup -S -g 10001 bot && adduser -S -D -u 10001 -G bot -h /home/bot bot
 
 WORKDIR /app
 
 COPY --from=builder /app/neuro-bot .
 COPY --from=builder /app/migrations ./migrations
+# /app/logs es lo único que el bot escribe en /app (los temporales del OCR van a /tmp). Un volumen nuevo
+# copia este dueño; uno que ya existía lo ajusta bot-logs-init.
+RUN mkdir -p /app/logs && chown bot:bot /app/logs
+
+USER bot:bot
 
 ENV TZ=America/Bogota
 # Tell Go GC to stay under 90% of the container memory limit (1024M → ~920MiB).
