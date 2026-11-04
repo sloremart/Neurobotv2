@@ -330,7 +330,7 @@ func (c *capturingTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 }
 
 func newDownloadSvc(rt http.RoundTripper) *OCRService {
-	s := NewOCRService("k", "m", "", "bird-key")
+	s := NewOCRService("k", "m", "bird-key")
 	s.client = &http.Client{Transport: rt}
 	return s
 }
@@ -536,7 +536,7 @@ func TestDownloadMedia_NectarRedirectNotFollowed(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	s := NewOCRService("k", "m", "", "bird-key")
+	s := NewOCRService("k", "m", "bird-key")
 	s.SetNectarCredentials(origin.URL, "service-key", "req-secret")
 	s.mediaRetryDelays = []time.Duration{0, 0, 0}
 	if _, err := s.downloadMedia(context.Background(), origin.URL+"/api/bot/attachments/7"); err == nil {
@@ -558,7 +558,7 @@ func TestDownloadMedia_OtherHostRedirectStillFollowed(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	s := NewOCRService("k", "m", "", "bird-key")
+	s := NewOCRService("k", "m", "bird-key")
 	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
 	data, err := s.downloadMedia(context.Background(), origin.URL+"/x.jpg")
 	if err != nil || string(data) != "data" {

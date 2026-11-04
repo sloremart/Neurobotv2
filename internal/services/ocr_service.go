@@ -46,7 +46,6 @@ type OCRService struct {
 	docModel      string
 	apiURL        string // default: https://api.openai.com/v1/chat/completions
 	client        *http.Client
-	cupsContext   string // CUPS reference table injected into the prompt
 	birdAccessKey string // Bird API key for downloading media files
 	// Néctar: adjuntos de GET /api/bot/attachments/{id}; solo se adjuntan si el anfitrión coincide.
 	nectarHost          string
@@ -67,12 +66,12 @@ type OCRService struct {
 	pdfText func(ctx context.Context, pdfPath string) []string
 }
 
-func NewOCRService(apiKey, model, cupsContext, birdAccessKey string) *OCRService {
+// NewOCRService crea el OCR de órdenes con el modelo de la lectura general y la credencial de Bird.
+func NewOCRService(apiKey, model, birdAccessKey string) *OCRService {
 	s := &OCRService{
 		apiKey:         apiKey,
 		model:          model,
 		apiURL:         "https://api.openai.com/v1/chat/completions",
-		cupsContext:    cupsContext,
 		birdAccessKey:  birdAccessKey,
 		analyzeTimeout: defaultAnalyzeTimeout,
 		pdfToImages:    pdfPagesToDataURIs,
@@ -163,16 +162,6 @@ type CUPSGroup struct {
 	Espacios    int         `json:"espacios"`
 }
 
-// BuildCupsContext constructs the CUPS reference table string from a list of procedures.
-// Call this once at startup and pass the result to NewOCRService.
-func BuildCupsContext(codes []struct{ Code, Name string }) string {
-	var sb strings.Builder
-	for _, p := range codes {
-		fmt.Fprintf(&sb, "- CUPS: %s, Descripción: %s\n", p.Code, p.Name)
-	}
-	return sb.String()
-}
-
 const ocrSystemPrompt = `Eres un extractor de datos de órdenes médicas colombianas. Devuelve SIEMPRE y SOLO un JSON válido (sin texto extra, sin bloques de código markdown).
 
 FORMATO DE SALIDA:
@@ -185,7 +174,8 @@ FORMATO DE SALIDA:
       "quantity": <int>,
       "is_sedated": <boolean>,
       "is_contrasted": <boolean>,
-      "observations": "<string>"
+      "observations": "<string>",
+      "is_interconsulta": <boolean>
     }
   ],
   "entity": "<nombre_EPS_o_entidad|null>",
@@ -208,8 +198,7 @@ REGLA CERO — ANTI-ALUCINACIÓN (tiene prioridad sobre todo lo demás):
 - Solo incluye en el resultado procedimientos que estén CLARAMENTE VISIBLES en la imagen.
 - NUNCA uses el contenido de los ejemplos de estas instrucciones como si fuera contenido del documento.
 - Si un código o nombre no es legible con certeza, OMITE ese procedimiento del resultado.
-- Un código que NO está en la LISTA DE REFERENCIA NO es motivo para inventar otro que sí esté. Devuelve el código y nombre tal como aparecen en la imagen, aunque no estén en la lista.
-- REGLA CRÍTICA: Si el código visible en la imagen NO existe en la LISTA DE REFERENCIA, devuélvelo EXACTAMENTE como aparece con el nombre de la orden. NUNCA lo reemplaces por otro código de la lista aunque la descripción parezca similar.
+- NUNCA inventes ni deduzcas un código: devuelve el código y el nombre tal como aparecen en la imagen.
 
 1) PRIORIDAD ABSOLUTA: CÓDIGO EN LA ORDEN
    - Si en la fila del procedimiento existe un número de 4 a 6 dígitos, ese ES el cups_code.
@@ -223,19 +212,15 @@ REGLA CERO — ANTI-ALUCINACIÓN (tiene prioridad sobre todo lo demás):
        * 890364 = FISIATRIA (MEDICINA FISICA Y REHABILITACION) CONTROL
        * 890374 = NEUROLOGÍA adultos CONTROL  ← si la orden dice "NEUROLOGÍA" sin "PEDIÁTRICA", termina en 74, NO en 75
        * 890375 = NEUROLOGÍA PEDIÁTRICA CONTROL  ← si la orden dice "NEUROLOGÍA PEDIÁTRICA", termina en 75, NO en 74
-       * 890284 = PSIQUIATRÍA PRIMERA VEZ — código válido aunque NO esté en la lista de referencia, devuélvelo tal cual
-       * 890308 = PSICOLOGÍA CONTROL — código válido aunque NO esté en la lista de referencia, devuélvelo tal cual
+       * 890284 = PSIQUIATRÍA PRIMERA VEZ — código válido, devuélvelo tal cual
+       * 890308 = PSICOLOGÍA CONTROL — código válido, devuélvelo tal cual
    - VERIFICACIÓN CRUZADA OBLIGATORIA: Después de leer el código, compara la especialidad del código con la especialidad mencionada en la descripción de la orden.
-     * Si NO coinciden → has leído mal el código. Usa el código de la imagen tal cual Y cups_name = descripción exacta de la orden (no uses el nombre de la lista).
+     * Si NO coinciden → has leído mal el código. Usa el código de la imagen tal cual Y cups_name = descripción exacta de la orden.
      * Ejemplo: si el código apunta a "MEDICINA FISICA" pero la descripción dice "PSICOLOGÍA" → el código correcto es 890308, devuélvelo con el nombre de la orden.
 
-2) SOLO SI NO HAY CÓDIGO EN LA ORDEN:
-   - Compara la descripción de la orden con la LISTA DE REFERENCIA (al final).
-   - Elige el CUPS con la coincidencia más fuerte y específica.
-   - cups_name se mantiene como la leída en la orden (no reemplazar por la de la lista).
-
-3) SI NO HAY CÓDIGO NI COINCIDENCIA:
-   - Pon cups_code vacío ("") y cups_name con la descripción leída en la orden.
+2) SI NO HAY CÓDIGO EN LA ORDEN:
+   - Pon cups_code vacío ("") y cups_name con la descripción tal como aparece en la orden.
+   - NUNCA elijas ni deduzcas un código por la descripción: el código lo asigna el sistema después.
 
 DATOS POR PROCEDIMIENTO:
 - quantity: entero. REGLAS DE CANTIDAD (en orden de prioridad):
@@ -247,6 +232,7 @@ DATOS POR PROCEDIMIENTO:
   - "ELECTROMIOGRAFÍA (#4) / 4 EXTREMIDADES" → quantity=4 (del #4). Las 4 extremidades indican dónde se aplica, no cuántas sesiones.
   - "NEUROCONDUCCIÓN (#16) / 4 EXTREMIDADES" → quantity=16 (del #16). Son 4 nervios × 4 extremidades = 16 estudios.
   NUNCA uses el número de extremidades como quantity cuando haya un (#N) en la misma fila.
+- is_interconsulta: true solo si el procedimiento sale de una SOLICITUD DE INTERCONSULTA o REMISIÓN (ver abajo); si no, false.
 - observations: texto adicional o marcadores del procedimiento como "AMB", "SUPERIORES", "BILATERAL", lateralidad, etc. Aplica corrección OCR mínima (ej: "CIN"→"SIN"). Si no hay observaciones, usa "".
 - is_sedated: indica si ESE procedimiento se realiza BAJO SEDACIÓN/ANESTESIA. Decide en este orden:
   1) NEGACIÓN primero: si dice "SIN sedación", "SIN anestesia", "NO requiere sedación", "no sedado/sedada"
@@ -281,12 +267,9 @@ REGLAS CAPITAL SALUD (solo si se detecta logo/texto "Capital Salud"):
 INTERCONSULTAS (solicitudes de remisión):
 - Si la imagen es una SOLICITUD DE INTERCONSULTA o REMISIÓN (no una orden con tabla de CUPS):
   Busca el servicio solicitado en los campos "Interconsulta a:", "Servicio referente:", "Especialidad:" o similares.
-  Compara ese servicio con la LISTA DE REFERENCIA y asigna el cups_code correspondiente.
-  cups_name = el nombre del servicio tal como aparece en el documento.
-  Si hay dos CUPS para la misma especialidad (primera vez y control), elige SIEMPRE el de "primera vez" o "1ª vez",
-  ya que las interconsultas son casi siempre consultas iniciales.
-  Si no hay coincidencia en la lista, pon cups_code = "" y cups_name con el servicio leído.
-  NO devuelvas error "no_table_detected" por ser interconsulta — intenta extraer el servicio.
+  Devuelve UN procedimiento con cups_code = "" (salvo que el documento traiga el código visible), cups_name = el servicio
+  tal como aparece en el documento e is_interconsulta = true. NUNCA elijas un código por el nombre del servicio.
+  NO devuelvas error "no_table_detected" por ser interconsulta — extrae el servicio.
 
 SIN TABLA DE PROCEDIMIENTOS:
 - Si la imagen no es una orden médica ni una interconsulta, o no tiene ningún procedimiento o servicio identificable:
@@ -296,13 +279,10 @@ SIN TABLA DE PROCEDIMIENTOS:
 
 Recuerda: SOLO JSON válido como salida.`
 
-// buildSystemPrompt constructs the system prompt with optional CUPS reference table.
+// buildSystemPrompt es el prompt de la lectura de la orden. No lleva el catálogo: sin código visible el
+// OCR devuelve el nombre y el código lo asigna el bot (cups_name.go), nunca el modelo de visión.
 func (s *OCRService) buildSystemPrompt() string {
-	systemPrompt := ocrSystemPrompt
-	if s.cupsContext != "" {
-		systemPrompt += "\n\nLISTA DE REFERENCIA DE PROCEDIMIENTOS (usar para matching cuando no hay código visible):\n" + s.cupsContext
-	}
-	return systemPrompt
+	return ocrSystemPrompt
 }
 
 // callOpenAI sends a request to OpenAI and parses the OCR-style response.

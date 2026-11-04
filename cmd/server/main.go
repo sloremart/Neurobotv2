@@ -191,21 +191,9 @@ func main() {
 	var patientSvc *services.PatientService
 	var appointmentSvc *services.AppointmentService
 
-	// Build CUPS context for OCR prompt (reference table for AI matching)
-	cupsContext := ""
-	if repos != nil && repos.Procedure != nil {
-		if allProcs, err := repos.Procedure.FindAllActive(ctx); err == nil {
-			entries := make([]struct{ Code, Name string }, len(allProcs))
-			for i, p := range allProcs {
-				entries[i] = struct{ Code, Name string }{p.Code, p.Name}
-			}
-			cupsContext = services.BuildCupsContext(entries)
-			slog.Info("cups context loaded", "procedures", len(allProcs))
-		} else {
-			slog.Warn("failed to load cups context for OCR", "error", err)
-		}
-	}
-	ocrSvc := services.NewOCRService(cfg.OpenAIAPIKey, cfg.OpenAIModel, cupsContext, cfg.BirdAccessKeyID)
+	// El prompt del OCR no lleva el catálogo: sin código visible el código lo asigna VALIDATE_OCR por
+	// nombre (handlers/cups_name_assign.go).
+	ocrSvc := services.NewOCRService(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.BirdAccessKeyID)
 	ocrSvc.SetDocumentModel(cfg.OpenAIDocModel)
 
 	if nectarBridge != nil {

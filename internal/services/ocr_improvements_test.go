@@ -541,3 +541,33 @@ func TestChooseCupsByName_OnlyHighConfidence(t *testing.T) {
 		}
 	}
 }
+
+// Sin código visible el OCR NUNCA elige un código de una lista: el prompt ya no lleva el catálogo y
+// pide el código vacío con el nombre tal cual (lo asigna el bot, cups_name.go).
+func TestSystemPrompt_HasNoCatalogListAndNeverChoosesACode(t *testing.T) {
+	rec, svc := newRecordingOpenAI(t, cupsPage1)
+	if _, err := svc.AnalyzeImage(context.Background(), "data:image/jpeg;base64,AAAA"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(rec.bodies[0]["messages"])
+	prompt := string(raw)
+	for _, banned := range []string{"LISTA DE REFERENCIA", "coincidencia más fuerte"} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("el prompt no puede pedir elegir de una lista: trae %q", banned)
+		}
+	}
+	if !strings.Contains(prompt, "is_interconsulta") {
+		t.Error("el prompt pide la marca de interconsulta")
+	}
+}
+
+func TestAnalyzeImage_ParsesInterconsultaMark(t *testing.T) {
+	_, svc := newRecordingOpenAI(t, `{"cups": [{"cups_code": "", "cups_name": "NEUROLOGIA", "quantity": 1, "is_interconsulta": true}]}`)
+	res, err := svc.AnalyzeImage(context.Background(), "data:image/jpeg;base64,AAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cups) != 1 || !res.Cups[0].IsInterconsulta || res.Cups[0].Code != "" {
+		t.Fatalf("interconsulta sin código: %+v", res.Cups)
+	}
+}
