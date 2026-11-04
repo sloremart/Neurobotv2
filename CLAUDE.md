@@ -439,7 +439,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (cuenta como omitido) y queda en `CtxOCRUnreadNames`; si la orden se queda sin CUPS, escala como la orden sin
   código. `/bot orden` con un procedimiento sin código se le rechaza al agente pidiendo el código. Lo asignado:
   `ocr_cups_name_assignments` («CUPS asignados por nombre»), `agendar/cups_asignado_nombre`, y el paciente ve
-  «<catálogo> (en tu orden: «<leído, ≤60>»)» (cuerpo ≤1.024). Guarda: un CUPS CON código cuyo nombre leído
-  contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera vez/control,
-  pediátrica/adultos, lado, superior/inferior, vía, marcador PET; NO región ni modalidad) → agente
-  (`cups_posible_mala_lectura`).
+  «<catálogo> (en tu orden: «<leído, ≤60>»)» (cuerpo ≤1.024). «CON Y SIN CONTRASTE» (y sin y con, con/sin, c/s,
+  gadolinio) es contrastado: queda «SIMPLE Y CONTRASTE» antes de leer «SIN CONTRASTE». Guarda: un CUPS CON código
+  cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
+  vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos
+  lo mencionan y no comparten ningún valor tras los sinónimos; NO modalidad) → agente (`cups_posible_mala_lectura`).
+  Pares de prueba de la guarda en `internal/services/testdata/cups_guard_pairs.txt`.
