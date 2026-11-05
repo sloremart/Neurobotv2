@@ -384,6 +384,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Apagado: el contenedor `bot` tiene `stop_grace_period: 75s` (el apagado ordenado suma hasta 67 s, `cmd/server/shutdown.go`); se aplica al
   recrearlo (`docker compose up -d bot`). Espera primero las respuestas a plantillas en vuelo (hasta 32 s: cubre `ConfirmBlock`, no 30 s
   más de candado del teléfono) y luego para el pool, cuyo drenado (hasta 15 s) toma los mensajes virtuales que encolaron.
+  Residual: el pool espera a los workers en vuelo sin plazo (`wg.Wait`) antes de drenar; si un mensaje en vuelo pasa de
+  47 s (`workersStopTimeout`), el drenado no corre y puede perderse el mensaje virtual encolado, que no está en el WAL.
   Una respuesta cortada tras sacar el pending pierde la pulsación, y si el proceso sale antes de que falle no queda ni el error en el log.
 - Candado por teléfono (`internal/worker/pool.go`): un mensaje del WAL que no lo consigue no se pierde; se reencola
   en memoria (un solo worker espera por teléfono, los demás se difieren 2 s) durante hasta 10 min, y el aviso
@@ -507,7 +509,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   DESCARTAR una lectura (`compareReadNames`) cualquier diferencia de los dos es duda. PROCEDIMIENTO, EXAMEN y ESTUDIO
   no son una consulta: se comparan, salvo si el nombre escribe la modalidad («ESTUDIO DE RM CEREBRO» = «RM CEREBRO»).
   OBLICUAS sí distingue (873444, de extremidades; en una columna es ruido al asignar); «3 PROYECCIONES» es ruido al
-  asignar y se compara al descartar; EXTREMIDADES solo es ruido en EMG, NC y potenciales; un doppler sin decir VASOS encaja también con el de vasos, y si encajan dos es duda.
+  asignar y se compara al descartar; EXTREMIDADES solo es ruido en EMG, NC y potenciales; al conservar nombres de otras hojas (`addUncodedFrom`), lo igual con otra cantidad, sedación, contraste u observaciones es duda; un doppler sin decir VASOS encaja también con el de vasos, y si encajan dos es duda.
   Guarda: un CUPS CON código
   cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
   vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos

@@ -17,7 +17,11 @@ const (
 	// pierde; queda el error en el log solo si la respuesta alcanza a fallar antes de que salga el proceso,
 	// y si no, no queda ni eso.
 	responsesWaitTimeout = 32 * time.Second
-	// workersStopTimeout acota las respuestas más el Stop del pool, que drena hasta 15 s: 32 + 15.
+	// workersStopTimeout acota las respuestas más el Stop del pool, que drena hasta 15 s: 32 + 15. Residual
+	// conocido: antes del drenado, Stop espera a los workers en vuelo sin plazo (wg.Wait), y un mensaje puede
+	// durar hasta processMsgTimeout (2 min). Si pasa de 32 s le quita tiempo al drenado; si pasa de 47 s, el
+	// drenado no llega a correr y se pierde el mensaje virtual encolado, que no tiene fila en el WAL. El mismo
+	// plazo de 47 s tampoco espera a un mensaje drenado que se alargue: los 15 s solo se miran entre mensajes.
 	workersStopTimeout = 47 * time.Second
 )
 
