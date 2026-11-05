@@ -287,81 +287,112 @@ func TestRetrySend_SiblingDeliveredDoesNotSuppress(t *testing.T) {
 	}
 }
 
-// I-1, dos turnos con Néctar cayendo y volviendo: el éxito del reintento de la vieja no suprime a la
-// nueva, que sale siempre, y la vieja nunca llega detrás de ella.
-func TestRetrySend_OldRetrySuccessDoesNotSuppressNewer(t *testing.T) {
+// Dos turnos con Néctar cayendo y volviendo: el 2.º reintento de la vieja no corre porque ya empezó el
+// turno nuevo, y la nueva sale en el suyo.
+func TestRetrySend_NewRetryDiscardedOnceLaterTurnStarted(t *testing.T) {
 	bad := status(http.StatusBadGateway)
 	pool, f, sess := newNectarRetryPool(t, bad, bad, bad, bad, status(http.StatusCreated))
 	pool.retryDelay = 400 * time.Millisecond
 
 	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("VIEJA")))
 	time.Sleep(150 * time.Millisecond)
+	pool.beginTurn(sess.PhoneNumber)
 	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("NUEVA")))
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && !slices.Contains(f.delivered(), "NUEVA") {
-		time.Sleep(5 * time.Millisecond)
-	}
-	time.Sleep(3*pool.retryDelay + 100*time.Millisecond)
-	got := f.delivered()
-	if len(got) == 0 || got[len(got)-1] != "NUEVA" {
-		t.Fatalf("la nueva sale y va la última: %v", got)
+	waitAttempts(t, f, 5, 3*pool.retryDelay+100*time.Millisecond)
+	if got := f.delivered(); !slices.Equal(got, []string{"NUEVA"}) {
+		t.Fatalf("entregados = %v", got)
 	}
 }
 
-// Si la nueva ya salió a la primera, la vieja se descarta con log, también en su primer reintento.
-func TestRetrySend_OldDiscardedOnceNewerDelivered(t *testing.T) {
-	logged := captureSendLogs(t)
+// El primer reintento a retryDelay sale siempre, como antes del lote, aunque ya saliera la nueva: el cruce
+// ya existía y perder una confirmación de cita no se acepta.
+func TestRetrySend_FirstRetryAlwaysRuns(t *testing.T) {
 	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway), status(http.StatusCreated))
 	pool.retryDelay = 100 * time.Millisecond
 
 	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("VIEJA")))
+	pool.beginTurn(sess.PhoneNumber)
 	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("NUEVA")))
 
-	waitAttempts(t, f, 2, 5*pool.retryDelay)
-	if got := f.delivered(); !slices.Equal(got, []string{"NUEVA"}) {
+	waitAttempts(t, f, 3, 5*pool.retryDelay)
+	if got := f.delivered(); !slices.Equal(got, []string{"NUEVA", "VIEJA"}) {
 		t.Fatalf("entregados = %v", got)
-	}
-	if !strings.Contains(logged.String(), "turno posterior") {
-		t.Fatalf("falta el log del descarte: %s", logged.String())
 	}
 }
 
-// Y si la nueva salió en SU reintento, tampoco la vieja llega detrás (quitar el sello de los reintentos
-// no bastaría: por eso la guarda compara turnos).
-func TestRetrySend_OldDiscardedOnceNewerDeliveredOnRetry(t *testing.T) {
-	bad := status(http.StatusBadGateway)
-	pool, f, sess := newNectarRetryPool(t, bad, bad, bad, status(http.StatusCreated))
-	pool.retryDelay = 400 * time.Millisecond
+// Un turno posterior cuenta desde que empieza, aunque siga en curso o no entregue nada: así no aparecen
+// botones viejos con el estado ya avanzado. El descarte deja su log.
+func TestRetrySend_LaterTurnInProgressDiscardsNewRetry(t *testing.T) {
+	logged := captureSendLogs(t)
+	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway))
+	pool.retryDelay = 100 * time.Millisecond
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(buttons("VIEJA")))
+	pool.beginTurn(sess.PhoneNumber) // sin enviar nada: por ejemplo, un OCR en curso
+
+	waitAttempts(t, f, 2, 5*pool.retryDelay) // el envío y el primer reintento
+	if out := logged.String(); !strings.Contains(out, "turno posterior") {
+		t.Fatalf("falta el log del descarte: %s", out)
+	}
+}
+
+// El primer reintento con Retry-After mayor que retryDelay es de los nuevos: lleva la guarda, y el 429
+// descartado deja su evento.
+func TestRetrySend_LongRetryAfterDiscardedOnceLaterTurnStarted(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	pool, f, sess := newNectarRetryPool(t, rateLimited("1"))
 
 	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("VIEJA")))
-	time.Sleep(150 * time.Millisecond)
-	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("NUEVA")))
+	pool.beginTurn(sess.PhoneNumber)
 
-	waitAttempts(t, f, 4, 3*pool.retryDelay+100*time.Millisecond)
-	if got := f.delivered(); !slices.Equal(got, []string{"NUEVA"}) {
-		t.Fatalf("entregados = %v", got)
+	waitAttempts(t, f, 1, 1200*time.Millisecond)
+	stop()
+	if e := sink.FindStep("infra", "send_rate_limited_undelivered"); e == nil {
+		t.Fatalf("falta el evento: %+v", sink.Events())
 	}
 }
 
-// El registro guarda el mayor turno entregado por paciente, nunca retrocede y la limpieza lo purga.
-func TestDeliveredTurns(t *testing.T) {
-	pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
-	if pool.laterTurnDelivered("nectar:1", 1) {
-		t.Fatal("sin envíos")
+// Los dos caminos que toman el candado empiezan turno, con cualquier mensaje o comando.
+func TestBeginTurn_AtMessagesAndCommands(t *testing.T) {
+	pool := retryTestPool(&mockMessageSender{}, newMockSessionMgmt())
+	phone := nectar.SessionKey(1234)
+	first := pool.beginTurn(phone)
+
+	pool.processMessage(context.Background(), bird.InboundMessage{ID: "m1", Phone: phone, Text: "hola"})
+	if !pool.laterTurnStarted(phone, first) {
+		t.Fatal("processMessage empieza un turno")
 	}
-	pool.markTurnDelivered("nectar:1", 5)
-	pool.markTurnDelivered("nectar:1", 3) // el reintento de un turno viejo no lo hace retroceder
-	if !pool.laterTurnDelivered("nectar:1", 4) || pool.laterTurnDelivered("nectar:1", 5) ||
-		pool.laterTurnDelivered("nectar:2", 4) {
+	second := pool.currentTurn(phone)
+
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "close", Phone: phone})
+	if !pool.laterTurnStarted(phone, second) {
+		t.Fatal("processAgentCommand empieza un turno")
+	}
+}
+
+// El registro del turno: uno por paciente, sendAndSave no empieza otro si ya hay, y la limpieza purga.
+func TestStartedTurns(t *testing.T) {
+	pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
+	if pool.laterTurnStarted("nectar:1", 1) {
+		t.Fatal("sin turnos")
+	}
+	first := pool.currentTurn("nectar:1") // sin turno empezado, lo empieza
+	if got := pool.currentTurn("nectar:1"); got != first || first == 0 {
+		t.Fatalf("currentTurn = %d, quiero %d", got, first)
+	}
+	second := pool.beginTurn("nectar:1")
+	if second <= first || !pool.laterTurnStarted("nectar:1", first) || pool.laterTurnStarted("nectar:1", second) ||
+		pool.laterTurnStarted("nectar:2", first) {
 		t.Fatal("solo cuenta un turno mayor, y de ese paciente")
 	}
-	pool.markTurnDelivered("+573001234567", 9)
-	if pool.laterTurnDelivered("+573001234567", 1) {
+	pool.beginTurn("+573001234567")
+	if pool.laterTurnStarted("+573001234567", first) {
 		t.Fatal("Bird no lleva guarda: sigue con su reintento de siempre")
 	}
-	pool.purgeStaleLockMisses(time.Now().Add(deliveredTurnTTL + time.Second))
-	if pool.laterTurnDelivered("nectar:1", 4) {
+	pool.purgeStaleLockMisses(time.Now().Add(startedTurnTTL + time.Second))
+	if pool.laterTurnStarted("nectar:1", first) {
 		t.Fatal("la limpieza purga las entradas viejas")
 	}
 }
