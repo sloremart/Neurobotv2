@@ -76,10 +76,11 @@ const (
 // palabra distintiva de más o de menos —RODILLA frente a HOMBRO, SIMPLE frente a CONTRASTE, PRIMERA VEZ
 // frente a CONTROL, PEDIÁTRICA, SUPERIOR, TRANSRECTAL, PSMA, FUNCIONAL— da CupsNamesDiffer. Sin palabras
 // distintivas en alguno de los dos no hay con qué comparar: CupsNamesDiffer. Es la comparación de asignar un
-// código: el nivel de columna que solo trae un nombre es silencio, porque el catálogo no lo distingue.
+// código: el nivel de columna que solo trae un nombre es silencio, porque el catálogo no lo distingue, salvo
+// que contradiga la región escrita.
 func CompareCupsNames(a, b string) CupsNameMatch {
 	aw, bw := distinctiveWords(a), distinctiveWords(b)
-	if hasSpineLevel(aw) != hasSpineLevel(bw) {
+	if hasSpineLevel(aw) != hasSpineLevel(bw) && !levelsContradictRegion(canonicalOrderName(a+" "+b)) {
 		aw, bw = withoutSpineLevels(aw), withoutSpineLevels(bw)
 	}
 	switch {
@@ -99,6 +100,52 @@ func hasSpineLevel(words []string) bool {
 
 func withoutSpineLevels(words []string) []string {
 	return slices.DeleteFunc(slices.Clone(words), spineLevel.MatchString)
+}
+
+// singleSpineLevel separa los niveles pegados («L4L5»).
+var singleSpineLevel = regexp.MustCompile(`[CTDLS]\d{1,2}`)
+
+// levelFitsRegion dice si un nivel cabe en una región de columna (su valor canónico). Los discos entre dos
+// regiones (C7-T1, T12-L1, L5-S1) caben en las dos, y LUMBAR también es la lumbosacra.
+func levelFitsRegion(level, region string) bool {
+	switch region {
+	case "CERVICAL":
+		return level[0] == 'C' || level == "T1" || level == "D1"
+	case "DORSAL":
+		return level[0] == 'T' || level[0] == 'D' || level == "C7" || level == "L1"
+	case "LUMBAR":
+		return level[0] == 'L' || level[0] == 'S' || level == "T12" || level == "D12"
+	default:
+		return level[0] == 'S' || level == "L5"
+	}
+}
+
+// levelsContradictRegion dice si un nombre canónico trae un nivel que no cabe en ninguna región de columna
+// escrita: «COLUMNA CERVICAL L4». Sin niveles o sin región no hay nada que contradecir. Para comparar dos
+// nombres se le pasan juntos: «COLUMNA L4» contradice a un catálogo que dice cervical.
+func levelsContradictRegion(canon string) bool {
+	words := strings.Fields(canon)
+	var regions []string
+	for _, w := range words {
+		if w == "CERVICAL" || w == "DORSAL" || w == "LUMBAR" || w == "SACRA" || w == "SACRO" || w == "COCCIX" {
+			regions = append(regions, w)
+		}
+	}
+	if len(regions) == 0 {
+		return false
+	}
+	for _, w := range words {
+		if !spineLevel.MatchString(w) {
+			continue
+		}
+		for _, level := range singleSpineLevel.FindAllString(w, -1) {
+			fits := slices.ContainsFunc(regions, func(region string) bool { return levelFitsRegion(level, region) })
+			if !fits {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // allWordsIn dice si cada palabra de words tiene su par en other según match.

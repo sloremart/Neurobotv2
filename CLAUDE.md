@@ -505,7 +505,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   son SIMPLE; «CON O SIN CONTRASTE», «SIMPLE O CONTRASTADO» o un nombre cortado en «CON» van al agente. Las palabras
   cortas cuentan (`procedureWords`), salvo `genericProcedureWords` (conectores, AP, PA): el lado en corto (D, OD, MD,
   I, OI, MI) vale lo mismo que la palabra. Al ASIGNAR, el nivel de columna (L4, C5) y la marca de cantidad (#2, X2,
-  N 2, No. 1) son silencio si el catálogo no los menciona, y si lo menciona y es otro nivel, contradicción; al
+  N 2, No. 1) son silencio si el catálogo no los menciona, y si lo menciona y es otro nivel, contradicción; también lo
+  es, en la asignación y en la guarda, el nivel que no cabe en la región escrita («COLUMNA CERVICAL L4»; C cervical, T o D
+  dorsal, L lumbar, S sacra, y los discos C7-T1, T12-L1, L5-S1 caben en las dos); al
   DESCARTAR una lectura (`compareReadNames`) cualquier diferencia de los dos es duda. PROCEDIMIENTO, EXAMEN y ESTUDIO
   no son una consulta: se comparan, salvo si el nombre escribe la modalidad («ESTUDIO DE RM CEREBRO» = «RM CEREBRO»).
   OBLICUAS sí distingue (873444, de extremidades; en una columna es ruido al asignar); «3 PROYECCIONES» es ruido al

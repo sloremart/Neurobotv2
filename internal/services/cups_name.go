@@ -565,6 +565,9 @@ func disjoint(a, b map[string]bool) bool {
 // un grupo no lo contradice (las órdenes abrevian); la modalidad, el doppler y los números no cuentan.
 func CupsNamesConflict(read, catalog string) bool {
 	r, c := canonicalOrderName(read), canonicalOrderName(catalog)
+	if levelsContradictRegion(r + " " + c) {
+		return true
+	}
 	for _, g := range qualifierGroups {
 		if !g.exclusive {
 			continue
@@ -590,6 +593,9 @@ func CupsNamesConflict(read, catalog string) bool {
 //     una abreviatura con barra que no se entendió) y en la pediatría, adultos.
 func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
 	canonCand := canonicalOrderName(candName)
+	if levelsContradictRegion(canonRead + " " + canonCand) {
+		return false
+	}
 	for _, g := range qualifierGroups {
 		rv, cv := g.groupValues(canonRead), g.groupValues(canonCand)
 		if contrastUnknown && g.values["CONTRASTE"] != "" && len(rv) == 0 {
