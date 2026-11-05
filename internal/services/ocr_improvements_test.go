@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -644,6 +645,42 @@ func TestAddUncodedFrom_ComparesReadNames(t *testing.T) {
 			}
 			if c.wantDoubt && got.ReadDoubtWith != c.first {
 				t.Fatalf("la duda nombra lo que trae la otra hoja: %q", got.ReadDoubtWith)
+			}
+		})
+	}
+}
+
+// Revisión del lote C (R2-M1): lo que la lectura conjunta trae dos veces (la orden copiada en dos hojas)
+// entra una sola vez, sin duda, para que no llegue a VALIDATE_OCR como un código repetido.
+func TestAddUncodedFrom_DeduplicatesWithinJointRead(t *testing.T) {
+	cases := []struct {
+		name  string
+		joint []string
+		want  []string
+	}{
+		{"duplicado literal", []string{"RESONANCIA MAGNETICA DE RODILLA", "RESONANCIA MAGNETICA DE RODILLA"}, []string{"RESONANCIA MAGNETICA DE RODILLA"}},
+		{"estrictamente igual con otra redacción", []string{"RM RODILLA", "RESONANCIA MAGNETICA DE RODILLA"}, []string{"RM RODILLA"}},
+		{"literal sin palabra distintiva", []string{"CONSULTA ESPECIALISTA", "CONSULTA ESPECIALISTA"}, []string{"CONSULTA ESPECIALISTA"}},
+		{"literal con barra sin entender", []string{"TAC C/X CRANEO", "TAC C/X CRANEO"}, []string{"TAC C/X CRANEO"}},
+		{"distintos se quedan", []string{"RM RODILLA DERECHA", "RM RODILLA IZQUIERDA"}, []string{"RM RODILLA DERECHA", "RM RODILLA IZQUIERDA"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := &OCRResult{}
+			for _, n := range c.joint {
+				src.Cups = append(src.Cups, CUPSEntry{Name: n})
+			}
+			first := &OCRResult{Cups: []CUPSEntry{{Code: "890274", Name: "TOMOGRAFIA DE TORAX"}}}
+			addUncodedFrom(first, src)
+			var got []string
+			for _, e := range first.Cups[1:] {
+				if e.ReadDoubtWith != "" {
+					t.Errorf("no debía quedar en duda: %+v", e)
+				}
+				got = append(got, e.Name)
+			}
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("añadidos = %q, quiero %q", got, c.want)
 			}
 		})
 	}

@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -763,13 +762,16 @@ func addUncodedFrom(dst, src *OCRResult) {
 	if dst == nil || src == nil {
 		return
 	}
-	known := slices.Clone(dst.Cups)
+	// Lo que src trae dos veces con el mismo texto entra una vez, aunque ese nombre no se pueda comparar.
+	seen := map[string]bool{}
 	for _, c := range src.Cups {
-		if strings.TrimSpace(c.Code) != "" || strings.TrimSpace(c.Name) == "" {
+		literal := foldOrderName(strings.TrimSpace(c.Name))
+		if strings.TrimSpace(c.Code) != "" || literal == "" || seen[literal] {
 			continue
 		}
+		seen[literal] = true
 		same := false
-		for _, d := range known {
+		for _, d := range dst.Cups {
 			switch compareReadNames(d.Name, c.Name) {
 			case CupsNamesEqual:
 				same = true
