@@ -426,3 +426,37 @@ func captureSendLogs(t *testing.T) *lockedBuffer {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	return logged
 }
+
+// Un 429 que sigue tras los dos reintentos se pierde: deja su evento, no solo el log (el Retry-After de
+// 60 s repetido). Con otro fallo no: ese queda en el log de siempre.
+func TestRetrySend_RateLimitedAfterAllRetriesLeavesEvent(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	pool, f, sess := newNectarRetryPool(t, rateLimited("1"))
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, textResult())
+	waitAttempts(t, f, 3, 100*time.Millisecond)
+	stop()
+
+	e := sink.FindStep("infra", "send_rate_limited_undelivered")
+	if e == nil {
+		t.Fatalf("falta el evento: %+v", sink.Events())
+	}
+	if e.TraceID != observability.TraceSession(sess.ID) || e.Outcome != "error" {
+		t.Errorf("evento = %+v", e)
+	}
+}
+
+func TestRetrySend_Exhausted5xxLeavesNoRateLimitEvent(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway))
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, textResult())
+	waitAttempts(t, f, 3, 100*time.Millisecond)
+	stop()
+
+	if e := sink.FindStep("infra", "send_rate_limited_undelivered"); e != nil {
+		t.Fatalf("un 502 no es un límite: %+v", e)
+	}
+}

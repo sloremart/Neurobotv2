@@ -2158,12 +2158,19 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 // sendRetryWait dice si el reintento número attempt procede tras el fallo err, y cuánto esperar antes.
 // En Néctar solo se reintenta un 5xx, un transporte o un 429: a retryDelay y luego a 3 veces eso, o a
 // lo que pida el Retry-After si es más. Pedir más de maxSendRetryAfter deja el rastro propio y no se
-// reintenta.
+// reintenta; seguir con 429 tras el último reintento, también.
 func (p *MessageWorkerPool) sendRetryWait(sessionID, phone string, attempt int, err error) (time.Duration, bool) {
 	if !session.IsNectarSession(phone) {
 		return p.retryDelay, attempt == 1
 	}
-	if attempt > nectar.MaxSendRetries || !nectar.RetryableSend(err) {
+	if attempt > nectar.MaxSendRetries {
+		if errors.Is(err, bird.ErrLineRateLimited) {
+			observability.Emit(observability.TraceSession(sessionID), "infra", "send_rate_limited_undelivered",
+				observability.EmitOpts{Phone: phone})
+		}
+		return 0, false
+	}
+	if !nectar.RetryableSend(err) {
 		return 0, false
 	}
 	retryAfter := nectar.RetryAfter(err)
