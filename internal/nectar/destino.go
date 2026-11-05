@@ -41,13 +41,13 @@ func HostOf(baseURL string) string {
 }
 
 // SafeBaseURL contesta si la clave de servicio y la firma pueden viajar a ese destino: por https, o
-// en claro solo a un stub local de pruebas. Una URL ilegible o sin esquema no lo es.
+// por http solo a un stub local de pruebas. Una URL ilegible, sin host o con otro esquema no lo es.
 func SafeBaseURL(baseURL string) bool {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || u.Host == "" {
+	if err != nil || u.Hostname() == "" {
 		return false
 	}
-	return u.Scheme == "https" || IsStubHost(baseURL)
+	return u.Scheme == "https" || (u.Scheme == "http" && IsStubHost(baseURL))
 }
 
 // IsStubHost contesta si ese destino es un stub local de pruebas. Un host vacío NO es stub:

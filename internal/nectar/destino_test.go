@@ -31,3 +31,29 @@ func TestIsStubHost(t *testing.T) {
 		}
 	}
 }
+
+// M-1: solo https, o http hacia un stub local, con esquema explícito y host.
+func TestSafeBaseURL(t *testing.T) {
+	for url, want := range map[string]bool{
+		"https://nectar.colibrixa.com": true,
+		"HTTPS://nectar.colibrixa.com": true,
+		"http://localhost:9999":        true,
+		"http://127.0.0.1:9999":        true,
+		"http://[::1]:9999":            true,
+		"http://nectar-stub:9999":      true,
+		"http://nectar.colibrixa.com":  false,
+		"ftp://localhost:1":            false,
+		"gopher://nectar-stub:1":       false,
+		"//localhost:1":                false,
+		"//nectar.colibrixa.com":       false,
+		"https://:443":                 false,
+		"http://:9999":                 false,
+		"https://":                     false,
+		"localhost:9999":               false,
+		"":                             false,
+	} {
+		if got := SafeBaseURL(url); got != want {
+			t.Errorf("SafeBaseURL(%q) = %v, quiero %v", url, got, want)
+		}
+	}
+}
