@@ -586,3 +586,64 @@ func TestRetrySend_ExhaustedLogsRetryFailed(t *testing.T) {
 		t.Fatalf("falta el log: %s", out)
 	}
 }
+
+// M-12: el evento mira todos los intentos, no el último: 429, 502 y descarte sigue siendo un mensaje
+// que el límite dejó sin salir.
+func TestRetrySend_RateLimitEventLooksAtEveryAttempt(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+	pool, f, sess := newNectarRetryPool(t, status(http.StatusTooManyRequests), status(http.StatusBadGateway))
+	pool.retryDelay = 100 * time.Millisecond
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("VIEJA")))
+	waitAttempts(t, f, 2, 0)
+	pool.beginTurn(sess.PhoneNumber)
+	time.Sleep(5 * pool.retryDelay)
+	stop()
+
+	if got := len(f.sent()); got != 2 {
+		t.Fatalf("intentos = %d, quiero 2", got)
+	}
+	if e := sink.FindStep("infra", "send_rate_limited_undelivered"); e == nil {
+		t.Fatalf("falta el evento: %+v", sink.Events())
+	}
+}
+
+// Y sin descarte: 429 y luego 502 hasta agotar. Un Retry-After demasiado largo deja solo su propio evento.
+func TestRetrySend_RateLimitEventOncePerMessage(t *testing.T) {
+	t.Run("agotado", func(t *testing.T) {
+		sink := &observability.CaptureSink{}
+		stop := observability.StartCapture(sink)
+		pool, f, sess := newNectarRetryPool(t, status(http.StatusTooManyRequests), status(http.StatusBadGateway))
+
+		pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, textResult())
+		waitAttempts(t, f, 3, 100*time.Millisecond)
+		stop()
+
+		n := 0
+		for _, e := range sink.Events() {
+			if e.Step == "send_rate_limited_undelivered" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("eventos = %d, quiero 1", n)
+		}
+	})
+	t.Run("demasiado largo en el segundo intento", func(t *testing.T) {
+		sink := &observability.CaptureSink{}
+		stop := observability.StartCapture(sink)
+		pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway), rateLimited("61"))
+
+		pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, textResult())
+		waitAttempts(t, f, 2, 100*time.Millisecond)
+		stop()
+
+		if sink.FindStep("infra", "send_retry_after_too_long") == nil {
+			t.Fatalf("falta el evento propio: %+v", sink.Events())
+		}
+		if e := sink.FindStep("infra", "send_rate_limited_undelivered"); e != nil {
+			t.Fatalf("un solo evento por mensaje: %+v", e)
+		}
+	})
+}

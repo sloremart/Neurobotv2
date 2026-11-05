@@ -2108,7 +2108,9 @@ func (p *MessageWorkerPool) sendMessageCtx(ctx context.Context, phone, conversat
 // avanzado. Los mensajes de un mismo turno no se suprimen entre sí. Se mira antes de cada intento: uno
 // ya en vuelo puede cruzarse con el turno nuevo.
 func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.OutboundMessage, err error, turn uint64) {
+	rateLimited := false // algún intento de este mensaje recibió un 429
 	for attempt := 1; ; attempt++ {
+		rateLimited = rateLimited || errors.Is(err, bird.ErrLineRateLimited)
 		wait, retry := p.sendRetryWait(sessionID, phone, attempt, err)
 		if !retry && attempt == 1 {
 			// sendAndSave ya dejó el ERROR de este fallo, y no hubo reintento.
@@ -2117,6 +2119,10 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 			return
 		}
 		if !retry {
+			// Un Retry-After demasiado largo ya dejó su propio evento en sendRetryWait.
+			if rateLimited && nectar.RetryAfter(err) <= nectar.MaxSendRetryAfter {
+				reportRateLimitedLoss(sessionID, phone)
+			}
 			slog.Error(
 				"send message retry failed",
 				"phone", utils.MaskPhone(phone),
@@ -2135,7 +2141,9 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 		if (attempt > 1 || wait > p.retryDelay) && p.laterTurnStarted(phone, turn) {
 			slog.Warn("send message retry discarded: ya empezó un turno posterior",
 				"phone", utils.MaskPhone(phone), "type", msg.Type(), "attempt", attempt)
-			reportRateLimitedLoss(sessionID, phone, err)
+			if rateLimited {
+				reportRateLimitedLoss(sessionID, phone)
+			}
 			return
 		}
 		// Ligado al app-ctx: el apagado corta el intento en vuelo en vez de esperarlo. El tope de cada
@@ -2155,16 +2163,12 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 // sendRetryWait dice si el reintento número attempt procede tras el fallo err, y cuánto esperar antes.
 // En Néctar solo se reintenta un 5xx, un transporte o un 429: a retryDelay y luego a 3 veces eso, o a
 // lo que pida el Retry-After si es más. Pedir más de nectar.MaxSendRetryAfter deja el rastro propio y no se
-// reintenta; seguir con 429 tras el último reintento, también.
+// reintenta.
 func (p *MessageWorkerPool) sendRetryWait(sessionID, phone string, attempt int, err error) (time.Duration, bool) {
 	if !session.IsNectarSession(phone) {
 		return p.retryDelay, attempt == 1
 	}
-	if attempt > nectar.MaxSendRetries {
-		reportRateLimitedLoss(sessionID, phone, err)
-		return 0, false
-	}
-	if !nectar.RetryableSend(err) {
+	if attempt > nectar.MaxSendRetries || !nectar.RetryableSend(err) {
 		return 0, false
 	}
 	retryAfter := nectar.RetryAfter(err)
@@ -2220,12 +2224,11 @@ func (p *MessageWorkerPool) laterTurnStarted(phone string, turn uint64) bool {
 	return p.startedTurns[phone].turn > turn
 }
 
-// reportRateLimitedLoss deja el rastro de un mensaje que no sale tras un 429 (con otro fallo basta el log).
-func reportRateLimitedLoss(sessionID, phone string, err error) {
-	if errors.Is(err, bird.ErrLineRateLimited) {
-		observability.Emit(observability.TraceSession(sessionID), "infra", "send_rate_limited_undelivered",
-			observability.EmitOpts{Phone: phone})
-	}
+// reportRateLimitedLoss deja el rastro de un mensaje que no sale y recibió algún 429 (con otro fallo basta
+// el log).
+func reportRateLimitedLoss(sessionID, phone string) {
+	observability.Emit(observability.TraceSession(sessionID), "infra", "send_rate_limited_undelivered",
+		observability.EmitOpts{Phone: phone})
 }
 
 // HandleAgentTakeover pausa el bot cuando un agente humano responde manualmente una conversación

@@ -273,7 +273,7 @@ var catalog = map[string]stepSpec{
 	// send_retry_after_too_long: Néctar pidió con Retry-After una espera mayor de la que el bot
 	// reintenta (60 s): el mensaje no sale y queda este rastro.
 	"infra/send_retry_after_too_long": {LvOutcome, "error", ""}, // trace sess:<id>
-	// send_rate_limited_undelivered: un mensaje con 429 no sale porque se agotaron los reintentos o ya
+	// send_rate_limited_undelivered: un mensaje que recibió algún 429 no sale porque se agotaron los reintentos o ya
 	// empezó un turno posterior, y queda este rastro.
 	"infra/send_rate_limited_undelivered": {LvOutcome, "error", ""}, // trace sess:<id>
 	// non_contactable_identifier: el identificador del contacto no es un teléfono E.164 (nombres del
