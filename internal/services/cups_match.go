@@ -1,6 +1,10 @@
 package services
 
-import "strings"
+import (
+	"regexp"
+	"slices"
+	"strings"
+)
 
 // PARECIDO ENTRE UN CÓDIGO/NOMBRE LEÍDO POR EL OCR Y EL CATÁLOGO (tomado de hdg-bot,
 // internal/eligibility/cups_resolve.go, y endurecido tras la revisión de 2026-11-03). Lo usa la
@@ -14,17 +18,35 @@ import "strings"
 
 // genericProcedureWords no distinguen un procedimiento de otro: no cuentan al comparar nombres. NO van
 // aquí las que sí cambian el procedimiento: SIMPLE, SIN y CON CONTRASTE, PRIMERA VEZ y CONTROL o
-// SEGUIMIENTO, TOTAL, la región, la lateralidad, la vía y los marcadores.
+// SEGUIMIENTO, TOTAL, la región, la lateralidad, la vía y los marcadores. Es una lista cerrada también para
+// lo corto: cualquier otra palabra, por corta que sea (NO, D, OD, L4, 3D, 6H), se compara. AP y PA son la
+// proyección, y el catálogo reúne las dos en un código (871121 «P.A. Ó A.P.»).
 var genericProcedureWords = map[string]bool{
 	"DE": true, "DEL": true, "LA": true, "EL": true, "LOS": true, "LAS": true, "POR": true,
 	"PARA": true, "EN": true, "Y": true, "O": true, "A": true, "CON": true, "AL": true,
-	"UN": true, "UNA": true, "U": true, "E": true,
+	"UN": true, "UNA": true, "U": true, "E": true, "AP": true, "PA": true,
 	"CONSULTA": true, "ESPECIALISTA": true, "MEDICINA": true, "PROCEDIMIENTO": true,
 	"EXAMEN": true, "ESTUDIO": true, "GENERAL": true, "NUEVA": true, "NUEVO": true, "SOD": true,
 }
 
 // accentFolder quita tildes y diéresis (el texto ya va en mayúsculas).
 var accentFolder = strings.NewReplacer("Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U", "Ü", "U", "Ñ", "N")
+
+// dottedProjection es la proyección escrita con puntos («P.A.», «A.P.»): sin esto quedaría una P suelta.
+var dottedProjection = regexp.MustCompile(`\b[AP]\.\s?[AP]\b`)
+
+// quantityMark es la cantidad escrita en el nombre («(#4)», «X2», «N 2», «No. 1»): no es parte del nombre.
+var quantityMark = regexp.MustCompile(`#\s*\d+|\bX\s*\d+\b|\b(?:N|NO|NRO|NUM)\s*[.:°º]*\s*\d+\b`)
+
+// spineLevel es un nivel de columna o varios pegados («L4», «T12», «L4L5»).
+var spineLevel = regexp.MustCompile(`^(?:[CTDLS]\d{1,2})+$`)
+
+// foldProcedureText pasa a mayúsculas sin tildes, une la proyección escrita con puntos y quita las marcas de
+// cantidad (compareReadNames las compara aparte).
+func foldProcedureText(text string) string {
+	folded := dottedProjection.ReplaceAllString(accentFolder.Replace(strings.ToUpper(text)), " AP ")
+	return quantityMark.ReplaceAllString(folded, " ")
+}
 
 // CupsNameMatch es cuánto se parecen dos nombres de procedimiento (CompareCupsNames).
 type CupsNameMatch int
@@ -44,9 +66,13 @@ const (
 // CompareCupsNames compara dos nombres por sus palabras distintivas, en los DOS sentidos. Cualquier
 // palabra distintiva de más o de menos —RODILLA frente a HOMBRO, SIMPLE frente a CONTRASTE, PRIMERA VEZ
 // frente a CONTROL, PEDIÁTRICA, SUPERIOR, TRANSRECTAL, PSMA, FUNCIONAL— da CupsNamesDiffer. Sin palabras
-// distintivas en alguno de los dos no hay con qué comparar: CupsNamesDiffer.
+// distintivas en alguno de los dos no hay con qué comparar: CupsNamesDiffer. Es la comparación de asignar un
+// código: el nivel de columna que solo trae un nombre es silencio, porque el catálogo no lo distingue.
 func CompareCupsNames(a, b string) CupsNameMatch {
 	aw, bw := distinctiveWords(a), distinctiveWords(b)
+	if hasSpineLevel(aw) != hasSpineLevel(bw) {
+		aw, bw = withoutSpineLevels(aw), withoutSpineLevels(bw)
+	}
 	switch {
 	case len(aw) == 0 || len(bw) == 0:
 		return CupsNamesDiffer
@@ -56,6 +82,14 @@ func CompareCupsNames(a, b string) CupsNameMatch {
 		return CupsNamesByPrefix
 	}
 	return CupsNamesDiffer
+}
+
+func hasSpineLevel(words []string) bool {
+	return slices.ContainsFunc(words, spineLevel.MatchString)
+}
+
+func withoutSpineLevels(words []string) []string {
+	return slices.DeleteFunc(slices.Clone(words), spineLevel.MatchString)
 }
 
 // allWordsIn dice si cada palabra de words tiene su par en other según match.
@@ -88,19 +122,13 @@ func prefixWord(a, b string) bool {
 	return false
 }
 
-// procedureWords parte el texto en palabras en mayúsculas y sin tildes: las de 3+ caracteres y todos
-// los números, que también distinguen («Paq. 1 electromiografía» frente a «Paq. 2 electromiografías»).
+// procedureWords parte el texto en palabras en mayúsculas y sin tildes. Todas, también las cortas y los
+// números: distinguen el lado (D, OD), el nivel (L4), la técnica o la duración (3D, 6H), la negación (NO) y
+// el paquete («Paq. 1 electromiografía» frente a «Paq. 2 electromiografías»).
 func procedureWords(text string) []string {
-	folded := accentFolder.Replace(strings.ToUpper(text))
-	var out []string
-	for _, w := range strings.FieldsFunc(folded, func(r rune) bool {
+	return strings.FieldsFunc(foldProcedureText(text), func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
-	}) {
-		if len(w) >= 3 || strings.Trim(w, "0123456789") == "" {
-			out = append(out, w)
-		}
-	}
-	return out
+	})
 }
 
 // distinctiveWords son las palabras del nombre que sí distinguen el procedimiento.

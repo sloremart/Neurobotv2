@@ -499,7 +499,12 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   «<catálogo> (en tu orden: «<leído, ≤60>»)». «CON Y SIN CONTRASTE» (y sin y con, con/sin, c/s,
   gadolinio) es contrastado: queda «SIMPLE Y CONTRASTE» antes de leer «SIN CONTRASTE»; «C/C», «C/CTE», «C/MEDIO» →
   CONTRASTE y «S/C», «S/CONTRASTE» → SIMPLE; una abreviatura con barra desconocida («C/X») no vale como silencio
-  del contraste (solo asigna el nombre igual). Guarda: un CUPS CON código
+  del contraste (solo asigna el nombre igual). «NO CONTRASTADO», «NO CON CONTRASTE», «SIN GADOLINIO», «CONTRASTE: NO»
+  son SIMPLE; «CON O SIN CONTRASTE», «SIMPLE O CONTRASTADO» o un nombre cortado en «CON» van al agente. Las palabras
+  cortas cuentan (`procedureWords`), salvo `genericProcedureWords` (conectores, AP, PA): el lado en corto (D, OD, MD,
+  I, OI, MI) vale lo mismo que la palabra. Al ASIGNAR, el nivel de columna (L4, C5) y la marca de cantidad (#2, X2,
+  N 2, No. 1) son silencio si el catálogo no los menciona, y si lo menciona y es otro nivel, contradicción; al
+  DESCARTAR una lectura (`compareReadNames`) cualquier diferencia de los dos es duda. Guarda: un CUPS CON código
   cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
   vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos
   lo mencionan y no comparten ningún valor tras los sinónimos; NO modalidad) → agente (`cups_posible_mala_lectura`).

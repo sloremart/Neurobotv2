@@ -2,6 +2,7 @@ package services
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -81,6 +82,8 @@ var orderAbbreviations = map[string]string{
 	// Errata del catálogo (930860 «ELECTROMIOGRAFÍIA»).
 	"ELECTROMIOGRAFIIA": "ELECTROMIOGRAFIA",
 	"DER":               "DERECHA", "DCHA": "DERECHA", "DERECHO": "DERECHA", "IZQ": "IZQUIERDA", "IZQUIERDO": "IZQUIERDA",
+	// El lado en corto se comporta igual que la palabra (ojo y miembro incluidos: OD, MD).
+	"D": "DERECHA", "OD": "DERECHA", "MD": "DERECHA", "I": "IZQUIERDA", "OI": "IZQUIERDA", "MI": "IZQUIERDA",
 	"BILAT": "BILATERAL",
 	// Sinónimos de región y de columna en las órdenes de Neuro.
 	"CEREBRAL": "CEREBRO", "ENCEFALO": "CEREBRO", "CRANEAL": "CEREBRO", "CRANEO": "CEREBRO",
@@ -133,14 +136,38 @@ var slashContrast = regexp.MustCompile(`\b([CS]) ?/ ?(C|CTE|CONTRASTE|MEDIO)\b`)
 // sentido se pierde al partir en palabras.
 var unknownSlash = regexp.MustCompile(`\b[A-Z] ?/|/ ?[A-Z]\b`)
 
-// quantityMark es la cantidad de las órdenes («(#4)», «#16»): no es parte del nombre.
-var quantityMark = regexp.MustCompile(`#\s*\d+`)
+// slashLetters son dos letras sueltas con una barra en medio («C/X»): no se sabe qué dicen. No son palabras
+// del nombre; lo que callan lo cubre hasUnknownSlash.
+var slashLetters = regexp.MustCompile(`\b[A-Z] ?/ ?[A-Z]\b`)
+
+// contrastEither son las frases que dejan el contraste abierto («CON O SIN CONTRASTE», «SIMPLE O CONTRASTADO»):
+// no dicen cuál de los estudios es. Van antes de orderPhrases, cuyo «SIN CONTRASTE» las leería como SIMPLE.
+var contrastEither = regexp.MustCompile(`\b(?:CON|SIN|SIMPLE) (?:O|Y/O) (?:CON |SIN )?(?:MEDIO DE )?(?:CONTRAST[A-Z]*|GADOLINIO)\b`)
+
+// unknownContrastWord reemplaza a contrastEither: una palabra sin par en ningún nombre, para que el
+// procedimiento no se dé por igual ni encaje con nadie, y vaya al agente.
+const unknownContrastWord = " CONTRASTEABIERTO "
+
+// negatedContrast es el contraste negado por delante, con o sin CON y MEDIO DE: «NO CONTRASTADO», «NO CON
+// CONTRASTE», «SIN GADOLINIO». Va después de partir las abreviaturas con barra («NO C/C»).
+var negatedContrast = regexp.MustCompile(`\b(?:NO|SIN)\s+(?:CON\s+)?(?:MEDIO\s+DE\s+)?(?:CONTRAST[A-Z]*|GADOLINIO)\b`)
+
+// contrastAnsweredNo es el contraste negado al final, como respuesta: «CONTRASTE: NO», «CONTRASTADO (NO)». Solo
+// al final: «CONTRASTE NO IONICO» sí lleva contraste.
+var contrastAnsweredNo = regexp.MustCompile(`\bCONTRAST[A-Z]*\W*NO\W*$`)
+
+// danglingWith es un nombre cortado en «CON»: CON no cuenta como palabra y el contraste se leería como
+// silencio (SIMPLE). unknownContrastWord lo manda al agente.
+var danglingWith = regexp.MustCompile(`\bCON\W*$`)
+
+// separatedUnit es un número y su unidad separados («3 D», «6 H»): sin unirlos, la D se leería como un lado.
+var separatedUnit = regexp.MustCompile(`\b(\d+) ([DH])\b`)
 
 // canonicalOrderName deja un nombre de procedimiento en la forma común de las órdenes y el catálogo:
 // mayúsculas, sin tildes, con las frases y abreviaturas de orderPhrases y orderAbbreviations.
 func canonicalOrderName(text string) string {
 	folded := foldOrderName(text)
-	folded = quantityMark.ReplaceAllString(folded, " ")
+	folded = slashLetters.ReplaceAllString(folded, " ")
 	var out []string
 	for _, w := range strings.FieldsFunc(folded, func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
@@ -158,13 +185,18 @@ func canonicalOrderName(text string) string {
 
 // foldOrderName pasa a mayúsculas sin tildes y reemplaza las frases y abreviaturas con barra del contraste.
 func foldOrderName(text string) string {
-	folded := orderPhrases.Replace(accentFolder.Replace(strings.ToUpper(text)))
-	return slashContrast.ReplaceAllStringFunc(folded, func(m string) string {
+	folded := contrastEither.ReplaceAllString(foldProcedureText(text), unknownContrastWord)
+	folded = orderPhrases.Replace(folded)
+	folded = slashContrast.ReplaceAllStringFunc(folded, func(m string) string {
 		if strings.HasPrefix(m, "S") {
 			return " SIMPLE "
 		}
 		return " CONTRASTE "
 	})
+	folded = negatedContrast.ReplaceAllString(folded, " SIMPLE ")
+	folded = contrastAnsweredNo.ReplaceAllString(folded, " SIMPLE ")
+	folded = danglingWith.ReplaceAllString(folded, unknownContrastWord)
+	return separatedUnit.ReplaceAllString(folded, "$1$2")
 }
 
 // hasUnknownSlash dice si el nombre trae letras sueltas con barra que no se entendieron («C/X»): entonces
@@ -197,12 +229,36 @@ func compareReadNames(a, b string) CupsNameMatch {
 	}
 	unknownA, unknownB := hasUnknownSlash(a), hasUnknownSlash(b)
 	if !unknownA && !unknownB && allWordsIn(wa, wb, sameWord) && allWordsIn(wb, wa, sameWord) {
-		return CupsNamesEqual
+		if (!bothSides(wa) || slices.Equal(wa, wb)) && sameQuantityMarks(a, b) {
+			return CupsNamesEqual
+		}
+		return CupsNamesByPrefix
 	}
 	if candidateFits(ca, b, unknownA) || candidateFits(cb, a, unknownB) {
 		return CupsNamesByPrefix
 	}
 	return CupsNamesDiffer
+}
+
+// bothSides dice si el nombre trae los dos lados: entonces importa a qué le toca cada uno («RODILLA DERECHA Y
+// CADERA IZQUIERDA» tiene las mismas palabras que «RODILLA IZQUIERDA Y CADERA DERECHA»).
+func bothSides(words []string) bool {
+	return slices.Contains(words, "DERECHA") && slices.Contains(words, "IZQUIERDA")
+}
+
+// sameQuantityMarks dice si dos nombres traen las mismas marcas de cantidad («#1» frente a «#4», o «X2» frente
+// a nada). La marca no es parte del nombre, pero al descartar uno se perdería.
+func sameQuantityMarks(a, b string) bool {
+	return slices.Equal(quantityMarkDigits(a), quantityMarkDigits(b))
+}
+
+func quantityMarkDigits(name string) []string {
+	var out []string
+	for _, m := range quantityMark.FindAllString(accentFolder.Replace(strings.ToUpper(name)), -1) {
+		out = append(out, strings.TrimLeft(m, "#XNORUM.:°º \t"))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // readNameWords son las palabras de un nombre canónico que cuentan al compararlo con otro leído: las
@@ -293,12 +349,7 @@ func containsCode(list []CupsCandidate, code string) bool {
 // leído, de mayor a menor parecido (y, a igual parecido, el de menos palabras de más). Los primeros
 // maxNameCandidates son la lista corta que ve el modelo.
 func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
-	var readWords []string
-	for _, w := range distinctiveWords(canonRead) {
-		if !retrievalStopWords[w] && !orderNoise[w] {
-			readWords = append(readWords, w)
-		}
-	}
+	readWords := retrievalWords(canonRead)
 	if len(readWords) == 0 {
 		return nil
 	}
@@ -337,6 +388,20 @@ func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 	return out
 }
 
+// retrievalWords son las palabras del leído con las que se buscan candidatos. Lo corto se compara pero no
+// busca: nunca va a coincidir («RM L4 L5» no tiene L4 en el catálogo), bajaría la fracción de minCandidateScore
+// y un procedimiento sin candidatos se descarta sin pasar por el agente.
+func retrievalWords(canonRead string) []string {
+	var out []string
+	for _, w := range distinctiveWords(canonRead) {
+		if retrievalStopWords[w] || orderNoise[w] || spineLevel.MatchString(w) || len(w) < 3 && strings.Trim(w, "0123456789") != "" {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
 // CONTRADICCIÓN ENTRE NOMBRES. Las palabras que cambian el procedimiento se agrupan; dentro de un grupo
 // los valores se excluyen (SIMPLE frente a CONTRASTE, PRIMERA VEZ frente a CONTROL, DERECHA frente a
 // IZQUIERDA, una región frente a otra, 18-FLUOR frente a PSMA…).
@@ -359,6 +424,9 @@ type qualifierGroup struct {
 	// numbers: el grupo son los números del nombre (cantidad de un paquete: «Paq. 1» frente a «Paq. 2»).
 	// Solo cuenta cuando los dos nombres traen números: el catálogo arrastra números sueltos («(62)»).
 	numbers bool
+	// levels: el grupo son los niveles de columna («L4», «C5»). Como los números, solo cuenta cuando los dos
+	// nombres traen niveles: el catálogo no los distingue.
+	levels bool
 	// exclusive: sus valores se excluyen de verdad (contraste, primera vez/control, pediátrica/adultos,
 	// lado, superior/inferior, vía, marcador del PET, nivel de columna y región). Solo estos cuentan para
 	// la guarda de los CUPS con código, y solo si los dos nombres traen el grupo y no comparten ningún
@@ -380,6 +448,7 @@ func words(values ...string) map[string]string {
 
 var qualifierGroups = []qualifierGroup{
 	{numbers: true},
+	{levels: true, exclusive: true},
 	{values: words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
 		"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA"), readSilentOK: true},
 	{values: words("DOPPLER")},
@@ -411,6 +480,12 @@ func (g qualifierGroup) groupValues(canon string) map[string]bool {
 	for _, w := range strings.Fields(canon) {
 		if g.numbers {
 			if strings.Trim(w, "0123456789") == "" {
+				out[w] = true
+			}
+			continue
+		}
+		if g.levels {
+			if spineLevel.MatchString(w) {
 				out[w] = true
 			}
 			continue
@@ -506,7 +581,7 @@ func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
 		if g.readMayAdd && len(cv) == 0 || g.readSilentOK && len(rv) == 0 {
 			continue
 		}
-		if g.numbers && (len(rv) == 0 || len(cv) == 0) {
+		if (g.numbers || g.levels) && (len(rv) == 0 || len(cv) == 0) {
 			continue
 		}
 		if !sameSet(rv, cv) {
