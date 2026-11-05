@@ -82,8 +82,14 @@ type inDoubtKey struct {
 // MaxSendRetries es el tope de reintentos de un envío por conversación (los hace el worker, retrySend).
 const MaxSendRetries = 2
 
+// MaxSendRetryAfter es la mayor espera de un Retry-After que el worker respeta; si pide más, no reintenta.
+const MaxSendRetryAfter = 60 * time.Second
+
+// requestTimeout es lo que puede tardar una llamada a Néctar: el tope de cada intento de envío.
+const requestTimeout = 15 * time.Second
+
 // inDoubtKeyTTL es cuánto se reutiliza la clave de un envío en duda, contado desde el último intento
-// fallido. Cubre la mayor espera del worker entre reintentos (60 s, un Retry-After al tope) con margen,
+// fallido. Cubre la mayor espera del worker entre reintentos (MaxSendRetryAfter) con margen,
 // y es corto para que un mensaje igual de un turno posterior salga como mensaje nuevo.
 const inDoubtKeyTTL = 90 * time.Second
 
@@ -94,7 +100,7 @@ func NewClient(baseURL, serviceKey, requestSecret string) *Client {
 		baseURL:       strings.TrimRight(baseURL, "/"),
 		serviceKey:    serviceKey,
 		requestSecret: requestSecret,
-		http:          &http.Client{Timeout: 15 * time.Second, CheckRedirect: noRedirects},
+		http:          &http.Client{Timeout: requestTimeout, CheckRedirect: noRedirects},
 		now:           time.Now,
 		sleep:         sleepCtx,
 	}

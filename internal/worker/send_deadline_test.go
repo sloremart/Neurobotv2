@@ -113,8 +113,7 @@ func TestSendAndSave_ExpiredTurnStillSends(t *testing.T) {
 	}
 }
 
-// Con plazo de sobra manda el del turno, y lo abandonado se decide por ese plazo: el timeout de 15 s del
-// cliente (que también es DeadlineExceeded) no lo agota y sigue siendo reintentable.
+// Con plazo de sobra manda el del turno; con poco, el mínimo.
 func TestSendDeadline_KeepsTurnDeadlineAndFloor(t *testing.T) {
 	pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
 	pool.minSendBudget = time.Minute

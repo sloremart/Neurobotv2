@@ -178,18 +178,14 @@ func TestRetryableSend_Classification(t *testing.T) {
 		http.StatusConflict:            false,
 		http.StatusNotFound:            false,
 		http.StatusFound:               false,
-		http.StatusOK:                  false, // cuerpo ilegible: ya salió
 	} {
 		f := newFakeSlowSend(t, status)
 		c := newSlowSendClient(f)
 		_, err := c.SendText(context.Background(), 1234, "hola")
-		if status == http.StatusOK {
-			err = errors.New("nectar: leer respuesta")
-		}
 		if got := RetryableSend(err); got != want {
 			t.Errorf("status %d: RetryableSend = %v (err %v)", status, got, err)
 		}
-		if !want && status != http.StatusOK {
+		if !want {
 			_, _ = c.SendText(context.Background(), 1234, "hola")
 			if keys := f.sentKeys(); keys[0] == keys[1] {
 				t.Errorf("status %d: no debía dejar clave en duda: %v", status, keys)
@@ -199,6 +195,62 @@ func TestRetryableSend_Classification(t *testing.T) {
 	f := newFakeSlowSend(t, 0) // tarda más que el timeout del cliente
 	if _, err := newSlowSendClient(f).SendText(context.Background(), 1234, "hola"); !RetryableSend(err) {
 		t.Errorf("el timeout es reintentable: %v", err)
+	}
+}
+
+// Una respuesta 2xx ilegible ya salió: no se reintenta y no deja clave en duda.
+func TestRetryableSend_Unreadable2xxIsNotRetryable(t *testing.T) {
+	var mu sync.Mutex
+	var keys []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Key string `json:"idempotency_key"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		keys = append(keys, req.Key)
+		mu.Unlock()
+		_, _ = w.Write([]byte("no es json"))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, svcKey, reqSecret)
+
+	_, err := c.SendText(context.Background(), 1234, "hola")
+	if err == nil || RetryableSend(err) {
+		t.Fatalf("err = %v, reintentable = %v", err, RetryableSend(err))
+	}
+	_, _ = c.SendText(context.Background(), 1234, "hola")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(keys) != 2 || keys[0] == keys[1] {
+		t.Fatalf("claves = %v", keys)
+	}
+}
+
+// El timeout del propio cliente también es DeadlineExceeded: por eso el worker decide un abandono mirando
+// su plazo y no el error. Sigue siendo reintentable.
+func TestSend_ClientTimeoutIsDeadlineExceededAndRetryable(t *testing.T) {
+	f := newFakeSlowSend(t, 0)
+	_, err := newSlowSendClient(f).SendText(context.Background(), 1234, "hola")
+	if !errors.Is(err, context.DeadlineExceeded) || !RetryableSend(err) {
+		t.Fatalf("err = %v, reintentable = %v", err, RetryableSend(err))
+	}
+}
+
+// M-9: la clave en duda aguanta la mayor espera del worker entre reintentos. Si inDoubtKeyTTL baja de
+// MaxSendRetryAfter, un 429 al tope reintentaría con otra clave.
+func TestSend_InDoubtKeySurvivesLongestRetryWait(t *testing.T) {
+	f := newFakeSlowSend(t, http.StatusBadGateway, http.StatusOK)
+	c := newSlowSendClient(f)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+
+	_, _ = c.SendText(context.Background(), 1234, "hola")
+	now = now.Add(MaxSendRetryAfter)
+	_, _ = c.SendText(context.Background(), 1234, "hola")
+
+	if keys := f.sentKeys(); len(keys) != 2 || keys[0] != keys[1] {
+		t.Fatalf("claves = %v", keys)
 	}
 }
 

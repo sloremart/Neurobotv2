@@ -36,8 +36,6 @@ const (
 	// estado del paciente. Ver sendAndSave (auditoría 2026-07-27).
 	persistStateTimeout = 15 * time.Second
 	processMsgTimeout   = 2 * time.Minute // BUG-004: cota por mensaje del ctx desacoplado del apagado
-	// maxSendRetryAfter es la mayor espera de un Retry-After que se respeta; si pide más, no se reintenta.
-	maxSendRetryAfter = 60 * time.Second
 	// deliveredTurnTTL es cuánto se recuerda el turno entregado: más que la vida de un reintento
 	// (dos esperas de 60 s y tres intentos de 15 s).
 	deliveredTurnTTL = 4 * time.Minute
@@ -2163,7 +2161,7 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 
 // sendRetryWait dice si el reintento número attempt procede tras el fallo err, y cuánto esperar antes.
 // En Néctar solo se reintenta un 5xx, un transporte o un 429: a retryDelay y luego a 3 veces eso, o a
-// lo que pida el Retry-After si es más. Pedir más de maxSendRetryAfter deja el rastro propio y no se
+// lo que pida el Retry-After si es más. Pedir más de nectar.MaxSendRetryAfter deja el rastro propio y no se
 // reintenta; seguir con 429 tras el último reintento, también.
 func (p *MessageWorkerPool) sendRetryWait(sessionID, phone string, attempt int, err error) (time.Duration, bool) {
 	if !session.IsNectarSession(phone) {
@@ -2180,7 +2178,7 @@ func (p *MessageWorkerPool) sendRetryWait(sessionID, phone string, attempt int, 
 		return 0, false
 	}
 	retryAfter := nectar.RetryAfter(err)
-	if retryAfter > maxSendRetryAfter {
+	if retryAfter > nectar.MaxSendRetryAfter {
 		observability.Emit(observability.TraceSession(sessionID), "infra", "send_retry_after_too_long",
 			observability.EmitOpts{Phone: phone, Attrs: map[string]interface{}{"n": int(retryAfter / time.Second)}})
 		return 0, false

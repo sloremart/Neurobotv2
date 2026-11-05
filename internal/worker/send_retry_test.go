@@ -228,7 +228,7 @@ func TestSendRetryWait_RetryAfterLimit(t *testing.T) {
 	if err == nil || len(f.sent()) != 1 {
 		t.Fatalf("err = %v", err)
 	}
-	if wait, ok := pool.sendRetryWait(sess.ID, sess.PhoneNumber, 1, err); !ok || wait != maxSendRetryAfter {
+	if wait, ok := pool.sendRetryWait(sess.ID, sess.PhoneNumber, 1, err); !ok || wait != nectar.MaxSendRetryAfter {
 		t.Fatalf("wait = %v, ok = %v", wait, ok)
 	}
 }
