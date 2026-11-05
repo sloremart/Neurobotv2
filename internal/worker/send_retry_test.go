@@ -358,7 +358,7 @@ func TestRetrySend_LongRetryAfterDiscardedOnceLaterTurnStarted(t *testing.T) {
 func TestBeginTurn_AtMessagesAndCommands(t *testing.T) {
 	pool := retryTestPool(&mockMessageSender{}, newMockSessionMgmt())
 	phone := nectar.SessionKey(1234)
-	first := pool.beginTurn(phone)
+	first := pool.currentTurn(phone)
 
 	pool.processMessage(context.Background(), bird.InboundMessage{ID: "m1", Phone: phone, Text: "hola"})
 	if !pool.laterTurnStarted(phone, first) {
@@ -446,7 +446,8 @@ func TestStartedTurns(t *testing.T) {
 	if got := pool.currentTurn("nectar:1"); got != first || first == 0 {
 		t.Fatalf("currentTurn = %d, quiero %d", got, first)
 	}
-	second := pool.beginTurn("nectar:1")
+	pool.beginTurn("nectar:1")
+	second := pool.currentTurn("nectar:1")
 	if second <= first || !pool.laterTurnStarted("nectar:1", first) || pool.laterTurnStarted("nectar:1", second) ||
 		pool.laterTurnStarted("nectar:2", first) {
 		t.Fatal("solo cuenta un turno mayor, y de ese paciente")

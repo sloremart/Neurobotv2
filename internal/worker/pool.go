@@ -711,7 +711,8 @@ func (p *MessageWorkerPool) renewDedupClaim(id string) {
 
 // purgeStaleLockMisses borra las entradas de lockMisses de mensajes que se fueron al replay y nunca
 // volvieron (fila cerrada por otro camino). El margen doble de maxPhoneLockWait no toca a un mensaje
-// aún en vuelo: ese se rinde en su siguiente intento pasado maxPhoneLockWait y borra su entrada.
+// aún en vuelo: ese se rinde en su siguiente intento pasado maxPhoneLockWait y borra su entrada. De paso
+// purga los turnos empezados que ya ningún reintento puede consultar (startedTurnTTL).
 func (p *MessageWorkerPool) purgeStaleLockMisses(now time.Time) {
 	p.turnsMu.Lock()
 	for phone, t := range p.startedTurns {
@@ -2102,8 +2103,8 @@ func (p *MessageWorkerPool) sendMessageCtx(ctx context.Context, phone, conversat
 // hasta nectar.MaxSendRetries (B-04, D-06), con la misma clave en duda (la pone el cliente). Corre fuera
 // del candado, así que no depende del plazo del turno.
 //
-// Regla: nada queda peor que antes de haber dos reintentos. El primero a retryDelay sale siempre, como
-// entonces. Los que entonces no existían (el segundo, y el primero que un Retry-After alarga) solo salen
+// Regla: ante lo que se reintenta, nada queda peor que antes de haber dos reintentos. El primero a
+// retryDelay sale siempre, como entonces. Los que entonces no existían (el segundo, y el primero que un Retry-After alarga) solo salen
 // si no EMPEZÓ un turno posterior, entregado o no: si no, aparecerían botones viejos con el estado ya
 // avanzado. Los mensajes de un mismo turno no se suprimen entre sí. Se mira antes de cada intento: uno
 // ya en vuelo puede cruzarse con el turno nuevo.
@@ -2184,15 +2185,15 @@ func (p *MessageWorkerPool) sendRetryWait(sessionID, phone string, attempt int, 
 	return max(wait, retryAfter), true
 }
 
-// beginTurn anota que empieza un turno de ese paciente y devuelve su número (solo Néctar; Bird no lleva
-// la guarda). Se llama con el candado del teléfono tomado: los turnos de un paciente van en orden.
-func (p *MessageWorkerPool) beginTurn(phone string) uint64 {
+// beginTurn anota que empieza un turno de ese paciente (solo Néctar; Bird no lleva la guarda). Se llama
+// con el candado del teléfono tomado: los turnos de un paciente van en orden.
+func (p *MessageWorkerPool) beginTurn(phone string) {
 	if !session.IsNectarSession(phone) {
-		return 0
+		return
 	}
 	p.turnsMu.Lock()
 	defer p.turnsMu.Unlock()
-	return p.beginTurnLocked(phone)
+	p.beginTurnLocked(phone)
 }
 
 func (p *MessageWorkerPool) beginTurnLocked(phone string) uint64 {

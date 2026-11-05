@@ -393,7 +393,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Reintentos de envío (`retrySend`, solo turnos del worker, nunca aperturas ni Bird, que sigue con su único reintento
   a los 10 s): en Néctar hasta 2 (10 s, 30 s) solo ante 5xx, transporte o 429, con la MISMA clave en duda; el 429 espera
   su Retry-After si es mayor (≤60 s; más: no se reintenta, evento `infra/send_retry_after_too_long`; 429 tras los dos reintentos: `infra/send_rate_limited_undelivered`). Corren fuera del
-  candado y no dependen del plazo del turno. Nada queda peor que con un solo reintento: el primero a los 10 s sale siempre; el 2.º, y
+  candado y no dependen del plazo del turno. Ante 5xx, transporte o abandono por plazo nada queda peor que con un solo reintento (un 4xx no
+  permanente o un Retry-After >60 s ya no se reintentan, a propósito): el primero a los 10 s sale siempre; el 2.º, y
   el 1.º que un Retry-After alarga, se descartan (con log) si ya EMPEZÓ un turno posterior de ese teléfono (`beginTurn`, al tomar el
   candado), entregado o no. Los mensajes de un mismo turno no se suprimen entre sí.
   Para `nectar_down` cuentan el envío y el primer reintento (el último no: el aviso salta con los mismos mensajes que con un solo

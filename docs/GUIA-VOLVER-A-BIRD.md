@@ -22,7 +22,7 @@ El aviso dice el **disparador**, un **detalle** (cuántos fallos y desde qué ho
 |---|---|---|
 | **Plantillas proactivas detenidas por configuración** (`proactive_stopped`) | Néctar rechazó una plantilla por algo de la cuenta (clave, plantilla, canal). La corrida se detuvo: no salió nada más en esa corrida. | **No. Tratarlo como real.** |
 | **Recordatorios sin enviar por encima del umbral** (`reminders_unsent`) | Una corrida de recordatorios dejó muchos (por defecto 10 o más) sin enviar o «en duda» por fallas de la línea. No cuentan los números sin WhatsApp ni los pacientes que ya hablan con un agente. | **No. Tratarlo como real.** |
-| **Néctar no responde** (`nectar_down`) | En pocos minutos (por defecto 5 fallos dentro de 5 min) los envíos o lecturas a Néctar fallaron por red, tiempo vencido o error del servidor de Néctar (5xx). | Puede ser un corte corto. Ver abajo. |
+| **Néctar no responde** (`nectar_down`) | En pocos minutos (por defecto 5 fallos dentro de 5 min) los envíos o lecturas a Néctar fallaron por red, tiempo vencido o error del servidor de Néctar (5xx). No cuentan el último reintento de un mensaje ni un envío que el propio bot abandonó porque se le acabó el plazo del turno. | Puede ser un corte corto. Ver abajo. |
 | **Escalaciones a Néctar fallando** (`escalation_failing`) | Al pasar pacientes a un agente de Néctar, Néctar los rechazó varias veces (por defecto 3 dentro de 10 min) por algo que no es una caída (permiso, clave, escalación apagada). | Puede ser algo puntual. Ver abajo. |
 
 **Los dos primeros no se repiten solos.** Avisan una vez por corrida (recordatorios del día antes a
