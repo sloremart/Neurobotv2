@@ -504,7 +504,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   cortas cuentan (`procedureWords`), salvo `genericProcedureWords` (conectores, AP, PA): el lado en corto (D, OD, MD,
   I, OI, MI) vale lo mismo que la palabra. Al ASIGNAR, el nivel de columna (L4, C5) y la marca de cantidad (#2, X2,
   N 2, No. 1) son silencio si el catálogo no los menciona, y si lo menciona y es otro nivel, contradicción; al
-  DESCARTAR una lectura (`compareReadNames`) cualquier diferencia de los dos es duda. Guarda: un CUPS CON código
+  DESCARTAR una lectura (`compareReadNames`) cualquier diferencia de los dos es duda. PROCEDIMIENTO, EXAMEN y ESTUDIO
+  no son una consulta: se comparan, salvo si el nombre escribe la modalidad («ESTUDIO DE RM CEREBRO» = «RM CEREBRO»).
+  Guarda: un CUPS CON código
   cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
   vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos
   lo mencionan y no comparten ningún valor tras los sinónimos; NO modalidad) → agente (`cups_posible_mala_lectura`).

@@ -180,7 +180,17 @@ func canonicalOrderName(text string) string {
 		}
 		out = append(out, w)
 	}
-	return strings.Join(out, " ")
+	return dropVagueWords(strings.Join(out, " "))
+}
+
+// dropVagueWords quita PROCEDIMIENTO, EXAMEN y ESTUDIO de un nombre que ya escribe la modalidad: «ESTUDIO DE
+// RM CEREBRO» es «RM CEREBRO», y el asunto ya está dicho.
+func dropVagueWords(canon string) string {
+	words := strings.Fields(canon)
+	if !slices.ContainsFunc(words, func(w string) bool { return modalityValues[w] != "" }) {
+		return canon
+	}
+	return strings.Join(slices.DeleteFunc(words, func(w string) bool { return vagueProcedureWords[w] }), " ")
 }
 
 // foldOrderName pasa a mayúsculas sin tildes y reemplaza las frases y abreviaturas con barra del contraste.
@@ -221,7 +231,7 @@ func CupsNameKey(name string) string { return canonicalOrderName(name) }
 func compareReadNames(a, b string) CupsNameMatch {
 	ca, cb := canonicalOrderName(a), canonicalOrderName(b)
 	wa, wb := readNameWords(ca), readNameWords(cb)
-	if len(wa) == 0 || len(wb) == 0 {
+	if !hasSpecificWord(wa) || !hasSpecificWord(wb) {
 		return CupsNamesDiffer
 	}
 	if CompareCupsNames(ca, cb) == CupsNamesByPrefix {
@@ -394,7 +404,8 @@ func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 func retrievalWords(canonRead string) []string {
 	var out []string
 	for _, w := range distinctiveWords(canonRead) {
-		if retrievalStopWords[w] || orderNoise[w] || spineLevel.MatchString(w) || len(w) < 3 && strings.Trim(w, "0123456789") != "" {
+		if retrievalStopWords[w] || orderNoise[w] || vagueProcedureWords[w] || spineLevel.MatchString(w) ||
+			len(w) < 3 && strings.Trim(w, "0123456789") != "" {
 			continue
 		}
 		out = append(out, w)
@@ -446,11 +457,14 @@ func words(values ...string) map[string]string {
 	return m
 }
 
+// modalityValues son las modalidades, con su valor en el grupo.
+var modalityValues = words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
+	"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA")
+
 var qualifierGroups = []qualifierGroup{
 	{numbers: true},
 	{levels: true, exclusive: true},
-	{values: words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
-		"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA"), readSilentOK: true},
+	{values: modalityValues, readSilentOK: true},
 	{values: words("DOPPLER")},
 	{values: words("SIMPLE", "CONTRASTE"), silentAs: "SIMPLE", exclusive: true},
 	{values: words("PRIMERA=PRIMERA_VEZ", "VEZ=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL"), exclusive: true},

@@ -25,8 +25,17 @@ var genericProcedureWords = map[string]bool{
 	"DE": true, "DEL": true, "LA": true, "EL": true, "LOS": true, "LAS": true, "POR": true,
 	"PARA": true, "EN": true, "Y": true, "O": true, "A": true, "CON": true, "AL": true,
 	"UN": true, "UNA": true, "U": true, "E": true, "AP": true, "PA": true,
-	"CONSULTA": true, "ESPECIALISTA": true, "MEDICINA": true, "PROCEDIMIENTO": true,
-	"EXAMEN": true, "ESTUDIO": true, "GENERAL": true, "NUEVA": true, "NUEVO": true, "SOD": true,
+	"CONSULTA": true, "ESPECIALISTA": true, "MEDICINA": true, "GENERAL": true, "NUEVA": true, "NUEVO": true, "SOD": true,
+}
+
+// vagueProcedureWords no dicen qué procedimiento es, pero tampoco son una consulta: «EXAMEN NEUROLOGIA» no es
+// «CONSULTA NEUROLOGIA», son asuntos distintos. Por eso sí se comparan, aunque solas no bastan para comparar
+// (dropVagueWords las quita cuando el nombre ya escribe la modalidad).
+var vagueProcedureWords = map[string]bool{"PROCEDIMIENTO": true, "EXAMEN": true, "ESTUDIO": true}
+
+// hasSpecificWord dice si hay alguna palabra con la que comparar.
+func hasSpecificWord(words []string) bool {
+	return slices.ContainsFunc(words, func(w string) bool { return !vagueProcedureWords[w] })
 }
 
 // accentFolder quita tildes y diéresis (el texto ya va en mayúsculas).
@@ -74,7 +83,7 @@ func CompareCupsNames(a, b string) CupsNameMatch {
 		aw, bw = withoutSpineLevels(aw), withoutSpineLevels(bw)
 	}
 	switch {
-	case len(aw) == 0 || len(bw) == 0:
+	case !hasSpecificWord(aw) || !hasSpecificWord(bw):
 		return CupsNamesDiffer
 	case allWordsIn(aw, bw, sameWord) && allWordsIn(bw, aw, sameWord):
 		return CupsNamesEqual
