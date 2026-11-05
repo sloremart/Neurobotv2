@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -82,6 +83,9 @@ type Tasks struct {
 	ReengageSource  ReengageSource            // re-enganche matutino (optional; nil = tarea muda)
 	NotifHistory    NotificationHistory       // dedup del recordatorio de corta antelación (optional; sin él la tarea NO envía — fail-closed)
 	Urgent          UrgentReporter            // aviso urgente de volver a Bird (optional; nil = sin aviso)
+
+	// remindersRunning: hay una corrida de recordatorios en curso, del cron o manual (single-flight).
+	remindersRunning atomic.Bool
 }
 
 // RegisterAll registers the scheduled tasks: the 4 originales (cleanup, recordatorios 07:00, lista de
@@ -179,6 +183,15 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 		slog.Info("whatsapp reminders skipped — notifications disabled (WHATSAPP_NOTIFICATIONS_ENABLED=false)")
 		return nil
 	}
+
+	// Single-flight: la idempotencia (HasPendingForContact) se mira antes de enviar, así que dos
+	// recorridos a la vez pasarían los dos el chequeo y la plantilla saldría (y se cobraría) dos veces.
+	// El segundo disparo no reintenta: la corrida en curso cubre las mismas citas.
+	if !t.remindersRunning.CompareAndSwap(false, true) {
+		slog.Warn("whatsapp reminders: ya en curso, este disparo no envía nada")
+		return nil
+	}
+	defer t.remindersRunning.Store(false)
 
 	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
 

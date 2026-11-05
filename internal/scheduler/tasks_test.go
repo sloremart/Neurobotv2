@@ -1845,3 +1845,70 @@ func TestSendSameDayReminders_RetryUsesScheduledWindow(t *testing.T) {
 		})
 	}
 }
+
+// A-08: un segundo disparo de los recordatorios (doble clic en el dashboard, o el cron más uno manual)
+// mientras otro está en curso no recorre ni envía nada; al terminar, el siguiente corre normal.
+func TestSendReminders_ConcurrentRunsSendOnce(t *testing.T) {
+	var sends atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			sends.Add(1)
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"msg-once"}`))
+	}))
+	defer srv.Close()
+
+	birdClient := bird.NewClientForTest(srv.URL)
+	cfg := testConfig()
+	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	appt := domain.Appointment{
+		ID: "apt-once", PatientID: "P100", PatientName: "Ana Ruiz",
+		PatientPhone: "3001112233", DoctorName: "Dr. Garcia",
+		Date: tomorrow, TimeSlot: tomorrow.Format("200601021504"),
+		Procedures: []domain.AppointmentProcedure{{CupCode: "890274", CupName: "Consulta Neurologia", Quantity: 1}},
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var reads atomic.Int32
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			if reads.Add(1) == 1 {
+				close(entered)
+				<-release
+				return []domain.Appointment{appt}, nil
+			}
+			return nil, nil
+		},
+	}
+	tasks := &Tasks{AppointmentRepo: mockRepo, BirdClient: birdClient, NotifyManager: nm, Cfg: cfg}
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- tasks.SendWhatsAppReminders(context.Background()) }()
+	<-entered
+
+	if err := tasks.sendWhatsAppReminders(context.Background()); err != nil {
+		t.Fatalf("el segundo disparo solo se anota, no falla: %v", err)
+	}
+	if got := reads.Load(); got != 1 {
+		t.Fatalf("el segundo disparo no debe leer citas: lecturas = %d", got)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("primer disparo: %v", err)
+	}
+	if got := sends.Load(); got != 1 {
+		t.Errorf("envíos = %d, want 1", got)
+	}
+	if p, ok := nm.LoadPendingForTest("+573001112233"); ok && p.Timer != nil {
+		p.Timer.Stop()
+	}
+
+	if err := tasks.SendWhatsAppReminders(context.Background()); err != nil {
+		t.Fatalf("tercer disparo: %v", err)
+	}
+	if got := reads.Load(); got != 2 {
+		t.Errorf("terminado el primero, el siguiente disparo corre: lecturas = %d, want 2", got)
+	}
+}
