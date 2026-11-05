@@ -17,8 +17,12 @@ import (
 // próximo día hábil). Esto lee cada pocos minutos y publica la lectura en el proveedor
 // (config.CachedSchedule), al que cada gate pregunta en el momento de decidir (cfg.Hours()).
 //
-// Viene APAGADO (NECTAR_SCHEDULE_ENABLED): apagado no se llama a Néctar y rige el horario de
-// siempre (config.DefaultBusinessHours), minuto a minuto y letra por letra.
+// Sin puente no se llama a Néctar y rige el horario de siempre (config.DefaultBusinessHours), minuto
+// a minuto y letra por letra. Con puente:
+//   - NECTAR_SCHEDULE_ENABLED apagada (default): de la lectura solo se toman los festivos, que en
+//     Néctar son de la entidad, sin depender de equipo ni canal. La semana sigue siendo la de siempre,
+//     así que unos equipos sin horario no pueden cerrar al bot.
+//   - encendida: mandan las ventanas y los festivos publicados.
 
 // scheduleReader es lo único que se necesita de Néctar: la lectura. Interfaz para probar el
 // bucle con un servidor de mentira.
@@ -33,6 +37,8 @@ type nectarScheduleRefresher struct {
 	cache     *config.CachedSchedule
 	channelID int64
 	every     time.Duration
+	// holidaysOnly: de la lectura solo se toman los festivos (NECTAR_SCHEDULE_ENABLED apagada).
+	holidaysOnly bool
 }
 
 func newNectarScheduleRefresher(read scheduleReader, cache *config.CachedSchedule,
@@ -85,11 +91,11 @@ func (r *nectarScheduleRefresher) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	hours, err := config.BusinessHoursFromSchedule(scheduleSpec(sch))
+	hours, err := r.hoursFrom(sch)
 	if err != nil {
 		return err
 	}
-	if len(sch.Windows) == 0 {
+	if !r.holidaysOnly && len(sch.Windows) == 0 {
 		// Válido según el contrato, pero es lo que se vería si alguien dejara a los equipos sin
 		// horario: el bot queda cerrado para todos. Que se vea en voz alta.
 		slog.Error("Néctar publicó un horario SIN ventanas: el bot queda CERRADO toda la semana",
@@ -102,6 +108,14 @@ func (r *nectarScheduleRefresher) refresh(ctx context.Context) error {
 	}
 	r.cache.Set(hours, sch.Version)
 	return nil
+}
+
+// hoursFrom valida una lectura y la convierte en el horario que se publica.
+func (r *nectarScheduleRefresher) hoursFrom(sch nectar.Schedule) (config.BusinessHours, error) {
+	if r.holidaysOnly {
+		return config.DefaultHoursWithHolidays(scheduleSpec(sch))
+	}
+	return config.BusinessHoursFromSchedule(scheduleSpec(sch))
 }
 
 // scheduleSpec copia el cable a los tipos neutros de config (config no puede importar nectar:
@@ -119,17 +133,17 @@ func scheduleSpec(sch nectar.Schedule) config.ScheduleSpec {
 	return spec
 }
 
-// startNectarSchedule arranca el refresco si está encendido y dice en el log con qué horario
-// decide el bot. Devuelve si arrancó. Apagado —o sin cliente de Néctar— no hace NINGUNA llamada.
+// startNectarSchedule arranca el refresco si hay puente y dice en el log con qué horario decide el
+// bot. Devuelve si arrancó. Sin cliente de Néctar no hace NINGUNA llamada.
 func startNectarSchedule(ctx context.Context, cfg *config.Config, client *nectar.Client,
 	cache *config.CachedSchedule,
 ) bool {
-	if !cfg.NectarScheduleEnabled {
-		slog.Info("horario: el de siempre (NECTAR_SCHEDULE_ENABLED apagada)",
-			"horario", cache.Current().String())
-		return false
-	}
 	if client == nil || !client.Configured() {
+		if !cfg.NectarScheduleEnabled {
+			slog.Info("horario: el de siempre, sin festivos (sin puente y NECTAR_SCHEDULE_ENABLED apagada)",
+				"horario", cache.Current().String())
+			return false
+		}
 		// Encendida sin con qué llamar (puente apagado): configuración a medias que hay que
 		// ver, pero el bot no se queda sin horario.
 		slog.Error("NECTAR_SCHEDULE_ENABLED encendida sin puente de Néctar: rige el horario de siempre",
@@ -142,8 +156,12 @@ func startNectarSchedule(ctx context.Context, cfg *config.Config, client *nectar
 		every = config.DefaultScheduleRefreshMin * time.Minute
 	}
 	r := newNectarScheduleRefresher(client, cache, cfg.NectarScheduleChannelID, every)
-	slog.Info("horario: fuente NÉCTAR (GET /api/bot/schedule)",
-		"cada_min", int(every.Minutes()), "channel_id", cfg.NectarScheduleChannelID,
+	r.holidaysOnly = !cfg.NectarScheduleEnabled
+	source := "horario: fuente NÉCTAR (GET /api/bot/schedule)"
+	if r.holidaysOnly {
+		source = "horario: el de siempre, con los festivos de NÉCTAR (GET /api/bot/schedule)"
+	}
+	slog.Info(source, "cada_min", int(every.Minutes()), "channel_id", cfg.NectarScheduleChannelID,
 		"respaldo", cache.Current().String())
 	safeGo("nectar-schedule", func() { r.Run(ctx) })
 	return true

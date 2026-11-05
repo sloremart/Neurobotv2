@@ -117,9 +117,9 @@ type Config struct {
 	// con el puente puesto, esas plantillas fallan con un error permanente y nada sale.
 	NectarChannelID int64
 	// EL HORARIO LEÍDO DE NÉCTAR (GET /api/bot/schedule). NectarScheduleEnabled
-	// (NECTAR_SCHEDULE_ENABLED) viene APAGADA: apagada no se hace ninguna llamada y rige el horario
-	// de siempre (DefaultBusinessHours). El .env la enciende cuando los equipos tengan horario en
-	// Néctar. NectarScheduleChannelID (NECTAR_SCHEDULE_CHANNEL_ID) acota la lectura a un canal
+	// (NECTAR_SCHEDULE_ENABLED) viene APAGADA: apagada rige la semana de siempre
+	// (DefaultBusinessHours) y, con puente, se leen solo los festivos de Néctar. El .env la enciende
+	// cuando los equipos tengan horario en Néctar. NectarScheduleChannelID (NECTAR_SCHEDULE_CHANNEL_ID) acota la lectura a un canal
 	// (0 = todos los de la entidad); NectarScheduleRefreshMin (NECTAR_SCHEDULE_REFRESH_MIN) es cada
 	// cuántos minutos se relee (5).
 	NectarScheduleEnabled    bool

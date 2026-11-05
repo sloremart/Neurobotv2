@@ -175,7 +175,7 @@ func main() {
 
 	// El horario de atención y los festivos: todo el bot los pregunta por cfg.Hours(). Rige el de
 	// siempre hasta que Néctar publique una lectura buena; con NECTAR_SCHEDULE_ENABLED apagada (el
-	// default) no se llama a Néctar. Solo con el puente activo hay de dónde leer.
+	// default) de Néctar solo se toman los festivos. Solo con el puente activo hay de dónde leer.
 	schedule := wireSchedule(cfg)
 	var scheduleClient *nectar.Client
 	if nectarBridge != nil {

@@ -123,6 +123,9 @@ const (
 
 var cot = time.FixedZone("COT", -5*3600)
 
+// holidayMonday es el lunes festivo de withSaturday a las 10:00: hábil en el horario de siempre.
+var holidayMonday = time.Date(2026, 11, 2, 10, 0, 0, 0, cot)
+
 // saturday es un sábado a las 09:00: dentro de la ventana del sábado, fuera de entre semana.
 var saturday = time.Date(2026, 10, 31, 9, 0, 0, 0, cot)
 
@@ -264,22 +267,19 @@ func TestNectarScheduleRefresher_RunReleeEnCadaTic(t *testing.T) {
 
 // Apagada (el default) no se llama a Néctar y rige el horario de siempre; encendida sin cliente,
 // tampoco.
-func TestStartNectarSchedule_ApagadaNoLlamaANadie(t *testing.T) {
+func TestStartNectarSchedule_SinPuenteNoLlamaANadie(t *testing.T) {
 	logs := captureSlog(t)
-	f := newFakeScheduleServer(t, withoutSaturday)
 	cfg := &config.Config{}
 	cache := wireSchedule(cfg)
-	client := nectar.NewClient(f.srv.URL, "clave", "secreto")
 
-	if startNectarSchedule(context.Background(), cfg, client, cache) {
-		t.Fatal("con NECTAR_SCHEDULE_ENABLED apagada no se arranca el refresco")
-	}
-	time.Sleep(50 * time.Millisecond)
-	if f.calls() != 0 {
-		t.Errorf("llamadas = %d: apagada no se llama a nadie", f.calls())
+	if startNectarSchedule(context.Background(), cfg, nil, cache) {
+		t.Fatal("sin puente no se arranca el refresco")
 	}
 	if got, want := cfg.Hours().String(), config.DefaultBusinessHours().String(); got != want {
-		t.Errorf("apagada rige el de siempre: %q", got)
+		t.Errorf("sin puente rige el de siempre: %q", got)
+	}
+	if cfg.Hours().IsHoliday(holidayMonday) {
+		t.Error("sin puente no hay festivos")
 	}
 
 	cfg.NectarScheduleEnabled = true
@@ -324,4 +324,132 @@ func TestStartNectarSchedule_EncendidaLee(t *testing.T) {
 		t.Fatal("con la bandera encendida y cliente, el refresco arranca")
 	}
 	waitFor(t, "la primera lectura", func() bool { return cache.Version() == "v2" })
+}
+
+// holidaysOnlyRefresher es el refresco de un bot con puente y NECTAR_SCHEDULE_ENABLED apagada.
+func holidaysOnlyRefresher(t *testing.T, f *fakeScheduleServer) (*config.Config, *nectarScheduleRefresher, *config.CachedSchedule) {
+	t.Helper()
+	cfg, r, cache := refresherFor(t, f)
+	r.holidaysOnly = true
+	return cfg, r, cache
+}
+
+// D-08: con puente y sin el horario de Néctar, los festivos publicados cierran el día, pero la semana
+// sigue siendo la de siempre aunque Néctar publique otras ventanas.
+func TestHolidaysOnly_AppliesHolidaysOverDefaultWeek(t *testing.T) {
+	f := newFakeScheduleServer(t, withSaturday)
+	cfg, r, cache := holidaysOnlyRefresher(t, f)
+	if err := r.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Hours()
+	if h.Open(holidayMonday) || !h.IsHoliday(holidayMonday) {
+		t.Error("el festivo publicado cierra el lunes")
+	}
+	if !h.Open(holidayMonday.AddDate(0, 0, 1)) {
+		t.Error("el día siguiente abre")
+	}
+	if got, want := h.String(), config.DefaultBusinessHours().String(); got != want {
+		t.Errorf("semana = %q, want la de siempre %q", got, want)
+	}
+	// 07:30 abre el de siempre; las ventanas publicadas empiezan a las 08:00.
+	if !h.Open(time.Date(2026, 11, 3, 7, 30, 0, 0, cot)) {
+		t.Error("las ventanas de Néctar no mandan con la bandera apagada")
+	}
+	if !h.SameAsDefault() {
+		t.Error("el texto de ayuda sigue siendo el de siempre")
+	}
+	if cache.Version() != "v2" {
+		t.Errorf("versión = %q: la lectura condicional necesita la de Néctar", cache.Version())
+	}
+}
+
+// D-08: la bandera apagada nunca publica «cerrado toda la semana», ni con Néctar sin ventanas.
+func TestHolidaysOnly_NoWindowsIsNotClosed(t *testing.T) {
+	f := newFakeScheduleServer(t, `{"timezone":"America/Bogota","version":"v0","windows":[],
+		"holidays":[{"date":"2026-11-02","name":"Todos los Santos"}]}`)
+	cfg, r, _ := holidaysOnlyRefresher(t, f)
+	logs := captureSlog(t)
+	if err := r.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Hours()
+	if !h.Open(saturday) || !h.Open(holidayMonday.AddDate(0, 0, 1)) || h.Open(holidayMonday) {
+		t.Errorf("rige el de siempre con el festivo: horario %q", h.String())
+	}
+	if h.Describe() == "" {
+		t.Error("sigue habiendo horario que nombrar")
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("no hay cierre que avisar: %s", logs.String())
+	}
+}
+
+// D-08: Néctar caído, una respuesta rota, una fecha inválida u otra zona conservan la última lista buena
+// y dejan un aviso en el log; un 304 también la conserva.
+func TestHolidaysOnly_KeepsLastGoodList(t *testing.T) {
+	f := newFakeScheduleServer(t, withSaturday)
+	cfg, r, cache := holidaysOnlyRefresher(t, f)
+	if err := r.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.publish(`{"timezone":"America/Bogota","version":"v3","windows":[],"holidays":[{"date":"2026-13-40"}]}`)
+	if err := r.refresh(context.Background()); err == nil {
+		t.Error("un festivo inválido tumba la lectura")
+	}
+	f.publish(`{"timezone":"America/Lima","version":"v4","windows":[],"holidays":[{"date":"2026-11-16"}]}`)
+	if err := r.refresh(context.Background()); err == nil {
+		t.Error("otra zona tumba la lectura: sus fechas no serían las de Bogotá")
+	}
+	f.fail(http.StatusInternalServerError)
+	if err := r.refresh(context.Background()); err == nil {
+		t.Error("una respuesta 500 es un fallo")
+	}
+	if h := cfg.Hours(); h.Open(holidayMonday) || !h.Open(saturday) || cache.Version() != "v2" {
+		t.Errorf("sigue la última buena: horario %q versión %q", h.String(), cache.Version())
+	}
+}
+
+// D-08: Néctar sin responder al arrancar: rige el de siempre, sin festivos ni cierre, con su aviso.
+func TestHolidaysOnly_NectarDownAtStartKeepsDefault(t *testing.T) {
+	f := newFakeScheduleServer(t, withSaturday)
+	f.fail(http.StatusServiceUnavailable)
+	cfg, r, _ := holidaysOnlyRefresher(t, f)
+	logs := captureSlog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+	waitFor(t, "el aviso", func() bool { return strings.Contains(logs.String(), "level=WARN") })
+	if h := cfg.Hours(); !h.Open(holidayMonday) || !h.Open(saturday) {
+		t.Errorf("rige el de siempre: %q", h.String())
+	}
+}
+
+// D-08: con puente y la bandera apagada el refresco arranca en modo solo festivos; encendida, como hoy.
+func TestStartNectarSchedule_ConPuenteLeeSegunLaBandera(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		enabled      bool
+		openSaturday bool // withoutSaturday no publica sábado: solo manda con la bandera encendida
+	}{
+		{"apagada: solo festivos", false, true},
+		{"encendida: el horario de Néctar", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			captureSlog(t)
+			f := newFakeScheduleServer(t, withoutSaturday)
+			cfg := &config.Config{NectarScheduleEnabled: tc.enabled}
+			cache := wireSchedule(cfg)
+			client := nectar.NewClient(f.srv.URL, "clave", "secreto")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if !startNectarSchedule(ctx, cfg, client, cache) {
+				t.Fatal("con puente el refresco arranca")
+			}
+			waitFor(t, "la primera lectura", func() bool { return cache.Version() == "v1" })
+			if got := cfg.Hours().Open(saturday); got != tc.openSaturday {
+				t.Errorf("abierto el sábado = %v, want %v", got, tc.openSaturday)
+			}
+		})
+	}
 }

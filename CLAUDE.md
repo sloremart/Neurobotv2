@@ -357,6 +357,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (migración 044); `TESTING_WHITELIST_PHONES` rige para los entrantes de Néctar con ese contacto (contacto vacío pasa).
 - Horario: `NECTAR_SCHEDULE_ENABLED` (por defecto false) hace que el horario y festivos de Néctar manden en atención y escalación; encenderlo
   solo cuando los tres equipos tengan horario en Néctar (si no, publica «cerrado toda la semana» y las escalaciones se desvían).
+  Apagada y con puente rige la semana de siempre con los festivos de Néctar (`GET /api/bot/schedule`; son de la entidad, no de equipo ni
+  canal, y por eso exigen la clave de CUENTA: la global lee los de todas), sin mirar sus ventanas: nunca «cerrado toda la semana». Si Néctar no
+  responde, sigue la última lista buena con un Warn. Sin puente, sin festivos. El texto de ayuda con el horario sigue igual (`SameAsDefault`).
 - Lo que Neuro pide a Néctar es aditivo: no debe romper a hdg-bot.
 - Informes de asesores (D5, `internal/nectarreports`): con puente, cada `NECTAR_REPORTS_SYNC_MIN` (5) el bot copia tramos
   (`waiting-cycles`, receta §3(a), desde `DataFloor`) y roster (`agents`) a las tablas de la migración 046 y completa las

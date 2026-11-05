@@ -947,3 +947,27 @@ func TestNewLineAnnouncement_CoalescedWithRealWelcome(t *testing.T) {
 		}
 	}
 }
+
+// D-08: los festivos de Néctar sobre la semana de siempre cierran el día y saltan en la próxima apertura,
+// pero la guía sigue mostrando el horario de siempre, letra por letra.
+func TestHolidaysOnly_DecidesButKeepsHelpText(t *testing.T) {
+	cot := time.FixedZone("COT", -5*3600)
+	hours, err := config.DefaultHoursWithHolidays(config.ScheduleSpec{
+		Timezone: config.ScheduleTimezone, Holidays: []string{"2026-11-16"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Schedule: config.NewStaticSchedule(hours)}
+
+	if got, want := helpHoursBlock(cfg), helpHoursBlock(&config.Config{}); got != want {
+		t.Errorf("guía = %q, want la de siempre %q", got, want)
+	}
+	holiday := time.Date(2026, 11, 16, 10, 0, 0, 0, cot)
+	if cfg.Hours().Open(holiday) {
+		t.Error("el festivo cierra el día")
+	}
+	if got, want := cfg.Hours().NextOpen(holiday), time.Date(2026, 11, 17, 7, 0, 0, 0, cot); !got.Equal(want) {
+		t.Errorf("próxima apertura = %v, want %v", got, want)
+	}
+}

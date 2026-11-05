@@ -41,8 +41,8 @@ type scheduleSnapshot struct {
 }
 
 // CachedSchedule guarda la ÚLTIMA lectura válida de Néctar y responde con ella; mientras no haya
-// ninguna —al arrancar, con NECTAR_SCHEDULE_ENABLED apagada o si Néctar nunca contestó— responde
-// con el respaldo (DefaultBusinessHours, el horario de siempre).
+// ninguna —al arrancar, sin puente o si Néctar nunca contestó— responde con el respaldo
+// (DefaultBusinessHours, el horario de siempre).
 //
 // No caduca: un refresco que falle no llama a Set y el bot sigue con lo último bueno. Quedarse
 // sin horario significaría abrir siempre o cerrar siempre. Seguro para uso concurrente: lo leen
@@ -57,7 +57,7 @@ func NewCachedSchedule(fallback BusinessHours) *CachedSchedule {
 	return &CachedSchedule{fallback: fallback}
 }
 
-// Set publica una lectura YA VALIDADA (BusinessHoursFromSchedule). version identifica la
+// Set publica una lectura YA VALIDADA (BusinessHoursFromSchedule o DefaultHoursWithHolidays). version identifica la
 // publicación del lado de Néctar; se guarda para la lectura condicional y los logs.
 func (c *CachedSchedule) Set(hours BusinessHours, version string) {
 	if c == nil {

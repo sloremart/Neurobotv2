@@ -48,9 +48,8 @@ type ScheduleSpec struct {
 // Una lista de ventanas VACÍA es válida y significa CERRADO TODA LA SEMANA (el contrato lo dice
 // así), al revés que el valor cero de BusinessHours: por eso lleva la marca `closed`.
 func BusinessHoursFromSchedule(spec ScheduleSpec) (BusinessHours, error) {
-	if strings.TrimSpace(spec.Timezone) != ScheduleTimezone {
-		return BusinessHours{}, fmt.Errorf("zona horaria %q: se esperaba %q",
-			spec.Timezone, ScheduleTimezone)
+	if err := checkScheduleTimezone(spec.Timezone); err != nil {
+		return BusinessHours{}, err
 	}
 	// Agrupadas por TRAMO (inicio-fin): los días con el mismo horario son UNA ventana, que es lo
 	// que permite decir "Lunes a Viernes de…" en vez de enumerar los cinco días. Néctar publica
@@ -108,6 +107,32 @@ func BusinessHoursFromSchedule(spec ScheduleSpec) (BusinessHours, error) {
 	}
 	bh.raw = describeSpec(bh.windows)
 	return bh.WithHolidays(holidays), nil
+}
+
+// DefaultHoursWithHolidays es el horario de siempre con los festivos de una publicación, para un bot
+// con puente y NECTAR_SCHEDULE_ENABLED apagada: las ventanas publicadas ni se miran, así que Néctar sin
+// horario de equipos no puede dejar al bot cerrado. El festivo decide el día (atención, escalación,
+// próxima apertura), pero el texto de ayuda sigue siendo el de siempre (SameAsDefault). Misma regla
+// que el resto: otra zona o una fecha que no se entienda es error y no se aplica nada.
+func DefaultHoursWithHolidays(spec ScheduleSpec) (BusinessHours, error) {
+	if err := checkScheduleTimezone(spec.Timezone); err != nil {
+		return BusinessHours{}, err
+	}
+	holidays, err := parseScheduleHolidays(spec.Holidays)
+	if err != nil {
+		return BusinessHours{}, err
+	}
+	bh := DefaultBusinessHours().WithHolidays(holidays)
+	bh.holidaysOnly = true
+	return bh, nil
+}
+
+// checkScheduleTimezone rechaza una publicación en otra zona: correría el horario y las fechas.
+func checkScheduleTimezone(timezone string) error {
+	if strings.TrimSpace(timezone) != ScheduleTimezone {
+		return fmt.Errorf("zona horaria %q: se esperaba %q", timezone, ScheduleTimezone)
+	}
+	return nil
 }
 
 // closedSpec es cómo se nombra en los logs el horario sin ninguna ventana.

@@ -31,6 +31,9 @@ type BusinessHours struct {
 	// porque "sin ventanas" ya significa el valor cero (horario por defecto). Lo pone solo
 	// BusinessHoursFromSchedule.
 	closed bool
+	// holidaysOnly marca el horario de siempre con festivos de Néctar y sin su horario semanal
+	// (DefaultHoursWithHolidays): se describe como el de siempre. Lo pone solo esa función.
+	holidaysOnly bool
 }
 
 // businessWindow es una ventana: qué días y entre qué minutos del día.
@@ -74,8 +77,8 @@ func PatientNoticeOpen(t time.Time) bool {
 }
 
 // DefaultBusinessHours es el horario de SIEMPRE de Neuro: L-V 07:00-18:00 y S 07:00-12:00, con
-// el fin exclusivo y sin festivos. Es el respaldo mientras Néctar no publique (o con
-// NECTAR_SCHEDULE_ENABLED apagada), y tiene que decidir —y describirse— EXACTAMENTE como el
+// el fin exclusivo y sin festivos. Es el respaldo mientras Néctar no publique y la semana con
+// NECTAR_SCHEDULE_ENABLED apagada (con puente, más sus festivos), y tiene que decidir —y describirse— EXACTAMENTE como el
 // horario quemado de antes: lo fija handlers.TestBusinessHours_FallbackEqualsLegacy.
 func DefaultBusinessHours() BusinessHours {
 	weekdays := []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday}
@@ -260,10 +263,11 @@ func (b BusinessHours) DescribeEmphasized() string {
 	return b.describe("*%s*")
 }
 
-// SameAsDefault dice si este horario decide y se describe igual que el de siempre (sin festivos).
+// SameAsDefault dice si este horario decide y se describe igual que el de siempre (sin festivos, o
+// con los que se le sumaron sin tocar su semana: holidaysOnly).
 // Lo usa el texto de ayuda, que con el horario de siempre conserva su forma propia.
 func (b BusinessHours) SameAsDefault() bool {
-	return !b.closed && len(b.holidays) == 0 && b.String() == DefaultBusinessHours().String()
+	return !b.closed && (len(b.holidays) == 0 || b.holidaysOnly) && b.String() == DefaultBusinessHours().String()
 }
 
 // OpenedEarlierToday dice si hoy (la fecha civil de t) hubo una apertura a la hora de t o antes:
