@@ -243,3 +243,43 @@ func TestUrgent_NoReporterIsNoop(t *testing.T) {
 		t.Fatal("el 502 sigue siendo error")
 	}
 }
+
+// M-3: un envío abandonado por el plazo del propio bot no prueba que Néctar esté caída: no llegó a
+// tener los 15 s del cliente.
+func TestUrgent_CallerDeadlineIsNotNectarDown(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer srv.Close()
+	defer close(release)
+	c := NewClient(srv.URL, svcKey, reqSecret)
+	u := &urgentCounter{}
+	c.SetUrgentReporter(u, testUrgentLimits)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := c.SendText(ctx, 1234, "hola"); err == nil {
+		t.Fatal("quería el error del plazo")
+	}
+	if got := u.of(monitor.TriggerNectarDown); len(got) != 0 {
+		t.Fatalf("el plazo del bot no es Néctar caído: %+v", got)
+	}
+}
+
+// El timeout del propio cliente sí cuenta: Néctar tuvo su tiempo y no contestó.
+func TestUrgent_ClientTimeoutCountsAsNectarDown(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer srv.Close()
+	defer close(release)
+	c := NewClient(srv.URL, svcKey, reqSecret)
+	c.http.Timeout = 50 * time.Millisecond
+	u := &urgentCounter{}
+	c.SetUrgentReporter(u, testUrgentLimits)
+
+	_, _ = c.SendText(context.Background(), 1234, "hola")
+
+	got := u.of(monitor.TriggerNectarDown)
+	if len(got) != 1 || got[0].detail != "último: timeout" {
+		t.Fatalf("el timeout del cliente cuenta: %+v", got)
+	}
+}

@@ -595,7 +595,11 @@ func (c *Client) exchangeWithHeaders(ctx context.Context, method, path string, i
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.reportDown(ctx, transportClass(err))
+		// Si venció antes el plazo de quien llama, Néctar no llegó a tener el tiempo del cliente: no
+		// prueba que esté caída.
+		if ctx.Err() == nil {
+			c.reportDown(ctx, transportClass(err))
+		}
 		return reply{}, fmt.Errorf("nectar: %s %s: %w", method, path, &transportError{err: err})
 	}
 	defer func() { _ = resp.Body.Close() }()
