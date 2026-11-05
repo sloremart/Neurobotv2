@@ -99,7 +99,9 @@ func (s *memSiesaStore) MarkSiesaPending(_ context.Context, row SiesaPendingRow,
 		row.ID = id
 		s.rows[id] = &row
 		delete(s.outcomes, id)
-		return s.statuses[id] == status, nil
+		same := s.statuses[id] == status
+		s.statuses[id] = status
+		return same, nil
 	}
 	s.nextID++
 	row.ID = s.nextID
@@ -1009,5 +1011,35 @@ func TestSiesaPending_AgentRetryOtherAction_AcksPatient(t *testing.T) {
 	}
 	if got := h.bird.count(siesaStillDownAgentNote); got != 0 {
 		t.Fatalf("no es un reintento de lo mismo: %d notas", got)
+	}
+}
+
+// R2-M2: con SIESA caída, el paciente recibe un acuse por cada cambio de respuesta y ninguno repetido, y
+// el último que oyó coincide con lo que queda pendiente.
+func TestSiesaPending_AckOncePerChangeOfResponse(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("confirm")
+
+	steps := []struct {
+		action                   string
+		confirms, cancels, notes int
+	}{
+		{"cancel", 1, 1, 0},
+		{"cancel", 1, 1, 1},
+		{"confirm", 2, 1, 1},
+		{"confirm", 2, 1, 2},
+	}
+	for i, step := range steps {
+		h.mgr.HandleNotifPendingCommand(h.phone, step.action, h.conv, "APT001", "confirmation", "")
+		confirms, cancels := h.bird.count(siesaConfirmDeferredText), h.bird.count(siesaCancelDeferredText)
+		notes := h.bird.count(siesaStillDownAgentNote)
+		if confirms != step.confirms || cancels != step.cancels || notes != step.notes {
+			t.Fatalf("paso %d (%s): acuses de confirmar=%d, de cancelar=%d, notas=%d; want %+v",
+				i+1, step.action, confirms, cancels, notes, step)
+		}
+	}
+	if rows := h.store.pending(); len(rows) != 1 || rows[0].Action != siesaActionConfirm {
+		t.Fatalf("queda pendiente lo último que oyó: %+v", rows)
 	}
 }

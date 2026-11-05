@@ -147,9 +147,11 @@ func (r *NotificationRepo) queryRows(ctx context.Context, query string) ([]notif
 // fecha y hora de la cita si llegan (la fila puede no tenerlas). Si no hay fila (Resolve falló)
 // inserta una con status, para que la respuesta no se pierda. Volver a marcar una fila ya cerrada
 // (p. ej. el agente reintenta y SIESA vuelve a fallar) reabre la espera y borra su desenlace.
-// alreadyDeferred dice si esa fila ya había quedado pendiente antes con esta misma respuesta
+// alreadyDeferred dice si la última respuesta que dejó pendiente esa fila es esta misma
 // (siesa_pending_since puesto y el mismo status): el paciente ya recibió ese acuse, o al menos se
-// intentó. No consta si el envío salió: saberlo pediría una columna nueva.
+// intentó. No consta si el envío salió: saberlo pediría una columna nueva. Por eso la marca deja en status
+// la respuesta nueva, aunque la fila viniera con otro desenlace (escalated_agent, expired…); nada más lee
+// ese status, y el evento siesa_pending guarda cada respuesta.
 func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notifications.SiesaPendingRow, status string) (alreadyDeferred bool, err error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -173,11 +175,11 @@ func (r *NotificationRepo) MarkSiesaPending(ctx context.Context, row notificatio
 	case err == nil:
 		_, err = tx.ExecContext(ctx,
 			`UPDATE notification_history
-			 SET siesa_pending = ?, siesa_pending_since = NOW(), siesa_attempts = 0,
+			 SET status = ?, siesa_pending = ?, siesa_pending_since = NOW(), siesa_attempts = 0,
 			     siesa_last_error_at = NOW(), siesa_outcome = NULL,
 			     conversation_id = COALESCE(NULLIF(?, ''), conversation_id),
 			     appointment_slot = COALESCE(NULLIF(?, ''), appointment_slot)
-			 WHERE id = ?`, row.Action, row.ConversationID, row.AppointmentSlot, id)
+			 WHERE id = ?`, status, row.Action, row.ConversationID, row.AppointmentSlot, id)
 	}
 	if err != nil {
 		return false, err

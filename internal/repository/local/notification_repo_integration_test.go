@@ -145,6 +145,56 @@ func TestNotificationRepo_SiesaPendingLifecycle(t *testing.T) {
 	}
 }
 
+// Revisión del lote C (R2-M2): un acuse por cada cambio de respuesta y ninguno repetido. Vale también si la
+// fila venía de una escalación (status escalated_agent): el agente reintenta dos veces lo mismo.
+func TestNotificationRepo_MarkSiesaPending_AckOncePerChangeOfResponse(t *testing.T) {
+	db := openLocalTestDB(t)
+	defer db.Close()
+	repo := NewNotificationRepo(db)
+	ctx := context.Background()
+
+	steps := []struct {
+		status string
+		again  bool
+	}{
+		{"confirmed", false},
+		{"cancel_requested", false},
+		{"cancel_requested", true},
+		{"confirmed", false},
+		{"confirmed", true},
+	}
+	for _, resolved := range []string{"confirmed", "escalated_agent"} {
+		t.Run(resolved, func(t *testing.T) {
+			n := time.Now().UnixNano()
+			phone := fmt.Sprintf("+57302%07d", n%10000000)
+			apptID := fmt.Sprintf("APT-SQ-%d", n%1000000)
+			t.Cleanup(func() {
+				_, _ = db.ExecContext(ctx, "DELETE FROM notification_history WHERE phone = ?", phone)
+				_, _ = db.ExecContext(ctx, "DELETE FROM notification_pending WHERE phone = ?", phone)
+			})
+			if err := repo.Upsert(ctx, phone, "confirmation", apptID, "202611041030", "", "msg-1", "", "", false, 0, time.Now().Add(time.Hour)); err != nil {
+				t.Fatalf("upsert: %v", err)
+			}
+			if err := repo.Resolve(ctx, phone, resolved); err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			row := notifications.SiesaPendingRow{Phone: phone, Type: "confirmation", AppointmentID: apptID, Action: "confirm"}
+			for i, step := range steps {
+				if again, err := repo.MarkSiesaPending(ctx, row, step.status); err != nil || again != step.again {
+					t.Fatalf("paso %d (%s) = %v, %v; want %v", i+1, step.status, again, err, step.again)
+				}
+				var status string
+				if err := db.QueryRowContext(ctx, "SELECT status FROM notification_history WHERE phone = ?", phone).Scan(&status); err != nil {
+					t.Fatal(err)
+				}
+				if status != step.status {
+					t.Fatalf("paso %d: status = %q", i+1, status)
+				}
+			}
+		})
+	}
+}
+
 // Sin la fila de Resolve (la BD falló justo ahí) la marca inserta una, para no perder la respuesta.
 func TestNotificationRepo_MarkSiesaPending_InsertsWithoutHistoryRow(t *testing.T) {
 	db := openLocalTestDB(t)

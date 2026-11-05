@@ -73,8 +73,8 @@ type SiesaPendingRow struct {
 // SiesaPendingStore guarda las respuestas pendientes de SIESA (implementado por local.NotificationRepo).
 type SiesaPendingStore interface {
 	// MarkSiesaPending marca como pendiente la última fila del historial de ese teléfono y cita, con
-	// la conversación si llega; si no hay fila (el Resolve falló) inserta una con status.
-	// alreadyDeferred: esa fila ya había quedado pendiente antes con esta misma respuesta (status), así
+	// la conversación si llega, y deja status en esa fila; si no hay fila (el Resolve falló) inserta una.
+	// alreadyDeferred: la última respuesta que dejó pendiente esa fila es esta misma (status), así
 	// que el paciente ya recibió ese acuse (el agente reintenta desde NOTIF_PENDING y SIESA vuelve a
 	// fallar). No prueba que el envío saliera: si no salió, se entera cuando el proceso de fondo aplique.
 	MarkSiesaPending(ctx context.Context, row SiesaPendingRow, status string) (alreadyDeferred bool, err error)
