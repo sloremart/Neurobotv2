@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -254,5 +256,37 @@ func TestSendAndSave_BirdRetriesEvenIfDeadlinePassed(t *testing.T) {
 	}
 	if got := countSent(sender, "text"); got != 2 {
 		t.Fatalf("Bird conserva su reintento: %d envíos", got)
+	}
+}
+
+// downCounter cuenta lo que el cliente de Néctar reporta para el aviso urgente.
+type downCounter struct{ n atomic.Int32 }
+
+func (d *downCounter) Count(context.Context, monitor.UrgentTrigger, int, time.Duration, string) {
+	d.n.Add(1)
+}
+
+// M-3 con el pool real: el abandono por el plazo del turno no cuenta para nectar_down.
+func TestSendAndSave_AbandonedSendDoesNotCountAsNectarDown(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(func() { close(release); srv.Close() })
+	client := nectar.NewClient(srv.URL, "clave", "secreto")
+	counter := &downCounter{}
+	client.SetUrgentReporter(counter, nectar.UrgentLimits{DownCount: 5, DownWindow: time.Minute})
+	bc := bird.NewClientForTest(srv.URL)
+	bc.SetNectar(nectar.NewBridge(client, nil))
+	pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
+	pool.birdClient = bc
+	pool.minSendBudget = 50 * time.Millisecond
+	pool.retryDelay = 5 * time.Second // solo interesa el envío abandonado
+	sess := &session.Session{ID: "s-nectar", PhoneNumber: nectar.SessionKey(1234)}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	pool.sendAndSave(ctx, sess, sess.PhoneNumber, textResult())
+
+	if n := counter.n.Load(); n != 0 {
+		t.Fatalf("el abandono contó %d como Néctar caída", n)
 	}
 }

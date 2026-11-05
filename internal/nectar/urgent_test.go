@@ -244,9 +244,29 @@ func TestUrgent_NoReporterIsNoop(t *testing.T) {
 	}
 }
 
-// M-3: un envío abandonado por el plazo del propio bot no prueba que Néctar esté caída: no llegó a
-// tener los 15 s del cliente.
-func TestUrgent_CallerDeadlineIsNotNectarDown(t *testing.T) {
+// M-3: un envío abandonado por el plazo del turno no prueba que Néctar esté caída: no llegó a tener los
+// 15 s del cliente. Solo ese, marcado por quien envía.
+func TestUrgent_TurnDeadlineIsNotNectarDown(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer srv.Close()
+	defer close(release)
+	c := NewClient(srv.URL, svcKey, reqSecret)
+	u := &urgentCounter{}
+	c.SetUrgentReporter(u, testUrgentLimits)
+
+	ctx, cancel := context.WithTimeout(MarkTurnSend(context.Background()), 50*time.Millisecond)
+	defer cancel()
+	if _, err := c.SendText(ctx, 1234, "hola"); err == nil {
+		t.Fatal("quería el error del plazo")
+	}
+	if got := u.of(monitor.TriggerNectarDown); len(got) != 0 {
+		t.Fatalf("el plazo del turno no es Néctar caído: %+v", got)
+	}
+}
+
+// M-10: cualquier otro plazo corto sí cuenta, como la lectura de contacto de 5 s con Néctar colgada.
+func TestUrgent_OtherCallerDeadlineCountsAsNectarDown(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
 	defer srv.Close()
@@ -257,11 +277,20 @@ func TestUrgent_CallerDeadlineIsNotNectarDown(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := c.SendText(ctx, 1234, "hola"); err == nil {
+	if _, err := c.GetState(ctx, 1234); err == nil {
 		t.Fatal("quería el error del plazo")
 	}
-	if got := u.of(monitor.TriggerNectarDown); len(got) != 0 {
-		t.Fatalf("el plazo del bot no es Néctar caído: %+v", got)
+	if got := u.of(monitor.TriggerNectarDown); len(got) != 1 {
+		t.Fatalf("la lectura colgada cuenta: %+v", got)
+	}
+}
+
+// Un envío del turno que falla sin que venza su plazo cuenta como siempre.
+func TestUrgent_TurnSendCountsIfDeadlineNotReached(t *testing.T) {
+	c, u := statusClient(t, http.StatusBadGateway, "")
+	_, _ = c.SendText(MarkTurnSend(context.Background()), 1234, "hola")
+	if got := u.of(monitor.TriggerNectarDown); len(got) != 1 {
+		t.Fatalf("el 502 cuenta: %+v", got)
 	}
 }
 

@@ -97,6 +97,21 @@ func withoutDownCount(ctx context.Context) context.Context {
 	return context.WithValue(ctx, downCountOffKey{}, true)
 }
 
+// turnSendKey marca el contexto de un envío del turno (ver MarkTurnSend).
+type turnSendKey struct{}
+
+// MarkTurnSend marca el contexto de un envío que lleva el plazo del turno: si ese plazo vence, el bot lo
+// abandonó sin darle a Néctar el tiempo del cliente, y no prueba que esté caída. Un plazo corto de
+// cualquier otra llamada (la lectura de contacto de 5 s) sí cuenta.
+func MarkTurnSend(ctx context.Context) context.Context {
+	return context.WithValue(ctx, turnSendKey{}, true)
+}
+
+// abandonedByTurn dice si el fallo de transporte de esa petición es el abandono por el plazo del turno.
+func abandonedByTurn(ctx context.Context) bool {
+	return ctx.Err() != nil && ctx.Value(turnSendKey{}) != nil
+}
+
 // reportDown cuenta un fallo de Néctar (transporte o 5xx). class es solo la clase («timeout»,
 // «HTTP 503»): ni cuerpos ni URLs viajan al aviso. El apagado del bot (contexto cancelado) no es
 // Néctar caído; el timeout del cliente sí cuenta: Néctar no contestó a tiempo.

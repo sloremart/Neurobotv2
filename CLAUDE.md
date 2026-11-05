@@ -397,7 +397,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   el 1.º que un Retry-After alarga, se descartan (con log) si ya EMPEZÓ un turno posterior de ese teléfono (`beginTurn`, al tomar el
   candado), entregado o no. Los mensajes de un mismo turno no se suprimen entre sí.
   Para `nectar_down` cuentan el envío y el primer reintento (el último no: el aviso salta con los mismos mensajes que con un solo
-  reintento), y un envío abandonado por el plazo del bot no cuenta.
+  reintento), y un envío del turno abandonado por su plazo (`nectar.MarkTurnSend`) no cuenta; cualquier otro plazo corto sí.
   Los envíos del turno por Néctar llevan el plazo que le queda al mensaje (mínimo 5 s, para que un turno que lo gastó aún
   responda); lo abandonado por plazo se reintenta fuera del turno como cualquier fallo, con su clave en duda. Quedan sin plazo propio (15 s del cliente):
   `SendTemplate`, `Available` y los envíos directos con `SendText`.

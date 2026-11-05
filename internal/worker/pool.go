@@ -1839,7 +1839,7 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 			}
 		}
 		slog.Debug("sending_message", "phone", utils.MaskPhone(phone), "type", outMsg.Type(), "conversation_id", convID)
-		sendCtx, sendCancel := context.WithDeadline(context.WithoutCancel(ctx), p.sendDeadline(ctx))
+		sendCtx, sendCancel := context.WithDeadline(nectar.MarkTurnSend(context.WithoutCancel(ctx)), p.sendDeadline(ctx))
 		birdMsgID, err := p.sendMessageCtx(sendCtx, phone, convID, outMsg)
 		sendCancel()
 		if err != nil {
