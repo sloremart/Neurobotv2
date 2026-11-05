@@ -188,7 +188,7 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 			dur := elapsed.Milliseconds()
 			slog.Error(label+" failed", "task", task.Name, "error", err,
 				"duration_ms", dur)
-			attrs := map[string]interface{}{"duration_ms": dur}
+			attrs := map[string]interface{}{"duration_ms": dur, "retryable": errors.Is(err, ErrNothingSent)}
 			if chain != nil {
 				attrs["attempt"] = chain.attempt
 			}

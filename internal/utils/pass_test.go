@@ -65,7 +65,7 @@ func TestRunPass_DefaultTimeout(t *testing.T) {
 }
 
 // La fila no hereda el plazo de la pasada: con la pasada vencida su ctx sigue vivo, acotado a
-// RowTimeout, y se corta con el apagado de la app.
+// rowTimeout, y se corta con el apagado de la app.
 func TestRowContext_OutlivesPassDeadlineButNotShutdown(t *testing.T) {
 	app, shutdown := context.WithCancel(context.Background())
 	defer shutdown()
@@ -79,8 +79,8 @@ func TestRowContext_OutlivesPassDeadlineButNotShutdown(t *testing.T) {
 	if row.Err() != nil {
 		t.Fatalf("la fila heredó el plazo vencido de la pasada: %v", row.Err())
 	}
-	if dl, ok := row.Deadline(); !ok || time.Until(dl) > RowTimeout {
-		t.Errorf("plazo de la fila = %v, want ≤ %v", time.Until(dl), RowTimeout)
+	if dl, ok := row.Deadline(); !ok || time.Until(dl) > rowTimeout {
+		t.Errorf("plazo de la fila = %v, want ≤ %v", time.Until(dl), rowTimeout)
 	}
 	shutdown()
 	if !errors.Is(row.Err(), context.Canceled) {
@@ -97,12 +97,12 @@ func TestMarkContext_IgnoresExpiredParent(t *testing.T) {
 	if mark.Err() != nil {
 		t.Fatalf("la marca heredó la cancelación: %v", mark.Err())
 	}
-	if dl, ok := mark.Deadline(); !ok || time.Until(dl) > MarkTimeout {
-		t.Errorf("plazo de la marca = %v, want ≤ %v", time.Until(dl), MarkTimeout)
+	if dl, ok := mark.Deadline(); !ok || time.Until(dl) > markTimeout {
+		t.Errorf("plazo de la marca = %v, want ≤ %v", time.Until(dl), markTimeout)
 	}
 }
 
-// WithRowTimeout cambia el plazo de las filas; sin él rige RowTimeout.
+// WithRowTimeout cambia el plazo de las filas; sin él rige rowTimeout.
 func TestRowContext_RowTimeoutOverride(t *testing.T) {
 	row, cancel := RowContext(WithRowTimeout(context.Background(), time.Second))
 	defer cancel()
@@ -111,7 +111,7 @@ func TestRowContext_RowTimeoutOverride(t *testing.T) {
 	}
 	row2, cancel2 := RowContext(context.Background())
 	defer cancel2()
-	if dl, _ := row2.Deadline(); time.Until(dl) < RowTimeout-time.Minute {
-		t.Errorf("plazo = %v, want ~%v", time.Until(dl), RowTimeout)
+	if dl, _ := row2.Deadline(); time.Until(dl) < rowTimeout-time.Minute {
+		t.Errorf("plazo = %v, want ~%v", time.Until(dl), rowTimeout)
 	}
 }

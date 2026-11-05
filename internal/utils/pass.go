@@ -12,18 +12,18 @@ import (
 // frente a un MySQL colgado, que sin plazo dejaría el bucle bloqueado para siempre.
 const BackgroundPassTimeout = 2 * time.Minute
 
-// RowTimeout acota el trabajo de UNA fila de una pasada (RowContext). Igual que la cota por mensaje
+// rowTimeout acota el trabajo de UNA fila de una pasada (RowContext). Igual que la cota por mensaje
 // del worker: por encima de la llamada externa sin ctx más larga de una fila (un POST a Bird vence a
 // los 30 s, CloseFeedItems hace varios), para que la fila no se corte antes de terminar el envío.
-const RowTimeout = 2 * time.Minute
+const rowTimeout = 2 * time.Minute
 
-// MarkTimeout acota la escritura que registra un envío que ya salió (MarkContext).
-const MarkTimeout = 10 * time.Second
+// markTimeout acota la escritura que registra un envío que ya salió (MarkContext).
+const markTimeout = 10 * time.Second
 
 // appCtxKey guarda en el ctx de la pasada el ctx del que deriva (el de la app), para RowContext.
 type appCtxKey struct{}
 
-// rowTimeoutKey sobreescribe RowTimeout en un ctx (WithRowTimeout).
+// rowTimeoutKey sobreescribe rowTimeout en un ctx (WithRowTimeout).
 type rowTimeoutKey struct{}
 
 // WithRowTimeout fija en ctx el plazo de las filas que deriven de él (RowContext); para las pruebas.
@@ -51,7 +51,7 @@ func RunPass(ctx context.Context, loop string, timeout time.Duration, pass func(
 	return true
 }
 
-// RowContext da el ctx de UNA fila de la pasada passCtx: acotado a RowTimeout y derivado del ctx de
+// RowContext da el ctx de UNA fila de la pasada passCtx: acotado a rowTimeout y derivado del ctx de
 // la app, no del plazo de la pasada. Una fila que ya empezó termina sus escrituras (un envío queda
 // con su marca) aunque la pasada venza a mitad; sí se corta con el apagado. Fuera de RunPass deriva
 // de passCtx tal cual.
@@ -60,17 +60,17 @@ func RowContext(passCtx context.Context) (context.Context, context.CancelFunc) {
 	if app, ok := passCtx.Value(appCtxKey{}).(context.Context); ok {
 		parent = app
 	}
-	timeout := RowTimeout
+	timeout := rowTimeout
 	if d, ok := passCtx.Value(rowTimeoutKey{}).(time.Duration); ok && d > 0 {
 		timeout = d
 	}
 	return context.WithTimeout(parent, timeout) //nolint:gosec // G118: el cancel se devuelve; lo llama quien recibe la fila.
 }
 
-// MarkContext da un ctx NUEVO y corto (MarkTimeout) para registrar un envío que ya salió, o el
+// MarkContext da un ctx NUEVO y corto (markTimeout) para registrar un envío que ya salió, o el
 // cierre de la fila del WAL de un turno que ya terminó. Se crea DESPUÉS del trabajo y no hereda ni el
 // plazo ni la cancelación de ctx: un envío o un turno lento queda marcado igual, y no se repite en
 // la pasada siguiente ni en el replay.
 func MarkContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), MarkTimeout) //nolint:gosec // G118: el cancel se devuelve; lo llama quien marca.
+	return context.WithTimeout(context.WithoutCancel(ctx), markTimeout) //nolint:gosec // G118: el cancel se devuelve; lo llama quien marca.
 }

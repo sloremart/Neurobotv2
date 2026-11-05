@@ -3,12 +3,14 @@ package session
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	birdpkg "github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
@@ -216,5 +218,49 @@ func TestCheckEscalatedSession_SlowSendStillMarked(t *testing.T) {
 	mgr.runInactivityPass(ctx, deps)
 	if len(bird.internalTexts) != 1 {
 		t.Fatalf("el recordatorio marcado no debe reenviarse: enviados=%d", len(bird.internalTexts))
+	}
+}
+
+// expireDeadlineRecorder anota el plazo con que llega Expire.
+type expireDeadlineRecorder struct {
+	mockEscalationRecorder
+	deadline time.Time
+}
+
+func (r *expireDeadlineRecorder) Expire(ctx context.Context, _ string) error {
+	r.deadline, _ = ctx.Deadline()
+	return nil
+}
+
+// m14: cerrar la escalación de una conversación inactiva no comparte plazo con MarkAbandoned: lo que
+// este tarde no se lo gasta a Expire.
+func TestCheckEscalated_ExpireHasItsOwnDeadline(t *testing.T) {
+	var abandonDeadline time.Time
+	repo := &mockRepo{
+		findEscalatedFn: func(_ context.Context) ([]EscalatedSession, error) {
+			return []EscalatedSession{{
+				ID: "s1", PhoneNumber: "+57300", ConversationID: "conv1",
+				LastPatientMsg: time.Now().Add(-90 * time.Minute),
+			}}, nil
+		},
+		markAbandonedFn: func(ctx context.Context, _ string) error {
+			abandonDeadline, _ = ctx.Deadline()
+			time.Sleep(30 * time.Millisecond)
+			return nil
+		},
+	}
+	mgr := NewSessionManager(repo, 120)
+	rec := &expireDeadlineRecorder{}
+	mgr.SetEscalationRecorder(rec)
+	deps := escalationDeps(&mockInactivityBird{internalSendErr: fmt.Errorf("send: %w", birdpkg.ErrConversationNotActive)})
+	deps.EscalationCloseMin = 0
+
+	mgr.checkEscalatedSessions(context.Background(), deps)
+
+	if abandonDeadline.IsZero() || rec.deadline.IsZero() {
+		t.Fatalf("plazos: abandon=%v expire=%v", abandonDeadline, rec.deadline)
+	}
+	if got := rec.deadline.Sub(abandonDeadline); got < 20*time.Millisecond {
+		t.Errorf("Expire debe empezar su propio plazo tras MarkAbandoned: diferencia = %v", got)
 	}
 }

@@ -1812,12 +1812,13 @@ func TestSendSameDayReminders_RetryUsesScheduledWindow(t *testing.T) {
 					return []domain.Appointment{appt}, nil
 				},
 			}
+			history := &mockNotifHistory{notified: tc.alreadySent}
 			tasks := &Tasks{
 				AppointmentRepo: mockRepo,
 				BirdClient:      birdClient,
 				NotifyManager:   notifications.NewNotificationManager(birdClient, nil, cfg),
 				Cfg:             cfg,
-				NotifHistory:    &mockNotifHistory{notified: tc.alreadySent},
+				NotifHistory:    history,
 			}
 
 			s := NewScheduler(time.Local)
@@ -1839,6 +1840,11 @@ func TestSendSameDayReminders_RetryUsesScheduledWindow(t *testing.T) {
 			}
 			if fetches.Load() != 2 {
 				t.Fatalf("esperaba la corrida y un reintento, got %d lecturas", fetches.Load())
+			}
+			// La cita llegó a la deduplicación: con la franja corrida quedaría fuera y el «no reenvía» del
+			// segundo caso pasaría por otra razón.
+			if got := history.calls.Load(); got != 1 {
+				t.Errorf("consultas de deduplicación = %d, esperaba 1", got)
 			}
 			if sendCount.Load() != tc.expectedSends {
 				t.Errorf("envíos = %d, esperaba %d", sendCount.Load(), tc.expectedSends)

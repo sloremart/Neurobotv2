@@ -359,6 +359,9 @@ var allowedAttrKeys = map[string]bool{
 	// / out_of_hours): se emitía ya y se descartaba en silencio. "team_id" es el equipo de Néctar
 	// sugerido y "grupo" el grupo de CUPS que lo decidió (imagenes / neuro / callcenter). Nada PII.
 	"motivo": true, "gate": true, "team_id": true, "grupo": true,
+	// scheduler/task_failed: qué intento de la cadena fue, si el error era reintentable (nada salió) y
+	// si la cadena se rindió. Se emitían y se descartaban en silencio.
+	"attempt": true, "retryable": true, "retries_exhausted": true,
 }
 
 func sanitizeAttrs(in map[string]interface{}) map[string]interface{} {

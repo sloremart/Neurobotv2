@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/observability"
 )
 
 func TestNewScheduler(t *testing.T) {
@@ -757,5 +759,52 @@ func TestEvaluateTasks_LateStartRetryWindowFromSchedule(t *testing.T) {
 	}
 	if want := time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC); !r.chain.scheduledAt.Equal(want) {
 		t.Errorf("scheduledAt = %v, want %v", r.chain.scheduledAt, want)
+	}
+}
+
+// m15: los atributos de task_failed dicen qué intento fue, si el error era reintentable y si la cadena
+// se rindió. El catch-up y un fallo tras enviar no se reintentan.
+func TestTaskFailed_Attrs(t *testing.T) {
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(failingUntil(1000, &calls))
+	tickUntil(context.Background(), t, s,
+		time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC), time.Date(2026, 3, 16, 8, 0, 0, 0, time.UTC))
+
+	partial := NewScheduler(time.UTC)
+	partial.AddTask(ScheduledTask{
+		Name: "partial", Hour: 7, Minute: 0,
+		Fn: func(_ context.Context) error { return errors.New("send failed after 40 reminders") },
+	})
+	tickUntil(context.Background(), t, partial,
+		time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC), time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC))
+	stop()
+
+	var failed []map[string]interface{}
+	for _, ev := range sink.Events() {
+		if ev.Step == "task_failed" {
+			failed = append(failed, ev.Attrs)
+		}
+	}
+	if want := 1 + taskMaxRetries + 1; len(failed) != want {
+		t.Fatalf("task_failed = %d, want %d", len(failed), want)
+	}
+	for i, attrs := range failed[:1+taskMaxRetries] {
+		if attrs["attempt"] != i || attrs["retryable"] != true {
+			t.Errorf("intento %d: attrs = %v", i, attrs)
+		}
+		if _, exhausted := attrs["retries_exhausted"]; exhausted != (i == taskMaxRetries) {
+			t.Errorf("intento %d: retries_exhausted = %v", i, attrs)
+		}
+	}
+	last := failed[len(failed)-1]
+	if last["retryable"] != false || last["attempt"] != 0 {
+		t.Errorf("fallo tras enviar: attrs = %v", last)
+	}
+	if _, exhausted := last["retries_exhausted"]; exhausted {
+		t.Errorf("un fallo que no se reintenta no agota nada: %v", last)
 	}
 }

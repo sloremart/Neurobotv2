@@ -722,9 +722,12 @@ func (m *SessionManager) checkEscalatedSession(ctx context.Context, deps Inactiv
 				return
 			}
 			if m.escalations != nil {
-				if eerr := m.escalations.Expire(ctx, s.ID); eerr != nil {
+				// Con su propio ctx: un MarkAbandoned lento no le gasta el plazo y deja la escalación abierta.
+				expireCtx, expireCancel := utils.MarkContext(ctx)
+				if eerr := m.escalations.Expire(expireCtx, s.ID); eerr != nil {
 					slog.Warn("escalation expire failed", "session_id", s.ID, "error", eerr)
 				}
+				expireCancel()
 			}
 			if deps.Tracker != nil {
 				deps.Tracker.LogEvent(ctx, s.ID, s.PhoneNumber, "escalation_closed_conversation_inactive", nil)
