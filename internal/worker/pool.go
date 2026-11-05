@@ -38,8 +38,6 @@ const (
 	processMsgTimeout   = 2 * time.Minute // BUG-004: cota por mensaje del ctx desacoplado del apagado
 	// maxSendRetryAfter es la mayor espera de un Retry-After que se respeta; si pide más, no se reintenta.
 	maxSendRetryAfter = 60 * time.Second
-	// sendAttemptBudget es lo que puede tardar un intento de envío (el timeout del cliente de Néctar).
-	sendAttemptBudget = 15 * time.Second
 	// deliveredTurnTTL es cuánto se recuerda el turno entregado: más que la vida de un reintento
 	// (dos esperas de 60 s y tres intentos de 15 s).
 	deliveredTurnTTL = 4 * time.Minute
@@ -1892,10 +1890,10 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 			// (L16: wg-tracked → el shutdown lo espera/cancela). Corre fuera del turno: no retiene el
 			// candado del teléfono, así que un reintento nunca alarga el turno.
 			p.wg.Add(1)
-			go func(m statemachine.OutboundMessage, firstErr error, deadline time.Time) { //nolint:contextcheck // corre fuera del turno, ligado al app-ctx
+			go func(m statemachine.OutboundMessage, firstErr error) { //nolint:contextcheck // corre fuera del turno, ligado al app-ctx
 				defer p.wg.Done()
-				p.retrySend(sess.ID, phone, m, firstErr, turn, deadline)
-			}(outMsg, err, retryDeadline(ctx))
+				p.retrySend(sess.ID, phone, m, firstErr, turn)
+			}(outMsg, err)
 			continue
 		}
 		p.markTurnDelivered(phone, turn)
@@ -2054,7 +2052,10 @@ func logResultEvents(sessionID, phone string, events []statemachine.Event) {
 // sendDeadline es el plazo de un envío del turno: el que le queda al mensaje, con un mínimo para que un
 // turno que ya lo gastó aún mande su respuesta.
 func (p *MessageWorkerPool) sendDeadline(ctx context.Context) time.Time {
-	deadline := retryDeadline(ctx)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(processMsgTimeout)
+	}
 	if floor := time.Now().Add(p.minSendBudget); deadline.Before(floor) {
 		return floor
 	}
@@ -2108,14 +2109,14 @@ func (p *MessageWorkerPool) sendMessageCtx(ctx context.Context, phone, conversat
 // a Conversations API failure. Launched as a goroutine from sendAndSave.
 //
 // Bird: un reintento a retryDelay, nada más (cobra cada POST, y sendWithRetry ya insiste). Néctar:
-// hasta nectar.MaxSendRetries (B-04, D-06), con la misma clave en duda (la pone el cliente). Lo que
-// va más allá del reintento de siempre a retryDelay no corre si no cabe antes de deadline.
+// hasta nectar.MaxSendRetries (B-04, D-06), con la misma clave en duda (la pone el cliente). Corre fuera
+// del candado, así que no depende del plazo del turno.
 //
 // El orden en Néctar (I-1): se compara por turno, no por hora. Un reintento se descarta si ya salió un
 // mensaje de un turno POSTERIOR: esa respuesta vieja llegaría encima de la vigente. Los mensajes de un
 // mismo turno no se suprimen entre sí, y el éxito de un reintento viejo no afecta a uno más nuevo.
 // Solo se mira antes de cada intento: uno ya en vuelo puede cruzarse con el primer envío del turno nuevo.
-func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.OutboundMessage, err error, turn uint64, deadline time.Time) {
+func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.OutboundMessage, err error, turn uint64) {
 	for attempt := 1; ; attempt++ {
 		wait, retry := p.sendRetryWait(sessionID, phone, attempt, err)
 		if !retry {
@@ -2126,12 +2127,6 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 				"attempt", attempt,
 				"error", err,
 			)
-			return
-		}
-		extra := attempt > 1 || wait > p.retryDelay
-		if extra && time.Now().Add(wait+sendAttemptBudget).After(deadline) {
-			slog.Error("send message retry abandoned: no cabe en el plazo del mensaje",
-				"phone", utils.MaskPhone(phone), "type", msg.Type(), "attempt", attempt, "error", err)
 			return
 		}
 		// L16: sleep cancelable por el app-ctx para no re-entregar un mensaje tras el shutdown.
@@ -2145,11 +2140,9 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 				"phone", utils.MaskPhone(phone), "type", msg.Type(), "attempt", attempt)
 			return
 		}
-		// Ligado al app-ctx: el apagado corta el intento en vuelo en vez de esperarlo.
-		attemptCtx, attemptCancel := context.WithTimeout(p.ctx, sendAttemptBudget)
-		_, err = p.sendMessageCtx(attemptCtx, phone, "", msg)
-		attemptCancel()
-		if err == nil {
+		// Ligado al app-ctx: el apagado corta el intento en vuelo en vez de esperarlo. El tope de cada
+		// intento es el timeout del cliente.
+		if _, err = p.sendMessageCtx(p.ctx, phone, "", msg); err == nil {
 			p.markTurnDelivered(phone, turn)
 			slog.Info(
 				"send_message_retry_succeeded",
@@ -2206,15 +2199,6 @@ func (p *MessageWorkerPool) laterTurnDelivered(phone string, turn uint64) bool {
 	p.deliveredMu.Lock()
 	defer p.deliveredMu.Unlock()
 	return p.deliveredTurns[phone].turn > turn
-}
-
-// retryDeadline es hasta cuándo pueden correr los reintentos extra de un envío del turno: el plazo del
-// mensaje (processMsgTimeout).
-func retryDeadline(ctx context.Context) time.Time {
-	if d, ok := ctx.Deadline(); ok {
-		return d
-	}
-	return time.Now().Add(processMsgTimeout)
 }
 
 // HandleAgentTakeover pausa el bot cuando un agente humano responde manualmente una conversación

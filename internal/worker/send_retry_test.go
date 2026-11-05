@@ -233,26 +233,30 @@ func TestSendRetryWait_RetryAfterLimit(t *testing.T) {
 	}
 }
 
-// Los reintentos extra no corren si no caben en el plazo del mensaje; el de siempre sí.
-func TestRetrySend_ExtraRetryMustFitDeadline(t *testing.T) {
+// M-4: los reintentos corren fuera del candado y no dependen del plazo del turno: un turno largo, que
+// ya casi lo gastó, tiene los dos igual.
+func TestRetrySend_BothRetriesRunInLongTurns(t *testing.T) {
 	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway))
-	ctx, cancel := context.WithTimeout(context.Background(), sendAttemptBudget/2)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	pool.sendAndSave(ctx, sess, sess.PhoneNumber, textResult())
 
-	waitAttempts(t, f, 2, 200*time.Millisecond)
+	waitAttempts(t, f, 3, 200*time.Millisecond)
 }
 
-// Lo mismo con el 429: esperar su Retry-After no cabe, y no se reintenta antes de lo que pidió.
-func TestRetrySend_LongRetryAfterMustFitDeadline(t *testing.T) {
-	pool, f, sess := newNectarRetryPool(t, rateLimited("30"))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// Lo mismo con el 429: su Retry-After se respeta aunque pase del plazo del turno.
+func TestRetrySend_RetryAfterRunsPastTurnDeadline(t *testing.T) {
+	pool, f, sess := newNectarRetryPool(t, rateLimited("1"), status(http.StatusCreated))
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	pool.sendAndSave(ctx, sess, sess.PhoneNumber, textResult())
 
-	waitAttempts(t, f, 1, 150*time.Millisecond)
+	got := waitAttempts(t, f, 2, 50*time.Millisecond)
+	if d := got[1].at.Sub(got[0].at); d < 900*time.Millisecond {
+		t.Fatalf("el reintento salió a %v, antes del Retry-After", d)
+	}
 }
 
 // I-1, Néctar cae y vuelve en un turno A+B: llegan los dos, aunque A salga antes en su reintento.
