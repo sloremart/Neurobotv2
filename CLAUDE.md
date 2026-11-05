@@ -406,7 +406,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   escalación vigente (−2 min de tolerancia) se ignora.
 - Scheduler: una tarea que falla ANTES de enviar (`ErrNothingSent`) se reintenta cada 5 min, máx. 6 veces y nunca
   después de la hora programada + 30 min; un fallo tras un envío no se reintenta (cada envío se cobra). El
-  reintento de `same_day_reminders_HH` calcula su franja desde la hora programada, no desde la suya.
+  reintento de `same_day_reminders_HH` calcula su franja desde la hora programada, no desde la suya. Un salto del
+  reloj que se come el minuto de una tarea: corre en el primer tic, hasta 10 min tarde y una vez al día, si su
+  política de catch-up lo permite a esa hora (nunca `CatchupNever`). Lo programado antes del arranque es de
+  `RunMissedTasks`, no de este arranque tardío.
 - Bucles de fondo con MySQL: plazo por pasada (2 min) que solo impide empezar la fila siguiente; cada fila tiene su
   propio ctx (2 min) y la marca de un envío ya hecho usa uno nuevo (`utils.MarkContext`).
 - Límite de la API interna: la IP del cliente sale de la última entrada de X-Forwarded-For solo si la conexión viene

@@ -186,8 +186,8 @@ func TestEvaluateTasks_PreventDoubleExecution(t *testing.T) {
 		t.Error("expected second call within same minute to be deduped")
 	}
 
-	// Third call with old lastRun entry → should execute again
-	lastRun["once-per-minute"] = now.Add(-3 * time.Minute)
+	// Third call with lastRun from another day → should execute again
+	lastRun["once-per-minute"] = now.AddDate(0, 0, -1)
 	executed3 := s.evaluateTasks(context.Background(), now, lastRun)
 	if len(executed3) != 1 {
 		t.Error("expected execution after dedup window passed")
@@ -372,11 +372,16 @@ func failingUntil(fails int32, calls *atomic.Int32) ScheduledTask {
 	}
 }
 
+// tickState guarda el mapa de cada scheduler de prueba: varias llamadas a tickUntil son el MISMO
+// proceso, como en Start (un mapa nuevo haría ver una corrida de hoy como pendiente, D-14).
+var tickState sync.Map
+
 // tickUntil evalúa minuto a minuto desde `from` hasta `to` (inclusive), drenando la tarea en vuelo
 // tras cada tick para que su resultado (y el reintento que programe) quede registrado.
 func tickUntil(ctx context.Context, t *testing.T, s *Scheduler, from, to time.Time) {
 	t.Helper()
-	lastRun := make(map[string]time.Time)
+	state, _ := tickState.LoadOrStore(s, make(map[string]time.Time))
+	lastRun := state.(map[string]time.Time)
 	for now := from; !now.After(to); now = now.Add(time.Minute) {
 		s.evaluateTasks(ctx, now, lastRun)
 		if !s.Wait(2 * time.Second) {
@@ -586,5 +591,171 @@ func TestRetry_HungAttemptEndingOutsideWindowIsNotRetried(t *testing.T) {
 	}
 	if r, ok := s.retries[task.Name]; !ok || !r.due.Equal(scheduled.Add(taskRetryInterval)) || r.chain.attempt != 1 {
 		t.Errorf("retry = %+v, want attempt 1 due %v", r, scheduled.Add(taskRetryInterval))
+	}
+}
+
+// --- arranque tardío tras un salto del reloj (D-14) ---
+
+// reminderLate es una tarea de las 07:00 con la política dada; calls cuenta sus ejecuciones.
+func reminderLate(mode CatchupMode, calls *atomic.Int32) ScheduledTask {
+	return ScheduledTask{
+		Name: "late", Hour: 7, Minute: 0, Catchup: mode,
+		Fn: func(_ context.Context) error {
+			calls.Add(1)
+			return nil
+		},
+	}
+}
+
+// ticks evalúa en cada minuto dado (del 16-mar-2026 a las 06:00 + m) sobre el mismo mapa y drena.
+func ticks(t *testing.T, s *Scheduler, lastRun map[string]time.Time, minutes ...int) {
+	t.Helper()
+	base := time.Date(2026, 3, 16, 6, 0, 0, 0, time.UTC)
+	for _, m := range minutes {
+		s.evaluateTasks(context.Background(), base.Add(time.Duration(m)*time.Minute), lastRun)
+		if !s.Wait(2 * time.Second) {
+			t.Fatal("task did not drain")
+		}
+	}
+}
+
+// El reloj salta por encima del minuto programado: la tarea corre en el primer tic posterior, una sola
+// vez aunque sigan los tics del tope, y no vuelve a correr ni a su hora tras un retroceso del reloj.
+func TestEvaluateTasks_ClockJump_RunsLateOnce(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(reminderLate(CatchupAlways, &calls))
+	lastRun := map[string]time.Time{}
+
+	ticks(t, s, lastRun, 59, 61) // 06:59 y 07:01: el minuto 07:00 no existió
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1 (arranque tardío)", got)
+	}
+	ticks(t, s, lastRun, 62, 65, 70, 60, 61) // el tope, y un retroceso del reloj hasta las 07:00
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1: no corre dos veces el mismo día", got)
+	}
+}
+
+// Justo en el tope corre; un minuto después ya no, ni en los tics siguientes.
+func TestEvaluateTasks_LateStartCap(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		minute int
+		want   int32
+	}{
+		{"a los 10 min corre", 70, 1},
+		{"a los 11 min no corre", 71, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewScheduler(time.UTC)
+			var calls atomic.Int32
+			s.AddTask(reminderLate(CatchupAlways, &calls))
+			ticks(t, s, map[string]time.Time{}, 59, tc.minute)
+			if got := calls.Load(); got != tc.want {
+				t.Errorf("calls = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// El arranque tardío sigue la política de catch-up (L14); a su minuto exacto la tarea corre siempre.
+func TestEvaluateTasks_LateStartRespectsCatchup(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mode   CatchupMode
+		hour   int
+		minute int // minutos desde las 06:00 del tic tardío
+		want   int32
+	}{
+		{"CatchupNever no arranca tarde", CatchupNever, 7, 62, 0},
+		{"CatchupDaytime en la ventana diurna", CatchupDaytime, 7, 62, 1},
+		{"CatchupDaytime fuera de la ventana", CatchupDaytime, 6, 2, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewScheduler(time.UTC)
+			var calls atomic.Int32
+			task := reminderLate(tc.mode, &calls)
+			task.Hour = tc.hour
+			s.AddTask(task)
+			ticks(t, s, map[string]time.Time{}, -1, tc.minute)
+			if got := calls.Load(); got != tc.want {
+				t.Errorf("calls = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(reminderLate(CatchupNever, &calls))
+	ticks(t, s, map[string]time.Time{}, 60)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("a su minuto exacto CatchupNever corre: calls = %d", got)
+	}
+}
+
+// El filtro de días vale también para el arranque tardío.
+func TestEvaluateTasks_LateStartRespectsWeekday(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	task := reminderLate(CatchupAlways, &calls)
+	task.Weekdays = []time.Weekday{time.Sunday} // el 16-mar-2026 es lunes
+	s.AddTask(task)
+	ticks(t, s, map[string]time.Time{}, 61)
+	if got := calls.Load(); got != 0 {
+		t.Errorf("calls = %d, want 0", got)
+	}
+}
+
+// Un reinicio minutos después de la hora no es un salto del reloj: lo programado antes del arranque ya
+// lo decidió RunMissedTasks (corrió, ya había corrido o su política lo impide), así que el primer tic
+// no lo relanza. Lo que todavía no tocaba al arrancar corre normal, también si el reloj salta.
+func TestStartLastRun_RestartDoesNotRerun(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(reminderLate(CatchupAlways, &calls))
+
+	restart := time.Date(2026, 3, 16, 7, 3, 0, 0, time.UTC)
+	lastRun := s.startLastRun(restart)
+	ticks(t, s, lastRun, 64, 65)
+	if got := calls.Load(); got != 0 {
+		t.Errorf("calls = %d, want 0 tras un reinicio posterior a la hora", got)
+	}
+
+	lastRun = s.startLastRun(restart.Add(-10 * time.Minute)) // 06:53
+	ticks(t, s, lastRun, 59, 61)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1: arrancó antes de la hora", got)
+	}
+
+	// Al día siguiente lo sembrado ya no cuenta.
+	lastRun = s.startLastRun(restart)
+	s.evaluateTasks(context.Background(), restart.Add(24*time.Hour-3*time.Minute), lastRun)
+	if !s.Wait(2 * time.Second) {
+		t.Fatal("task did not drain")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2: corre a su hora al día siguiente", got)
+	}
+}
+
+// El reintento (D-03) de un arranque tardío cuenta su ventana desde la hora programada, no desde el tic.
+func TestEvaluateTasks_LateStartRetryWindowFromSchedule(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(failingUntil(100, &calls))
+	lastRun := map[string]time.Time{}
+	ticks(t, s, lastRun, 59, 70) // arranque tardío a las 07:10 que falla
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1", got)
+	}
+	s.retryMu.Lock()
+	r, ok := s.retries["reminders"]
+	s.retryMu.Unlock()
+	if !ok {
+		t.Fatal("el fallo debía programar un reintento")
+	}
+	if want := time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC); !r.chain.scheduledAt.Equal(want) {
+		t.Errorf("scheduledAt = %v, want %v", r.chain.scheduledAt, want)
 	}
 }

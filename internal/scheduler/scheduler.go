@@ -77,6 +77,10 @@ const (
 	CatchupNever                      // nunca recupera (IVR: solo a su hora, tras el WA matutino)
 )
 
+// lateStartMaxDelay es cuánto después de su hora puede arrancar todavía una tarea cuyo minuto no vio
+// ningún tic: un salto del reloj de pared lo salta (D-14). Más tarde ya no se lanza.
+const lateStartMaxDelay = 10 * time.Minute
+
 // Ventana diurna permitida para el catch-up de notificaciones al paciente [start, end) (L14).
 const (
 	catchupDaytimeStartHour = 7
@@ -284,7 +288,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	lastRun := make(map[string]time.Time)
+	lastRun := s.startLastRun(time.Now().In(s.timezone))
 
 	for {
 		select {
@@ -296,6 +300,25 @@ func (s *Scheduler) Start(ctx context.Context) {
 			s.evaluateTasks(ctx, now, lastRun)
 		}
 	}
+}
+
+// startLastRun arma el mapa de lastRun al arrancar: lo programado antes de este momento cuenta como
+// visto hoy. Eso lo decide RunMissedTasks con el last-run persistido (corrió, ya había corrido o su
+// política lo impide); sin esto, el primer tic tras un reinicio lo tomaría por un minuto saltado y
+// volvería a enviar lo ya enviado.
+func (s *Scheduler) startLastRun(now time.Time) map[string]time.Time {
+	lastRun := make(map[string]time.Time, len(s.tasks))
+	for _, task := range s.tasks {
+		if !now.Before(task.scheduledOn(now)) {
+			lastRun[task.Name] = now
+		}
+	}
+	return lastRun
+}
+
+// scheduledOn es la hora programada de la tarea en la fecha civil de at.
+func (t ScheduledTask) scheduledOn(at time.Time) time.Time {
+	return time.Date(at.Year(), at.Month(), at.Day(), t.Hour, t.Minute, 0, 0, at.Location())
 }
 
 // RunMissedTasks checks if any tasks should have run today but haven't.
@@ -363,7 +386,11 @@ func (s *Scheduler) RunMissedTasks(ctx context.Context) {
 }
 
 // evaluateTasks checks all registered tasks against the given time and runs matching ones.
-// lastRun is updated in place to prevent double execution within the same minute.
+// lastRun is updated in place to prevent double execution.
+//
+// Una tarea toca si ya pasó su hora, hasta lateStartMaxDelay después, y hoy no se lanzó (D-14). Pasado
+// su minuto exacto es un arranque tardío, que sigue la política de catch-up (L14): CatchupNever solo
+// corre a su minuto.
 func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun map[string]time.Time) []string {
 	var executed []string
 
@@ -376,7 +403,9 @@ func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun ma
 	}
 
 	for _, task := range s.tasks {
-		if now.Hour() != task.Hour || now.Minute() != task.Minute {
+		scheduled := task.scheduledOn(now)
+		delay := now.Sub(scheduled)
+		if delay < 0 || delay > lateStartMaxDelay {
 			continue
 		}
 
@@ -394,16 +423,31 @@ func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun ma
 			}
 		}
 
-		// Prevent double execution within same minute
+		// Prevent double execution: una vez al día, con la guarda de 2 min para el cambio de fecha.
 		key := task.Name
-		if last, ok := lastRun[key]; ok && now.Sub(last) < 2*time.Minute {
+		if last, ok := lastRun[key]; ok && (sameDate(last, now) || now.Sub(last) < 2*time.Minute) {
 			continue
+		}
+		label := "scheduler task"
+		if delay >= time.Minute {
+			if !catchupAllowed(task.Catchup, now.Hour()) {
+				continue
+			}
+			label = "scheduler late start"
+			slog.Warn("scheduler: tarea lanzada tarde, su minuto no tuvo tic", "task", task.Name, "scheduled_at", scheduled)
 		}
 		lastRun[key] = now
 		executed = append(executed, task.Name)
 
-		s.runTask(ctx, task, now, "scheduler task", &retryChain{scheduledAt: now.Truncate(time.Minute)})
+		s.runTask(ctx, task, now, label, &retryChain{scheduledAt: scheduled})
 	}
 
 	return executed
+}
+
+// sameDate dice si dos instantes caen en la misma fecha civil, en la zona de b.
+func sameDate(a, b time.Time) bool {
+	ay, am, ad := a.In(b.Location()).Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }
