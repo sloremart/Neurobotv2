@@ -506,8 +506,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   N 2, No. 1) son silencio si el catálogo no los menciona, y si lo menciona y es otro nivel, contradicción; al
   DESCARTAR una lectura (`compareReadNames`) cualquier diferencia de los dos es duda. PROCEDIMIENTO, EXAMEN y ESTUDIO
   no son una consulta: se comparan, salvo si el nombre escribe la modalidad («ESTUDIO DE RM CEREBRO» = «RM CEREBRO»).
-  OBLICUAS sí distingue (873444); «3 PROYECCIONES» es ruido al asignar y se compara al descartar; EXTREMIDADES solo es
-  ruido en la EMG y la NC; un doppler sin decir VASOS encaja también con el de vasos, y si encajan dos es duda.
+  OBLICUAS sí distingue (873444, de extremidades; en una columna es ruido al asignar); «3 PROYECCIONES» es ruido al
+  asignar y se compara al descartar; EXTREMIDADES solo es ruido en EMG, NC y potenciales; un doppler sin decir VASOS encaja también con el de vasos, y si encajan dos es duda.
   Guarda: un CUPS CON código
   cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
   vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos

@@ -5,6 +5,30 @@ import (
 	"testing"
 )
 
+// Lo que el catálogo no distingue no es duda al asignar: 873444 es solo de extremidades, así que las oblicuas de
+// una columna no cambian de código; y los potenciales se facturan por extremidad como la EMG. Al descartar una
+// lectura sí se comparan.
+func TestResolveCupsByName_WhatTheCatalogDoesNotDistinguish(t *testing.T) {
+	catalog := []CupsCandidate{
+		{"871040", "RADIOGRAFIA DE COLUMNA LUMBOSACRA"},
+		{"873444", "RADIOGRAFÍAS EN EXTREMIDADES PROYECCIONES ADICIONALES: STRESS, TUNEL, OBLICUAS  (54)"},
+		{"891530", "POTENCIALES EVOCADOS SOMATOSENSORIALES (275)"},
+	}
+	for read, want := range map[string]string{
+		"RX COLUMNA LUMBAR OBLICUAS":                          "871040",
+		"RX COLUMNA LUMBOSACRA AP LAT Y OBLICUAS":             "871040",
+		"POTENCIALES EVOCADOS SOMATOSENSORIALES EXTREMIDADES": "891530",
+	} {
+		got := acceptedByAdversary(read, catalog, false)
+		if len(got) == 0 || got[0] != want {
+			t.Errorf("%q: %v, quiero %s", read, got, want)
+		}
+	}
+	if got := compareReadNames("RX COLUMNA LUMBAR OBLICUAS", "RX COLUMNA LUMBAR"); got == CupsNamesEqual {
+		t.Error("al descartar, las oblicuas no se pierden")
+	}
+}
+
 // Revisión del lote C, ronda 3 (R3-M2): el ruido de la orden se aplicaba fuera de su caso.
 func TestCompareReadNames_NoiseOnlyInItsCase(t *testing.T) {
 	cases := []struct {
@@ -14,7 +38,7 @@ func TestCompareReadNames_NoiseOnlyInItsCase(t *testing.T) {
 		// El catálogo tiene código propio para las proyecciones adicionales (873444).
 		{"oblicuas", "RX RODILLA OBLICUAS", "RX RODILLA", CupsNamesDiffer},
 		{"oblicua frente a lateral", "RX RODILLA LATERAL", "RX RODILLA OBLICUA", CupsNamesDiffer},
-		{"oblicuas en columna", "RX COLUMNA LUMBAR OBLICUAS", "RX COLUMNA LUMBAR AP Y LATERAL", CupsNamesDiffer},
+		{"oblicuas en columna", "RX COLUMNA LUMBAR OBLICUAS", "RX COLUMNA LUMBAR AP Y LATERAL", CupsNamesByPrefix},
 		{"proyecciones al descartar", "RX RODILLA PROYECCIONES", "RX RODILLA", CupsNamesByPrefix},
 		// La región en silencio es duda, también donde EXTREMIDAD era ruido.
 		{"doppler", "ECO DOPPLER", "ECO DOPPLER MIEMBROS", CupsNamesByPrefix},

@@ -111,8 +111,8 @@ var orderNoise = map[string]bool{
 	"LATERAL": true, "LAT": true, "PROYECCIONES": true, "VISTAS": true,
 }
 
-// limbWords dicen dónde se hace la EMG o la NC («4 EXTREMIDADES»), que el catálogo factura por extremidad o
-// nervio: en esas dos no necesitan par. En las demás modalidades son una región (ECO DOPPLER MIEMBROS).
+// limbWords dicen dónde se hacen la EMG, la NC o los potenciales («4 EXTREMIDADES»), que el catálogo factura por
+// extremidad o nervio: en esos no necesitan par. En lo demás son una región (ECO DOPPLER MIEMBROS).
 var limbWords = map[string]bool{"EXTREMIDAD": true, "EXTREMIDADES": true}
 
 // retrievalOnlyNoise no cuentan al buscar candidatos, aunque sí al compararlos: son los que podrían quedarse
@@ -614,8 +614,13 @@ func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
 		}
 	}
 	readContent := contentWords(canonRead, orderNoise)
-	if namesLimbStudy(canonRead) {
+	readWords := strings.Fields(canonRead)
+	if namesLimbStudy(readWords) {
 		readContent = slices.DeleteFunc(readContent, func(w string) bool { return limbWords[w] })
+	}
+	// 873444 es solo de extremidades: en una columna, el catálogo no distingue las oblicuas.
+	if slices.Contains(readWords, "COLUMNA") {
+		readContent = slices.DeleteFunc(readContent, func(w string) bool { return w == "OBLICUA" || w == "OBLICUAS" })
 	}
 	if !allWordsIn(readContent, distinctiveWords(canonCand), prefixWord) {
 		return false
@@ -629,10 +634,10 @@ func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
 	return allWordsIn(candCore, distinctiveWords(canonRead), prefixWord)
 }
 
-// namesLimbStudy dice si el nombre es una EMG o una NC.
-func namesLimbStudy(canon string) bool {
-	return slices.ContainsFunc(strings.Fields(canon), func(w string) bool {
-		return w == "ELECTROMIOGRAFIA" || w == "NEUROCONDUCCION"
+// namesLimbStudy dice si el nombre es de los que se facturan por extremidad o nervio: EMG, NC y potenciales.
+func namesLimbStudy(words []string) bool {
+	return slices.ContainsFunc(words, func(w string) bool {
+		return w == "ELECTROMIOGRAFIA" || w == "NEUROCONDUCCION" || w == "POTENCIALES"
 	})
 }
 
