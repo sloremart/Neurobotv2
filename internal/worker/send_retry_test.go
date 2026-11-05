@@ -460,3 +460,34 @@ func TestRetrySend_Exhausted5xxLeavesNoRateLimitEvent(t *testing.T) {
 		t.Fatalf("un 502 no es un límite: %+v", e)
 	}
 }
+
+// M-7: un fallo que no se reintenta (un 4xx no permanente) ya dejó su ERROR al fallar el envío: no
+// registra «retry failed» sin haber reintentado, que sería un segundo ERROR hacia Telegram.
+func TestRetrySend_NotRetryableDoesNotLogRetryFailed(t *testing.T) {
+	logged := captureSendLogs(t)
+	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadRequest))
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, textResult())
+	waitAttempts(t, f, 1, 100*time.Millisecond)
+
+	out := logged.String()
+	if strings.Contains(out, "send message retry failed") {
+		t.Fatalf("no hubo reintento: %s", out)
+	}
+	if strings.Count(out, "level=ERROR") != 1 || !strings.Contains(out, "send retry skipped") {
+		t.Fatalf("un solo ERROR y el aviso de que no se reintenta: %s", out)
+	}
+}
+
+// Agotar reintentos sí es «retry failed».
+func TestRetrySend_ExhaustedLogsRetryFailed(t *testing.T) {
+	logged := captureSendLogs(t)
+	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway))
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, textResult())
+	waitAttempts(t, f, 3, 100*time.Millisecond)
+
+	if out := logged.String(); !strings.Contains(out, "send message retry failed") {
+		t.Fatalf("falta el log: %s", out)
+	}
+}

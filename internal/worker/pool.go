@@ -2119,6 +2119,12 @@ func (p *MessageWorkerPool) sendMessageCtx(ctx context.Context, phone, conversat
 func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.OutboundMessage, err error, turn uint64) {
 	for attempt := 1; ; attempt++ {
 		wait, retry := p.sendRetryWait(sessionID, phone, attempt, err)
+		if !retry && attempt == 1 {
+			// sendAndSave ya dejó el ERROR de este fallo, y no hubo reintento.
+			slog.Warn("send retry skipped (not retryable)",
+				"phone", utils.MaskPhone(phone), "type", msg.Type(), "error", err)
+			return
+		}
 		if !retry {
 			slog.Error(
 				"send message retry failed",
