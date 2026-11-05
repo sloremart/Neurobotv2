@@ -45,11 +45,12 @@ func TestShutdownBudgetFitsGracePeriod(t *testing.T) {
 		httpShutdown = 10 * time.Second
 		audits       = 10 * time.Second
 		gracePeriod  = 75 * time.Second
+		poolDrain    = 15 * time.Second // el drenado de Pool.Stop
 	)
 	if total := httpShutdown + workersStopTimeout + audits; total > gracePeriod-5*time.Second {
 		t.Fatalf("el apagado suma %v; no cabe en %v", total, gracePeriod)
 	}
-	if responsesWaitTimeout >= workersStopTimeout {
-		t.Fatal("el drenado necesita tiempo después de esperar las respuestas")
+	if responsesWaitTimeout+poolDrain > workersStopTimeout {
+		t.Fatalf("esperar las respuestas (%v) y drenar (%v) no cabe en %v", responsesWaitTimeout, poolDrain, workersStopTimeout)
 	}
 }

@@ -5,7 +5,7 @@ services:
       dockerfile: docker/Dockerfile
     container_name: neuro_bot
     restart: unless-stopped
-    # El apagado ordenado de main.go suma hasta 65 s (HTTP 10 + respuestas y workers 45, a la par del
+    # El apagado ordenado de main.go suma hasta 67 s (HTTP 10 + respuestas y workers 47, a la par del
     # scheduler 20, + auditorías SIESA 10; cmd/server/shutdown.go); con los 10 s por defecto Docker
     # mata el proceso a mitad de un mensaje.
     stop_grace_period: 75s

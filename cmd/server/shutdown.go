@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Plazos del apagado. El peor caso suma 65 s: HTTP (10) + workers (workersStopTimeout, a la par del
+// Plazos del apagado. El peor caso suma 67 s: HTTP (10) + workers (workersStopTimeout, a la par del
 // scheduler, que son 20) + auditorías SIESA (10). Cabe en el stop_grace_period de 75 s del compose: si
 // cambia, cambiar también el comentario de allá.
 const (
@@ -14,10 +14,11 @@ const (
 	// 30 s esperando el candado del teléfono (notifLockTimeout). Una respuesta cortada en esa espera no
 	// se pierde del todo, porque el pending sigue en la BD y se restaura al arrancar (el paciente puede
 	// volver a pulsar y el IVR lo sigue viendo). Cortada después de sacar el pending, la pulsación se
-	// pierde y solo queda el error en el log.
+	// pierde; queda el error en el log solo si la respuesta alcanza a fallar antes de que salga el proceso,
+	// y si no, no queda ni eso.
 	responsesWaitTimeout = 32 * time.Second
-	// workersStopTimeout acota las respuestas más el Stop del pool, que drena hasta 15 s.
-	workersStopTimeout = 45 * time.Second
+	// workersStopTimeout acota las respuestas más el Stop del pool, que drena hasta 15 s: 32 + 15.
+	workersStopTimeout = 47 * time.Second
 )
 
 // stopWorkers para el pool DESPUÉS de esperar las respuestas a plantillas en vuelo, en ese orden y bajo
