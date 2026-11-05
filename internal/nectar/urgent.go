@@ -88,11 +88,20 @@ func parseRetryAfter(h string) time.Duration {
 	return 0
 }
 
+// downCountOffKey marca el contexto de un intento que no cuenta para TriggerNectarDown.
+type downCountOffKey struct{}
+
+// withoutDownCount es el contexto del último reintento de un envío: un mensaje fallido cuenta su envío
+// y su primer reintento, y así el umbral sigue saltando con el mismo número de mensajes.
+func withoutDownCount(ctx context.Context) context.Context {
+	return context.WithValue(ctx, downCountOffKey{}, true)
+}
+
 // reportDown cuenta un fallo de Néctar (transporte o 5xx). class es solo la clase («timeout»,
 // «HTTP 503»): ni cuerpos ni URLs viajan al aviso. El apagado del bot (contexto cancelado) no es
 // Néctar caído; el timeout del cliente sí cuenta: Néctar no contestó a tiempo.
 func (c *Client) reportDown(ctx context.Context, class string) {
-	if c.urgent == nil || errors.Is(ctx.Err(), context.Canceled) {
+	if c.urgent == nil || errors.Is(ctx.Err(), context.Canceled) || ctx.Value(downCountOffKey{}) != nil {
 		return
 	}
 	c.urgent.Count(ctx, monitor.TriggerNectarDown, c.urgentLimits.DownCount, c.urgentLimits.DownWindow,

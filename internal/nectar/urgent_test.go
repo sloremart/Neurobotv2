@@ -283,3 +283,46 @@ func TestUrgent_ClientTimeoutCountsAsNectarDown(t *testing.T) {
 		t.Fatalf("el timeout del cliente cuenta: %+v", got)
 	}
 }
+
+// M-2: un mensaje que agota sus reintentos cuenta lo mismo que antes de haber dos: el envío y el primer
+// reintento. Con el umbral de 5, el aviso sigue saltando con el tercer mensaje fallido, no con el segundo.
+func TestUrgent_ExtraRetryDoesNotCountAsNectarDown(t *testing.T) {
+	c, u := statusClient(t, http.StatusBadGateway, "")
+	failMessage := func(text string) {
+		for range MaxSendRetries + 1 { // el envío y sus reintentos: misma clave en duda
+			_, _ = c.SendText(context.Background(), 1234, text)
+		}
+	}
+
+	failMessage("primero")
+	if got := u.of(monitor.TriggerNectarDown); len(got) != 2 {
+		t.Fatalf("un mensaje cuenta 2 (envío y primer reintento): %d", len(got))
+	}
+	failMessage("segundo")
+	if got := u.of(monitor.TriggerNectarDown); len(got) >= testUrgentLimits.DownCount {
+		t.Fatalf("con 2 mensajes no llega al umbral: %d", len(got))
+	}
+	failMessage("tercero")
+	if got := u.of(monitor.TriggerNectarDown); len(got) < testUrgentLimits.DownCount {
+		t.Fatalf("con 3 mensajes llega al umbral: %d", len(got))
+	}
+}
+
+// Lo mismo con el transporte, y sin tocar lo demás: una lectura o un mensaje nuevo cuentan siempre.
+func TestUrgent_ExtraRetryTransportDoesNotCount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+	c := NewClient(srv.URL, svcKey, reqSecret)
+	u := &urgentCounter{}
+	c.SetUrgentReporter(u, testUrgentLimits)
+	for range MaxSendRetries + 1 {
+		_, _ = c.SendText(context.Background(), 1234, "hola")
+	}
+	if got := u.of(monitor.TriggerNectarDown); len(got) != 2 {
+		t.Fatalf("transporte: %d", len(got))
+	}
+	_, _ = c.GetState(context.Background(), 1234)
+	if got := u.of(monitor.TriggerNectarDown); len(got) != 3 {
+		t.Fatalf("la lectura cuenta: %d", len(got))
+	}
+}

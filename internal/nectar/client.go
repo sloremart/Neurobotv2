@@ -408,6 +408,9 @@ func (c *Client) send(ctx context.Context, conversationID int64, req sendRequest
 	fingerprint := sendFingerprint(conversationID, req)
 	key, retries := c.takeInDoubtKey(fingerprint)
 	req.IdempotencyKey = key
+	if retries >= MaxSendRetries {
+		ctx = withoutDownCount(ctx)
+	}
 	var out struct {
 		ID int64 `json:"id"`
 	}
