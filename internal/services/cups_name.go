@@ -104,12 +104,22 @@ var retrievalStopWords = map[string]bool{
 }
 
 // orderNoise son palabras de la orden que no describen el procedimiento (prioridad, proyecciones): no
-// necesitan par en el candidato.
+// necesitan par en el candidato. OBLICUAS sí lo describe: las proyecciones adicionales tienen código propio
+// (873444). «3 PROYECCIONES» cuenta vistas, pero al descartar sí se compara (readNameWords).
 var orderNoise = map[string]bool{
 	"AMB": true, "AMBULATORIO": true, "PRIORITARIO": true, "URGENTE": true,
-	"LATERAL": true, "LAT": true, "OBLICUA": true, "OBLICUAS": true, "PROYECCIONES": true, "VISTAS": true,
-	// Dónde se hace la EMG o la NC («4 EXTREMIDADES»): el catálogo la factura por extremidad o nervio.
-	"EXTREMIDAD": true, "EXTREMIDADES": true,
+	"LATERAL": true, "LAT": true, "PROYECCIONES": true, "VISTAS": true,
+}
+
+// limbWords dicen dónde se hace la EMG o la NC («4 EXTREMIDADES»), que el catálogo factura por extremidad o
+// nervio: en esas dos no necesitan par. En las demás modalidades son una región (ECO DOPPLER MIEMBROS).
+var limbWords = map[string]bool{"EXTREMIDAD": true, "EXTREMIDADES": true}
+
+// retrievalOnlyNoise no cuentan al buscar candidatos, aunque sí al compararlos: son los que podrían quedarse
+// sin par y dejar a un procedimiento sin ningún candidato, y entonces se descartaría sin pasar por el agente.
+var retrievalOnlyNoise = map[string]bool{
+	"OBLICUA": true, "OBLICUAS": true, "EXTREMIDAD": true, "EXTREMIDADES": true,
+	"PROCEDIMIENTO": true, "EXAMEN": true, "ESTUDIO": true,
 }
 
 // catalogNoise son palabras del catálogo que anotan la forma de facturar o el equipo, no un procedimiento
@@ -234,14 +244,14 @@ func compareReadNames(a, b string) CupsNameMatch {
 	if !hasSpecificWord(wa) || !hasSpecificWord(wb) {
 		return CupsNamesDiffer
 	}
-	if CompareCupsNames(ca, cb) == CupsNamesByPrefix {
-		return CupsNamesByPrefix
-	}
 	unknownA, unknownB := hasUnknownSlash(a), hasUnknownSlash(b)
 	if !unknownA && !unknownB && allWordsIn(wa, wb, sameWord) && allWordsIn(wb, wa, sameWord) {
 		if (!bothSides(wa) || slices.Equal(wa, wb)) && sameQuantityMarks(a, b) {
 			return CupsNamesEqual
 		}
+		return CupsNamesByPrefix
+	}
+	if allWordsIn(wa, wb, prefixWord) && allWordsIn(wb, wa, prefixWord) {
 		return CupsNamesByPrefix
 	}
 	if candidateFits(ca, b, unknownA) || candidateFits(cb, a, unknownB) {
@@ -272,11 +282,12 @@ func quantityMarkDigits(name string) []string {
 }
 
 // readNameWords son las palabras de un nombre canónico que cuentan al compararlo con otro leído: las
-// distintivas, sin encabezados ni ruido de la orden. Calificadores y números sí cuentan.
+// distintivas, sin encabezados ni ruido de la orden. Calificadores y números sí cuentan, y PROYECCIONES también:
+// suelto puede ser el comienzo de «PROYECCIONES ADICIONALES», y aquí un error pierde un procedimiento.
 func readNameWords(canon string) []string {
 	var out []string
 	for _, w := range distinctiveWords(canon) {
-		if !retrievalStopWords[w] && !orderNoise[w] {
+		if !retrievalStopWords[w] && (!orderNoise[w] || w == "PROYECCIONES") {
 			out = append(out, w)
 		}
 	}
@@ -404,7 +415,7 @@ func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 func retrievalWords(canonRead string) []string {
 	var out []string
 	for _, w := range distinctiveWords(canonRead) {
-		if retrievalStopWords[w] || orderNoise[w] || vagueProcedureWords[w] || spineLevel.MatchString(w) ||
+		if retrievalStopWords[w] || orderNoise[w] || retrievalOnlyNoise[w] || spineLevel.MatchString(w) ||
 			len(w) < 3 && strings.Trim(w, "0123456789") != "" {
 			continue
 		}
@@ -603,11 +614,26 @@ func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
 		}
 	}
 	readContent := contentWords(canonRead, orderNoise)
+	if namesLimbStudy(canonRead) {
+		readContent = slices.DeleteFunc(readContent, func(w string) bool { return limbWords[w] })
+	}
 	if !allWordsIn(readContent, distinctiveWords(canonCand), prefixWord) {
 		return false
 	}
 	candCore := contentWords(canonicalOrderName(catalogAnnotation.ReplaceAllString(candName, " ")), catalogNoise)
+	// Un doppler es de vasos aunque el leído no lo diga: «DOPPLER TESTICULAR» también puede ser el de vasos
+	// escrotales (882282), y si encajan los dos, es duda. El doppler ya lo comparó su grupo.
+	if slices.Contains(strings.Fields(canonCand), "DOPPLER") {
+		candCore = slices.DeleteFunc(candCore, func(w string) bool { return w == "VASOS" })
+	}
 	return allWordsIn(candCore, distinctiveWords(canonRead), prefixWord)
+}
+
+// namesLimbStudy dice si el nombre es una EMG o una NC.
+func namesLimbStudy(canon string) bool {
+	return slices.ContainsFunc(strings.Fields(canon), func(w string) bool {
+		return w == "ELECTROMIOGRAFIA" || w == "NEUROCONDUCCION"
+	})
 }
 
 // contentWords son las palabras distintivas de un nombre canónico que describen el procedimiento: sin
