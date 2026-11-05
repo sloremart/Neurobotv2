@@ -17,7 +17,8 @@ import (
 // Respuesta al recordatorio pendiente de SIESA (D-04). Si el paciente pulsa «Confirmar» o
 // «Cancelar» y SIESA no responde, la respuesta queda marcada en su fila de notification_history
 // (migración 047) y un proceso de fondo la retoma cuando SIESA vuelve: la confirmación se aplica;
-// la cancelación NO, se le pide al paciente que la confirme, como al pulsar «Cancelar».
+// la cancelación NO, se le pide al paciente que la confirme, como al pulsar «Cancelar». Las dos cosas
+// le escriben al paciente: solo dentro de la ventana de avisos (config.PatientNoticeOpen).
 
 // Acciones que pueden quedar pendientes de SIESA (columna siesa_pending).
 const (
@@ -247,6 +248,15 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 		return false
 	}
 
+	// Lo que sigue le escribe al paciente, y eso no sale de madrugada: la fila espera, sin sumar
+	// intento, a que abra la ventana. Los cierres y los topes de arriba no le escriben: no esperan, así
+	// que una fila que cruza la noche puede llegar a uno de ellos y pasar a un agente sin aplicarse.
+	if !m.noticeWindowOpen(now) {
+		slog.Debug("respuesta pendiente de SIESA: fuera de la ventana de avisos, se espera",
+			"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action)
+		return false
+	}
+
 	if row.Action == siesaActionCancel {
 		m.promptDeferredCancel(ctx, row, pending, appt, block, now)
 		return false
@@ -275,6 +285,14 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action,
 		"attempts", row.Attempts, "total", len(block))
 	return false
+}
+
+// noticeWindowOpen dice si un aviso diferido al paciente puede salir a esa hora.
+func (m *NotificationManager) noticeWindowOpen(now time.Time) bool {
+	if m.patientNoticeOpen != nil {
+		return m.patientNoticeOpen(now)
+	}
+	return config.PatientNoticeOpen(now)
 }
 
 // readSiesaRow lee la cita de la fila con el plazo corto de la lectura. hung: venció ese plazo (no el

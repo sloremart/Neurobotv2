@@ -60,6 +60,19 @@ var dayLetters = []struct {
 	{"D", time.Sunday, "Domingo", "Domingos"},
 }
 
+// Ventana diurna de los avisos al paciente que salen tarde [start, end): el catch-up de las tareas de
+// WhatsApp (L14) y lo que el proceso de fondo de D-04 le escribe al volver SIESA. Es hora del reloj,
+// no el horario de atención.
+const (
+	PatientNoticeStartHour = 7
+	PatientNoticeEndHour   = 20
+)
+
+// PatientNoticeOpen dice si un aviso tardío al paciente puede salir a la hora de t.
+func PatientNoticeOpen(t time.Time) bool {
+	return t.Hour() >= PatientNoticeStartHour && t.Hour() < PatientNoticeEndHour
+}
+
 // DefaultBusinessHours es el horario de SIEMPRE de Neuro: L-V 07:00-18:00 y S 07:00-12:00, con
 // el fin exclusivo y sin festivos. Es el respaldo mientras Néctar no publique (o con
 // NECTAR_SCHEDULE_ENABLED apagada), y tiene que decidir —y describirse— EXACTAMENTE como el

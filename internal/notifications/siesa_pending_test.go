@@ -251,6 +251,7 @@ func buildSiesaHarness(t *testing.T, nectarBridge bool) *siesaHarness {
 	}
 	h.mgr = NewNotificationManager(client, services.NewAppointmentService(h.siesa.repo(), nil), &config.Config{BirdTeamFallback: "team-fallback"})
 	h.mgr.SetSiesaPendingStore(h.store)
+	h.mgr.patientNoticeOpen = func(time.Time) bool { return true } // las pruebas no dependen de la hora en que corren
 	h.mgr.SetTracker(h.tracker)
 	h.mgr.SetWaitingListDeps(nil, h.sess, h.wp)
 	return h
@@ -1130,5 +1131,112 @@ func TestSiesaPending_ShutdownIsNotHung(t *testing.T) {
 	h.mgr.apptSvc = services.NewAppointmentService(repo, nil)
 	if h.mgr.retrySiesaRow(ctx, h.store.pending()[0], time.Now()) {
 		t.Error("un ctx cancelado no cuenta como SIESA colgada")
+	}
+}
+
+// tomorrowAt es la hora dada del día de futureAppt (mañana), en la zona local.
+func tomorrowAt(hour, minute int) time.Time {
+	d := time.Now().AddDate(0, 0, 1)
+	return time.Date(d.Year(), d.Month(), d.Day(), hour, minute, 0, 0, time.Local)
+}
+
+// realNoticeWindow vuelve a la ventana de verdad en este arnés, que la abre para no depender del reloj.
+func (h *siesaHarness) realNoticeWindow() { h.mgr.patientNoticeOpen = nil }
+
+// D-04: de madrugada la confirmación espera entera (ni SIESA ni mensaje) y sale al abrir la ventana.
+func TestSiesaPending_NoticeWindow_ConfirmWaitsUntilOpen(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("confirm")
+	h.onlyPending(t, siesaActionConfirm)
+	h.siesa.set(func(f *siesaFake) { f.readDown = false })
+	h.realNoticeWindow()
+
+	for _, night := range []time.Time{tomorrowAt(3, 0), tomorrowAt(6, 59)} {
+		h.pass(night)
+		if h.siesa.confirms != 0 || h.bird.count(confirmedDetailsPrefix) != 0 {
+			t.Fatalf("a las %s no se aplica ni se avisa: confirms=%d", night.Format("15:04"), h.siesa.confirms)
+		}
+		if r := h.onlyPending(t, siesaActionConfirm); r.Attempts != 0 {
+			t.Fatalf("esperar la ventana no es un intento fallido: attempts=%d", r.Attempts)
+		}
+	}
+	h.pass(tomorrowAt(7, 0))
+	if len(h.store.pending()) != 0 || h.bird.count(confirmedDetailsPrefix) != 1 {
+		t.Errorf("al abrir la ventana se aplica y se avisa una vez: pendientes=%d avisos=%d",
+			len(h.store.pending()), h.bird.count(confirmedDetailsPrefix))
+	}
+}
+
+// D-04: la pregunta de cancelación tampoco se abre fuera de la ventana; las 20:00 ya es fuera.
+func TestSiesaPending_NoticeWindow_CancelWaitsUntilOpen(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("cancelar")
+	h.siesa.set(func(f *siesaFake) { f.readDown = false; f.appt.TimeSlot = futureAppt().TimeSlot })
+	h.realNoticeWindow()
+
+	// Con la cita de mañana a las 10:00, las 20:00 de hoy está lejos de los dos topes.
+	today := tomorrowAt(20, 0).AddDate(0, 0, -1)
+	h.pass(today)
+	if h.sess.createdSession != nil {
+		t.Fatal("a las 20:00 no se abre la pregunta")
+	}
+	h.onlyPending(t, siesaActionCancel)
+	h.pass(today.Add(-time.Minute))
+	if s := h.sess.createdSession; s == nil || s.CurrentState != sm.StateConfirmCancelNotif {
+		t.Fatalf("a las 19:59 se abre la pregunta: sesión = %+v", s)
+	}
+}
+
+// D-04: los dos topes no esperan a la ventana: pasan a un agente a la misma hora de siempre, y esa
+// escalación no le escribe al paciente. Una fila ya resuelta también se cierra de noche, en silencio.
+func TestSiesaPending_NoticeWindow_CapsAndClosuresDoNotWait(t *testing.T) {
+	night := tomorrowAt(3, 0)
+	for _, tc := range []struct {
+		name    string
+		prepare func(h *siesaHarness)
+		outcome string
+		escal   int
+	}{
+		{"más de 6 h", func(h *siesaHarness) {
+			h.store.mu.Lock()
+			defer h.store.mu.Unlock()
+			h.store.rows[1].PendingFor = siesaPendingMaxAge + time.Minute
+		}, siesaOutcomeGaveUp, 1},
+		{"cita a menos de 2 h", func(h *siesaHarness) {
+			slot := tomorrowAt(4, 0).Format("200601021504")
+			h.siesa.set(func(f *siesaFake) { f.appt.TimeSlot = slot })
+			h.store.mu.Lock()
+			defer h.store.mu.Unlock()
+			h.store.rows[1].AppointmentSlot = slot
+		}, siesaOutcomeGaveUp, 1},
+		{"cita ya confirmada", func(h *siesaHarness) {
+			h.siesa.set(func(f *siesaFake) { f.appt.Confirmed = true })
+		}, siesaOutcomeAlreadyApplied, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSiesaHarness(t)
+			h.siesa.set(func(f *siesaFake) { f.readDown = true })
+			h.respond("confirm")
+			h.siesa.set(func(f *siesaFake) { f.readDown = false })
+			tc.prepare(h)
+			h.realNoticeWindow()
+
+			h.pass(night)
+
+			if got := h.store.outcomes[1]; got != tc.outcome {
+				t.Errorf("desenlace = %q, want %q", got, tc.outcome)
+			}
+			if got := h.escalations(); got != tc.escal {
+				t.Errorf("escalaciones = %d, want %d", got, tc.escal)
+			}
+			if h.siesa.confirms != 0 || h.bird.count(confirmedDetailsPrefix) != 0 {
+				t.Error("no se aplica ni se le avisa al paciente")
+			}
+			if h.bird.count("Un asistente del centro") != 0 || h.bird.count(siesaConfirmDeferredText) != 1 {
+				t.Error("de madrugada no sale otro texto al paciente: solo el acuse de cuando respondió")
+			}
+		})
 	}
 }

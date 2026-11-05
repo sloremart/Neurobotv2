@@ -419,7 +419,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Recordatorio con SIESA caída (D-04, migración 047): «Confirmar»/«Cancelar» quedan pendientes en `notification_history`
   (`siesa_pending`, `siesa_outcome`, `appointment_slot`); el paciente recibe un acuse y el proceso de fondo
   (`SIESA_PENDING_RETRY_MIN`, 5) las aplica al volver: confirma con el mensaje de siempre o abre la confirmación de
-  cancelación de siempre. Cita movida (otro `appointment_slot`), sesión ocupada, >6 h o cita a <2 h → agente
+  cancelación de siempre, solo en la ventana de avisos (7-20 h, `config.PatientNoticeOpen`; fuera, la fila espera
+  sin sumar intento y los topes siguen contando). Cita movida (otro `appointment_slot`), sesión ocupada, >6 h o cita a <2 h → agente
   (`notificacion_siesa_pendiente`).
 - Topes: cantidad por CUPS >100 → agente (`cantidad_fuera_de_rango`; EMG/NC sin cambios; `/bot cups` de Bird y el
   campo de CUPS de Néctar se le rechazan al asesor con `services.AgentCupsQuantityProblem`); 3 lecturas fallidas

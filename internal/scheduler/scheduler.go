@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 )
 
@@ -81,12 +82,6 @@ const (
 // ningún tic: un salto del reloj de pared lo salta (D-14). Más tarde ya no se lanza.
 const lateStartMaxDelay = 10 * time.Minute
 
-// Ventana diurna permitida para el catch-up de notificaciones al paciente [start, end) (L14).
-const (
-	catchupDaytimeStartHour = 7
-	catchupDaytimeEndHour   = 20
-)
-
 type ScheduledTask struct {
 	Name     string
 	Hour     int
@@ -102,7 +97,7 @@ func catchupAllowed(mode CatchupMode, hour int) bool {
 	case CatchupNever:
 		return false
 	case CatchupDaytime:
-		return hour >= catchupDaytimeStartHour && hour < catchupDaytimeEndHour
+		return hour >= config.PatientNoticeStartHour && hour < config.PatientNoticeEndHour
 	default: // CatchupAlways
 		return true
 	}
