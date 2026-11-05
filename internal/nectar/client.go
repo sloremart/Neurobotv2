@@ -88,6 +88,10 @@ const MaxSendRetryAfter = 60 * time.Second
 // requestTimeout es lo que puede tardar una llamada a Néctar: el tope de cada intento de envío.
 const requestTimeout = 15 * time.Second
 
+// MaxSendRetryLife es lo más que puede durar un envío con sus reintentos: las esperas al tope y un
+// intento completo tras cada una, más el primero.
+const MaxSendRetryLife = MaxSendRetries*MaxSendRetryAfter + (MaxSendRetries+1)*requestTimeout
+
 // inDoubtKeyTTL es cuánto se reutiliza la clave de un envío en duda, contado desde el último intento
 // fallido. Cubre la mayor espera del worker entre reintentos (MaxSendRetryAfter) con margen,
 // y es corto para que un mensaje igual de un turno posterior salga como mensaje nuevo.

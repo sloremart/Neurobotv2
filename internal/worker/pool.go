@@ -36,9 +36,8 @@ const (
 	// estado del paciente. Ver sendAndSave (auditoría 2026-07-27).
 	persistStateTimeout = 15 * time.Second
 	processMsgTimeout   = 2 * time.Minute // BUG-004: cota por mensaje del ctx desacoplado del apagado
-	// startedTurnTTL es cuánto se recuerda el último turno empezado: más que la vida de un reintento
-	// (dos esperas de 60 s y tres intentos de 15 s).
-	startedTurnTTL = 4 * time.Minute
+	// startedTurnTTL es cuánto se recuerda el último turno empezado: más que la vida de un reintento.
+	startedTurnTTL = nectar.MaxSendRetryLife + time.Minute
 	// defaultMinSendBudget es el plazo de un envío de un turno que ya gastó el suyo: la respuesta que
 	// decidió el turno todavía sale si Néctar contesta rápido (ver sendDeadline).
 	defaultMinSendBudget = 5 * time.Second

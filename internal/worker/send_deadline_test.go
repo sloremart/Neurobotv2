@@ -176,7 +176,7 @@ func TestSendAndSave_AbandonedFirstRetryHasNoGuard(t *testing.T) {
 // posterior lleva la misma clave y Néctar no lo manda dos veces.
 func TestSendAndSave_AbandonedSendLeavesKeyInDoubt(t *testing.T) {
 	pool, sess, keys := slowNectar(t, 300*time.Millisecond)
-	pool.retryDelay = time.Minute // el envío igual llega antes que el reintento
+	pool.retryDelay = 5 * time.Second // el envío igual llega antes que el reintento
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -187,7 +187,6 @@ func TestSendAndSave_AbandonedSendLeavesKeyInDoubt(t *testing.T) {
 	if len(got) != 2 || got[0] == "" || got[0] != got[1] {
 		t.Fatalf("claves = %v", got)
 	}
-	pool.Stop()
 }
 
 // Un turno que ya agotó su plazo manda igual su respuesta si Néctar contesta rápido.

@@ -372,6 +372,70 @@ func TestBeginTurn_AtMessagesAndCommands(t *testing.T) {
 	}
 }
 
+// M-11: sin el candado no empieza turno: un mensaje o un comando que se reencola no descarta reintentos.
+func TestBeginTurn_NotBeforeTheLock(t *testing.T) {
+	sm := newMockSessionMgmt()
+	pool := retryTestPool(&mockMessageSender{}, sm)
+	pool.lockTimeout = 20 * time.Millisecond
+	phone := nectar.SessionKey(1234)
+	turn := pool.currentTurn(phone)
+	if err := sm.mutex.Lock(context.Background(), phone); err != nil {
+		t.Fatal(err)
+	}
+	defer sm.mutex.Unlock(phone)
+
+	pool.processMessage(context.Background(), bird.InboundMessage{ID: "virtual-1", Phone: phone, Text: "hola"})
+	if pool.laterTurnStarted(phone, turn) {
+		t.Fatal("un mensaje sin candado no empieza turno")
+	}
+	pool.processAgentCommand(context.Background(), AgentCommand{Action: "close", Phone: phone})
+	if pool.laterTurnStarted(phone, turn) {
+		t.Fatal("un comando sin candado no empieza turno")
+	}
+}
+
+// M-11: el turno cuenta desde que toma el candado, no desde que envía: con uno en curso (un OCR), el
+// reintento nuevo de la respuesta anterior no sale.
+func TestRetrySend_RealTurnInProgressDiscardsNewRetry(t *testing.T) {
+	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway))
+	pool.sessionManager = newMockSessionMgmt()
+	pool.retryDelay = 100 * time.Millisecond
+	entered, release := make(chan struct{}), make(chan struct{})
+	pool.machine = &mockMessageProcessor{
+		processFn: func(context.Context, *session.Session, bird.InboundMessage) (*statemachine.StateResult, error) {
+			close(entered)
+			<-release
+			return &statemachine.StateResult{NextState: "GREETING"}, nil
+		},
+	}
+	done := make(chan struct{})
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(buttons("VIEJA")))
+	go func() {
+		defer close(done)
+		pool.processMessage(context.Background(), bird.InboundMessage{ID: "virtual-2", Phone: sess.PhoneNumber, Text: "hola"})
+	}()
+	<-entered
+
+	waitAttempts(t, f, 2, 5*pool.retryDelay) // el envío y el primer reintento
+	close(release)
+	<-done
+}
+
+// M-11: el turno se recuerda más que el reintento más largo: si se purgara antes, el reintento saldría
+// con un turno posterior ya empezado.
+func TestStartedTurnTTL_OutlivesLongestRetry(t *testing.T) {
+	pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
+	turn := pool.currentTurn("nectar:1")
+	pool.beginTurn("nectar:1")
+
+	pool.purgeStaleLockMisses(time.Now().Add(nectar.MaxSendRetryLife))
+
+	if !pool.laterTurnStarted("nectar:1", turn) {
+		t.Fatal("la limpieza no borra un turno mientras un reintento anterior pueda seguir vivo")
+	}
+}
+
 // El registro del turno: uno por paciente, sendAndSave no empieza otro si ya hay, y la limpieza purga.
 func TestStartedTurns(t *testing.T) {
 	pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
