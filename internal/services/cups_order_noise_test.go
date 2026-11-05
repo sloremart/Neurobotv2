@@ -51,6 +51,9 @@ func TestCompareReadNames_NoiseOnlyInItsCase(t *testing.T) {
 		// Unilateral frente a bilateral es duda con o sin una palabra de ruido de más.
 		{"prefijo", "EMG MIEMBRO", "EMG MIEMBROS", CupsNamesByPrefix},
 		{"prefijo con ruido", "EMG MIEMBRO URGENTE", "EMG MIEMBROS", CupsNamesByPrefix},
+		// Solo el prefijo los acerca: candidateFits no encaja, porque CONTRASTES no es un valor del grupo.
+		{"prefijo sin encajar", "TAC CRANEO CONTRASTES", "TAC CRANEO CONTRASTE", CupsNamesByPrefix},
+		{"prefijo con barra sin entender", "TAC C/X RODILLA", "TAC C/X RODILLAS", CupsNamesByPrefix},
 		{"prefijo con ruido, una extremidad", "EMG UNA EXTREMIDAD URGENTE", "EMG EXTREMIDADES", CupsNamesByPrefix},
 		// Lo que sí es ruido.
 		{"prioridad", "RX TORAX URGENTE", "RX TORAX", CupsNamesEqual},

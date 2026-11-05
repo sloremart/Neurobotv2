@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/worker"
 )
 
 // D-10: lo que una respuesta en vuelo encola antes de terminar lo toma el drenado de Stop, porque Stop
@@ -45,12 +47,11 @@ func TestShutdownBudgetFitsGracePeriod(t *testing.T) {
 		httpShutdown = 10 * time.Second
 		audits       = 10 * time.Second
 		gracePeriod  = 75 * time.Second
-		poolDrain    = 15 * time.Second // el drenado de Pool.Stop
 	)
 	if total := httpShutdown + workersStopTimeout + audits; total > gracePeriod-5*time.Second {
 		t.Fatalf("el apagado suma %v; no cabe en %v", total, gracePeriod)
 	}
-	if responsesWaitTimeout+poolDrain > workersStopTimeout {
-		t.Fatalf("esperar las respuestas (%v) y drenar (%v) no cabe en %v", responsesWaitTimeout, poolDrain, workersStopTimeout)
+	if responsesWaitTimeout+worker.StopDrainTimeout > workersStopTimeout {
+		t.Fatalf("esperar las respuestas (%v) y drenar (%v) no cabe en %v", responsesWaitTimeout, worker.StopDrainTimeout, workersStopTimeout)
 	}
 }

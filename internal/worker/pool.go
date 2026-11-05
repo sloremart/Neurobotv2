@@ -360,8 +360,11 @@ func (p *MessageWorkerPool) Start(ctx context.Context) {
 	slog.Info("worker pool started", "workers", p.workers, "queue_size", cap(p.queue))
 }
 
+// StopDrainTimeout acota el drenado de Stop. El presupuesto del apagado (cmd/server) cuenta con él.
+const StopDrainTimeout = 15 * time.Second
+
 // Stop waits for all workers and overflow goroutines to finish,
-// then drains remaining queued messages (up to 15s) before returning.
+// then drains remaining queued messages (up to StopDrainTimeout) before returning.
 func (p *MessageWorkerPool) Stop() {
 	// #5: marcar el cierre ANTES de Wait, bajo Lock. tryAddOverflow toma RLock, así que cualquier
 	// enqueuer en curso termina su chequeo+Add antes de que este Lock retorne; tras esto, los nuevos
@@ -379,7 +382,7 @@ func (p *MessageWorkerPool) Stop() {
 	}
 
 	slog.Info("draining queued messages before shutdown", "count", remaining)
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), StopDrainTimeout)
 	defer drainCancel()
 
 	drained := 0
