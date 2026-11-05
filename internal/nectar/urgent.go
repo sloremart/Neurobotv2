@@ -78,7 +78,8 @@ const maxParsedRetryAfter = 24 * time.Hour
 // no se entiende o ya pasó.
 func parseRetryAfter(h string) time.Duration {
 	h = strings.TrimSpace(h)
-	if secs, err := strconv.Atoi(h); err == nil {
+	// Un número que no cabe en int llega con el extremo de su signo y ErrRange: sigue siendo «demasiado».
+	if secs, err := strconv.Atoi(h); err == nil || errors.Is(err, strconv.ErrRange) {
 		return max(0, time.Duration(min(secs, int(maxParsedRetryAfter/time.Second)))*time.Second)
 	}
 	if at, err := http.ParseTime(h); err == nil {
@@ -89,7 +90,7 @@ func parseRetryAfter(h string) time.Duration {
 
 // reportDown cuenta un fallo de Néctar (transporte o 5xx). class es solo la clase («timeout»,
 // «HTTP 503»): ni cuerpos ni URLs viajan al aviso. El apagado del bot (contexto cancelado) no es
-// Néctar caído; un tiempo vencido sí cuenta: Néctar no contestó a tiempo.
+// Néctar caído; el timeout del cliente sí cuenta: Néctar no contestó a tiempo.
 func (c *Client) reportDown(ctx context.Context, class string) {
 	if c.urgent == nil || errors.Is(ctx.Err(), context.Canceled) {
 		return
