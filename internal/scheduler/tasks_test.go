@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1910,5 +1911,187 @@ func TestSendReminders_ConcurrentRunsSendOnce(t *testing.T) {
 	}
 	if got := reads.Load(); got != 2 {
 		t.Errorf("terminado el primero, el siguiente disparo corre: lecturas = %d, want 2", got)
+	}
+}
+
+// ivrHarness es un Bird de voz que anota las llamadas.
+type ivrHarness struct {
+	calls atomic.Int32
+	body  atomic.Value // cuerpo de la última llamada
+	srv   *httptest.Server
+}
+
+func newIVRHarness(t *testing.T, callStatus int) *ivrHarness {
+	t.Helper()
+	h := &ivrHarness{}
+	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/calls") {
+			raw, _ := io.ReadAll(r.Body)
+			h.body.Store(string(raw))
+			n := h.calls.Add(1)
+			w.WriteHeader(callStatus)
+			_, _ = fmt.Fprintf(w, `{"id":"call-%d"}`, n)
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"msg-123"}`))
+	}))
+	t.Cleanup(h.srv.Close)
+	return h
+}
+
+// ivrFamily son dos citas de mañana de dos pacientes con el mismo teléfono; la de Mateo es la más próxima.
+func ivrFamily() (soon, late domain.Appointment) {
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	day := tomorrow.Format("20060102")
+	soon = domain.Appointment{
+		ID: "apt-soon", PatientID: "P-MATEO", PatientName: "Mateo Ruiz", PatientPhone: "3001112233",
+		Date: tomorrow, TimeSlot: day + "0800",
+	}
+	late = domain.Appointment{
+		ID: "apt-late", PatientID: "P-SARA", PatientName: "Sara Ruiz", PatientPhone: "3001112233",
+		Date: tomorrow, TimeSlot: day + "1000",
+	}
+	return soon, late
+}
+
+func stopIVRTimers(t *testing.T, nm *notifications.NotificationManager, keys ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, k := range keys {
+			if p, ok := nm.LoadPendingForTest(k); ok && p.Timer != nil {
+				p.Timer.Stop()
+			}
+		}
+	})
+}
+
+// B-15: dos pendings con el mismo teléfono dan UNA llamada, que anuncia la cita más próxima. El DTMF se
+// aplica solo a esa cita; el otro pending sigue igual, sin marcarse ni resolverse.
+func TestSendVoiceReminders_OneCallPerDialPhone(t *testing.T) {
+	const keySoon, keyLate = "nectar:1", "nectar:2"
+	h := newIVRHarness(t, http.StatusAccepted)
+	birdClient := bird.NewVoiceClientForTest(h.srv.URL)
+	cfg := testConfig()
+	soon, late := ivrFamily()
+
+	var confirmed []string
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			return []domain.Appointment{soon, late}, nil // la última era la que quedaba en el mapa por teléfono
+		},
+		FindByIDFn: func(_ context.Context, id string) (*domain.Appointment, error) {
+			if id == soon.ID {
+				return &soon, nil
+			}
+			return &late, nil
+		},
+		ConfirmBatchFn: func(_ context.Context, ids []string, _, _ string) error {
+			confirmed = append(confirmed, ids...)
+			return nil
+		},
+	}
+	nm := notifications.NewNotificationManager(birdClient, services.NewAppointmentService(mockRepo, nil), cfg)
+	for key, apptID := range map[string]string{keySoon: soon.ID, keyLate: late.ID} {
+		nm.RegisterPending(notifications.PendingNotification{
+			Type: "confirmation", Phone: key, ContactPhone: "+573001112233", AppointmentID: apptID,
+		})
+	}
+	stopIVRTimers(t, nm, keySoon, keyLate)
+
+	tasks := &Tasks{AppointmentRepo: mockRepo, BirdClient: birdClient, NotifyManager: nm, Cfg: cfg}
+	if err := tasks.sendVoiceReminders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.calls.Load(); got != 1 {
+		t.Fatalf("llamadas = %d, want 1", got)
+	}
+	if body, _ := h.body.Load().(string); !strings.Contains(body, soon.PatientName) || strings.Contains(body, late.PatientName) {
+		t.Errorf("la llamada debe anunciar la cita más próxima: %s", body)
+	}
+	called, ok := nm.LoadPendingForTest(keySoon)
+	if !ok || called.CallID != "call-1" || called.RetryCount != 3 {
+		t.Fatalf("pending de la cita anunciada = %+v", called)
+	}
+	other, ok := nm.LoadPendingForTest(keyLate)
+	if !ok || other.CallID != "" || other.RetryCount != 0 {
+		t.Fatalf("el otro pending no se toca: %+v", other)
+	}
+	if other.Timer == nil {
+		t.Error("el otro pending conserva su timer: sigue su flujo normal")
+	}
+
+	nm.HandleVoiceGatherResult("call-1", "1")
+	if len(confirmed) != 1 || confirmed[0] != soon.ID {
+		t.Errorf("confirmadas = %v, want solo %s", confirmed, soon.ID)
+	}
+	if _, ok := nm.LoadPendingForTest(keySoon); ok {
+		t.Error("el pending de la cita anunciada queda resuelto")
+	}
+	if _, ok := nm.LoadPendingForTest(keyLate); !ok {
+		t.Error("el DTMF no resuelve el otro pending")
+	}
+}
+
+// B-15: si la llamada falla no se intenta otra por el mismo teléfono, y ningún pending queda marcado.
+func TestSendVoiceReminders_FailedCallIsNotRetriedWithOtherPending(t *testing.T) {
+	const keySoon, keyLate = "nectar:1", "nectar:2"
+	h := newIVRHarness(t, http.StatusBadRequest)
+	birdClient := bird.NewVoiceClientForTest(h.srv.URL)
+	cfg := testConfig()
+	soon, late := ivrFamily()
+	mockRepo := &testutil.MockAppointmentRepo{
+		FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+			return []domain.Appointment{soon, late}, nil
+		},
+	}
+	nm := notifications.NewNotificationManager(birdClient, nil, cfg)
+	for key, apptID := range map[string]string{keySoon: soon.ID, keyLate: late.ID} {
+		nm.RegisterPending(notifications.PendingNotification{
+			Type: "confirmation", Phone: key, ContactPhone: "+573001112233", AppointmentID: apptID,
+		})
+	}
+	stopIVRTimers(t, nm, keySoon, keyLate)
+
+	tasks := &Tasks{AppointmentRepo: mockRepo, BirdClient: birdClient, NotifyManager: nm, Cfg: cfg}
+	if err := tasks.sendVoiceReminders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.calls.Load(); got != 1 {
+		t.Errorf("llamadas = %d, want 1", got)
+	}
+	for _, key := range []string{keySoon, keyLate} {
+		if p, ok := nm.LoadPendingForTest(key); !ok || p.RetryCount != 0 {
+			t.Errorf("pending %s = %+v, sigue sin marcar", key, p)
+		}
+	}
+}
+
+// B-15: cada pending solo llama por SU cita. Uno cuya cita ya no está pendiente (confirmada o cancelada
+// en SIESA) no llama aunque el teléfono tenga otra, y nunca se llama a un teléfono que no es el de la
+// cita (el contacto de Néctar distinto del de SIESA). Teléfonos distintos, una llamada cada uno.
+func TestIVRCalls_PickPerPhone(t *testing.T) {
+	soon, late := ivrFamily()
+	other := domain.Appointment{ID: "apt-other", PatientPhone: "3009998877", TimeSlot: late.TimeSlot}
+	pending := func(key, contact, apptID string) *notifications.PendingNotification {
+		return &notifications.PendingNotification{Phone: key, ContactPhone: contact, AppointmentID: apptID}
+	}
+	tasks := &Tasks{Cfg: testConfig()}
+
+	calls := tasks.ivrCalls([]*notifications.PendingNotification{
+		pending("nectar:9", "+573001112233", "apt-gone"), // su cita ya no está: no llama
+		pending("nectar:8", "+573005550000", late.ID),    // su teléfono no es el de la cita: no llama
+		pending("nectar:2", "+573001112233", late.ID),    // cita posterior del mismo teléfono
+		pending("+573001112233", "", soon.ID),            // Bird: la más próxima de ese teléfono
+		pending("nectar:4", "+573001112233", soon.ID),    // la misma cita bajo otra clave: una llamada
+		pending("nectar:3", "+573009998877", other.ID),   // otro teléfono: su propia llamada
+	}, []domain.Appointment{late, other, soon})
+
+	got := map[string]string{}
+	for _, c := range calls {
+		got[c.appt.ID] = c.pending.Phone
+	}
+	if len(calls) != 2 || got[soon.ID] != "+573001112233" || got[other.ID] != "nectar:3" {
+		t.Errorf("llamadas = %v", got)
 	}
 }

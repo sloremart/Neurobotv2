@@ -818,6 +818,65 @@ func (t *Tasks) sendMorningReengagement(ctx context.Context) error {
 // Calls patients who completed WA follow-up chain (RetryCount==2),
 // then sets post-IVR timer for final agent escalation.
 
+// ivrCall es UNA llamada del IVR: el pending que recibe el DTMF y la cita que se anuncia, que es la
+// suya (el DTMF actúa sobre la cita del pending, así que anunciar otra confirmaría lo que no se dijo).
+type ivrCall struct {
+	pending *notifications.PendingNotification
+	appt    domain.Appointment
+}
+
+// ivrCalls decide las llamadas de la corrida: una por teléfono (Bird Voice cobra cada una), a la cita
+// más próxima entre las de los pendings de ese teléfono. Los demás pendings de ese teléfono no se
+// tocan: conservan su timer y su flujo normal, sin marcarse como llamados ni como respondidos. Un
+// pending llama solo si su cita sigue en la lectura y con ese teléfono: si no, puede que ya la
+// confirmaran o cancelaran.
+//
+// Se llama al teléfono del paciente (DialPhone): en Bird es la clave del pending; en Néctar la clave es
+// "nectar:<id>" y el teléfono viene en ContactPhone, con el mismo formato "+57…" que la clave de Bird.
+// Se normaliza igual por defensa (un dato viejo o a mano), sin costo si ya lo está.
+func (t *Tasks) ivrCalls(targets []*notifications.PendingNotification, appointments []domain.Appointment) []ivrCall {
+	type apptKey struct{ phone, id string }
+	appts := make(map[apptKey]domain.Appointment, len(appointments))
+	for _, appt := range appointments {
+		if phone := utils.ParseColombianPhone(appt.PatientPhone); phone != "" {
+			appts[apptKey{phone, appt.ID}] = appt
+		}
+	}
+
+	var calls []ivrCall
+	byPhone := make(map[string]int, len(targets)) // teléfono → índice en calls
+	for _, pending := range targets {
+		dialPhone := pending.DialPhone()
+		if !t.Cfg.IsPhoneWhitelisted(dialPhone) {
+			continue
+		}
+		phone := utils.ParseColombianPhone(dialPhone)
+		appt, ok := appts[apptKey{phone, pending.AppointmentID}]
+		if !ok {
+			continue
+		}
+		i, seen := byPhone[phone]
+		if !seen {
+			byPhone[phone] = len(calls)
+			calls = append(calls, ivrCall{pending, appt})
+			continue
+		}
+		if call := calls[i]; ivrCallFirst(pending, appt, call) {
+			calls[i] = ivrCall{pending, appt}
+		}
+	}
+	return calls
+}
+
+// ivrCallFirst dice si (pending, appt) va antes que call: la hora más próxima (TimeSlot es
+// YYYYMMDDHHmm, se ordena como texto) y, a igual hora, la clave, porque los pendings llegan sin orden.
+func ivrCallFirst(pending *notifications.PendingNotification, appt domain.Appointment, call ivrCall) bool {
+	if appt.TimeSlot != call.appt.TimeSlot {
+		return appt.TimeSlot < call.appt.TimeSlot
+	}
+	return pending.Phone < call.pending.Phone
+}
+
 func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 	if t.Cfg != nil && !t.Cfg.IVRNotificationsEnabled {
 		slog.Info("voice reminders skipped — IVR notifications disabled (IVR_NOTIFICATIONS_ENABLED=false)")
@@ -838,33 +897,14 @@ func (t *Tasks) sendVoiceReminders(ctx context.Context) error {
 		return nothingSent(fmt.Errorf("fetch appointments for IVR: %w", err))
 	}
 
-	// Build phone → appointment map for quick lookup
-	apptByPhone := make(map[string]domain.Appointment)
-	for _, appt := range appointments {
-		phone := utils.ParseColombianPhone(appt.PatientPhone)
-		if phone != "" {
-			apptByPhone[phone] = appt
-		}
-	}
-
 	sent := 0
-	for _, pending := range targets {
+	for _, call := range t.ivrCalls(targets, appointments) {
 		// Detener llamadas si el contexto fue cancelado (apagado)
 		if ctx.Err() != nil {
 			break
 		}
-		// Se llama al teléfono del paciente (DialPhone): en Bird es la clave del pending; en Néctar la
-		// clave es "nectar:<id>" y el teléfono viene en ContactPhone, con el mismo formato "+57…" que la
-		// clave de Bird. Se normaliza igual por defensa (un dato viejo o a mano), sin costo si ya lo está.
+		pending, appt := call.pending, call.appt
 		dialPhone := pending.DialPhone()
-		if !t.Cfg.IsPhoneWhitelisted(dialPhone) {
-			continue
-		}
-
-		appt, ok := apptByPhone[utils.ParseColombianPhone(dialPhone)]
-		if !ok {
-			continue // No matching appointment — may have been confirmed/cancelled meanwhile
-		}
 
 		// Resolve address from first procedure in the appointment (via center_location_id → center_locations)
 		clinicAddress := ""

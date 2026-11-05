@@ -410,6 +410,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   reloj que se come el minuto de una tarea: corre en el primer tic, hasta 10 min tarde y una vez al día, si su
   política de catch-up lo permite a esa hora (nunca `CatchupNever`). Lo programado antes del arranque es de
   `RunMissedTasks`, no de este arranque tardío.
+- IVR: una llamada por teléfono (`DialPhone`), a la cita más próxima entre sus pendings; el DTMF va solo al pending de
+  esa cita y los demás siguen su flujo normal. Un pending llama solo si su cita sigue en la lectura con ese teléfono.
 - Bucles de fondo con MySQL: plazo por pasada (2 min) que solo impide empezar la fila siguiente; cada fila tiene su
   propio ctx (2 min) y la marca de un envío ya hecho usa uno nuevo (`utils.MarkContext`).
 - Límite de la API interna: la IP del cliente sale de la última entrada de X-Forwarded-For solo si la conexión viene
