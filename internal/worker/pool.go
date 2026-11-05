@@ -1841,8 +1841,6 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 		slog.Debug("sending_message", "phone", utils.MaskPhone(phone), "type", outMsg.Type(), "conversation_id", convID)
 		sendCtx, sendCancel := context.WithDeadline(context.WithoutCancel(ctx), p.sendDeadline(ctx))
 		birdMsgID, err := p.sendMessageCtx(sendCtx, phone, convID, outMsg)
-		// B-07: el envío a Néctar se abandonó por el plazo del turno, no por un fallo suyo.
-		abandoned := session.IsNectarSession(phone) && sendCtx.Err() != nil
 		sendCancel()
 		if err != nil {
 			slog.Error("send message error", "phone", utils.MaskPhone(phone), "session_id", sess.ID, "conversation_id", convID, "type", outMsg.Type(), "error", err)
@@ -1878,16 +1876,11 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 				}
 				continue
 			}
-			// B-07: abandonado por plazo no se reintenta. Si Néctar sí lo recibió, la clave queda en duda
-			// (B-02): un envío igual posterior la reutiliza y no sale dos veces.
-			if abandoned {
-				slog.Error("send message abandoned: se agotó el plazo del mensaje",
-					"phone", utils.MaskPhone(phone), "session_id", sess.ID, "type", outMsg.Type(), "error", err)
-				continue
-			}
 			// E6: async retry (retryDelay) via Channels API para errores transitorios
 			// (L16: wg-tracked → el shutdown lo espera/cancela). Corre fuera del turno: no retiene el
-			// candado del teléfono, así que un reintento nunca alarga el turno.
+			// candado del teléfono, así que un reintento nunca alarga el turno. También tras un envío
+			// abandonado por el plazo del turno (B-07): su clave queda en duda (B-02), y el reintento no
+			// duplica aunque Néctar sí lo hubiera recibido.
 			p.wg.Add(1)
 			go func(m statemachine.OutboundMessage, firstErr error) { //nolint:contextcheck // corre fuera del turno, ligado al app-ctx
 				defer p.wg.Done()

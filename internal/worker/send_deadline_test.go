@@ -53,7 +53,8 @@ func slowNectar(t *testing.T, delay time.Duration) (*MessageWorkerPool, *session
 	}
 }
 
-// B-07: con Néctar lenta, sendAndSave vuelve al vencer el plazo del mensaje y no lanza el reintento.
+// B-07: con Néctar lenta, sendAndSave vuelve al vencer el plazo del mensaje; lo abandonado tiene su primer
+// reintento fuera del turno, con la misma clave en duda (I-2).
 func TestSendAndSave_NectarSlow_RespectsMessageDeadline(t *testing.T) {
 	for name, msg := range map[string]statemachine.OutboundMessage{
 		"texto":   &statemachine.TextMessage{Text: "hola"},
@@ -74,18 +75,106 @@ func TestSendAndSave_NectarSlow_RespectsMessageDeadline(t *testing.T) {
 			if d := time.Since(start); d > 2*time.Second {
 				t.Fatalf("sendAndSave tardó %v con un plazo de 200 ms", d)
 			}
-			time.Sleep(5 * pool.retryDelay)
-			if got := keys(); len(got) != 1 {
-				t.Fatalf("abandonado por plazo no se reintenta: %d intentos", len(got))
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) && len(keys()) < 2 {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if got := keys(); len(got) != 2 || got[0] != got[1] {
+				t.Fatalf("el reintento de lo abandonado lleva la misma clave: %v", got)
 			}
 		})
 	}
 }
 
-// B-02: lo abandonado por plazo puede haber salido (Néctar contesta 2xx cuando el bot ya se fue): un
-// envío igual posterior lleva la misma clave y Néctar no lo manda dos veces.
+// I-2: un envío abandonado por el plazo del turno tiene su primer reintento, como antes del lote, y lo
+// entrega aunque el contexto del turno ya venció: corre con el de la aplicación.
+func TestSendAndSave_AbandonedSendGetsFirstRetry(t *testing.T) {
+	for name, first := range map[string]func(w http.ResponseWriter, release <-chan struct{}){
+		"502 lento": func(w http.ResponseWriter, _ <-chan struct{}) {
+			time.Sleep(300 * time.Millisecond)
+			w.WriteHeader(http.StatusBadGateway)
+		},
+		"cuelgue": func(_ http.ResponseWriter, release <-chan struct{}) { <-release },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			var keys []string
+			delivered := 0
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Key string `json:"idempotency_key"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				mu.Lock()
+				keys = append(keys, req.Key)
+				isFirst := len(keys) == 1
+				mu.Unlock()
+				if isFirst {
+					first(w, release)
+					return
+				}
+				mu.Lock()
+				delivered++
+				mu.Unlock()
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"id":55}`))
+			}))
+			t.Cleanup(func() { close(release); srv.Close() })
+			bc := bird.NewClientForTest(srv.URL)
+			bc.SetNectar(nectar.NewBridge(nectar.NewClient(srv.URL, "clave", "secreto"), nil))
+			pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
+			pool.birdClient = bc
+			pool.minSendBudget = 50 * time.Millisecond
+			sess := &session.Session{ID: "s-nectar", PhoneNumber: nectar.SessionKey(1234)}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			pool.sendAndSave(ctx, sess, sess.PhoneNumber, textResult())
+
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				mu.Lock()
+				done := delivered == 1
+				mu.Unlock()
+				if done {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if delivered != 1 || len(keys) != 2 || keys[0] != keys[1] {
+				t.Fatalf("entregados = %d, claves = %v", delivered, keys)
+			}
+		})
+	}
+}
+
+// El primer reintento también sale si ya empezó un turno posterior: el abandono no le quita esa regla.
+func TestSendAndSave_AbandonedFirstRetryHasNoGuard(t *testing.T) {
+	pool, sess, keys := slowNectar(t, 10*time.Second)
+	pool.retryDelay = 100 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	pool.sendAndSave(ctx, sess, sess.PhoneNumber, textResult())
+	pool.beginTurn(sess.PhoneNumber)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(keys()) < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := keys(); len(got) != 2 {
+		t.Fatalf("intentos = %d, quiero 2", len(got))
+	}
+}
+
+// B-02: lo abandonado puede haber salido (Néctar contesta 2xx cuando el bot ya se fue): un envío igual
+// posterior lleva la misma clave y Néctar no lo manda dos veces.
 func TestSendAndSave_AbandonedSendLeavesKeyInDoubt(t *testing.T) {
 	pool, sess, keys := slowNectar(t, 300*time.Millisecond)
+	pool.retryDelay = time.Minute // el envío igual llega antes que el reintento
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -96,6 +185,7 @@ func TestSendAndSave_AbandonedSendLeavesKeyInDoubt(t *testing.T) {
 	if len(got) != 2 || got[0] == "" || got[0] != got[1] {
 		t.Fatalf("claves = %v", got)
 	}
+	pool.Stop()
 }
 
 // Un turno que ya agotó su plazo manda igual su respuesta si Néctar contesta rápido.

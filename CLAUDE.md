@@ -399,7 +399,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   Para `nectar_down` cuentan el envío y el primer reintento (el último no: el aviso salta con los mismos mensajes que con un solo
   reintento), y un envío abandonado por el plazo del bot no cuenta.
   Los envíos del turno por Néctar llevan el plazo que le queda al mensaje (mínimo 5 s, para que un turno que lo gastó aún
-  responda); abandonado por plazo no se reintenta y su clave queda en duda. Quedan sin plazo propio (15 s del cliente):
+  responda); lo abandonado por plazo se reintenta fuera del turno como cualquier fallo, con su clave en duda. Quedan sin plazo propio (15 s del cliente):
   `SendTemplate`, `Available` y los envíos directos con `SendText`.
 - Avisos resuelta/devuelta de Néctar: su fila del WAL se cierra al procesar el comando; un aviso anterior a la
   escalación vigente (−2 min de tolerancia) se ignora.
