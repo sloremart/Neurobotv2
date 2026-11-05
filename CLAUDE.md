@@ -391,7 +391,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Reintentos de envío (`retrySend`, solo turnos del worker, nunca aperturas ni Bird, que sigue con su único reintento
   a los 10 s): en Néctar hasta 2 (10 s, 30 s) solo ante 5xx, transporte o 429, con la MISMA clave en duda; el 429 espera
   su Retry-After si es mayor (≤60 s; más: no se reintenta, evento `infra/send_retry_after_too_long`). Corren fuera del
-  candado; el 2.º y el de Retry-After largo no corren si no caben en el plazo del mensaje ni si ya salió otro mensaje a ese paciente.
+  candado; el 2.º y el de Retry-After largo no corren si no caben en el plazo del mensaje. El orden se compara por turno: un
+  reintento se descarta (con log) si ya salió un mensaje de un turno posterior; los mensajes de un mismo turno no se suprimen entre sí.
   Los envíos del turno por Néctar llevan el plazo que le queda al mensaje (mínimo 5 s, para que un turno que lo gastó aún
   responda); abandonado por plazo no se reintenta y su clave queda en duda. Quedan sin plazo propio (15 s del cliente):
   `SendTemplate`, `Available` y los envíos directos con `SendText`.

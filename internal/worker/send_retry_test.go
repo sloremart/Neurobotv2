@@ -1,12 +1,16 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,10 +22,23 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
-// sendAttempt es una llegada al falso Néctar: su clave y cuándo llegó.
+// sendAttempt es una llegada al falso Néctar: su clave, su texto, cuándo llegó y qué se le contestó.
 type sendAttempt struct {
-	key string
-	at  time.Time
+	key    string
+	text   string
+	at     time.Time
+	status int
+}
+
+// codeRecorder anota el código con el que contesta un paso del guion.
+type codeRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (r *codeRecorder) WriteHeader(code int) {
+	r.code = code
+	r.ResponseWriter.WriteHeader(code)
 }
 
 // fakeNectarSend es un falso Néctar cuyo guion dice qué contesta cada POST de mensaje (el último paso
@@ -55,14 +72,20 @@ func newNectarRetryPool(t *testing.T, script ...func(w http.ResponseWriter)) (*M
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
-			Key string `json:"idempotency_key"`
+			Key  string `json:"idempotency_key"`
+			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(body, &req)
 		f.mu.Lock()
-		f.attempts = append(f.attempts, sendAttempt{key: req.Key, at: time.Now()})
-		step := f.script[min(len(f.attempts), len(f.script))-1]
+		f.attempts = append(f.attempts, sendAttempt{key: req.Key, text: req.Text, at: time.Now()})
+		n := len(f.attempts)
+		step := f.script[min(n, len(f.script))-1]
 		f.mu.Unlock()
-		step(w)
+		rec := &codeRecorder{ResponseWriter: w}
+		step(rec)
+		f.mu.Lock()
+		f.attempts[n-1].status = rec.code
+		f.mu.Unlock()
 	}))
 	t.Cleanup(srv.Close)
 
@@ -77,6 +100,27 @@ func (f *fakeNectarSend) sent() []sendAttempt {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]sendAttempt(nil), f.attempts...)
+}
+
+// delivered son los textos que Néctar aceptó, en orden de llegada.
+func (f *fakeNectarSend) delivered() []string {
+	var out []string
+	for _, a := range f.sent() {
+		if a.status >= 200 && a.status < 300 {
+			out = append(out, a.text)
+		}
+	}
+	return out
+}
+
+func turnWith(messages ...statemachine.OutboundMessage) *statemachine.StateResult {
+	return &statemachine.StateResult{NextState: "MAIN_MENU", Messages: messages}
+}
+
+func text(s string) statemachine.OutboundMessage { return &statemachine.TextMessage{Text: s} }
+
+func buttons(s string) statemachine.OutboundMessage {
+	return &statemachine.ButtonMessage{Text: s, Buttons: []statemachine.Button{{Text: "a", Payload: "a"}}}
 }
 
 // waitAttempts espera a que lleguen n intentos y confirma que no llegan más.
@@ -211,44 +255,109 @@ func TestRetrySend_LongRetryAfterMustFitDeadline(t *testing.T) {
 	waitAttempts(t, f, 1, 150*time.Millisecond)
 }
 
-// El orden: si ya salió un mensaje posterior a ese paciente, el reintento extra no corre. El primero
-// sí, como siempre: no llega más tarde de lo que ya llegaba.
-func TestRetrySend_ExtraRetrySkippedAfterLaterMessage(t *testing.T) {
-	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway), status(http.StatusOK), status(http.StatusBadGateway))
+// I-1, Néctar cae y vuelve en un turno A+B: llegan los dos, aunque A salga antes en su reintento.
+func TestRetrySend_SameTurnBothArriveWhenNectarReturns(t *testing.T) {
+	bad := status(http.StatusBadGateway)
+	pool, f, sess := newNectarRetryPool(t, bad, bad, bad, bad, status(http.StatusCreated), status(http.StatusCreated))
 	pool.retryDelay = 400 * time.Millisecond // más que los 300 ms entre mensajes del turno
 
-	// Falla el primero; el segundo mensaje, posterior, sale; el primer reintento del primero falla.
-	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, &statemachine.StateResult{
-		NextState: "MAIN_MENU",
-		Messages: []statemachine.OutboundMessage{
-			&statemachine.ButtonMessage{Text: "elige", Buttons: []statemachine.Button{{Text: "a", Payload: "a"}}},
-			&statemachine.TextMessage{Text: "posterior"},
-		},
-	})
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(buttons("A"), text("B")))
 
-	got := waitAttempts(t, f, 3, 3*pool.retryDelay+200*time.Millisecond)
-	if got[2].key != got[0].key {
-		t.Fatalf("el tercer intento es el reintento del primero: %+v", got)
+	waitAttempts(t, f, 6, 100*time.Millisecond)
+	if got := f.delivered(); !slices.Contains(got, "A") || !slices.Contains(got, "B") {
+		t.Fatalf("llegan A y B: %v", got)
 	}
 }
 
-// Un segundo reintento sin mensajes posteriores sí corre aunque ya haya salido uno ANTES del fallo.
-func TestSentNectarAfter_OnlyCountsLaterMessages(t *testing.T) {
+// Dentro del turno, un hermano entregado no suprime al otro: llegan los dos.
+func TestRetrySend_SiblingDeliveredDoesNotSuppress(t *testing.T) {
+	bad := status(http.StatusBadGateway)
+	pool, f, sess := newNectarRetryPool(t, bad, status(http.StatusCreated), bad, status(http.StatusCreated))
+	pool.retryDelay = 400 * time.Millisecond
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(buttons("A"), text("B")))
+
+	waitAttempts(t, f, 4, 100*time.Millisecond)
+	if got := f.delivered(); !slices.Equal(got, []string{"B", "A"}) {
+		t.Fatalf("entregados = %v", got)
+	}
+}
+
+// I-1, dos turnos con Néctar cayendo y volviendo: el éxito del reintento de la vieja no suprime a la
+// nueva, que sale siempre, y la vieja nunca llega detrás de ella.
+func TestRetrySend_OldRetrySuccessDoesNotSuppressNewer(t *testing.T) {
+	bad := status(http.StatusBadGateway)
+	pool, f, sess := newNectarRetryPool(t, bad, bad, bad, bad, status(http.StatusCreated))
+	pool.retryDelay = 400 * time.Millisecond
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("VIEJA")))
+	time.Sleep(150 * time.Millisecond)
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("NUEVA")))
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !slices.Contains(f.delivered(), "NUEVA") {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(3*pool.retryDelay + 100*time.Millisecond)
+	got := f.delivered()
+	if len(got) == 0 || got[len(got)-1] != "NUEVA" {
+		t.Fatalf("la nueva sale y va la última: %v", got)
+	}
+}
+
+// Si la nueva ya salió a la primera, la vieja se descarta con log, también en su primer reintento.
+func TestRetrySend_OldDiscardedOnceNewerDelivered(t *testing.T) {
+	logged := captureSendLogs(t)
+	pool, f, sess := newNectarRetryPool(t, status(http.StatusBadGateway), status(http.StatusCreated))
+	pool.retryDelay = 100 * time.Millisecond
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("VIEJA")))
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("NUEVA")))
+
+	waitAttempts(t, f, 2, 5*pool.retryDelay)
+	if got := f.delivered(); !slices.Equal(got, []string{"NUEVA"}) {
+		t.Fatalf("entregados = %v", got)
+	}
+	if !strings.Contains(logged.String(), "turno posterior") {
+		t.Fatalf("falta el log del descarte: %s", logged.String())
+	}
+}
+
+// Y si la nueva salió en SU reintento, tampoco la vieja llega detrás (quitar el sello de los reintentos
+// no bastaría: por eso la guarda compara turnos).
+func TestRetrySend_OldDiscardedOnceNewerDeliveredOnRetry(t *testing.T) {
+	bad := status(http.StatusBadGateway)
+	pool, f, sess := newNectarRetryPool(t, bad, bad, bad, status(http.StatusCreated))
+	pool.retryDelay = 400 * time.Millisecond
+
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("VIEJA")))
+	time.Sleep(150 * time.Millisecond)
+	pool.sendAndSave(context.Background(), sess, sess.PhoneNumber, turnWith(text("NUEVA")))
+
+	waitAttempts(t, f, 4, 3*pool.retryDelay+100*time.Millisecond)
+	if got := f.delivered(); !slices.Equal(got, []string{"NUEVA"}) {
+		t.Fatalf("entregados = %v", got)
+	}
+}
+
+// El registro guarda el mayor turno entregado por paciente, nunca retrocede y la limpieza lo purga.
+func TestDeliveredTurns(t *testing.T) {
 	pool := retryTestPool(&mockMessageSender{}, &mockSessionMgmt{})
-	now := time.Now()
-	if pool.sentNectarAfter("nectar:1", now) {
+	if pool.laterTurnDelivered("nectar:1", 1) {
 		t.Fatal("sin envíos")
 	}
-	pool.lastNectarSend.Store("nectar:1", now.Add(-time.Second))
-	if pool.sentNectarAfter("nectar:1", now) {
-		t.Fatal("el envío es anterior")
+	pool.markTurnDelivered("nectar:1", 5)
+	pool.markTurnDelivered("nectar:1", 3) // el reintento de un turno viejo no lo hace retroceder
+	if !pool.laterTurnDelivered("nectar:1", 4) || pool.laterTurnDelivered("nectar:1", 5) ||
+		pool.laterTurnDelivered("nectar:2", 4) {
+		t.Fatal("solo cuenta un turno mayor, y de ese paciente")
 	}
-	pool.lastNectarSend.Store("nectar:1", now.Add(time.Second))
-	if !pool.sentNectarAfter("nectar:1", now) || pool.sentNectarAfter("nectar:2", now) {
-		t.Fatal("el envío es posterior, y solo de ese paciente")
+	pool.markTurnDelivered("+573001234567", 9)
+	if pool.laterTurnDelivered("+573001234567", 1) {
+		t.Fatal("Bird no lleva guarda: sigue con su reintento de siempre")
 	}
-	pool.purgeStaleLockMisses(now.Add(2*processMsgTimeout + 2*time.Second))
-	if _, ok := pool.lastNectarSend.Load("nectar:1"); ok {
+	pool.purgeStaleLockMisses(time.Now().Add(deliveredTurnTTL + time.Second))
+	if pool.laterTurnDelivered("nectar:1", 4) {
 		t.Fatal("la limpieza purga las entradas viejas")
 	}
 }
@@ -285,4 +394,31 @@ func TestSendAndSave_DoesNotWaitForRetries(t *testing.T) {
 		t.Fatalf("intentos dentro del turno = %d", n)
 	}
 	pool.Stop()
+}
+
+// lockedBuffer es un búfer que se puede leer mientras un reintento en otra goroutine escribe en el log.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureSendLogs(t *testing.T) *lockedBuffer {
+	t.Helper()
+	logged := &lockedBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return logged
 }

@@ -40,6 +40,9 @@ const (
 	maxSendRetryAfter = 60 * time.Second
 	// sendAttemptBudget es lo que puede tardar un intento de envío (el timeout del cliente de Néctar).
 	sendAttemptBudget = 15 * time.Second
+	// deliveredTurnTTL es cuánto se recuerda el turno entregado: más que la vida de un reintento
+	// (dos esperas de 60 s y tres intentos de 15 s).
+	deliveredTurnTTL = 4 * time.Minute
 	// defaultMinSendBudget es el plazo de un envío de un turno que ya gastó el suyo: la respuesta que
 	// decidió el turno todavía sale si Néctar contesta rápido (ver sendDeadline).
 	defaultMinSendBudget = 5 * time.Second
@@ -248,9 +251,12 @@ type MessageWorkerPool struct {
 
 	// retryDelay: espera antes del reintento de un envío fallido (solo errores transitorios).
 	retryDelay time.Duration
-	// lastNectarSend: teléfono → cuándo salió su último mensaje de Néctar (ver retrySend). La limpieza
-	// periódica purga las entradas viejas.
-	lastNectarSend sync.Map
+	// turnSeq numera los turnos que envían: los de un paciente van en orden porque los serializa su candado.
+	turnSeq atomic.Uint64
+	// deliveredTurns: teléfono → el mayor turno de Néctar del que salió un mensaje (ver retrySend). La
+	// limpieza periódica purga las entradas viejas.
+	deliveredMu    sync.Mutex
+	deliveredTurns map[string]deliveredTurn
 	// minSendBudget: ver defaultMinSendBudget.
 	minSendBudget time.Duration
 	// passTimeout acota cada pasada del replay de atascados (0 = utils.BackgroundPassTimeout).
@@ -557,6 +563,12 @@ func recoverLog(name string) {
 	}
 }
 
+// deliveredTurn es el mayor turno entregado a un paciente y cuándo.
+type deliveredTurn struct {
+	turn uint64
+	at   time.Time
+}
+
 // lockMiss sigue a un mensaje del WAL que no consiguió el candado de su teléfono (B-01): cuándo empezó
 // su primer intento fallido y si el paciente ya recibió el aviso de espera.
 type lockMiss struct {
@@ -704,12 +716,13 @@ func (p *MessageWorkerPool) renewDedupClaim(id string) {
 // volvieron (fila cerrada por otro camino). El margen doble de maxPhoneLockWait no toca a un mensaje
 // aún en vuelo: ese se rinde en su siguiente intento pasado maxPhoneLockWait y borra su entrada.
 func (p *MessageWorkerPool) purgeStaleLockMisses(now time.Time) {
-	p.lastNectarSend.Range(func(key, value interface{}) bool {
-		if now.Sub(value.(time.Time)) > 2*processMsgTimeout {
-			p.lastNectarSend.Delete(key)
+	p.deliveredMu.Lock()
+	for phone, d := range p.deliveredTurns {
+		if now.Sub(d.at) > deliveredTurnTTL {
+			delete(p.deliveredTurns, phone)
 		}
-		return true
-	})
+	}
+	p.deliveredMu.Unlock()
 	p.lockMisses.Range(func(key, value interface{}) bool {
 		if now.Sub(value.(lockMiss).first) > 2*maxPhoneLockWait {
 			p.lockMisses.Delete(key)
@@ -1789,6 +1802,7 @@ func (p *MessageWorkerPool) PreEscalationFlush(_ context.Context, sess *session.
 		}
 		messages = kept
 	}
+	turn := p.turnSeq.Add(1)
 	for i, m := range statemachine.CoalesceMessages(messages) {
 		if i > 0 {
 			time.Sleep(300 * time.Millisecond)
@@ -1796,7 +1810,9 @@ func (p *MessageWorkerPool) PreEscalationFlush(_ context.Context, sess *session.
 		if _, err := p.sendMessage(sess.PhoneNumber, sess.ConversationID, m); err != nil {
 			slog.Error("pre-escalation send error", "phone", utils.MaskPhone(sess.PhoneNumber),
 				"session_id", sess.ID, "type", m.Type(), "error", err)
+			continue
 		}
+		p.markTurnDelivered(sess.PhoneNumber, turn)
 	}
 	return true
 }
@@ -1808,6 +1824,7 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 	// Coalescer: los mensajes acumulados del turno (auto-chain: texto de transición + prompt del
 	// siguiente estado) se fusionan en el mínimo de envíos — Bird cobra cada uno por separado.
 	result.Messages = statemachine.CoalesceMessages(result.Messages)
+	turn := p.turnSeq.Add(1)
 
 	// Send messages — route via Conversations API when conversationID is available.
 	// Add a short delay between consecutive messages so WhatsApp preserves order
@@ -1875,12 +1892,13 @@ func (p *MessageWorkerPool) sendAndSave(ctx context.Context, sess *session.Sessi
 			// (L16: wg-tracked → el shutdown lo espera/cancela). Corre fuera del turno: no retiene el
 			// candado del teléfono, así que un reintento nunca alarga el turno.
 			p.wg.Add(1)
-			go func(m statemachine.OutboundMessage, firstErr error, failedAt, deadline time.Time) {
+			go func(m statemachine.OutboundMessage, firstErr error, deadline time.Time) { //nolint:contextcheck // corre fuera del turno, ligado al app-ctx
 				defer p.wg.Done()
-				p.retrySend(sess.ID, phone, m, firstErr, failedAt, deadline)
-			}(outMsg, err, time.Now(), retryDeadline(ctx))
+				p.retrySend(sess.ID, phone, m, firstErr, turn, deadline)
+			}(outMsg, err, retryDeadline(ctx))
 			continue
 		}
+		p.markTurnDelivered(phone, turn)
 		slog.Debug("message_sent_ok", "phone", utils.MaskPhone(phone), "type", outMsg.Type(), "bird_msg_id", birdMsgID)
 		if p.tracker != nil {
 			p.tracker.LogMessageSent(ctx, sess.ID, phone, outMsg.Type(), birdMsgID)
@@ -2048,18 +2066,9 @@ func (p *MessageWorkerPool) sendMessage(phone, conversationID string, msg statem
 	return p.sendMessageCtx(context.Background(), phone, conversationID, msg)
 }
 
-// sendMessageCtx envía un mensaje saliente y, si es de Néctar, anota cuándo salió (ver retrySend).
-func (p *MessageWorkerPool) sendMessageCtx(ctx context.Context, phone, conversationID string, msg statemachine.OutboundMessage) (string, error) {
-	id, err := p.deliverMessage(ctx, phone, conversationID, msg)
-	if err == nil && session.IsNectarSession(phone) {
-		p.lastNectarSend.Store(phone, time.Now())
-	}
-	return id, err
-}
-
-// deliverMessage envía un mensaje saliente vía Bird API.
+// sendMessageCtx envía un mensaje saliente vía Bird API.
 // Routes via Conversations API when conversationID is available.
-func (p *MessageWorkerPool) deliverMessage(ctx context.Context, phone, conversationID string, msg statemachine.OutboundMessage) (string, error) {
+func (p *MessageWorkerPool) sendMessageCtx(ctx context.Context, phone, conversationID string, msg statemachine.OutboundMessage) (string, error) {
 	withCtx, hasCtx := p.birdClient.(contextSender)
 	switch m := msg.(type) {
 	case *statemachine.TextMessage:
@@ -2100,9 +2109,13 @@ func (p *MessageWorkerPool) deliverMessage(ctx context.Context, phone, conversat
 //
 // Bird: un reintento a retryDelay, nada más (cobra cada POST, y sendWithRetry ya insiste). Néctar:
 // hasta nectar.MaxSendRetries (B-04, D-06), con la misma clave en duda (la pone el cliente). Lo que
-// va más allá del reintento de siempre a retryDelay no corre si no cabe antes de deadline, ni si ya
-// salió un mensaje posterior a ese paciente: llegaría fuera de orden más tarde de lo que ya pasaba.
-func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.OutboundMessage, err error, failedAt, deadline time.Time) {
+// va más allá del reintento de siempre a retryDelay no corre si no cabe antes de deadline.
+//
+// El orden en Néctar (I-1): se compara por turno, no por hora. Un reintento se descarta si ya salió un
+// mensaje de un turno POSTERIOR: esa respuesta vieja llegaría encima de la vigente. Los mensajes de un
+// mismo turno no se suprimen entre sí, y el éxito de un reintento viejo no afecta a uno más nuevo.
+// Solo se mira antes de cada intento: uno ya en vuelo puede cruzarse con el primer envío del turno nuevo.
+func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.OutboundMessage, err error, turn uint64, deadline time.Time) {
 	for attempt := 1; ; attempt++ {
 		wait, retry := p.sendRetryWait(sessionID, phone, attempt, err)
 		if !retry {
@@ -2127,8 +2140,8 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 		case <-p.ctx.Done():
 			return
 		}
-		if extra && p.sentNectarAfter(phone, failedAt) {
-			slog.Warn("send message retry skipped: ya salió un mensaje posterior",
+		if p.laterTurnDelivered(phone, turn) {
+			slog.Warn("send message retry discarded: ya salió la respuesta de un turno posterior",
 				"phone", utils.MaskPhone(phone), "type", msg.Type(), "attempt", attempt)
 			return
 		}
@@ -2137,6 +2150,7 @@ func (p *MessageWorkerPool) retrySend(sessionID, phone string, msg statemachine.
 		_, err = p.sendMessageCtx(attemptCtx, phone, "", msg)
 		attemptCancel()
 		if err == nil {
+			p.markTurnDelivered(phone, turn)
 			slog.Info(
 				"send_message_retry_succeeded",
 				"phone", utils.MaskPhone(phone),
@@ -2172,10 +2186,26 @@ func (p *MessageWorkerPool) sendRetryWait(sessionID, phone string, attempt int, 
 	return max(wait, retryAfter), true
 }
 
-// sentNectarAfter dice si a ese paciente le salió un mensaje de Néctar después de t.
-func (p *MessageWorkerPool) sentNectarAfter(phone string, t time.Time) bool {
-	v, ok := p.lastNectarSend.Load(phone)
-	return ok && v.(time.Time).After(t)
+// markTurnDelivered anota que salió un mensaje de ese turno (solo Néctar; Bird no lleva la guarda).
+func (p *MessageWorkerPool) markTurnDelivered(phone string, turn uint64) {
+	if !session.IsNectarSession(phone) {
+		return
+	}
+	p.deliveredMu.Lock()
+	defer p.deliveredMu.Unlock()
+	if p.deliveredTurns == nil {
+		p.deliveredTurns = map[string]deliveredTurn{}
+	}
+	if turn >= p.deliveredTurns[phone].turn {
+		p.deliveredTurns[phone] = deliveredTurn{turn: turn, at: time.Now()}
+	}
+}
+
+// laterTurnDelivered dice si a ese paciente ya le salió un mensaje de un turno posterior a turn.
+func (p *MessageWorkerPool) laterTurnDelivered(phone string, turn uint64) bool {
+	p.deliveredMu.Lock()
+	defer p.deliveredMu.Unlock()
+	return p.deliveredTurns[phone].turn > turn
 }
 
 // retryDeadline es hasta cuándo pueden correr los reintentos extra de un envío del turno: el plazo del
