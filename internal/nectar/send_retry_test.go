@@ -270,6 +270,8 @@ func TestRetryAfter_ExposedOn429(t *testing.T) {
 		{"enorme", "9223372036854775807", http.StatusTooManyRequests, maxParsedRetryAfter, maxParsedRetryAfter},
 		{"no cabe en int", "99999999999999999999999", http.StatusTooManyRequests, maxParsedRetryAfter, maxParsedRetryAfter},
 		{"negativo que no cabe", "-99999999999999999999999", http.StatusTooManyRequests, 0, 0},
+		{"negativo cuyo producto desborda", "-10000000000", http.StatusTooManyRequests, 0, 0},
+		{"negativo mínimo", "-9223372036854775808", http.StatusTooManyRequests, 0, 0},
 		{"un 503 no cuenta", "30", http.StatusServiceUnavailable, 0, 0},
 	}
 	for _, tc := range cases {

@@ -80,7 +80,10 @@ func parseRetryAfter(h string) time.Duration {
 	h = strings.TrimSpace(h)
 	// Un número que no cabe en int llega con el extremo de su signo y ErrRange: sigue siendo «demasiado».
 	if secs, err := strconv.Atoi(h); err == nil || errors.Is(err, strconv.ErrRange) {
-		return max(0, time.Duration(min(secs, int(maxParsedRetryAfter/time.Second)))*time.Second)
+		if secs <= 0 {
+			return 0 // negativo: inválido
+		}
+		return time.Duration(min(secs, int(maxParsedRetryAfter/time.Second))) * time.Second
 	}
 	if at, err := http.ParseTime(h); err == nil {
 		return max(0, min(time.Until(at), maxParsedRetryAfter))
