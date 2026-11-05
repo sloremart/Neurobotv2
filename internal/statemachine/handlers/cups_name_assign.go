@@ -112,7 +112,8 @@ func cupsNameDoubtNote(name string, candidates []services.CupsCandidate) string 
 // prefijo (services.CUPSEntry.ReadDoubtWith): pueden ser el mismo procedimiento u otro.
 func cupsReadDoubtNote(name, other string) string {
 	return fmt.Sprintf("POSIBLE MALA LECTURA DEL CUPS: la orden dice «%s» sin código y en otra hoja «%s». Pueden ser "+
-		"el mismo procedimiento o dos distintos (unilateral o bilateral). Verifica la orden y devuelve los CUPS correctos.",
+		"el mismo procedimiento o dos distintos (unilateral o bilateral, otra cantidad, sedación u observaciones). "+
+		"Verifica la orden y devuelve los CUPS correctos.",
 		oneLine(name), oneLine(other))
 }
 

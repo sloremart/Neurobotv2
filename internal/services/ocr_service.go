@@ -192,8 +192,8 @@ type CUPSEntry struct {
 	OrderName string `json:"order_name,omitempty"`
 	// ReadDoubtWith es el nombre de otra hoja de la misma orden al que este se parece sin ser igual: solo por
 	// prefijo (MIEMBRO frente a MIEMBROS: en CUPS es unilateral frente a bilateral) o con un calificador en
-	// silencio (RX TORAX frente a TORAX). No se sabe si es el mismo procedimiento: VALIDATE_OCR lo manda a un
-	// agente, sin asignarle código.
+	// silencio (RX TORAX frente a TORAX), o igual pero con otra cantidad, sedación, contraste u observaciones.
+	// No se sabe si es el mismo procedimiento: VALIDATE_OCR lo manda a un agente, sin asignarle código.
 	ReadDoubtWith string `json:"read_doubt_with,omitempty"`
 }
 
@@ -757,24 +757,36 @@ func (s *OCRService) analyzePages(ctx context.Context, uris []string) (*OCRResul
 // addUncodedFrom añade a dst los procedimientos SIN código de src que dst no trae ya (compareReadNames).
 // Solo no se añade lo estrictamente igual: la asignación por nombre lo vería como un código repetido y
 // mandaría la orden a un agente. Lo parecido se añade marcado como duda (ReadDoubtWith), para que no se
-// descarte en silencio ni se le asigne un código; lo distinto se añade tal cual.
+// descarte en silencio ni se le asigne un código; lo distinto se añade tal cual. Lo igual con otra cantidad,
+// sedación, contraste u observaciones también es duda: descartarlo perdería esos datos.
 func addUncodedFrom(dst, src *OCRResult) {
 	if dst == nil || src == nil {
 		return
 	}
-	// Lo que src trae dos veces con el mismo texto entra una vez, aunque ese nombre no se pueda comparar.
-	seen := map[string]bool{}
+	// Lo que src trae dos veces con el mismo texto y los mismos datos entra una vez, aunque ese nombre no se
+	// pueda comparar. Con otros datos es duda.
+	seenNames, seenReadings := map[string]bool{}, map[string]bool{}
 	for _, c := range src.Cups {
-		literal := foldOrderName(strings.TrimSpace(c.Name))
-		if strings.TrimSpace(c.Code) != "" || literal == "" || seen[literal] {
+		name := strings.TrimSpace(c.Name)
+		literal := foldOrderName(name) + strings.Join(quantityMarkDigits(name), ",")
+		reading := literal + "|" + orderDataKey(c)
+		if strings.TrimSpace(c.Code) != "" || name == "" || seenReadings[reading] {
 			continue
 		}
-		seen[literal] = true
+		seenReadings[reading] = true
+		if seenNames[literal] {
+			c.ReadDoubtWith = c.Name
+		}
+		seenNames[literal] = true
 		same := false
 		for _, d := range dst.Cups {
 			switch compareReadNames(d.Name, c.Name) {
 			case CupsNamesEqual:
-				same = true
+				if orderDataKey(d) == orderDataKey(c) {
+					same = true
+				} else {
+					c.ReadDoubtWith = d.Name
+				}
 			case CupsNamesByPrefix:
 				c.ReadDoubtWith = d.Name
 			case CupsNamesDiffer:
@@ -784,6 +796,13 @@ func addUncodedFrom(dst, src *OCRResult) {
 			dst.Cups = append(dst.Cups, c)
 		}
 	}
+}
+
+// orderDataKey resume lo que la orden dice de un procedimiento además del nombre, lo que cambia los cupos y la
+// sedación: sin cantidad escrita (0) vale 1.
+func orderDataKey(c CUPSEntry) string {
+	return fmt.Sprintf("%d|%t|%t|%s", max(c.Quantity, 1), c.IsSedated, c.IsContrasted,
+		accentFolder.Replace(strings.ToUpper(strings.TrimSpace(c.Observations))))
 }
 
 // minPDFTextWords: por debajo de esto el PDF NO tiene una capa de texto útil (un escaneo trae cero o
