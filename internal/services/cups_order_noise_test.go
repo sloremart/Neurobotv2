@@ -1,9 +1,6 @@
 package services
 
-import (
-	"slices"
-	"testing"
-)
+import "testing"
 
 // Lo que el catálogo no distingue no es duda al asignar: 873444 es solo de extremidades, así que las oblicuas de
 // una columna no cambian de código; y los potenciales se facturan por extremidad como la EMG. Al descartar una
@@ -93,11 +90,29 @@ func TestResolveCupsByName_NoiseOnlyInItsCase(t *testing.T) {
 	}
 	// Las extremidades de una radiografía comparativa no son la radiografía comparativa a secas.
 	for _, read := range []string{"RX COMPARATIVAS DE EXTREMIDADES SUPERIORES", "RX COMPARATIVAS EXTREMIDADES SUPERIORES"} {
-		if got := acceptedByAdversary(read, catalog, false); slices.Contains(got, "1005927") {
-			t.Errorf("%q: se asignaría la comparativa a secas", read)
+		if res := ResolveCupsByName(read, catalog, false, nil); res.Code != "873123" {
+			t.Errorf("%q: %+v, quiero 873123 por nombre igual", read, res)
 		}
-		if res := ResolveCupsByName(read, catalog, false, nil); len(res.Candidates) == 0 {
-			t.Errorf("%q debe ir al agente con candidatos", read)
+	}
+	// Singular y plural valen lo mismo; superiores e inferiores nunca.
+	for _, read := range []string{"RX COMPARATIVA DE EXTREMIDADES SUPERIORES", "RADIOGRAFIA COMPARATIVA EXTREMIDADES SUPERIORES", "RX COMPARATIVAS MMSS"} {
+		if res := ResolveCupsByName(read, catalog, false, nil); res.Code != "873123" {
+			t.Errorf("%q: %+v, quiero 873123", read, res)
+		}
+	}
+	if res := ResolveCupsByName("RX COMPARATIVAS", catalog, false, nil); res.Code != "1005927" {
+		t.Errorf("la comparativa a secas: %+v", res)
+	}
+	for _, p := range [][2]string{
+		{"RADIOGRAFIAS COMPARATIVAS DE EXTREMIDADES SUPERIORES", "RADIOGRAFIAS COMPARATIVAS DE EXTREMIDADES INFERIORES"},
+		{"RX COMPARATIVAS EXTREMIDADES SUPERIORES", "RX COMPARATIVA EXTREMIDADES INFERIORES"},
+		{"RX COMPARATIVAS MMSS", "RX COMPARATIVAS MMII"},
+	} {
+		if got := compareReadNames(p[0], p[1]); got != CupsNamesDiffer {
+			t.Errorf("compareReadNames(%q, %q) = %d", p[0], p[1], got)
+		}
+		if got := CompareCupsNames(canonicalOrderName(p[0]), canonicalOrderName(p[1])); got != CupsNamesDiffer {
+			t.Errorf("CompareCupsNames(%q, %q) = %d", p[0], p[1], got)
 		}
 	}
 	// En la EMG y la NC las extremidades siguen siendo solo dónde se hacen.

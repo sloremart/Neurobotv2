@@ -70,7 +70,7 @@ var orderAbbreviations = map[string]string{
 	"TACAR": "TOMOGRAFIA ALTA RESOLUCION TORAX",
 	"AXIAL": "", "COMPUTADA": "", "COMPUTARIZADA": "",
 	"ECO": "ECOGRAFIA", "US": "ECOGRAFIA", "ULTRASONOGRAFIA": "ECOGRAFIA", "ULTRASONIDO": "ECOGRAFIA",
-	"RX":  "RADIOGRAFIA",
+	"RX": "RADIOGRAFIA", "RADIOGRAFIAS": "RADIOGRAFIA", "COMPARATIVAS": "COMPARATIVA",
 	"EMG": "ELECTROMIOGRAFIA", "NC": "NEUROCONDUCCION", "VCN": "NEUROCONDUCCION",
 	"NEUROCONDUCCIONES": "NEUROCONDUCCION", "ELECTROMIOGRAFIAS": "ELECTROMIOGRAFIA",
 	"EEG": "ELECTROENCEFALOGRAMA", "ELECTROENCEFALOGRAFIA": "ELECTROENCEFALOGRAMA",
@@ -624,7 +624,8 @@ func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
 	if namesLimbStudy(readWords) {
 		readContent = slices.DeleteFunc(readContent, func(w string) bool { return limbWords[w] })
 	}
-	// 873444 es solo de extremidades: en una columna, el catálogo no distingue las oblicuas.
+	// 873444 es solo de extremidades: en una columna, el catálogo no distingue las oblicuas. Si el catálogo añade
+	// un código de oblicuas de columna, esta regla hay que retirarla.
 	if slices.Contains(readWords, "COLUMNA") {
 		readContent = slices.DeleteFunc(readContent, func(w string) bool { return w == "OBLICUA" || w == "OBLICUAS" })
 	}
