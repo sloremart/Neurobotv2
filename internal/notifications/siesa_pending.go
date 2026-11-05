@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -52,6 +53,14 @@ const (
 	siesaPendingMaxAge = 6 * time.Hour
 	// siesaPendingMinLead: con la cita a menos de esto, la atiende una persona.
 	siesaPendingMinLead = 2 * time.Hour
+)
+
+// SIESA colgada (no caída: la lectura no responde). La lectura de cada fila tiene plazo corto dentro
+// del de la fila y, tras siesaHungReadsPerPass seguidas vencidas, la pasada termina: las demás filas
+// se colgarían igual y agotarían el plazo de la pasada, con su aviso a Telegram cada pocos minutos.
+const (
+	siesaReadTimeout      = 15 * time.Second
+	siesaHungReadsPerPass = 2
 )
 
 // SiesaPendingRow es una respuesta al recordatorio pendiente de aplicar en SIESA.
@@ -181,13 +190,22 @@ func (m *NotificationManager) retrySiesaPending(ctx context.Context, now time.Ti
 		}
 		return
 	}
+	hungReads := 0
 	for _, row := range rows {
 		if ctx.Err() != nil {
 			return // pasada vencida o apagado: las que faltan, en la pasada siguiente
 		}
 		rowCtx, cancel := utils.RowContext(ctx)
-		m.retrySiesaRow(rowCtx, row, now)
+		hung := m.retrySiesaRow(rowCtx, row, now)
 		cancel()
+		if !hung {
+			hungReads = 0
+			continue
+		}
+		if hungReads++; hungReads >= siesaHungReadsPerPass {
+			slog.Warn("respuestas pendientes de SIESA: SIESA no responde, la pasada termina aquí", "filas", len(rows))
+			return
+		}
 	}
 }
 
@@ -196,46 +214,47 @@ func (m *NotificationManager) retrySiesaPending(ctx context.Context, now time.Ti
 // encuentra la cita ya como pidió el paciente y la cierra sin reenviar nada. Lo mismo vale si
 // ConfirmBlock escribió pero devolvió error (escritura en duda) o si la confirmó otro: se cierra como
 // already_applied y el paciente se queda con el aviso «la registraremos», sin el detalle de la cita.
-func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendingRow, now time.Time) {
+// Devuelve hung si la lectura de SIESA venció su plazo corto.
+func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendingRow, now time.Time) (hung bool) {
 	if !m.lockPhone(row.Phone) { //nolint:contextcheck // el candado del manager acota su propia espera
-		return // la pasada siguiente la retoma
+		return false // la pasada siguiente la retoma
 	}
 	defer m.unlockPhone(row.Phone)
 
 	pending := row.notification()
 	expired := row.PendingFor > siesaPendingMaxAge
-	appt, block, err := m.apptSvc.FindBlockByAppointmentID(ctx, row.AppointmentID)
+	appt, block, hung, err := m.readSiesaRow(ctx, row)
 	if err != nil {
 		if expired {
 			m.handOverSiesaRow(ctx, row, pending, nil, siesaOutcomeGaveUp, true, now)
-			return
+			return hung
 		}
 		m.recordSiesaFailure(ctx, row, err)
-		return
+		return hung
 	}
 	// Con la cita leída, una ya resuelta se cierra en silencio aunque haya vencido el tope.
 	switch siesaCheck(row, appt) {
 	case siesaOutcomeAlreadyApplied:
 		m.finishSiesaRow(ctx, row, siesaOutcomeAlreadyApplied)
-		return
+		return false
 	case siesaOutcomeNotApplicable:
 		capped := expired || (appt != nil && startsWithin(appt, now, siesaPendingMinLead))
 		m.handOverSiesaRow(ctx, row, pending, appt, siesaOutcomeNotApplicable, capped, now)
-		return
+		return false
 	}
 	if expired || startsWithin(appt, now, siesaPendingMinLead) {
 		m.handOverSiesaRow(ctx, row, pending, appt, siesaOutcomeGaveUp, true, now)
-		return
+		return false
 	}
 
 	if row.Action == siesaActionCancel {
 		m.promptDeferredCancel(ctx, row, pending, appt, block, now)
-		return
+		return false
 	}
 
 	if err := m.apptSvc.ConfirmBlock(ctx, block, "whatsapp_bot", row.ConversationID); err != nil {
 		m.recordSiesaFailure(ctx, row, err)
-		return
+		return false
 	}
 	_, _ = m.birdClient.SendText(row.Phone, row.ConversationID, m.buildConfirmationMessage(ctx, appt, block)) //nolint:contextcheck // cliente Bird sin ctx (patrón existente)
 
@@ -255,6 +274,20 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	slog.Info("respuesta pendiente de SIESA aplicada",
 		"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action,
 		"attempts", row.Attempts, "total", len(block))
+	return false
+}
+
+// readSiesaRow lee la cita de la fila con el plazo corto de la lectura. hung: venció ese plazo (no el
+// corte por el apagado).
+func (m *NotificationManager) readSiesaRow(ctx context.Context, row SiesaPendingRow) (appt *domain.Appointment, block []domain.Appointment, hung bool, err error) {
+	timeout := m.siesaReadTimeout
+	if timeout <= 0 {
+		timeout = siesaReadTimeout
+	}
+	readCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	appt, block, err = m.apptSvc.FindBlockByAppointmentID(readCtx, row.AppointmentID)
+	return appt, block, err != nil && errors.Is(readCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil, err
 }
 
 // promptDeferredCancel abre la confirmación de la cancelación, la misma que al pulsar «Cancelar»

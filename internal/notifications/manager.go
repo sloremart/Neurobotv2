@@ -247,6 +247,8 @@ type NotificationManager struct {
 
 	// passTimeout acota cada pasada del checker de expiraciones (0 = utils.BackgroundPassTimeout).
 	passTimeout time.Duration
+	// siesaReadTimeout acota la lectura de SIESA de una fila pendiente (0 = siesaReadTimeout).
+	siesaReadTimeout time.Duration
 
 	// responses rastrea las respuestas a plantillas lanzadas en segundo plano (GoHandleResponse)
 	// para que el apagado las espere (WaitResponses, D-10). responsesMu y responsesClosed cierran la

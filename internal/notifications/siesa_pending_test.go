@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1041,5 +1043,92 @@ func TestSiesaPending_AckOncePerChangeOfResponse(t *testing.T) {
 	}
 	if rows := h.store.pending(); len(rows) != 1 || rows[0].Action != siesaActionConfirm {
 		t.Fatalf("queda pendiente lo último que oyó: %+v", rows)
+	}
+}
+
+// markRows deja n respuestas pendientes de confirmar, cada una con su teléfono.
+func (h *siesaHarness) markRows(t *testing.T, n int) {
+	t.Helper()
+	for i := range n {
+		row := SiesaPendingRow{
+			Phone: fmt.Sprintf("+57300000%04d", i), Type: "confirmation", AppointmentID: fmt.Sprintf("APT%03d", i),
+			ConversationID: "conv-1", Action: siesaActionConfirm,
+		}
+		if _, err := h.store.MarkSiesaPending(context.Background(), row, "confirmed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// m18: la lectura de SIESA de una fila va con plazo corto, dentro del de la fila.
+func TestSiesaPending_ReadHasShortDeadline(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.markRows(t, 1)
+	var left time.Duration
+	repo := h.siesa.repo()
+	repo.findByIDFn = func(ctx context.Context, _ string) (*domain.Appointment, error) {
+		if dl, ok := ctx.Deadline(); ok {
+			left = time.Until(dl)
+		}
+		return nil, errSiesaDown
+	}
+	h.mgr.apptSvc = services.NewAppointmentService(repo, nil)
+	h.pass(time.Now())
+	if left <= 0 || left > siesaReadTimeout {
+		t.Errorf("plazo de la lectura = %v, want ≤ %v", left, siesaReadTimeout)
+	}
+}
+
+// m18: con SIESA colgada la pasada no se consume leyendo fila tras fila: se corta en la segunda lectura
+// vencida, sin avisar de una pasada vencida, y cada fila queda para la siguiente. Una lectura que falla
+// sin colgarse no corta nada.
+func TestSiesaPending_HungSiesaEndsPassEarly(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.mgr.siesaReadTimeout = 20 * time.Millisecond
+	h.markRows(t, 5)
+	var reads atomic.Int32
+	hung := atomic.Bool{}
+	hung.Store(true)
+	repo := h.siesa.repo()
+	repo.findByIDFn = func(ctx context.Context, _ string) (*domain.Appointment, error) {
+		reads.Add(1)
+		if hung.Load() {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return nil, errSiesaDown
+	}
+	h.mgr.apptSvc = services.NewAppointmentService(repo, nil)
+
+	h.pass(time.Now())
+	if got := reads.Load(); got != siesaHungReadsPerPass {
+		t.Fatalf("lecturas con SIESA colgada = %d, want %d", got, siesaHungReadsPerPass)
+	}
+	rows := h.store.pending()
+	if len(rows) != 5 || rows[0].Attempts != 1 || rows[1].Attempts != 1 || rows[2].Attempts != 0 {
+		t.Errorf("filas = %+v", rows)
+	}
+
+	hung.Store(false)
+	reads.Store(0)
+	h.pass(time.Now())
+	if got := reads.Load(); got != 5 {
+		t.Errorf("con SIESA respondiendo error se leen todas: lecturas = %d, want 5", got)
+	}
+}
+
+// m18: un corte de la fila por el apagado no es una SIESA colgada.
+func TestSiesaPending_ShutdownIsNotHung(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.markRows(t, 1)
+	repo := h.siesa.repo()
+	ctx, cancel := context.WithCancel(context.Background())
+	repo.findByIDFn = func(ctx context.Context, _ string) (*domain.Appointment, error) {
+		cancel()
+		return nil, ctx.Err()
+	}
+	h.mgr.apptSvc = services.NewAppointmentService(repo, nil)
+	if h.mgr.retrySiesaRow(ctx, h.store.pending()[0], time.Now()) {
+		t.Error("un ctx cancelado no cuenta como SIESA colgada")
 	}
 }
