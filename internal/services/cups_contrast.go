@@ -54,7 +54,8 @@ var contrastEdgeWords = map[string]bool{"Y": true, "DE": true}
 // negationWords sueltas junto a una mención dejan el contraste sin leer («NO REQUIERE CONTRASTE»).
 var negationWords = map[string]bool{"NO": true, "NI": true, "NEGATIVO": true, "SIN": true}
 
-// contrastNear son las palabras a las que una mención con una letra de más, de menos o cambiada se parece.
+// contrastNear son las palabras a las que una mención con una letra de más, de menos, cambiada o dos trocadas se
+// parece («CONTRATE», «CONSTRASTE», «CONTRATSE»).
 var contrastNear = []string{"CONTRASTE", "CONTRASTADO", "CONTRASTADA", "GADOLINIO"}
 
 // contrastSlashForms son las abreviaturas con barra que la gramática entiende, puestas en palabras.
@@ -209,7 +210,8 @@ func mentionsContrast(run []string, atEnd bool) bool {
 	return hasCon && hasSin || hasMedio && (hasCon || hasSin) || atEnd && (hasCon || hasSin)
 }
 
-// oneEditApart dice si dos palabras se diferencian en una letra de más, de menos o cambiada.
+// oneEditApart dice si dos palabras se diferencian en una letra de más, de menos o cambiada, o en dos seguidas
+// trocadas (el error de tecla y de OCR más común: «CONTRATSE»).
 func oneEditApart(a, b string) bool {
 	if a == b {
 		return true
@@ -225,7 +227,7 @@ func oneEditApart(a, b string) bool {
 		i++
 	}
 	if len(a) == len(b) {
-		return a[i+1:] == b[i+1:]
+		return a[i+1:] == b[i+1:] || i+1 < len(a) && a[i] == b[i+1] && a[i+1] == b[i] && a[i+2:] == b[i+2:]
 	}
 	return a[i+1:] == b[i:]
 }

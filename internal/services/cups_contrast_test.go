@@ -58,6 +58,7 @@ func TestReadContrast_Grammar(t *testing.T) {
 			"C/X", "X/C", "TAC C/X CRANEO", "CONTRASTE N/A", "S.C.", "C.C.", "CONTRASTE?",
 			// Palabra parecida a CONTRASTE pero que no es la de la gramática.
 			"CONTRASTES", "CONTRAST", "CONTRATE", "CONTRASE", "CONSTRASTE", "NOCONTRASTADO", "SIN CONTRAS",
+			"SIN CONTRATSE", "CON CONTRASET", "GADOLINOI",
 			// Negado de otra forma: lo que dice no está en la gramática.
 			"CONTRASTE NEGATIVO", "NI CONTRASTE", "NO SE REQUIERE CONTRASTE", "NO REQUIERE CONTRASTE", "NO USAR CONTRASTE",
 			"NO APLICA CONTRASTE", "CONTRASTE NO APLICA", "NO HAY CONTRASTE", "NO LLEVA CONTRASTE", "NO 1 CONTRASTE",
