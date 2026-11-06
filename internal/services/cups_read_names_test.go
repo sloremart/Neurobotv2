@@ -137,6 +137,7 @@ func TestCompareReadNames_AllGuardNamesOfOtherCodesAreNeverEqual(t *testing.T) {
 		if x.verdict != "OK" {
 			continue
 		}
+		validFor := readsOf[CupsNameKey(x.read)]
 		for _, y := range pairs {
 			if y.verdict != "OK" || x.code == y.code {
 				continue
@@ -145,7 +146,7 @@ func TestCompareReadNames_AllGuardNamesOfOtherCodesAreNeverEqual(t *testing.T) {
 			if compareReadNames(x.catalog, y.catalog) == CupsNamesEqual {
 				t.Errorf("catálogo: %s «%s» igual a %s «%s»", x.code, x.catalog, y.code, y.catalog)
 			}
-			if !readsOf[CupsNameKey(x.read)][y.code] && compareReadNames(x.read, y.catalog) == CupsNamesEqual {
+			if !validFor[y.code] && compareReadNames(x.read, y.catalog) == CupsNamesEqual {
 				t.Errorf("leído %s «%s» igual al catálogo %s «%s»", x.code, x.read, y.code, y.catalog)
 			}
 		}

@@ -186,9 +186,8 @@ func diagnosisNamesAProcedure(diagnosis []string, catalog []CupsCandidate) bool 
 	}
 	words := distinctiveWords(canonicalOrderName(strings.Join(diagnosis, " ")))
 	for _, c := range catalog {
-		if slices.ContainsFunc(words, func(w string) bool {
-			return allWordsIn([]string{w}, distinctiveWords(canonicalOrderName(c.Name)), pluralWord)
-		}) {
+		rowWords := rowOf(c.Name).words
+		if slices.ContainsFunc(words, func(w string) bool { return allWordsIn([]string{w}, rowWords, pluralWord) }) {
 			return true
 		}
 	}
@@ -309,7 +308,10 @@ func CupsNameKey(name string) string { return canonicalOrderName(name) }
 //   - CupsNamesDiffer (se conserva sin código): lo demás, también un nombre sin palabras que lo distingan:
 //     «CONSULTA ESPECIALISTA» no dice con qué comparar.
 func compareReadNames(a, b string) CupsNameMatch {
-	ca, cb := canonicalOrderName(a), canonicalOrderName(b)
+	// Las formas canónicas se cachean también para las lecturas (con el tope de la caché): entre hojas se comparan
+	// las mismas pocas lecturas muchas veces.
+	rowA, rowB := rowOf(a), rowOf(b)
+	ca, cb := rowA.canon, rowB.canon
 	wa, wb := readNameWords(ca), readNameWords(cb)
 	if !hasSpecificWord(wa) || !hasSpecificWord(wb) {
 		return CupsNamesDiffer
@@ -323,7 +325,7 @@ func compareReadNames(a, b string) CupsNameMatch {
 	if allWordsIn(wa, wb, prefixWord) && allWordsIn(wb, wa, prefixWord) {
 		return CupsNamesByPrefix
 	}
-	if candidateFits(ca, b) || candidateFits(cb, a) {
+	if rowFits(newReadSide(ca), rowB) || rowFits(newReadSide(cb), rowA) {
 		return CupsNamesByPrefix
 	}
 	ra, rb := withoutContrast(wa), withoutContrast(wb)
@@ -435,9 +437,12 @@ func resolveFoldedRead(
 	// Una lectura sin región frente a varias filas que son ese procedimiento con región es duda, aunque
 	// exista la fila a secas: «RX COMPARATIVAS» puede ser cualquiera de las comparativas con región.
 	regionless := regionalRows(canonRead, catalog) >= minRegionalRowsForDoubt
+	side := newReadSide(canonRead)
 	var equal []CupsCandidate
 	for _, c := range catalog {
-		if CompareCupsNames(canonRead, canonicalOrderName(c.Name)) == CupsNamesEqual {
+		// Las dos formas ya son canónicas: la pareja se compara sin volver a canonizar (CompareCupsNames).
+		row := rowOf(c.Name)
+		if compareNameWords(side.words, row.words, canonRead+" "+row.canon) == CupsNamesEqual {
 			equal = append(equal, c)
 		}
 	}
@@ -448,7 +453,7 @@ func resolveFoldedRead(
 	// «en cada extremidad (uno o más músculos)») puede quedar lejos por parecido y ser el único que encaja.
 	var fitting, rest []CupsCandidate
 	for _, c := range nameCandidates(retrievalRead, catalog) {
-		if candidateFits(canonRead, c.Name) {
+		if rowFits(side, rowOf(c.Name)) {
 			fitting = append(fitting, c)
 		} else {
 			rest = append(rest, c)
@@ -491,17 +496,17 @@ func regionalRows(canonRead string, catalog []CupsCandidate) int {
 	if len(regionGroup.groupValues(canonRead)) > 0 || len(spineGroup.groupValues(canonRead)) > 0 {
 		return 0
 	}
-	readWords := regionalRowWords(canonRead, orderNoise)
+	readWords := regionalRowWords(distinctiveWords(canonRead), orderNoise)
 	if len(readWords) == 0 {
 		return 0
 	}
 	n := 0
 	for _, c := range catalog {
-		cc := canonicalOrderName(catalogAnnotation.ReplaceAllString(c.Name, " "))
-		if len(regionGroup.groupValues(cc)) == 0 {
+		row := rowOf(c.Name)
+		if len(regionGroup.groupValues(row.core)) == 0 {
 			continue
 		}
-		rowWords := regionalRowWords(cc, catalogNoise)
+		rowWords := regionalRowWords(row.coreWords, catalogNoise)
 		if allWordsIn(readWords, rowWords, pluralWord) && allWordsIn(rowWords, readWords, pluralWord) {
 			n++
 		}
@@ -509,12 +514,12 @@ func regionalRows(canonRead string, catalog []CupsCandidate) int {
 	return n
 }
 
-// regionalRowWords son las palabras con que se compara una fila con región frente al leído sin región: las
-// distintivas sin encabezados, ruido, números, nivel, lado ni la región o el segmento. La modalidad y los demás
+// regionalRowWords son las palabras con que se compara una fila con región frente al leído sin región: de las
+// distintivas, sin encabezados, ruido, números, nivel, lado ni la región o el segmento. La modalidad y los demás
 // calificadores (PERFUSION, CONTRASTE, PEDIATRICA…) sí cuentan: cambian el procedimiento.
-func regionalRowWords(canon string, noise map[string]bool) []string {
+func regionalRowWords(words []string, noise map[string]bool) []string {
 	var out []string
-	for _, w := range distinctiveWords(canon) {
+	for _, w := range words {
 		if retrievalStopWords[w] || noise[w] || strings.Trim(w, "0123456789") == "" || spineLevel.MatchString(w) ||
 			sideValues[w] != "" || len(regionGroup.groupValues(w)) > 0 || len(spineGroup.groupValues(w)) > 0 {
 			continue
@@ -547,7 +552,7 @@ func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 	}
 	var found []scored
 	for _, c := range catalog {
-		catWords := distinctiveWords(canonicalOrderName(c.Name))
+		catWords := rowOf(c.Name).words
 		matched := 0
 		for _, r := range readWords {
 			for _, w := range catWords {
@@ -777,12 +782,16 @@ func CupsNamesConflict(read, catalog string) bool {
 //     superior/inferior, el silencio en el contraste vale SIMPLE y en la pediatría, adultos. El contraste
 //     que no se entendió no está en ningún candidato: no encaja con ninguno.
 func candidateFits(canonRead, candName string) bool {
-	canonCand := canonicalOrderName(candName)
-	if levelsContradictRegion(canonRead + " " + canonCand) {
+	return rowFits(newReadSide(canonRead), newCatalogRow(candName))
+}
+
+// rowFits es candidateFits con las formas de la lectura y del candidato ya calculadas.
+func rowFits(read *readSide, cand *catalogRow) bool {
+	if levelsContradictRegion(read.canon + " " + cand.canon) {
 		return false
 	}
-	for _, g := range qualifierGroups {
-		rv, cv := g.groupValues(canonRead), g.groupValues(canonCand)
+	for i, g := range qualifierGroups {
+		rv, cv := read.groups[i], cand.groups[i]
 		if g.silentAs != "" {
 			if len(rv) == 0 {
 				rv = map[string]bool{g.silentAs: true}
@@ -801,26 +810,16 @@ func candidateFits(canonRead, candName string) bool {
 			return false
 		}
 	}
-	readContent := contentWords(canonRead, orderNoise)
-	readWords := strings.Fields(canonRead)
-	if namesLimbStudy(readWords) {
-		readContent = slices.DeleteFunc(readContent, func(w string) bool { return limbWords[w] })
-	}
-	// 873444 es solo de extremidades: en una columna, el catálogo no distingue las oblicuas. Si el catálogo añade
-	// un código de oblicuas de columna, esta regla hay que retirarla.
-	if slices.Contains(readWords, "COLUMNA") {
-		readContent = slices.DeleteFunc(readContent, func(w string) bool { return w == "OBLICUA" || w == "OBLICUAS" })
-	}
-	if !allWordsIn(readContent, distinctiveWords(canonCand), pluralWord) {
+	if !allWordsIn(read.content, cand.words, pluralWord) {
 		return false
 	}
-	candCore := contentWords(canonicalOrderName(catalogAnnotation.ReplaceAllString(candName, " ")), catalogNoise)
+	candCore := contentOf(cand.coreWords, catalogNoise)
 	// Un doppler es de vasos aunque el leído no lo diga: «DOPPLER TESTICULAR» también puede ser el de vasos
 	// escrotales (882282), y si encajan los dos, es duda. El doppler ya lo comparó su grupo.
-	if slices.Contains(strings.Fields(canonCand), "DOPPLER") {
-		candCore = slices.DeleteFunc(candCore, func(w string) bool { return w == "VASOS" })
+	if containsWord(strings.Fields(cand.canon), "DOPPLER") {
+		candCore = deleteWords(candCore, func(w string) bool { return w == "VASOS" })
 	}
-	return allWordsIn(candCore, distinctiveWords(canonRead), pluralWord)
+	return allWordsIn(candCore, read.words, pluralWord)
 }
 
 // familyGroups son los grupos que dicen qué estudio es y dónde: dos filas de la misma familia los comparten.
@@ -842,18 +841,20 @@ func annotationDistinguishes(canonRead string, cand CupsCandidate, catalog []Cup
 	if len(missing) == 0 {
 		return false
 	}
-	canonCand := canonicalOrderName(catalogAnnotation.ReplaceAllString(cand.Name, " "))
-	core := contentWords(canonCand, catalogNoise)
+	candRow := rowOf(cand.Name)
+	core := contentOf(candRow.coreWords, catalogNoise)
 	for _, other := range catalog {
 		if other.Code == cand.Code {
 			continue
 		}
-		canonOther := canonicalOrderName(catalogAnnotation.ReplaceAllString(other.Name, " "))
+		otherRow := rowOf(other.Name)
+		if !allWordsIn(core, otherRow.coreWords, pluralWord) || !allWordsIn(missing, otherRow.coreWords, pluralWord) {
+			continue
+		}
 		sameFamily := !slices.ContainsFunc(familyGroups, func(g qualifierGroup) bool {
-			return !sameSet(g.groupValues(canonCand), g.groupValues(canonOther))
+			return !sameSet(g.groupValues(candRow.core), g.groupValues(otherRow.core))
 		})
-		words := distinctiveWords(canonOther)
-		if sameFamily && allWordsIn(core, words, pluralWord) && allWordsIn(missing, words, pluralWord) {
+		if sameFamily {
 			return true
 		}
 	}
@@ -871,8 +872,13 @@ func namesLimbStudy(words []string) bool {
 // encabezados (retrievalStopWords), sin ruido (noise), sin números y sin las palabras de un grupo de
 // calificadores (esas las compara su grupo).
 func contentWords(canon string, noise map[string]bool) []string {
+	return contentOf(distinctiveWords(canon), noise)
+}
+
+// contentOf es contentWords sobre las palabras distintivas ya partidas.
+func contentOf(words []string, noise map[string]bool) []string {
 	var out []string
-	for _, w := range distinctiveWords(canon) {
+	for _, w := range words {
 		if retrievalStopWords[w] || noise[w] || strings.Trim(w, "0123456789") == "" || isQualifierWord(w) {
 			continue
 		}

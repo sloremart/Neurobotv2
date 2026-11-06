@@ -134,8 +134,13 @@ const (
 // código: el nivel de columna que solo trae un nombre es silencio, porque el catálogo no lo distingue, salvo
 // que contradiga la región escrita.
 func CompareCupsNames(a, b string) CupsNameMatch {
-	aw, bw := distinctiveWords(a), distinctiveWords(b)
-	if hasSpineLevel(aw) != hasSpineLevel(bw) && !levelsContradictRegion(canonicalOrderName(a+" "+b)) {
+	return compareNameWords(distinctiveWords(a), distinctiveWords(b), canonicalOrderName(a+" "+b))
+}
+
+// compareNameWords es CompareCupsNames sobre las palabras distintivas ya partidas; canonPair es la pareja canónica
+// (los segmentos y niveles de columna son estables al canonizar: dos nombres ya canónicos se pasan pegados).
+func compareNameWords(aw, bw []string, canonPair string) CupsNameMatch {
+	if hasSpineLevel(aw) != hasSpineLevel(bw) && !levelsContradictRegion(canonPair) {
 		aw, bw = withoutSpineLevels(aw), withoutSpineLevels(bw)
 	}
 	switch {

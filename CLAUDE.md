@@ -570,7 +570,11 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   desde el último POR y sigue el camino normal; si aun así no hay candidatos, se reintenta con la lectura ENTERA
   antes de descartar (un descarte silencioso solo queda para lo que no tiene candidatos ni entero ni sin colas:
   EEG/PSG no están en el catálogo de prueba; «PET CT CUERPO ENTERO FDG» es el PET, `orderPhrases`). Al descartar
-  entre hojas el plazo, el CIE, la EPS y el DX siguen contando.
+  entre hojas el plazo, el CIE, la EPS y el DX siguen contando. Rendimiento (ronda 6c): las formas canónicas de
+  cada nombre del catálogo (canónico, palabras, grupos, sin anotaciones) se calculan una vez y se cachean por el
+  nombre tal cual (`cups_catalog_cache.go`, `sync.Map`, tope 4096 entradas; un nombre que cambia en el catálogo
+  es otra clave, así que una recarga no necesita invalidar nada; lo cacheado es de solo lectura); la lectura se
+  prepara una vez por resolución (`readSide`), no por candidato.
   Para ENCAJAR y para que una región sea la misma solo vale el plural (`pluralWord`); el prefijo de 5+ letras
   (`prefixWord`) solo busca candidatos y sospecha («NEURO», «RX ESTERNOCLAVICULAR», «RM CEREBELO» → agente). «VEZ»
   sola no es primera vez («2 VEZ» → agente; «1 VEZ», «1A VEZ» sí). Al
