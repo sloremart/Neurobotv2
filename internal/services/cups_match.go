@@ -158,18 +158,14 @@ func withoutSpineLevels(words []string) []string {
 // singleSpineLevel separa los niveles pegados («L4L5»).
 var singleSpineLevel = regexp.MustCompile(`[CTDLS]\d{1,2}`)
 
-// spineRegions son las regiones de columna que escriben las órdenes y el catálogo, ya canónicas (TORACICA y
-// TORACICO son DORSAL, LUMBOSACRA es LUMBAR).
-var spineRegions = map[string]bool{
-	"CERVICAL": true, "DORSAL": true, "LUMBAR": true, "SACRA": true, "SACRO": true, "COCCIX": true,
-	"DORSOLUMBAR": true, "SACROCOXIGEA": true,
-}
+// isSpineRegion dice si la palabra canónica es un segmento de columna (spineGroup, cups_name.go: TORACICA y
+// TORACICO son DORSAL, LUMBOSACRA es LUMBAR, DORSOLUMBAR es DORSAL LUMBAR, SACROCOXIGEA es SACRO COXIS).
+func isSpineRegion(w string) bool { return spineGroup.values[w] != "" }
 
-func isSpineRegion(w string) bool { return spineRegions[w] }
-
-// levelFitsRegion dice si un nivel cabe en una región de columna (su valor canónico). Los discos entre dos
+// levelFitsRegion dice si un nivel cabe en un segmento de columna (su valor en spineGroup). Los discos entre dos
 // regiones (C7-T1, T12-L1, L5-S1) caben en las dos. LUMBAR también es la lumbosacra, que llega a S1 y no más
-// abajo: S2 en adelante es la sacrocoxígea, así que es duda.
+// abajo: S2 en adelante es la sacrocoxígea, así que es duda. La dorsolumbar escribe sus dos segmentos, y el nivel
+// cabe en cualquiera.
 func levelFitsRegion(level, region string) bool {
 	switch region {
 	case "CERVICAL":
@@ -178,9 +174,7 @@ func levelFitsRegion(level, region string) bool {
 		return level[0] == 'T' || level[0] == 'D' || level == "C7" || level == "L1"
 	case "LUMBAR":
 		return level[0] == 'L' || level == "S1" || level == "T12" || level == "D12"
-	case "DORSOLUMBAR":
-		return level[0] == 'T' || level[0] == 'D' || level[0] == 'L' || level == "C7" || level == "S1"
-	default: // SACRA, SACRO, COCCIX, SACROCOXIGEA
+	default: // SACRO, COXIS
 		return level[0] == 'S' || level == "L5"
 	}
 }
@@ -193,7 +187,7 @@ func levelsContradictRegion(canon string) bool {
 	var regions []string
 	for _, w := range words {
 		if isSpineRegion(w) {
-			regions = append(regions, w)
+			regions = append(regions, spineGroup.values[w])
 		}
 	}
 	if len(regions) == 0 {

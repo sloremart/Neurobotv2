@@ -75,9 +75,13 @@ var orderAbbreviations = map[string]string{
 	"ELECTROMIOGRAFIIA": "ELECTROMIOGRAFIA",
 	"DER":               "DERECHA", "DCHA": "DERECHA", "DERECHO": "DERECHA", "IZQ": "IZQUIERDA", "IZQUIERDO": "IZQUIERDA",
 	"BILAT": "BILATERAL",
-	// Sinónimos de región y de columna en las órdenes de Neuro.
+	// Sinónimos de región y de columna en las órdenes de Neuro. La dorsolumbar son sus dos segmentos («RX COLUMNA
+	// DORSAL Y LUMBAR» es 871030, y un nivel cabe en cualquiera de los dos); la sacrocoxígea es el sacro coxis
+	// (871050 lo escribe en dos palabras).
 	"CEREBRAL": "CEREBRO", "ENCEFALO": "CEREBRO", "CRANEAL": "CEREBRO", "CRANEO": "CEREBRO",
 	"TORACICA": "DORSAL", "LUMBOSACRA": "LUMBAR", "COXOFEMORAL": "CADERA", "HIPOFISIS": "SILLA TURCA",
+	"DORSOLUMBAR": "DORSAL LUMBAR", "TORACOLUMBAR": "DORSAL LUMBAR",
+	"SACROCOXIGEA": "SACRO COXIS", "SACROCOCCIGEA": "SACRO COXIS",
 	"PEDIATRICO": "PEDIATRICA", "PEDIATRIA": "PEDIATRICA", "MAMARIA": "MAMA", "MAMAS": "MAMA",
 	// Sinónimos anatómicos de las órdenes (revisión, ronda 2): sin ellos la guarda de región escalaría
 	// órdenes correctas.
@@ -147,17 +151,21 @@ func canonicalOrderName(text string) string {
 	raw := strings.FieldsFunc(folded, func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
 	})
-	spine := slices.ContainsFunc(raw, func(w string) bool { return w == "COLUMNA" || isSpineRegion(w) })
-	var out []string
+	expanded := make([]string, 0, len(raw))
 	for _, w := range raw {
-		if side, ok := sideLetters[w]; ok && !spine {
-			out = append(out, side)
+		if exp, ok := orderAbbreviations[w]; ok {
+			expanded = append(expanded, strings.Fields(exp)...)
 			continue
 		}
-		if exp, ok := orderAbbreviations[w]; ok {
-			if exp != "" {
-				out = append(out, exp)
-			}
+		expanded = append(expanded, w)
+	}
+	// El lado en corto se expande sobre las palabras ya canónicas: así una región de columna abreviada
+	// (SACROCOXIGEA) también deja la D o la I sin expandir.
+	spine := slices.ContainsFunc(expanded, func(w string) bool { return w == "COLUMNA" || isSpineRegion(w) })
+	out := make([]string, 0, len(expanded))
+	for _, w := range expanded {
+		if side, ok := sideLetters[w]; ok && !spine {
+			out = append(out, side)
 			continue
 		}
 		out = append(out, w)
@@ -476,9 +484,16 @@ var sideValues = words("DERECHA", "IZQUIERDA", "BILATERAL")
 var modalityValues = words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
 	"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA")
 
-// spineGroup son los segmentos de columna; regionGroup, las regiones anatómicas.
+// spineGroup son los segmentos de columna, ya canónicos (TORACICA es DORSAL, LUMBOSACRA es LUMBAR, DORSOLUMBAR es
+// «DORSAL LUMBAR» y SACROCOXIGEA es «SACRO COXIS», por orderAbbreviations): la única fuente para la guarda y para
+// los niveles (isSpineRegion, levelFitsRegion). regionGroup son las regiones anatómicas; el sacro y el coxis son
+// además una región propia, porque 871050 «SACRO COXIS» se escribe sin COLUMNA y frente a «COLUMNA VERTEBRAL
+// TOTAL» o «DINÁMICA DE COLUMNA» (a un dígito) es otra región; ESTERNOCLAVICULAR, frente a TORAX y ESTERNON
+// (R5-C2).
 var (
-	spineGroup  = qualifierGroup{values: words("CERVICAL", "DORSAL", "LUMBAR", "SACRA", "SACRO=SACRA", "COCCIX"), exclusive: true}
+	spineGroup = qualifierGroup{exclusive: true, values: words(
+		"CERVICAL", "DORSAL", "LUMBAR", "SACRO", "SACRA=SACRO", "COXIS", "COCCIX=COXIS",
+	)}
 	regionGroup = qualifierGroup{plural: true, exclusive: true, values: words(
 		"CEREBRO", "CARA", "ORBITA", "SENOS", "OIDO", "MASTOIDES", "SILLA",
 		"CUELLO", "COLUMNA", "TORAX", "ABDOMEN", "PELVIS", "HOMBRO", "BRAZO", "CODO",
@@ -486,6 +501,7 @@ var (
 		"TOBILLO", "PIE", "CALCANEO", "MAXILAR", "MANDIBULA", "PROSTATA", "TIROIDES", "MAMA",
 		"RINON", "HIGADO", "VESICULA", "TESTICULO", "SACROILIACA", "CLAVICULA", "ESTERNON",
 		"COSTILLAS", "PARRILLA", "TEMPOROMANDIBULAR", "PIES=PIE",
+		"SACRO", "SACRA=SACRO", "COXIS=SACRO", "COCCIX=SACRO", "ESTERNOCLAVICULAR",
 	)}
 )
 
