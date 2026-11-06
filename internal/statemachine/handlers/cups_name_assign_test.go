@@ -223,6 +223,39 @@ func TestValidateOCR_CodedCupsWithUnclearContrastIsADoubt(t *testing.T) {
 	}
 }
 
+// Ronda 4 (R4-I1): el lado en corto no deja a la EMG sin candidatos. «TAC TORAX» + «EMG MMII D» asigna las
+// dos; nada queda «omitido» sin agente.
+func TestValidateOCR_LimbStudyWithSideIsAssignedNotSkipped(t *testing.T) {
+	cat := []domain.Procedure{
+		{Code: "879301", Name: "TOMOGRAFIA AXIAL COMPUTADA DE TORAX", IsActive: true},
+		{Code: "930860", Name: "ELECTROMIOGRAFÍIA EN CADA EXTREMIDAD (UNO O MAS MUSCULOS)", IsActive: true},
+		{Code: "891509", Name: "NEUROCONDUCCION (CADA NERVIO)", IsActive: true},
+	}
+	for _, names := range [][]string{{"TAC TORAX", "EMG MMII D"}, {"TAC TORAX", "EMG MIEMBRO SUPERIOR DERECHO"}, {"TAC TORAX", "ELECTROMIOGRAFIA MMSS IZQ"}} {
+		var cups []services.CUPSEntry
+		for _, n := range names {
+			cups = append(cups, noCode(n))
+		}
+		raw, _ := json.Marshal(cups)
+		sess := testSess(sm.StateValidateOCR)
+		sess.SetContext("ocr_cups_json", string(raw))
+		calls := 0
+		res, err := validateOCRHandler(catalogRepo(cat, &calls), &fakeCupsReader{choice: "930860"})(context.Background(), sess, textM(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.NextState != sm.StateConfirmOCRResult {
+			t.Fatalf("%v: %s / %q", names, res.NextState, res.UpdateCtx[sm.CtxEscalationReason])
+		}
+		if got := validatedCodes(t, res); len(got) != 2 {
+			t.Errorf("%v: CUPS = %v, quiero los dos", names, got)
+		}
+		if res.UpdateCtx["ocr_skipped_count"] != "0" {
+			t.Errorf("%v: omitidos = %q", names, res.UpdateCtx["ocr_skipped_count"])
+		}
+	}
+}
+
 // Un descartado sin código queda anotado aunque la orden escale por otro motivo (aquí, el tope B-10).
 func TestValidateOCR_DiscardedNoCodeIsNotedWhenTheOrderEscalatesForAnotherReason(t *testing.T) {
 	res, _ := runNameAssign(t, []services.CUPSEntry{

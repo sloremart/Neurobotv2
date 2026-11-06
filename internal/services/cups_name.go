@@ -366,13 +366,14 @@ func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 
 // retrievalWords son las palabras del leído con las que se buscan candidatos. Lo corto se compara pero no
 // busca: nunca va a coincidir («RM L4 L5» no tiene L4 en el catálogo), bajaría la fracción de minCandidateScore
-// y un procedimiento sin candidatos se descarta sin pasar por el agente. El contraste que no se entendió,
-// tampoco: no está en ningún nombre del catálogo.
+// y un procedimiento sin candidatos se descarta sin pasar por el agente. Tampoco buscan el lado (el catálogo
+// tiene un solo código para los dos: «EMG MMII D» se quedaba sin candidatos) ni el contraste que no se
+// entendió (no está en ningún nombre del catálogo).
 func retrievalWords(canonRead string) []string {
 	var out []string
 	for _, w := range distinctiveWords(canonRead) {
 		if retrievalStopWords[w] || orderNoise[w] || retrievalOnlyNoise[w] || spineLevel.MatchString(w) ||
-			w == string(contrastUnknown) || len(w) < 3 && strings.Trim(w, "0123456789") != "" {
+			sideValues[w] != "" || w == string(contrastUnknown) || len(w) < 3 && strings.Trim(w, "0123456789") != "" {
 			continue
 		}
 		out = append(out, w)
@@ -424,6 +425,9 @@ func words(values ...string) map[string]string {
 	return m
 }
 
+// sideValues son los lados, con su valor en el grupo.
+var sideValues = words("DERECHA", "IZQUIERDA", "BILATERAL")
+
 // modalityValues son las modalidades, con su valor en el grupo.
 var modalityValues = words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
 	"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA")
@@ -436,7 +440,7 @@ var qualifierGroups = []qualifierGroup{
 	{values: contrastValues, silentAs: string(contrastSimple), exclusive: true},
 	{values: words("PRIMERA=PRIMERA_VEZ", "VEZ=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL"), exclusive: true},
 	{values: words("PEDIATRICA", "ADULTO", "ADULTOS=ADULTO"), silentAs: "ADULTO", exclusive: true},
-	{values: words("DERECHA", "IZQUIERDA", "BILATERAL"), readMayAdd: true, exclusive: true},
+	{values: sideValues, readMayAdd: true, exclusive: true},
 	// El leído puede precisar superior/inferior cuando el código del catálogo vale para cualquier
 	// extremidad (la EMG «en cada extremidad»).
 	{values: words("SUPERIOR", "SUPERIORES=SUPERIOR", "INFERIOR", "INFERIORES=INFERIOR"), readMayAdd: true, exclusive: true},
