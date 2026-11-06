@@ -194,9 +194,10 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 			// El choque con otra corrida de los recordatorios en curso (una manual) no es un fallo: Warn,
 			// sin task_failed ni aviso a Telegram, y el reintento de siempre por si la otra muere a medias.
 			if errors.Is(err, ErrRemindersRunning) {
-				// Solo hay reintento con cadena (no en el catch-up) y sin apagado: scheduleRetry lo decide.
-				retries := chain != nil && ctx.Err() == nil
-				slog.Warn(label+": otra corrida en curso", "task", task.Name, "duration_ms", dur, "retry", retries)
+				// El Warn dice lo que scheduleRetry va a decidir: misma función, mismos criterios.
+				_, plan := planRetry(ctx, chain, runAt.Add(elapsed), err)
+				slog.Warn(label+": otra corrida en curso", "task", task.Name, "duration_ms", dur,
+					"retry", plan == retryScheduled)
 				s.scheduleRetry(ctx, task, chain, runAt.Add(elapsed), err)
 				return
 			}
@@ -237,18 +238,39 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 	}()
 }
 
-// scheduleRetry programa el reintento de un intento que falló (D-03) y devuelve true si la cadena
-// se rinde. Solo se reintenta un error marcado con ErrNothingSent (nada salió: reintentar no duplica
-// envíos), nunca en el apagado (ctx cancelado) ni en el catch-up (chain nil). El reintento sale
-// taskRetryInterval después del minuto en que terminó el intento (endedAt), así que un intento
-// colgado que termina fuera de la ventana no se reintenta. Lo lanza evaluateTasks en el tick que
-// cumple due: no hay timers ni goroutines que drenar.
-func (s *Scheduler) scheduleRetry(ctx context.Context, task ScheduledTask, chain *retryChain, endedAt time.Time, err error) bool {
+// retryPlan es la decisión sobre el reintento de un intento que falló.
+type retryPlan int
+
+const (
+	retryNone      retryPlan = iota // no se reintenta: sin cadena, apagado o error que ya envió algo
+	retryExhausted                  // la cadena se rinde: tope de intentos o fuera de la ventana
+	retryScheduled                  // hay reintento
+)
+
+// planRetry decide si el intento que terminó en endedAt se reintenta y cuándo. Solo se reintenta un
+// error marcado con ErrNothingSent (nada salió: reintentar no duplica envíos), nunca en el apagado
+// (ctx cancelado) ni en el catch-up (chain nil). El reintento sale taskRetryInterval después del
+// minuto en que terminó el intento, así que un intento colgado que termina fuera de la ventana no se
+// reintenta. Lo usan scheduleRetry y el Warn del choque para no divergir.
+func planRetry(ctx context.Context, chain *retryChain, endedAt time.Time, err error) (time.Time, retryPlan) {
 	if chain == nil || ctx.Err() != nil || !errors.Is(err, ErrNothingSent) {
-		return false
+		return time.Time{}, retryNone
 	}
 	due := endedAt.Truncate(time.Minute).Add(taskRetryInterval)
 	if chain.attempt >= taskMaxRetries || due.After(chain.scheduledAt.Add(taskRetryWindow)) {
+		return due, retryExhausted
+	}
+	return due, retryScheduled
+}
+
+// scheduleRetry programa el reintento de un intento que falló (D-03) y devuelve true si la cadena
+// se rinde. Lo lanza evaluateTasks en el tick que cumple due: no hay timers ni goroutines que drenar.
+func (s *Scheduler) scheduleRetry(ctx context.Context, task ScheduledTask, chain *retryChain, endedAt time.Time, err error) bool {
+	due, plan := planRetry(ctx, chain, endedAt, err)
+	switch plan {
+	case retryNone:
+		return false
+	case retryExhausted:
 		slog.Error("scheduler task retries exhausted", "task", task.Name,
 			"attempts", chain.attempt+1, "scheduled_at", chain.scheduledAt, "error", err)
 		return true

@@ -885,3 +885,55 @@ func TestRunTask_ReminderClashIsWarnAndRetries(t *testing.T) {
 		t.Errorf("el Warn debe decir que se reintenta: %s", out)
 	}
 }
+
+// I-M2/I-M3: el campo retry del Warn del choque sale de la misma decisión que scheduleRetry: dice true
+// solo si de verdad queda un reintento programado, y false sin cadena, con el ctx cancelado, con el
+// tope de intentos agotado o fuera de la ventana de la hora programada.
+func TestRunTask_ReminderClashWarnRetryMatchesScheduleRetry(t *testing.T) {
+	scheduled := time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name      string
+		ctx       context.Context
+		chain     *retryChain
+		runAt     time.Time
+		wantRetry bool
+	}{
+		{"con cadena y a tiempo", context.Background(), &retryChain{scheduledAt: scheduled}, scheduled, true},
+		{"sin cadena (catch-up)", context.Background(), nil, scheduled, false},
+		{"apagado", cancelled, &retryChain{scheduledAt: scheduled}, scheduled, false},
+		{"tope de intentos agotado", context.Background(), &retryChain{scheduledAt: scheduled, attempt: taskMaxRetries}, scheduled, false},
+		{"fuera de la ventana", context.Background(), &retryChain{scheduledAt: scheduled}, scheduled.Add(taskRetryWindow), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			var logMu sync.Mutex
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&lockedWriter{mu: &logMu, w: &logs}, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			s := NewScheduler(time.UTC)
+			task := ScheduledTask{Name: "reminders", Hour: 7, Fn: func(context.Context) error {
+				return nothingSent(ErrRemindersRunning)
+			}}
+			s.runTask(tc.ctx, task, tc.runAt, "scheduler", tc.chain)
+			if !s.Wait(2 * time.Second) {
+				t.Fatal("tasks did not drain")
+			}
+			logMu.Lock()
+			out := logs.String()
+			logMu.Unlock()
+			if !strings.Contains(out, "otra corrida en curso") {
+				t.Fatalf("falta el Warn del choque: %s", out)
+			}
+			if got := strings.Contains(out, "retry=true"); got != tc.wantRetry {
+				t.Errorf("retry=true en el Warn = %v, want %v: %s", got, tc.wantRetry, out)
+			}
+			if _, scheduledRetry := s.retries[task.Name]; scheduledRetry != tc.wantRetry {
+				t.Errorf("reintento programado = %v, want %v", scheduledRetry, tc.wantRetry)
+			}
+		})
+	}
+}
