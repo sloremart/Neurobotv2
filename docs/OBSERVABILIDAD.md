@@ -166,10 +166,10 @@ La fuente de verdad del nivel y del desenlace de cada paso es `internal/observab
 
 **Recordatorio (`notif_recordatorio`)**
 - SIESA caída (D-04): `siesa_pending` (MILESTONE; la respuesta queda pendiente, reason: confirm\|cancel), `siesa_retry_failed` (FULL; attrs
-  `n` = intento), `siesa_cancel_prompted` (OUTCOME; se abrió la confirmación de cancelación), `siesa_unattended` (ERROR; la cita pasó sin
+  `n` = intento), `siesa_cancel_prompted` (OUTCOME; se abrió la confirmación de cancelación), `siesa_unattended` (OUTCOME, desenlace error; la cita pasó sin
   poder escalar, revisar a mano).
 - Mismo día: `same_day_reminder_sent` (MILESTONE, ref bird_msg), `same_day_no_response` (OUTCOME; limpieza silenciosa).
-- Otros: `escalation_no_conversation` (ERROR; el agente NO se entera), `suppressed_no_whatsapp` (OUTCOME; teléfono sin WhatsApp).
+- Otros: `escalation_no_conversation` (OUTCOME, desenlace error; el agente NO se entera), `suppressed_no_whatsapp` (OUTCOME; teléfono sin WhatsApp).
 
 **Escalación (`escalacion`)**
 - `agent_return_window_closed` (ERROR; reason: estado de la sesión): el agente devolvió el caso con la ventana de 24 h de WhatsApp ya cerrada
