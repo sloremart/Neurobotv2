@@ -798,6 +798,18 @@ func addUncodedFrom(dst, src *OCRResult) {
 	}
 }
 
+// CompareUncodedReadings compara dos lecturas sin código de la misma orden para fusionar sus hojas
+// (mergeCupsJSON): CupsNamesEqual es la misma lectura con los mismos datos (entra una sola vez);
+// CupsNamesByPrefix, parecidas o iguales con otra cantidad, sedación, contraste u observaciones (duda para
+// un agente, descartarla perdería esos datos); CupsNamesDiffer, dos procedimientos.
+func CompareUncodedReadings(a, b CUPSEntry) CupsNameMatch {
+	match := compareReadNames(a.Name, b.Name)
+	if match == CupsNamesEqual && orderDataKey(a) != orderDataKey(b) {
+		return CupsNamesByPrefix
+	}
+	return match
+}
+
 // orderDataKey resume lo que la orden dice de un procedimiento además del nombre, lo que cambia los cupos y la
 // sedación: sin cantidad escrita (0) vale 1.
 func orderDataKey(c CUPSEntry) string {

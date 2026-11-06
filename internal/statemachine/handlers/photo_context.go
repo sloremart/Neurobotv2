@@ -51,33 +51,51 @@ func PhotoStartInterceptor(cfg *config.Config) sm.Interceptor {
 	}
 }
 
-// mergeCupsJSON fusiona los CUPS de una página adicional con los ya leídos (dedupe por código o, sin
-// código, por nombre).
+// mergeCupsJSON fusiona los CUPS de una página adicional con los ya leídos: dedupe por código o, sin
+// código, por lectura (services.CompareUncodedReadings). La misma lectura con los mismos datos entra una
+// vez; parecida, o igual con otra cantidad, sedación, contraste u observaciones, entra marcada como duda
+// (ReadDoubtWith) para que VALIDATE_OCR la lleve al agente en vez de perderla (ronda 4, R4-M1).
 // Devuelve el JSON combinado y cuántos se agregaron. Función pura (testeable sin OCR).
 func mergeCupsJSON(existingJSON string, newCups []services.CUPSEntry) (string, int) {
 	var existing []services.CUPSEntry
 	_ = json.Unmarshal([]byte(existingJSON), &existing)
-	// Clave de deduplicación: el código o, sin código, el nombre (lo resuelve VALIDATE_OCR por nombre).
-	key := func(c services.CUPSEntry) string {
-		if code := strings.TrimSpace(c.Code); code != "" {
-			return code
-		}
-		if name := services.CupsNameKey(c.Name); name != "" {
-			return "nombre:" + name
-		}
-		return ""
-	}
-	seen := map[string]bool{}
+	codes := map[string]bool{}
 	for _, c := range existing {
-		seen[key(c)] = true
+		if code := strings.TrimSpace(c.Code); code != "" {
+			codes[code] = true
+		}
 	}
 	added := 0
 	for _, c := range newCups {
-		k := key(c)
-		if k == "" || seen[k] {
+		code := strings.TrimSpace(c.Code)
+		switch {
+		case code != "":
+			if codes[code] {
+				continue
+			}
+			codes[code] = true
+		case strings.TrimSpace(c.Name) == "":
 			continue
+		default:
+			same := false
+			for _, e := range existing {
+				if strings.TrimSpace(e.Code) != "" {
+					continue
+				}
+				switch services.CompareUncodedReadings(e, c) {
+				case services.CupsNamesEqual:
+					same = true
+				case services.CupsNamesByPrefix:
+					if c.ReadDoubtWith == "" {
+						c.ReadDoubtWith = e.Name
+					}
+				case services.CupsNamesDiffer:
+				}
+			}
+			if same {
+				continue
+			}
 		}
-		seen[k] = true
 		existing = append(existing, c)
 		added++
 	}

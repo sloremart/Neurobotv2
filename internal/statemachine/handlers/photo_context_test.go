@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,47 @@ func TestMergeCupsJSON(t *testing.T) {
 	m2, a2 := mergeCupsJSON("", []services.CUPSEntry{{Code: "890374"}})
 	if a2 != 1 || !strings.Contains(m2, "890374") {
 		t.Errorf("merge sobre vacío falló: %s (%d)", m2, a2)
+	}
+}
+
+// Ronda 4 (R4-M1): la página añadida no pierde la duda ni la cantidad. Lo que llega marcado como duda
+// (ReadDoubtWith) entra siempre; el mismo nombre sin código con otra cantidad, sedación o contraste entra
+// como duda frente al ya leído, en vez de desaparecer.
+func TestMergeCupsJSON_KeepsDoubtsAndOtherQuantities(t *testing.T) {
+	merged, added := mergeCupsJSON(`[{"cups_code":"879301","cups_name":"TAC TORAX"}]`, []services.CUPSEntry{
+		{Name: "RX RODILLA", Quantity: 1},
+		{Name: "RX RODILLA", Quantity: 3, ReadDoubtWith: "RX RODILLA"},
+	})
+	var out []services.CUPSEntry
+	if err := json.Unmarshal([]byte(merged), &out); err != nil {
+		t.Fatal(err)
+	}
+	if added != 2 || len(out) != 3 || out[2].Quantity != 3 || out[2].ReadDoubtWith == "" {
+		t.Fatalf("la duda con cantidad 3 se pierde: added=%d %s", added, merged)
+	}
+
+	// La misma lectura con los mismos datos que una ya marcada no se repite.
+	if _, added = mergeCupsJSON(merged, []services.CUPSEntry{{Name: "RX RODILLA", Quantity: 3}}); added != 0 {
+		t.Errorf("la lectura ya está: added=%d", added)
+	}
+	// Página 1 con «RX RODILLA» (1) y página 2 con «RX RODILLA» (3), sin marca: la segunda es duda frente a la primera.
+	merged, added = mergeCupsJSON(`[{"cups_code":"","cups_name":"RX RODILLA","quantity":1}]`, []services.CUPSEntry{{Name: "RX DE RODILLA", Quantity: 3}})
+	_ = json.Unmarshal([]byte(merged), &out)
+	if added != 1 || len(out) != 2 || out[1].ReadDoubtWith != "RX RODILLA" || out[1].Quantity != 3 {
+		t.Fatalf("otra cantidad del mismo nombre es duda: added=%d %s", added, merged)
+	}
+	// Las marcas de cantidad del nombre también cuentan como otra lectura.
+	merged, added = mergeCupsJSON(`[]`, []services.CUPSEntry{
+		{Name: "RX RODILLA #1", Quantity: 1},
+		{Name: "RX RODILLA #4", Quantity: 1},
+	})
+	_ = json.Unmarshal([]byte(merged), &out)
+	if added != 2 || len(out) != 2 || out[1].ReadDoubtWith == "" {
+		t.Fatalf("#1 frente a #4 es duda: added=%d %s", added, merged)
+	}
+	// Lo estrictamente igual sigue sin sumar.
+	if _, added = mergeCupsJSON(`[{"cups_code":"","cups_name":"RX RODILLA","quantity":1}]`, []services.CUPSEntry{{Name: "RX DE RODILLA", Quantity: 1}}); added != 0 {
+		t.Errorf("el mismo nombre y los mismos datos no suman: %d", added)
 	}
 }
 
