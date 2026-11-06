@@ -179,8 +179,9 @@ func withoutDiagnosis(words []string, vocabulary func(string) bool) (kept []stri
 
 // procedureRoots son raíces de palabras de tipo o modalidad que el catálogo de prueba no trae tal cual y que
 // nunca son un diagnóstico: la angio (ANGIO, ANGIOTAC, ANGIORESONANCIA con una R), la sedación o anestesia
-// (asunto 17), la flexión/extensión y la dinámica (871070), el protocolo.
-var procedureRoots = []string{"ANGIO", "SEDA", "ANESTES", "FLEXION", "EXTENSION", "DINAMIC", "PROTOCOLO"}
+// (asunto 17), la flexión/extensión y la dinámica (871070), el protocolo, la alta resolución (TACAR) y el paquete
+// de EMG («PAQ. 2», que es otra fila).
+var procedureRoots = []string{"ANGIO", "SEDA", "ANESTES", "FLEXION", "EXTENSION", "DINAMIC", "PROTOCOLO", "RESOLUCION", "PAQ"}
 
 // procedureVocabulary dice, para un catálogo, si una palabra (en mayúsculas, sin tildes) es vocabulario de
 // procedimiento: una palabra del contraste o una negación, CONSULTA, un valor de algún grupo de calificadores
