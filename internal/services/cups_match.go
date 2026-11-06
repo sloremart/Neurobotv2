@@ -41,20 +41,56 @@ func hasSpecificWord(words []string) bool {
 // accentFolder quita tildes y diéresis (el texto ya va en mayúsculas).
 var accentFolder = strings.NewReplacer("Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U", "Ü", "U", "Ñ", "N")
 
-// dottedProjection es la proyección escrita con puntos («P.A.», «A.P.»): sin esto quedaría una P suelta.
-var dottedProjection = regexp.MustCompile(`\b[AP]\.\s?[AP]\b`)
+// dottedLetters son letras sueltas con punto que forman una sigla («P.A.», «M.D.», «O.D.»): sin unirlas
+// quedarían letras sueltas.
+var dottedLetters = regexp.MustCompile(`\b([A-Z])\.\s?([A-Z])\b\.?`)
 
-// quantityMark es la cantidad escrita en el nombre («(#4)», «X2», «N 2», «No. 1»): no es parte del nombre.
-var quantityMark = regexp.MustCompile(`#\s*\d+|\bX\s*\d+\b|\b(?:N|NO|NRO|NUM)\s*[.:°º]*\s*\d+\b`)
+// ocrConfusions deshace las confusiones del OCR que cambian el sentido: la O leída como cero («N0», «C0N»,
+// «C0NTRASTE») y la S como cinco («5IN»). Van sobre el texto con un solo espacio entre palabras.
+var ocrConfusions = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`\bN ?0\b`), "NO"},
+	{regexp.MustCompile(`\bC0N\b`), "CON"},
+	{regexp.MustCompile(`C0NTRAST`), "CONTRAST"},
+	{regexp.MustCompile(`\b5IN\b`), "SIN"},
+}
+
+// quantityMark es la cantidad escrita en el nombre («(#4)», «X2», «N 2», «No. 1», «NO2»): no es parte del
+// nombre. «NO» solo vale como marca con un signo o pegado a la cifra: «NO 1 CONTRASTE» no es una cantidad.
+var quantityMark = regexp.MustCompile(`#\s*\d+|\bX\s*\d+\b|\b(?:N|NRO|NUM)\s*[.:°º]*\s*\d+\b|\bNO\s*[.:°º]+\s*\d+\b|\bNO\d+\b`)
+
+// nonNameChars es todo lo que no es letra, cifra, barra ni interrogación: la barra la lee el contraste
+// («C/S»), y la interrogación («CONTRASTE?») lo deja en duda.
+var nonNameChars = regexp.MustCompile(`[^A-Z0-9/?]+`)
+
+// slashSpaces pega la barra a sus letras: «C / S» es «C/S».
+var slashSpaces = regexp.MustCompile(` */ *`)
 
 // spineLevel es un nivel de columna o varios pegados («L4», «T12», «L4L5»).
 var spineLevel = regexp.MustCompile(`^(?:[CTDLS]\d{1,2})+$`)
 
-// foldProcedureText pasa a mayúsculas sin tildes, une la proyección escrita con puntos y quita las marcas de
-// cantidad (compareReadNames las compara aparte).
+// prefoldProcedureText pasa a mayúsculas sin tildes, une las siglas con punto, deja un solo espacio entre
+// palabras y deshace las confusiones del OCR: lo común a las palabras y a las marcas de cantidad.
+func prefoldProcedureText(text string) string {
+	folded := accentFolder.Replace(strings.ToUpper(text))
+	folded = dottedLetters.ReplaceAllString(folded, " $1$2 ")
+	folded = strings.Join(strings.Fields(folded), " ")
+	for _, c := range ocrConfusions {
+		folded = c.re.ReplaceAllString(folded, c.repl)
+	}
+	return folded
+}
+
+// foldProcedureText normaliza un nombre de procedimiento: prefoldProcedureText, sin las marcas de cantidad
+// (compareReadNames las compara aparte), «+» como Y, sin signos salvo la barra pegada a sus letras, y un solo
+// espacio entre palabras. Es el texto que lee el contraste (readContrast) y que se parte en palabras.
 func foldProcedureText(text string) string {
-	folded := dottedProjection.ReplaceAllString(accentFolder.Replace(strings.ToUpper(text)), " AP ")
-	return quantityMark.ReplaceAllString(folded, " ")
+	folded := quantityMark.ReplaceAllString(prefoldProcedureText(text), " ")
+	folded = strings.NewReplacer("+", " Y ", "?", " ? ").Replace(folded)
+	folded = slashSpaces.ReplaceAllString(nonNameChars.ReplaceAllString(folded, " "), "/")
+	return strings.Join(strings.Fields(folded), " ")
 }
 
 // CupsNameMatch es cuánto se parecen dos nombres de procedimiento (CompareCupsNames).

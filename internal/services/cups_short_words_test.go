@@ -13,7 +13,7 @@ func TestResolveCupsByName_NegatedContrastIsSimple(t *testing.T) {
 	for _, read := range []string{
 		"TAC CRANEO NO CONTRASTADO", "TAC CRANEO NO CONTRASTADA", "TAC CRANEO NO CONTRASTE", "TAC CRANEO NO CON CONTRASTE",
 		"TAC CRANEO NO MEDIO DE CONTRASTE", "TAC CRANEO NO CON MEDIO DE CONTRASTE", "TAC CRANEO SIN CONTRASTADO",
-		"TAC CRANEO NO GADOLINIO", "TAC CRANEO SIN GADOLINIO", "TAC CRANEO NO C/C", "TAC CRANEO NO CON C/C",
+		"TAC CRANEO NO GADOLINIO", "TAC CRANEO SIN GADOLINIO", "TAC CRANEO NO C/C",
 		"TAC CRANEO CONTRASTE: NO", "TAC CRANEO CONTRASTE NO", "TAC CRANEO CONTRASTADO (NO)", "tac craneo no contrastado",
 	} {
 		if res := ResolveCupsByName(read, contrastCatalog, false, nil); res.Code != "879111" {
@@ -25,6 +25,14 @@ func TestResolveCupsByName_NegatedContrastIsSimple(t *testing.T) {
 		if CupsNamesConflict(read, "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE") {
 			t.Errorf("%q no contradice el simple", read)
 		}
+	}
+	// Ronda 4: una negación que no está en la gramática («NO CON C/C») no se lee como simple: es duda, y con
+	// código contradice cualquier catálogo.
+	if got := acceptedByAdversary("TAC CRANEO NO CON C/C", contrastCatalog, false); len(got) != 0 {
+		t.Errorf("NO CON C/C: se asignaría %v", got)
+	}
+	if !CupsNamesConflict("TAC CRANEO NO CON C/C", withContrast) || !CupsNamesConflict("TAC CRANEO NO CON C/C", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE") {
+		t.Error("NO CON C/C con código va al agente")
 	}
 	// En otra columna, sin nombre SIMPLE igual, tampoco cae en el contrastado.
 	for _, code := range acceptedByAdversary("RM COLUMNA LUMBAR NO CONTRASTADA", contrastCatalog, false) {
@@ -50,15 +58,26 @@ func TestResolveCupsByName_NonIonicContrastIsNotNegated(t *testing.T) {
 	}
 }
 
-// «CON O SIN CONTRASTE» y «SIMPLE O CONTRASTADO» no dicen cuál: ni el simple, ni el contrastado, ni los dos.
+// Ronda 4 (decisión del dueño): «CON O SIN CONTRASTE» es el estudio simple y contrastado, como «CON Y SIN»;
+// donde el catálogo no tiene esa fila es duda, nunca el simple ni el contrastado. «SIMPLE O CONTRASTADO» y
+// «CON Y/O SIN» no están en la gramática: duda.
 func TestResolveCupsByName_ContrastEitherIsADoubt(t *testing.T) {
 	for _, read := range []string{
-		"TAC CRANEO CON O SIN CONTRASTE", "TAC CRANEO SIN O CON CONTRASTE", "TAC CRANEO SIMPLE O CONTRASTADO",
-		"TAC CRANEO SIMPLE O CON CONTRASTE", "TAC CRANEO CON Y/O SIN CONTRASTE", "TAC CRANEO CON O SIN MEDIO DE CONTRASTE",
-		"RM CEREBRO CON O SIN GADOLINIO",
+		"TAC CRANEO CON O SIN CONTRASTE", "TAC CRANEO SIN O CON CONTRASTE", "TAC CRANEO CON O SIN MEDIO DE CONTRASTE",
+	} {
+		if res := ResolveCupsByName(read, contrastCatalog, false, nil); res.Code != "879113" {
+			t.Errorf("%q es el simple y con contraste: %+v", read, res)
+		}
+	}
+	for _, read := range []string{
+		"TAC CRANEO SIMPLE O CONTRASTADO", "TAC CRANEO SIMPLE O CON CONTRASTE", "TAC CRANEO CON Y/O SIN CONTRASTE",
+		"RM CEREBRO CON O SIN GADOLINIO", "RM COLUMNA LUMBAR CON O SIN CONTRASTE", "RM COLUMNA LUMBAR CON Y SIN CONTRASTE",
 	} {
 		if got := acceptedByAdversary(read, contrastCatalog, false); len(got) != 0 {
 			t.Errorf("%q: se asignaría %v", read, got)
+		}
+		if res := ResolveCupsByName(read, contrastCatalog, false, nil); len(res.Candidates) == 0 {
+			t.Errorf("%q debe ir al agente con candidatos", read)
 		}
 	}
 }
@@ -93,8 +112,9 @@ func TestCompareReadNames_ShortWordsCount(t *testing.T) {
 		{"negación sin frase conocida", "TAC CRANEO NO CON CONTRASTE", "TAC CRANEO CON CONTRASTE", CupsNamesDiffer},
 		{"negación igual a simple", "TAC CRANEO NO CONTRASTADO", "TAC CRANEO SIMPLE", CupsNamesEqual},
 		{"negación igual a sin", "RM CEREBRO NO CONTRASTE", "RM CEREBRO SIN CONTRASTE", CupsNamesEqual},
-		{"contraste dudoso", "TAC CRANEO SIMPLE O CONTRASTADO", "TAC CRANEO SIMPLE Y CONTRASTADO", CupsNamesDiffer},
-		{"cortado en con", "TAC CRANEO CON", "TAC CRANEO", CupsNamesDiffer},
+		// Un contraste que no se entendió frente al mismo nombre es duda (ronda 4): pueden ser el mismo estudio.
+		{"contraste dudoso", "TAC CRANEO SIMPLE O CONTRASTADO", "TAC CRANEO SIMPLE Y CONTRASTADO", CupsNamesByPrefix},
+		{"cortado en con", "TAC CRANEO CON", "TAC CRANEO", CupsNamesByPrefix},
 
 		{"lado en una letra", "RX RODILLA D", "RX RODILLA I", CupsNamesDiffer},
 		{"lado entre paréntesis", "RX RODILLA (D)", "RX RODILLA (I)", CupsNamesDiffer},

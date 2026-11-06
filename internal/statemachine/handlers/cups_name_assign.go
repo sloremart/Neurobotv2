@@ -125,6 +125,14 @@ func cupsConflictNote(cup services.CUPSEntry, catalogName string) string {
 		cup.Code, oneLine(cup.Name), cup.Code, catalogName)
 }
 
+// cupsContrastUnclearNote es la nota del agente para un CUPS con código cuyo nombre leído menciona el
+// contraste de una forma que no se entiende (services.ContrastUnclear).
+func cupsContrastUnclearNote(cup services.CUPSEntry, catalogName string) string {
+	return fmt.Sprintf("POSIBLE MALA LECTURA DEL CUPS: el OCR leyó %s «%s» y no se entiende si es con o sin contraste; "+
+		"en el catálogo %s es «%s». Verifica la orden y devuelve los CUPS correctos.",
+		cup.Code, oneLine(cup.Name), cup.Code, catalogName)
+}
+
 // cupsAssignmentsLine es la línea del resumen del agente con los códigos asignados por nombre.
 func cupsAssignmentsLine(sess *session.Session) string {
 	var list []cupsCorrection

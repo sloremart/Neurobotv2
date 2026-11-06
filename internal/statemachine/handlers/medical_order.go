@@ -777,13 +777,18 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 					}
 				} else if cup.OrderName == "" && services.CupsNamesConflict(cup.Name, proc.Name) {
 					// Guarda: el nombre leído CONTRADICE el del catálogo de su código (SIMPLE frente a
-					// CONTRASTE, primera vez frente a control, lado, región…). Solo una contradicción
-					// explícita: un nombre abreviado o que no dice nada no escala.
+					// CONTRASTE, primera vez frente a control, lado, región…), o menciona el contraste de
+					// una forma que no se entiende. Solo una contradicción explícita: un nombre abreviado
+					// o que no dice nada no escala.
+					reason, note := "contradiccion", cupsConflictNote(cup, proc.Name)
+					if services.ContrastUnclear(cup.Name) {
+						reason, note = "contraste_dudoso", cupsContrastUnclearNote(cup, proc.Name)
+					}
 					observability.Emit(trace, "agendar", "cups_duda", observability.EmitOpts{
-						Phone: sess.PhoneNumber, Reason: "contradiccion",
+						Phone: sess.PhoneNumber, Reason: reason,
 						Attrs: map[string]interface{}{"leido": cup.Code},
 					})
-					doubts = append(doubts, cupsConflictNote(cup, proc.Name))
+					doubts = append(doubts, note)
 					continue
 				}
 

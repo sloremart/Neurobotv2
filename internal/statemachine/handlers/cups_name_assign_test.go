@@ -199,6 +199,30 @@ func TestValidateOCR_CodedCupsWhoseNameContradictsIsADoubt(t *testing.T) {
 	}
 }
 
+// Ronda 4 (R4-I2): un CUPS con código cuyo nombre menciona el contraste de una forma que no se entiende va
+// al agente con su propia nota, aunque el catálogo de ese código no diga nada del contraste.
+func TestValidateOCR_CodedCupsWithUnclearContrastIsADoubt(t *testing.T) {
+	for _, name := range []string{"RM CEREBRO CONTRASTE N/A", "RM CEREBRO SIMPLE O CONTRASTADO", "RM CEREBRO C/X"} {
+		res, sink := runNameAssign(t, []services.CUPSEntry{{Code: "883101", Name: name, Quantity: 1}}, nil)
+		if res.NextState != sm.StateEscalateToAgent || res.UpdateCtx[sm.CtxEscalationReason] != sm.EscalationReasonCupsPossibleMisread {
+			t.Fatalf("%q: contraste dudoso → duda: %s / %q", name, res.NextState, res.UpdateCtx[sm.CtxEscalationReason])
+		}
+		note := res.UpdateCtx["escalation_note"]
+		if !strings.Contains(note, "883101") || !strings.Contains(note, "contraste") {
+			t.Errorf("%q: la nota dice que el contraste no se entendió: %q", name, note)
+		}
+		if ev := sink.FindStep("agendar", "cups_duda"); ev == nil || ev.Reason != "contraste_dudoso" {
+			t.Errorf("%q: evento cups_duda con el motivo del contraste: %+v", name, ev)
+		}
+	}
+	// El sin código con el contraste dudoso también es duda, con sus candidatos.
+	res, _ := runNameAssign(t, []services.CUPSEntry{noCode("RNM CEREBRAL CONTRASTE N/A")}, &fakeCupsReader{choice: "883101"})
+	assertNameDoubt(t, res, "RNM CEREBRAL CONTRASTE N/A")
+	if !strings.Contains(res.UpdateCtx["escalation_note"], "883101") {
+		t.Errorf("la nota trae los candidatos: %q", res.UpdateCtx["escalation_note"])
+	}
+}
+
 // Un descartado sin código queda anotado aunque la orden escale por otro motivo (aquí, el tope B-10).
 func TestValidateOCR_DiscardedNoCodeIsNotedWhenTheOrderEscalatesForAnotherReason(t *testing.T) {
 	res, _ := runNameAssign(t, []services.CUPSEntry{

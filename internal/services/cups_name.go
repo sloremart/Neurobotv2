@@ -13,7 +13,8 @@ import (
 // resuelve aquí, con reglas que se pueden medir:
 //
 //  1. Un único procedimiento del catálogo con el nombre IGUAL (CompareCupsNames sobre los nombres
-//     canónicos: sin tildes, con las abreviaturas de las órdenes expandidas) → se asigna.
+//     canónicos: sin tildes, con las abreviaturas de las órdenes expandidas y el contraste leído por
+//     readContrast, cups_contrast.go) → se asigna.
 //  2. Si no, hasta maxNameCandidates candidatos por parecido amplio de palabras; un modelo de solo texto
 //     elige uno, y se acepta solo con confianza alta, si está en la lista y si es el ÚNICO de los
 //     parecidos que ENCAJA con el leído (candidateFits): las mismas palabras de contenido en los dos
@@ -41,22 +42,13 @@ const (
 	CupsNameViaModel = "modelo"       // el modelo eligió de la lista corta
 )
 
-// orderPhrases se reemplazan antes de partir en palabras (frases de las órdenes con un solo sentido).
-// strings.Replacer toma, en cada posición, la primera frase de la lista que coincide: «CON Y SIN
-// CONTRASTE» y sus variantes van ANTES de «SIN CONTRASTE», que si no se comería su CONTRASTE. Son un estudio
-// simple y contrastado: quedan como «SIMPLE Y CONTRASTE» (el grupo del contraste lo lee como CONTRASTE y el
-// nombre igual distingue el «simple y con contraste» del «con contraste»).
+// orderPhrases se reemplazan antes de partir en palabras (frases de las órdenes con un solo sentido). Van
+// sobre el texto normalizado y ya sin la frase del contraste (readContrast): «1ª VEZ» y «1° VEZ» llegan como
+// «1 VEZ».
 var orderPhrases = strings.NewReplacer(
-	"CON Y SIN MEDIO DE CONTRASTE", " SIMPLE Y CONTRASTE ", "SIN Y CON MEDIO DE CONTRASTE", " SIMPLE Y CONTRASTE ",
-	"CON Y SIN CONTRASTE", " SIMPLE Y CONTRASTE ", "SIN Y CON CONTRASTE", " SIMPLE Y CONTRASTE ",
-	"CON/SIN CONTRASTE", " SIMPLE Y CONTRASTE ", "SIN/CON CONTRASTE", " SIMPLE Y CONTRASTE ",
-	"CON / SIN CONTRASTE", " SIMPLE Y CONTRASTE ", "C/S CONTRASTE", " SIMPLE Y CONTRASTE ",
-	"CON Y SIN GADOLINIO", " SIMPLE Y CONTRASTE ", "SIN Y CON GADOLINIO", " SIMPLE Y CONTRASTE ",
-	"SIMPLE Y CON MEDIO DE CONTRASTE", " SIMPLE Y CONTRASTE ",
-	"SIN MEDIO DE CONTRASTE", " SIMPLE ", "SIN CONTRASTE", " SIMPLE ", "MEDIO DE CONTRASTE", " CONTRASTE ",
 	"TOMOGRAFIA POR EMISION DE POSITRONES", " PET ",
-	"VASOS ARTERIALES", " ARTERIAL ", "VASOS VENOSOS", " VENOSO ", "COXO-FEMORAL", " CADERA ", "COXO FEMORAL", " CADERA ",
-	"1A VEZ", " PRIMERA VEZ ", "1RA VEZ", " PRIMERA VEZ ", "1ª VEZ", " PRIMERA VEZ ", "1° VEZ", " PRIMERA VEZ ",
+	"VASOS ARTERIALES", " ARTERIAL ", "VASOS VENOSOS", " VENOSO ", "COXO FEMORAL", " CADERA ",
+	"1A VEZ", " PRIMERA VEZ ", "1RA VEZ", " PRIMERA VEZ ", "1 VEZ", " PRIMERA VEZ ",
 	"RAYOS X", " RADIOGRAFIA ",
 )
 
@@ -88,7 +80,6 @@ var orderAbbreviations = map[string]string{
 	// Sinónimos de región y de columna en las órdenes de Neuro.
 	"CEREBRAL": "CEREBRO", "ENCEFALO": "CEREBRO", "CRANEAL": "CEREBRO", "CRANEO": "CEREBRO",
 	"TORACICA": "DORSAL", "LUMBOSACRA": "LUMBAR", "COXOFEMORAL": "CADERA", "HIPOFISIS": "SILLA TURCA",
-	"CONTRASTADA": "CONTRASTE", "CONTRASTADO": "CONTRASTE", "GADOLINIO": "CONTRASTE",
 	"PEDIATRICO": "PEDIATRICA", "PEDIATRIA": "PEDIATRICA", "MAMARIA": "MAMA", "MAMAS": "MAMA",
 	// Sinónimos anatómicos de las órdenes (revisión, ronda 2): sin ellos la guarda de región escalaría
 	// órdenes correctas.
@@ -136,40 +127,6 @@ var catalogNoise = map[string]bool{
 // MUSCULOS)», «(CADA NERVIO)», «[CARPOGRAMA]». No obliga al nombre leído a traerlo.
 var catalogAnnotation = regexp.MustCompile(`\([^)]*\)|\[[^\]]*\]`)
 
-// slashContrast son las abreviaturas con barra del contraste: «C/C», «C/ CONTRASTE», «C/CTE», «C/MEDIO»
-// (con contraste) y «S/C», «S/CONTRASTE» (sin contraste). Van antes de partir en palabras, porque la
-// partición descarta las palabras de una letra y el contraste se leería como silencio (SIMPLE). Con
-// límites de palabra, para no tocar «TAC/C…».
-var slashContrast = regexp.MustCompile(`\b([CS]) ?/ ?(C|CTE|CONTRASTE|MEDIO)\b`)
-
-// unknownSlash son letras sueltas pegadas a una barra que no son una abreviatura conocida («C/X»): su
-// sentido se pierde al partir en palabras.
-var unknownSlash = regexp.MustCompile(`\b[A-Z] ?/|/ ?[A-Z]\b`)
-
-// slashLetters son dos letras sueltas con una barra en medio («C/X»): no se sabe qué dicen. No son palabras
-// del nombre; lo que callan lo cubre hasUnknownSlash.
-var slashLetters = regexp.MustCompile(`\b[A-Z] ?/ ?[A-Z]\b`)
-
-// contrastEither son las frases que dejan el contraste abierto («CON O SIN CONTRASTE», «SIMPLE O CONTRASTADO»):
-// no dicen cuál de los estudios es. Van antes de orderPhrases, cuyo «SIN CONTRASTE» las leería como SIMPLE.
-var contrastEither = regexp.MustCompile(`\b(?:CON|SIN|SIMPLE) (?:O|Y/O) (?:CON |SIN )?(?:MEDIO DE )?(?:CONTRAST[A-Z]*|GADOLINIO)\b`)
-
-// unknownContrastWord reemplaza a contrastEither: una palabra sin par en ningún nombre, para que el
-// procedimiento no se dé por igual ni encaje con nadie, y vaya al agente.
-const unknownContrastWord = " CONTRASTEABIERTO "
-
-// negatedContrast es el contraste negado por delante, con o sin CON y MEDIO DE: «NO CONTRASTADO», «NO CON
-// CONTRASTE», «SIN GADOLINIO». Va después de partir las abreviaturas con barra («NO C/C»).
-var negatedContrast = regexp.MustCompile(`\b(?:NO|SIN)\s+(?:CON\s+)?(?:MEDIO\s+DE\s+)?(?:CONTRAST[A-Z]*|GADOLINIO)\b`)
-
-// contrastAnsweredNo es el contraste negado al final, como respuesta: «CONTRASTE: NO», «CONTRASTADO (NO)». Solo
-// al final: «CONTRASTE NO IONICO» sí lleva contraste.
-var contrastAnsweredNo = regexp.MustCompile(`\bCONTRAST[A-Z]*\W*NO\W*$`)
-
-// danglingWith es un nombre cortado en «CON»: CON no cuenta como palabra y el contraste se leería como
-// silencio (SIMPLE). unknownContrastWord lo manda al agente.
-var danglingWith = regexp.MustCompile(`\bCON\W*$`)
-
 // separatedUnit es un número y su unidad separados («3 D», «6 H»): sin unirlos, la D se leería como un lado.
 var separatedUnit = regexp.MustCompile(`\b(\d+) ([DH])\b`)
 
@@ -177,7 +134,6 @@ var separatedUnit = regexp.MustCompile(`\b(\d+) ([DH])\b`)
 // mayúsculas, sin tildes, con las frases y abreviaturas de orderPhrases y orderAbbreviations.
 func canonicalOrderName(text string) string {
 	folded := foldOrderName(text)
-	folded = slashLetters.ReplaceAllString(folded, " ")
 	var out []string
 	for _, w := range strings.FieldsFunc(folded, func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
@@ -203,26 +159,12 @@ func dropVagueWords(canon string) string {
 	return strings.Join(slices.DeleteFunc(words, func(w string) bool { return vagueProcedureWords[w] }), " ")
 }
 
-// foldOrderName pasa a mayúsculas sin tildes y reemplaza las frases y abreviaturas con barra del contraste.
+// foldOrderName normaliza el nombre (foldProcedureText), lee el contraste y deja en su lugar lo leído
+// (readContrast), y reemplaza las frases de las órdenes.
 func foldOrderName(text string) string {
-	folded := contrastEither.ReplaceAllString(foldProcedureText(text), unknownContrastWord)
+	_, folded := readContrast(foldProcedureText(text))
 	folded = orderPhrases.Replace(folded)
-	folded = slashContrast.ReplaceAllStringFunc(folded, func(m string) string {
-		if strings.HasPrefix(m, "S") {
-			return " SIMPLE "
-		}
-		return " CONTRASTE "
-	})
-	folded = negatedContrast.ReplaceAllString(folded, " SIMPLE ")
-	folded = contrastAnsweredNo.ReplaceAllString(folded, " SIMPLE ")
-	folded = danglingWith.ReplaceAllString(folded, unknownContrastWord)
 	return separatedUnit.ReplaceAllString(folded, "$1$2")
-}
-
-// hasUnknownSlash dice si el nombre trae letras sueltas con barra que no se entendieron («C/X»): entonces
-// el contraste no se puede dar por silencio.
-func hasUnknownSlash(text string) bool {
-	return unknownSlash.MatchString(foldOrderName(text))
 }
 
 // CupsNameKey es la forma canónica de un nombre de procedimiento (sin tildes, mayúsculas y abreviaturas
@@ -231,11 +173,12 @@ func CupsNameKey(name string) string { return canonicalOrderName(name) }
 
 // compareReadNames compara dos nombres leídos de la misma orden, para decidir si uno se descarta. Es más
 // estricta que la asignación por nombre, porque aquí un error pierde un procedimiento sin que nadie lo vea:
-//   - CupsNamesEqual (se descarta): tras quitar el ruido, las mismas palabras en los dos sentidos. Los
-//     calificadores y la modalidad también son palabras, así que callar uno no vale por decirlo: «RX TORAX»
-//     no es «TORAX», ni «SIMPLE Y CONTRASTE» es «CONTRASTE».
+//   - CupsNamesEqual (se descarta): tras quitar el ruido, las mismas palabras en los dos sentidos, con el
+//     contraste leído (nunca DESCONOCIDO). Los calificadores y la modalidad también son palabras, así que
+//     callar uno no vale por decirlo: «RX TORAX» no es «TORAX», ni «SIMPLE Y CONTRASTE» es «CONTRASTE».
 //   - CupsNamesByPrefix (duda, va al agente): coinciden solo por prefijo, o encajan salvo un calificador en
-//     silencio (candidateFits sirve para sospechar, no para descartar).
+//     silencio (candidateFits sirve para sospechar, no para descartar), o solo los separa un contraste que
+//     puede ser el mismo estudio (contrastsMayMatch).
 //   - CupsNamesDiffer (se conserva sin código): lo demás, también un nombre sin palabras que lo distingan:
 //     «CONSULTA ESPECIALISTA» no dice con qué comparar.
 func compareReadNames(a, b string) CupsNameMatch {
@@ -244,9 +187,8 @@ func compareReadNames(a, b string) CupsNameMatch {
 	if !hasSpecificWord(wa) || !hasSpecificWord(wb) {
 		return CupsNamesDiffer
 	}
-	unknownA, unknownB := hasUnknownSlash(a), hasUnknownSlash(b)
-	if !unknownA && !unknownB && allWordsIn(wa, wb, sameWord) && allWordsIn(wb, wa, sameWord) {
-		if (!bothSides(wa) || slices.Equal(wa, wb)) && sameQuantityMarks(a, b) {
+	if allWordsIn(wa, wb, sameWord) && allWordsIn(wb, wa, sameWord) {
+		if contrastOf(ca) != contrastUnknown && (!bothSides(wa) || slices.Equal(wa, wb)) && sameQuantityMarks(a, b) {
 			return CupsNamesEqual
 		}
 		return CupsNamesByPrefix
@@ -254,10 +196,26 @@ func compareReadNames(a, b string) CupsNameMatch {
 	if allWordsIn(wa, wb, prefixWord) && allWordsIn(wb, wa, prefixWord) {
 		return CupsNamesByPrefix
 	}
-	if candidateFits(ca, b, unknownA) || candidateFits(cb, a, unknownB) {
+	if candidateFits(ca, b) || candidateFits(cb, a) {
+		return CupsNamesByPrefix
+	}
+	ra, rb := withoutContrast(wa), withoutContrast(wb)
+	if contrastsMayMatch(contrastOf(ca), contrastOf(cb)) && allWordsIn(ra, rb, sameWord) && allWordsIn(rb, ra, sameWord) {
 		return CupsNamesByPrefix
 	}
 	return CupsNamesDiffer
+}
+
+// withoutContrast quita la lectura del contraste de las palabras de un nombre canónico.
+func withoutContrast(words []string) []string {
+	return slices.DeleteFunc(slices.Clone(words), func(w string) bool { return contrastValues[w] != "" })
+}
+
+// contrastsMayMatch dice si dos lecturas distintas del contraste pueden ser el mismo estudio: una que no se
+// entendió, o el contrastado frente al «simple y contrastado». El simple frente al contrastado, no.
+func contrastsMayMatch(a, b contrastReading) bool {
+	return a == contrastUnknown || b == contrastUnknown ||
+		a == contrastWith && b == contrastBoth || a == contrastBoth && b == contrastWith
 }
 
 // bothSides dice si el nombre trae los dos lados: entonces importa a qué le toca cada uno («RODILLA DERECHA Y
@@ -331,12 +289,9 @@ func ResolveCupsByName(
 	}
 	// La lista corta pone primero los que encajan: un nombre de catálogo con muchas anotaciones (la EMG
 	// «en cada extremidad (uno o más músculos)») puede quedar lejos por parecido y ser el único que encaja.
-	// Una abreviatura con barra que no se entendió («C/X») puede decir algo del contraste: no vale como
-	// silencio (SIMPLE) y nada encaja por ese lado; solo el nombre igual, arriba, asigna.
-	contrastUnknown := hasUnknownSlash(read)
 	var fitting, rest []CupsCandidate
 	for _, c := range nameCandidates(retrievalRead, catalog) {
-		if candidateFits(canonRead, c.Name, contrastUnknown) {
+		if candidateFits(canonRead, c.Name) {
 			fitting = append(fitting, c)
 		} else {
 			rest = append(rest, c)
@@ -411,12 +366,13 @@ func nameCandidates(canonRead string, catalog []CupsCandidate) []CupsCandidate {
 
 // retrievalWords son las palabras del leído con las que se buscan candidatos. Lo corto se compara pero no
 // busca: nunca va a coincidir («RM L4 L5» no tiene L4 en el catálogo), bajaría la fracción de minCandidateScore
-// y un procedimiento sin candidatos se descarta sin pasar por el agente.
+// y un procedimiento sin candidatos se descarta sin pasar por el agente. El contraste que no se entendió,
+// tampoco: no está en ningún nombre del catálogo.
 func retrievalWords(canonRead string) []string {
 	var out []string
 	for _, w := range distinctiveWords(canonRead) {
 		if retrievalStopWords[w] || orderNoise[w] || retrievalOnlyNoise[w] || spineLevel.MatchString(w) ||
-			len(w) < 3 && strings.Trim(w, "0123456789") != "" {
+			w == string(contrastUnknown) || len(w) < 3 && strings.Trim(w, "0123456789") != "" {
 			continue
 		}
 		out = append(out, w)
@@ -477,7 +433,7 @@ var qualifierGroups = []qualifierGroup{
 	{levels: true, exclusive: true},
 	{values: modalityValues, readSilentOK: true},
 	{values: words("DOPPLER")},
-	{values: words("SIMPLE", "CONTRASTE"), silentAs: "SIMPLE", exclusive: true},
+	{values: contrastValues, silentAs: string(contrastSimple), exclusive: true},
 	{values: words("PRIMERA=PRIMERA_VEZ", "VEZ=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL"), exclusive: true},
 	{values: words("PEDIATRICA", "ADULTO", "ADULTOS=ADULTO"), silentAs: "ADULTO", exclusive: true},
 	{values: words("DERECHA", "IZQUIERDA", "BILATERAL"), readMayAdd: true, exclusive: true},
@@ -528,10 +484,7 @@ func (g qualifierGroup) groupValues(canon string) map[string]bool {
 			}
 		}
 	}
-	// SIMPLE Y CON CONTRASTE es un estudio contrastado, y el PET-TC es un PET.
-	if out["CONTRASTE"] && out["SIMPLE"] {
-		delete(out, "SIMPLE")
-	}
+	// El PET-TC es un PET.
 	if out["PET"] {
 		delete(out, "TC")
 	}
@@ -562,10 +515,11 @@ func disjoint(a, b map[string]bool) bool {
 // CupsNamesConflict dice si dos nombres se contradicen EXPLÍCITAMENTE: los dos mencionan un mismo grupo
 // excluyente (contraste, primera vez/control, pediátrica/adultos, lado, superior/inferior, vía,
 // marcador del PET, nivel de columna, región) sin compartir ningún valor. Un nombre que no dice nada de
-// un grupo no lo contradice (las órdenes abrevian); la modalidad, el doppler y los números no cuentan.
+// un grupo no lo contradice (las órdenes abrevian); la modalidad, el doppler y los números no cuentan. Un
+// contraste que no se entendió (contrastUnknown) también es duda: con código, va al agente igual.
 func CupsNamesConflict(read, catalog string) bool {
 	r, c := canonicalOrderName(read), canonicalOrderName(catalog)
-	if levelsContradictRegion(r + " " + c) {
+	if levelsContradictRegion(r+" "+c) || contrastOf(r) == contrastUnknown {
 		return true
 	}
 	for _, g := range qualifierGroups {
@@ -573,7 +527,7 @@ func CupsNamesConflict(read, catalog string) bool {
 			continue
 		}
 		rv, cv := g.groupValues(r), g.groupValues(c)
-		if len(rv) > 0 && len(cv) > 0 && disjoint(rv, cv) {
+		if len(rv) > 0 && len(cv) > 0 && disjoint(rv, cv) && !contrastCompatible(rv, cv) {
 			return true
 		}
 	}
@@ -589,18 +543,15 @@ func CupsNamesConflict(read, catalog string) bool {
 //     FIBRA ÚNICA, CERVICO DORSAL, PÍLORO), salvo sus anotaciones (catalogNoise y lo que va entre
 //     paréntesis);
 //   - en cada grupo de calificadores los dos dicen lo mismo: el leído puede precisar el lado o
-//     superior/inferior, el silencio en el contraste vale SIMPLE (salvo contrastUnknown: el leído traía
-//     una abreviatura con barra que no se entendió) y en la pediatría, adultos.
-func candidateFits(canonRead, candName string, contrastUnknown bool) bool {
+//     superior/inferior, el silencio en el contraste vale SIMPLE y en la pediatría, adultos. El contraste
+//     que no se entendió no está en ningún candidato: no encaja con ninguno.
+func candidateFits(canonRead, candName string) bool {
 	canonCand := canonicalOrderName(candName)
 	if levelsContradictRegion(canonRead + " " + canonCand) {
 		return false
 	}
 	for _, g := range qualifierGroups {
 		rv, cv := g.groupValues(canonRead), g.groupValues(canonCand)
-		if contrastUnknown && g.values["CONTRASTE"] != "" && len(rv) == 0 {
-			return false
-		}
 		if g.silentAs != "" {
 			if len(rv) == 0 {
 				rv = map[string]bool{g.silentAs: true}
