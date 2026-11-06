@@ -145,34 +145,54 @@ var orderTailNoise = []*regexp.Regexp{
 var cieCode = regexp.MustCompile(`^[A-Z]\d{2}\.?\d?X?$`)
 
 // withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) las colas de orderTailNoise, el
-// diagnóstico escrito tras DX y los códigos CIE sueltos.
-func withoutOrderTails(folded string) string {
+// diagnóstico escrito tras DX y los códigos CIE sueltos. Devuelve también las palabras del diagnóstico cortado.
+func withoutOrderTails(folded string) (stripped string, diagnosis []string) {
 	for _, tail := range orderTailNoise {
 		folded = tail.ReplaceAllString(folded, " ")
 	}
-	words := withoutDiagnosis(strings.Fields(folded))
+	words, diagnosis := withoutDiagnosis(strings.Fields(folded))
 	words = slices.DeleteFunc(words, func(w string) bool {
 		return cieCode.MatchString(w) && !spineLevel.MatchString(w)
 	})
-	return strings.Join(words, " ")
+	return strings.Join(words, " "), diagnosis
 }
 
 // withoutDiagnosis quita «DX» y el diagnóstico que lo sigue, pero solo hasta la primera palabra que habla del
 // procedimiento (procedureWord): «TAC CRANEO DX TCE CON CONTRASTE» conserva el contraste, «CONSULTA DX CEFALEA
 // CONTROL NEUROLOGIA» conserva el control y la especialidad (R6-C1, R6-I1). Hasta el final se comía las dos cosas.
-func withoutDiagnosis(words []string) []string {
+// Devuelve las palabras cortadas, sin el DX ni los signos.
+func withoutDiagnosis(words []string) (kept, diagnosis []string) {
 	for i := 0; i < len(words); i++ {
 		if strings.Trim(words[i], ".:") != "DX" {
 			continue
 		}
 		j := i + 1
 		for j < len(words) && !procedureWord(strings.Trim(words[j], ".,:;")) {
+			diagnosis = append(diagnosis, strings.Trim(words[j], ".,:;"))
 			j++
 		}
 		words = slices.Delete(words, i, j)
 		i--
 	}
-	return words
+	return words, diagnosis
+}
+
+// diagnosisNamesAProcedure dice si alguna palabra cortada tras DX es palabra de contenido del nombre de algún
+// procedimiento del catálogo (TUNEL, STRESS, MASAS): entonces puede no ser un diagnóstico, y asignar el nombre
+// recortado sería elegir por el bot. Cerrado a fallos: duda (ronda 6).
+func diagnosisNamesAProcedure(diagnosis []string, catalog []CupsCandidate) bool {
+	if len(diagnosis) == 0 {
+		return false
+	}
+	words := distinctiveWords(canonicalOrderName(strings.Join(diagnosis, " ")))
+	for _, c := range catalog {
+		if slices.ContainsFunc(words, func(w string) bool {
+			return allWordsIn([]string{w}, distinctiveWords(canonicalOrderName(c.Name)), pluralWord)
+		}) {
+			return true
+		}
+	}
+	return false
 }
 
 // procedureWord dice si una palabra de la lectura (en mayúsculas, sin tildes, antes de canonizar) habla del
@@ -382,8 +402,8 @@ func ResolveCupsByName(
 	// no puede cambiar lo que la lectura dice del contraste ni de ningún grupo excluyente (ronda 6): si lo
 	// cambia, la cola no era cola, y es duda para un agente con los candidatos que haya.
 	full := prefoldProcedureText(read)
-	stripped := withoutOrderTails(full)
-	if tailsChangeMeaning(canonicalOrderName(full), canonicalOrderName(stripped)) {
+	stripped, diagnosis := withoutOrderTails(full)
+	if tailsChangeMeaning(canonicalOrderName(full), canonicalOrderName(stripped)) || diagnosisNamesAProcedure(diagnosis, catalog) {
 		cands := nameCandidates(canonicalOrderName(stripped), catalog)
 		if len(cands) == 0 {
 			cands = nameCandidates(canonicalOrderName(full), catalog)

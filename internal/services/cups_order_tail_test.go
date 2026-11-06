@@ -117,19 +117,20 @@ func TestResolveCupsByName_OrderTailsNeverChangeTheMeaning(t *testing.T) {
 	}
 	// Lo que se asigna bien: la cola quitada deja el procedimiento entero.
 	for read, want := range map[string][]string{
-		"TAC CRANEO DX TCE CON CONTRASTE":               {"879112"},
-		"TAC CRANEO CON CONTRASTE DX TCE":               {"879112"},
-		"TAC CRANEO SIMPLE DX TCE":                      {"879111"},
-		"TAC CRANEO DX TCE SIN CONTRASTE":               {"879111"},
-		"RM COLUMNA LUMBAR DX HERNIA CON CONTRASTE":     {"883231"},
-		"RM COLUMNA DX LUMBALGIA LUMBAR CON CONTRASTE":  {"883231"},
-		"RX DX RODILLA DERECHA":                         {"873420"},
-		"RX RODILLA DX GONARTROSIS DERECHA":             {"873420"},
-		"CONSULTA DX CEFALEA CONTROL NEUROLOGIA":        {"890374"},
-		"CONSULTA DX EPILEPSIA PRIMERA VEZ NEUROLOGIA":  {"890274"},
-		"CONSULTA NEUROLOGIA DX CEFALEA PRIMERA VEZ":    {"890274"},
-		"EMG DX RADICULOPATIA MMII":                     {"930860"},
-		"NC DX TUNEL CARPIANO MMSS":                     {"891509"},
+		"TAC CRANEO DX TCE CON CONTRASTE":              {"879112"},
+		"TAC CRANEO CON CONTRASTE DX TCE":              {"879112"},
+		"TAC CRANEO SIMPLE DX TCE":                     {"879111"},
+		"TAC CRANEO DX TCE SIN CONTRASTE":              {"879111"},
+		"RM COLUMNA LUMBAR DX HERNIA CON CONTRASTE":    {"883231"},
+		"RM COLUMNA DX LUMBALGIA LUMBAR CON CONTRASTE": {"883231"},
+		"RX DX RODILLA DERECHA":                        {"873420"},
+		"RX RODILLA DX GONARTROSIS DERECHA":            {"873420"},
+		"CONSULTA DX CEFALEA CONTROL NEUROLOGIA":       {"890374"},
+		"CONSULTA DX EPILEPSIA PRIMERA VEZ NEUROLOGIA": {"890274"},
+		"CONSULTA NEUROLOGIA DX CEFALEA PRIMERA VEZ":   {"890274"},
+		"EMG DX RADICULOPATIA MMII":                    {"930860"},
+		// TUNEL es palabra de contenido de 873444: el corte tras DX se queda en duda (cerrado a fallos).
+		"NC DX TUNEL CARPIANO MMSS":                     nil,
 		"TAC CRANEO EPS SANITAS SIMPLE":                 {"879111"},
 		"TAC CRANEO SANITAS EPS SIN CONTRASTE":          {"879111"},
 		"CONSULTA NEUROLOGIA NUEVA EPS CONTROL":         {"890374"},
@@ -165,5 +166,27 @@ func TestResolveCupsByName_OrderTailsNeverChangeTheMeaning(t *testing.T) {
 	}
 	if got := acceptedByAdversary("RM COLUMNA DORSAL T12", catalog, false); !slices.Equal(got, []string{"883220"}) {
 		t.Errorf("«RM COLUMNA DORSAL T12» → %v, quiero [883220]", got)
+	}
+}
+
+// Ronda 6, duda 3 (cerrado a fallos): si lo que se corta tras DX es una palabra de contenido del nombre de algún
+// procedimiento del catálogo (TUNEL, STRESS, MASAS), puede que no fuera un diagnóstico: duda para un agente, nunca
+// la asignación al nombre recortado. Un diagnóstico que no está en el catálogo (GONARTROSIS, TCE) sigue cortándose.
+func TestResolveCupsByName_DiagnosisThatNamesAProcedureIsADoubt(t *testing.T) {
+	catalog := catalogFromTSV(t, "testdata/cups_catalog_active.tsv")
+	for _, read := range []string{"RX RODILLA DX TUNEL", "RX RODILLA DX: TUNEL", "RX RODILLA DX STRESS", "ECO DX MASA ABDOMEN", "NC DX TUNEL CARPIANO MMSS"} {
+		if got := acceptedByAdversary(read, catalog, false); len(got) != 0 {
+			t.Errorf("%q → %v, quiero agente", read, got)
+		}
+		if res := ResolveCupsByName(read, catalog, false, nil); len(res.Candidates) == 0 {
+			t.Errorf("%q debe ir al agente con candidatos", read)
+		}
+	}
+	for read, want := range map[string]string{
+		"RX RODILLA DX GONARTROSIS": "873420", "RX RODILLA DX GONARTROSIS DERECHA": "873420", "TAC CRANEO DX TCE SIN CONTRASTE": "879111",
+	} {
+		if got := acceptedByAdversary(read, catalog, false); !slices.Equal(got, []string{want}) {
+			t.Errorf("%q → %v, quiero [%s]", read, got, want)
+		}
 	}
 }

@@ -562,7 +562,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (`withoutOrderTails`, `orderNoise`); «DX» y el diagnóstico escrito se cortan SOLO hasta la primera palabra del
   procedimiento (`withoutDiagnosis`/`procedureWord`: abreviatura, lado, contraste o negación, CONSULTA, nivel o
   valor de un grupo: «TAC CRANEO DX TCE CON CONTRASTE» conserva el contraste, «CONSULTA DX CEFALEA CONTROL
-  NEUROLOGIA» el control). INVARIANTE (ronda 6): el contraste y los grupos excluyentes se leen sobre la lectura
+  NEUROLOGIA» el control); si una palabra cortada tras DX es palabra de contenido del nombre de algún
+  procedimiento del catálogo (TUNEL, STRESS, MASAS; `diagnosisNamesAProcedure`), es duda, nunca la asignación al
+  nombre recortado. INVARIANTE (ronda 6): el contraste y los grupos excluyentes se leen sobre la lectura
   COMPLETA; si sin colas dicen otra cosa (`tailsChangeMeaning`, «TAC CRANEO NO POS CONTRASTE»), es duda para un
   agente, nunca una asignación. Si sin colas no hay candidatos y la lectura acaba en «POR <motivo>», se quita
   desde el último POR y sigue el camino normal; si aun así no hay candidatos, se reintenta con la lectura ENTERA
