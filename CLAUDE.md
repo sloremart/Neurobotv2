@@ -553,8 +553,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   de su familia (misma modalidad y región, sus palabras de contenido) y el leído no lo dice, es duda («TAC MIEMBROS
   INFERIORES PEDIATRICA» frente a 879523-1 «(AXIALES DE ROTULA O LONGITUD…)»; `annotationDistinguishes`); «(54)»,
   «(TEJIDOS BLANDOS)» o «(UNO O MAS MUSCULOS)» no tienen esa otra fila y siguen sin obligar. Al asignar, el plazo
-  («EN 1 MES», «6 MESES», «2 SEMANAS»), el diagnóstico («CIE10 M545», un código CIE suelto que no es nivel de
-  columna) y CITA PRIORITARIA son ruido (`withoutOrderTails`, `orderNoise`); si aun así no hay candidatos y la
+  («EN 1 MES», «6 MESES», «2 SEMANAS», «1 SESION»), la cantidad escrita («CANT 1», «CANTIDAD: 2»), el diagnóstico
+  («CIE10 M545», un código CIE suelto que no es nivel de columna, «DX …» hasta el final), «EPS <nombre>», «ORDEN
+  <n>», «SEGUN EVOLUCION», «NO POS» y CITA PRIORITARIA son ruido (`withoutOrderTails`, `orderNoise`); si aun así no hay candidatos y la
   lectura acaba en «POR <motivo>», se quita desde el último POR y sigue el camino normal (nunca un descarte
   silencioso de una consulta o una EMG con cola); al descartar entre hojas el plazo y el CIE siguen contando.
   Para ENCAJAR y para que una región sea la misma solo vale el plural (`pluralWord`); el prefijo de 5+ letras

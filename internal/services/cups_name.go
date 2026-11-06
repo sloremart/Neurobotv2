@@ -117,12 +117,20 @@ var orderNoise = map[string]bool{
 }
 
 // orderTailNoise son colas de la orden que no describen el procedimiento y dejaban una lectura típica sin
-// candidatos, y por tanto descartada en silencio (R5-I3): el plazo («EN 1 MES», «6 MESES», «PARA 2 SEMANAS»)
-// y el diagnóstico («CIE10 M545», «CIE-10: G40»). Se quitan solo al asignar (withoutOrderTails); al descartar
-// entre hojas siguen contando, porque otro plazo u otro diagnóstico puede ser otra cita.
+// candidatos, y por tanto descartada en silencio (R5-I3 y ronda 5b): el plazo («EN 1 MES», «6 MESES», «PARA 2
+// SEMANAS»), las sesiones («1 SESION»), la cantidad escrita («CANT 1», «CANTIDAD: 2»), el diagnóstico («CIE10
+// M545», «CIE-10: G40», «DX LUMBALGIA» hasta el final), la EPS («EPS SANITAS»), el número de la orden («ORDEN
+// 123456»), «SEGUN EVOLUCION» y «NO POS». Se quitan solo al asignar (withoutOrderTails); al descartar entre hojas
+// siguen contando, porque otro plazo, otra sesión u otro diagnóstico puede ser otra cita.
 var orderTailNoise = []*regexp.Regexp{
-	regexp.MustCompile(`\b(?:(?:EN|PARA|A|CADA) )?\d+ (?:MES|MESES|SEMANA|SEMANAS|DIA|DIAS)\b`),
+	regexp.MustCompile(`\b(?:(?:EN|PARA|A|CADA) )?\d+ (?:MES|MESES|SEMANA|SEMANAS|DIA|DIAS|SESION|SESIONES)\b`),
+	regexp.MustCompile(`\bCANT(?:IDAD)?[ .:]*\d+\b`),
 	regexp.MustCompile(`\bCIE[ -]?10\b`),
+	regexp.MustCompile(`\bDX\b.*$`),
+	regexp.MustCompile(`\bEPS [A-Z]+\b`),
+	regexp.MustCompile(`\bORDEN[ .:#NRO°º]*\d+\b`),
+	regexp.MustCompile(`\bSEGUN EVOLUCION\b`),
+	regexp.MustCompile(`\bNO POS\b`),
 }
 
 // cieCode es un código CIE-10 suelto («M545», «M54.5», «G40», «R51X»): letra y dos o tres cifras. Un nivel de
