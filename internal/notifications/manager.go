@@ -1105,6 +1105,11 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 	if !m.lockPhone(phone) {
 		return
 	}
+	// El DTMF aplica a todas las citas del paciente en esa fecha: sus otros pendings (otra clave para
+	// la misma persona, otra cita del día) se resuelven igual, después de soltar este candado.
+	var applied []domain.Appointment
+	var appliedOutcome string
+	defer func() { m.resolveOtherPendings(phone, applied, appliedOutcome) }()
 	defer m.unlockPhone(phone)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1140,6 +1145,9 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 				allAppts = []domain.Appointment{*appt}
 			}
 			confirmErr = m.apptSvc.ConfirmBlock(ctx, allAppts, "ivr", callID)
+			if confirmErr == nil {
+				applied, appliedOutcome = allAppts, "confirmed"
+			}
 		}
 
 		if confirmErr != nil {
@@ -1197,6 +1205,9 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 				allAppts = []domain.Appointment{*appt}
 			}
 			cancelErr = m.apptSvc.CancelBlock(ctx, allAppts, "Cancelada por paciente via llamada IVR", "ivr", "")
+			if cancelErr == nil {
+				applied, appliedOutcome = allAppts, "cancelled"
+			}
 		}
 
 		if cancelErr != nil {
@@ -1241,6 +1252,54 @@ func (m *NotificationManager) HandleVoiceGatherResult(callID, keys string) {
 			_ = m.callTracker.UpdateCallResult(ctx, callID, "completed", "no_dtmf") // L11: KPI best-effort
 		}
 	}
+}
+
+// resolveOtherPendings resuelve con outcome los pendings, bajo otra clave que key, de las citas que el
+// DTMF acaba de confirmar o cancelar: sin esto, su timer escalaría «sin respuesta» una cita ya resuelta.
+// Se llama sin el candado de key; cada clave se toma con el suyo.
+func (m *NotificationManager) resolveOtherPendings(key string, appts []domain.Appointment, outcome string) {
+	if len(appts) == 0 {
+		return
+	}
+	ids := make(map[string]bool, len(appts))
+	for _, a := range appts {
+		ids[a.ID] = true
+	}
+	var keys []string
+	m.pending.Range(func(k, v any) bool {
+		if other, _ := k.(string); other != key && ids[v.(*PendingNotification).AppointmentID] {
+			keys = append(keys, other)
+		}
+		return true
+	})
+	for _, other := range keys {
+		m.resolveOtherPending(other, ids, outcome)
+	}
+}
+
+// resolveOtherPending saca el pending de key si sigue siendo de una de esas citas.
+func (m *NotificationManager) resolveOtherPending(key string, ids map[string]bool, outcome string) {
+	if !m.lockPhone(key) {
+		return
+	}
+	defer m.unlockPhone(key)
+	val, ok := m.pending.Load(key)
+	if !ok || !ids[val.(*PendingNotification).AppointmentID] {
+		return
+	}
+	p, _ := m.takePending(key)
+	if p.Timer != nil {
+		p.Timer.Stop()
+	}
+	if m.persister != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := m.persister.Resolve(ctx, key, outcome); err != nil {
+			slog.Error("IVR: resolver otro pending del paciente", "phone", utils.MaskPhone(key), "error", err)
+		}
+	}
+	slog.Info("IVR: pending de otra cita del paciente resuelto por el DTMF", "phone", utils.MaskPhone(key),
+		"appointment_id", p.AppointmentID, "outcome", outcome)
 }
 
 // HandleVoiceCallCompleted is called when a voice call completes (via notification webhook).

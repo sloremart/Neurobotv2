@@ -2101,3 +2101,67 @@ func TestIVRCalls_PickPerPhone(t *testing.T) {
 		t.Errorf("llamadas = %v", got)
 	}
 }
+
+// M-4: el DTMF confirma o cancela todas las citas del paciente en esa fecha, y también resuelve sus
+// otros pendings (la misma persona bajo otra clave, otra cita del día), que si no escalarían «sin
+// respuesta» una cita ya resuelta. El pending de otro paciente con el mismo teléfono no se toca.
+func TestIVRDTMF_ResolvesOtherPendingsOfSamePatient(t *testing.T) {
+	for _, tc := range []struct{ keys, outcome string }{{"1", "confirmed"}, {"2", "cancelled"}} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			const keyCalled, keySameAppt, keyOtherAppt, keyOtherPatient = "+573001112233", "nectar:1", "nectar:2", "nectar:3"
+			h := newIVRHarness(t, http.StatusAccepted)
+			birdClient := bird.NewVoiceClientForTest(h.srv.URL)
+			cfg := testConfig()
+			soon, late := ivrFamily()
+			soonB := soon
+			soonB.ID, soonB.TimeSlot = "apt-soon-2", soon.TimeSlot[:8]+"0900" // otra cita de Mateo ese día
+
+			var applied []string
+			mockRepo := &testutil.MockAppointmentRepo{
+				FindPendingByDateFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+					return []domain.Appointment{soon, soonB, late}, nil
+				},
+				FindByIDFn: func(_ context.Context, _ string) (*domain.Appointment, error) { return &soon, nil },
+				FindUpcomingByPatientFn: func(_ context.Context, _ string) ([]domain.Appointment, error) {
+					return []domain.Appointment{soon, soonB}, nil
+				},
+				ConfirmBatchFn: func(_ context.Context, ids []string, _, _ string) error {
+					applied = append(applied, ids...)
+					return nil
+				},
+				CancelBatchFn: func(_ context.Context, ids []string, _, _, _ string) error {
+					applied = append(applied, ids...)
+					return nil
+				},
+			}
+			nm := notifications.NewNotificationManager(birdClient, services.NewAppointmentService(mockRepo, nil), cfg)
+			for key, apptID := range map[string]string{
+				keyCalled: soon.ID, keySameAppt: soon.ID, keyOtherAppt: soonB.ID, keyOtherPatient: late.ID,
+			} {
+				contact := "+573001112233"
+				if key == keyCalled {
+					contact = ""
+				}
+				nm.RegisterPending(notifications.PendingNotification{
+					Type: "confirmation", Phone: key, ContactPhone: contact, AppointmentID: apptID,
+				})
+			}
+			stopIVRTimers(t, nm, keyCalled, keySameAppt, keyOtherAppt, keyOtherPatient)
+
+			nm.RegisterCallID("call-1", keyCalled)
+			nm.HandleVoiceGatherResult("call-1", tc.keys)
+
+			if len(applied) != 2 {
+				t.Fatalf("citas aplicadas = %v, want las dos de Mateo", applied)
+			}
+			for _, key := range []string{keyCalled, keySameAppt, keyOtherAppt} {
+				if _, ok := nm.LoadPendingForTest(key); ok {
+					t.Errorf("el pending %s es de una cita ya resuelta por el DTMF", key)
+				}
+			}
+			if _, ok := nm.LoadPendingForTest(keyOtherPatient); !ok {
+				t.Error("el pending de otro paciente sigue su flujo")
+			}
+		})
+	}
+}
