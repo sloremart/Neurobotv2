@@ -1,9 +1,11 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -208,9 +210,16 @@ func TestRenderPDFPages_BudgetExhaustedFailsLikeGhostscript(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(previous)
 	start := time.Now()
 	_, err := renderPDFPagesWithin(context.Background(), run, 50*time.Millisecond,
 		filepath.Join(t.TempDir(), "order.pdf"), 1, maxOCRPages)
+	if !strings.Contains(logged.String(), "se agotó el presupuesto de conversión") {
+		t.Errorf("el presupuesto agotado deja su línea propia en el registro: %s", logged.String())
+	}
 	if err == nil || !strings.Contains(err.Error(), "pdf to image conversion failed") || errors.Is(err, errPageImagesTooLarge) {
 		t.Fatalf("err = %v, esperaba el fallo de gs", err)
 	}

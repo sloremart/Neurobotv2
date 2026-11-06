@@ -1003,6 +1003,12 @@ func renderPDFPagesAt(ctx context.Context, run gsRunner, pdfPath string, first, 
 		defer func(p string) { _ = os.Remove(p) }(m)
 	}
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// El presupuesto de la conversión se agotó (o el plazo del mensaje): se distingue de un PDF roto
+			// para poder buscarlo en el registro; la orden se pide de nuevo como con cualquier fallo de gs.
+			slog.Warn("ocr: se agotó el presupuesto de conversión del pdf con Ghostscript",
+				"budget", pdfRenderBudget, "dpi", dpi)
+		}
 		slog.Error("ghostscript conversion failed", "error", err, "output", string(output))
 		return nil, fmt.Errorf("pdf to image conversion failed: %w", err)
 	}
