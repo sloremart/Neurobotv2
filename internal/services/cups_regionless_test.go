@@ -50,3 +50,30 @@ func TestResolveCupsByName_RegionlessReadWithRegionalRowsIsADoubt(t *testing.T) 
 		t.Errorf("EMG: %v", got)
 	}
 }
+
+// Ronda 5 (R5-I2): solo cuentan las filas que son el leído MÁS una región, sin lo que el catálogo pone entre
+// paréntesis y sin otra anatomía: «RX MIEMBRO INFERIOR AP Y LATERAL» es el nombre exacto de 873340 y se asigna;
+// «MAXILAR INFERIOR» (870113) y «MEDICION DE MIEMBROS INFERIORES … (PIES CON APOYO)» (873302) no son «RX de
+// miembro inferior con región». «RX COMPARATIVAS» sigue en duda con el catálogo entero (PELVIS y MASTOIDES).
+func TestResolveCupsByName_RegionalRowsAreTheReadPlusARegion(t *testing.T) {
+	catalog := catalogFromTSV(t, "testdata/cups_catalog_active.tsv")
+	if res := ResolveCupsByName("RX MIEMBRO INFERIOR AP Y LATERAL", catalog, false, nil); res.Code != "873340" {
+		t.Errorf("«RX MIEMBRO INFERIOR AP Y LATERAL» → %q, quiero 873340 por nombre igual", res.Code)
+	}
+	for _, read := range []string{
+		"RX MIEMBRO INFERIOR", "RX MIEMBROS INFERIORES", "RX MMII AP Y LATERAL", "RX DE MIEMBRO INFERIOR IZQUIERDO",
+		"RX MIEMBRO INFERIOR DERECHO AP Y LATERAL",
+	} {
+		if got := acceptedByAdversary(read, catalog, false); len(got) != 1 || got[0] != "873340" {
+			t.Errorf("%q → %v, quiero [873340]", read, got)
+		}
+	}
+	for _, read := range []string{"RX COMPARATIVAS", "RX COMPARATIVA", "RX COMPARATIVAS AP Y LATERAL"} {
+		if got := acceptedByAdversary(read, catalog, false); len(got) != 0 {
+			t.Errorf("%q → %v, quiero agente", read, got)
+		}
+		if res := ResolveCupsByName(read, catalog, false, nil); len(res.Candidates) == 0 {
+			t.Errorf("%q debe ir al agente con candidatos", read)
+		}
+	}
+}

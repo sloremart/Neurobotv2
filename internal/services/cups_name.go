@@ -112,8 +112,33 @@ var retrievalStopWords = map[string]bool{
 // necesitan par en el candidato. OBLICUAS sí lo describe: las proyecciones adicionales tienen código propio
 // (873444). «3 PROYECCIONES» cuenta vistas, pero al descartar sí se compara (readNameWords).
 var orderNoise = map[string]bool{
-	"AMB": true, "AMBULATORIO": true, "PRIORITARIO": true, "URGENTE": true,
+	"AMB": true, "AMBULATORIO": true, "PRIORITARIO": true, "PRIORITARIA": true, "CITA": true, "URGENTE": true,
 	"LATERAL": true, "LAT": true, "PROYECCIONES": true, "VISTAS": true,
+}
+
+// orderTailNoise son colas de la orden que no describen el procedimiento y dejaban una lectura típica sin
+// candidatos, y por tanto descartada en silencio (R5-I3): el plazo («EN 1 MES», «6 MESES», «PARA 2 SEMANAS»)
+// y el diagnóstico («CIE10 M545», «CIE-10: G40»). Se quitan solo al asignar (withoutOrderTails); al descartar
+// entre hojas siguen contando, porque otro plazo u otro diagnóstico puede ser otra cita.
+var orderTailNoise = []*regexp.Regexp{
+	regexp.MustCompile(`\b(?:(?:EN|PARA|A|CADA) )?\d+ (?:MES|MESES|SEMANA|SEMANAS|DIA|DIAS)\b`),
+	regexp.MustCompile(`\bCIE[ -]?10\b`),
+}
+
+// cieCode es un código CIE-10 suelto («M545», «M54.5», «G40», «R51X»): letra y dos o tres cifras. Un nivel de
+// columna («T12», «L5») tiene la misma forma y no lo es.
+var cieCode = regexp.MustCompile(`^[A-Z]\d{2}\.?\d?X?$`)
+
+// withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) el plazo, el diagnóstico y los códigos
+// CIE sueltos.
+func withoutOrderTails(folded string) string {
+	for _, tail := range orderTailNoise {
+		folded = tail.ReplaceAllString(folded, " ")
+	}
+	words := slices.DeleteFunc(strings.Fields(folded), func(w string) bool {
+		return cieCode.MatchString(w) && !spineLevel.MatchString(w)
+	})
+	return strings.Join(words, " ")
 }
 
 // limbWords dicen dónde se hacen la EMG, la NC o los potenciales («4 EXTREMIDADES»), que el catálogo factura por
@@ -295,6 +320,8 @@ func ResolveCupsByName(
 	read string, catalog []CupsCandidate, interconsulta bool,
 	choose func(read string, candidates []CupsCandidate) string,
 ) CupsNameResolution {
+	// El plazo, el diagnóstico y los códigos CIE de la orden no buscan ni encajan (R5-I3).
+	read = withoutOrderTails(prefoldProcedureText(read))
 	// La búsqueda de candidatos usa solo lo leído; el sufijo de primera vez de una interconsulta cuenta
 	// para el nombre igual y para encajar, no para encontrar candidatos de otra especialidad.
 	retrievalRead := canonicalOrderName(read)
@@ -325,6 +352,13 @@ func ResolveCupsByName(
 		}
 	}
 	similar := append(append([]CupsCandidate{}, fitting...), rest...)
+	// Sin ningún candidato se descartaría en silencio: si la lectura acaba en un motivo («EMG MMII POR
+	// DOLOR»), se quita desde el último POR y lo que queda sigue el camino normal (R5-I3).
+	if len(similar) == 0 {
+		if i := strings.LastIndex(read+" ", " POR "); i > 0 {
+			return ResolveCupsByName(read[:i], catalog, interconsulta, choose)
+		}
+	}
 	res := CupsNameResolution{Candidates: similar[:min(len(similar), maxNameCandidates)]}
 	if len(res.Candidates) == 0 || choose == nil || regionless {
 		return res
@@ -343,21 +377,27 @@ func ResolveCupsByName(
 // duda. Una sola no basta: la EMG a secas sigue siendo la de cada extremidad aunque exista la de cara.
 const minRegionalRowsForDoubt = 2
 
-// regionalRows cuenta las filas del catálogo que son el leído más una región (decisión del dueño, R4-I3):
-// el leído no dice región ni segmento de columna, y la fila trae todas las palabras con las que busca
-// (retrievalWords: sin el lado, el nivel ni el ruido) y una región.
+// regionalRows cuenta las filas del catálogo que son el leído MÁS una región (decisión del dueño, R4-I3 y
+// R5-I2): el leído no dice región ni segmento de columna, y la fila trae una región y, fuera de ella, de sus
+// calificadores y de sus anotaciones (lo entre paréntesis y catalogNoise), las mismas palabras de contenido que
+// el leído (pluralWord). Otra anatomía o subtipo no cuenta: «MAXILAR INFERIOR» no es «RX de miembro inferior
+// con región», ni «MEDICION DE MIEMBROS INFERIORES … (PIES CON APOYO)».
 func regionalRows(canonRead string, catalog []CupsCandidate) int {
 	if len(regionGroup.groupValues(canonRead)) > 0 || len(spineGroup.groupValues(canonRead)) > 0 {
 		return 0
 	}
-	readWords := retrievalWords(canonRead)
-	if len(readWords) == 0 {
+	readContent := contentWords(canonRead, orderNoise)
+	if len(readContent) == 0 {
 		return 0
 	}
 	n := 0
 	for _, c := range catalog {
-		cc := canonicalOrderName(c.Name)
-		if len(regionGroup.groupValues(cc)) > 0 && allWordsIn(readWords, distinctiveWords(cc), prefixWord) {
+		cc := canonicalOrderName(catalogAnnotation.ReplaceAllString(c.Name, " "))
+		if len(regionGroup.groupValues(cc)) == 0 {
+			continue
+		}
+		rowContent := contentWords(cc, catalogNoise)
+		if allWordsIn(readContent, rowContent, pluralWord) && allWordsIn(rowContent, readContent, pluralWord) {
 			n++
 		}
 	}
