@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -806,5 +807,35 @@ func TestTaskFailed_Attrs(t *testing.T) {
 	}
 	if _, exhausted := last["retries_exhausted"]; exhausted {
 		t.Errorf("un fallo que no se reintenta no agota nada: %v", last)
+	}
+}
+
+// I-1: en producción el ticker no cae en el segundo 0 del minuto. Un tic a las HH:MM:30 es el minuto
+// normal de la tarea, no un arranque tardío: las CatchupNever (IVR, avisos del mismo día, re-enganche)
+// corren, también si el tic anterior fue a las HH:MM-1:30.
+func TestEvaluateTasks_MidMinuteTickIsOnTime(t *testing.T) {
+	s := NewScheduler(time.UTC)
+	(&Tasks{}).RegisterAll(s)
+	for i := range s.tasks {
+		s.tasks[i].Fn = func(context.Context) error { return nil }
+	}
+	lastRun := map[string]time.Time{}
+	wednesday := func(h, m int) time.Time { return time.Date(2026, 3, 18, h, m, 30, 0, time.UTC) }
+	for _, tc := range []struct {
+		at   time.Time
+		task string
+	}{
+		{wednesday(7, 5), "morning_reengage"},
+		{wednesday(10, 0), "same_day_reminders_10"},
+		{wednesday(13, 0), "voice_reminders"},
+	} {
+		s.evaluateTasks(context.Background(), tc.at.Add(-time.Minute), lastRun)
+		got := s.evaluateTasks(context.Background(), tc.at, lastRun)
+		if !slices.Contains(got, tc.task) {
+			t.Errorf("%s: a las %s debía correr en su minuto, corrieron %v", tc.task, tc.at.Format("15:04:05"), got)
+		}
+	}
+	if !s.Wait(2 * time.Second) {
+		t.Fatal("tasks did not drain")
 	}
 }

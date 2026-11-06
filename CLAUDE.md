@@ -411,7 +411,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Scheduler: una tarea que falla ANTES de enviar (`ErrNothingSent`) se reintenta cada 5 min, máx. 6 veces y nunca
   después de la hora programada + 30 min; un fallo tras un envío no se reintenta (cada envío se cobra). El
   reintento de `same_day_reminders_HH` calcula su franja desde la hora programada, no desde la suya. Un salto del
-  reloj que se come el minuto de una tarea: corre en el primer tic, hasta 10 min tarde y una vez al día, si su
+  reloj que se come el minuto de una tarea: corre en el primer tic, hasta 10 min tarde y una vez al día (por fecha), si su
   política de catch-up lo permite a esa hora (nunca `CatchupNever`). Lo programado antes del arranque es de
   `RunMissedTasks`, no de este arranque tardío.
 - IVR: una llamada por teléfono (`DialPhone`), a la cita más próxima entre sus pendings; el DTMF va solo al pending de

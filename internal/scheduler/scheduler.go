@@ -418,9 +418,10 @@ func (s *Scheduler) evaluateTasks(ctx context.Context, now time.Time, lastRun ma
 			}
 		}
 
-		// Prevent double execution: una vez al día, con la guarda de 2 min para el cambio de fecha.
+		// Una vez al día. La vieja guarda de 2 min sobra: el tope de 10 min no cruza la medianoche
+		// (now y la hora programada son de la misma fecha), así que la misma fecha lo cubre todo.
 		key := task.Name
-		if last, ok := lastRun[key]; ok && (sameDate(last, now) || now.Sub(last) < 2*time.Minute) {
+		if last, ok := lastRun[key]; ok && sameDate(last, now) {
 			continue
 		}
 		label := "scheduler task"
