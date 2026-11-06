@@ -71,7 +71,7 @@ del secreto, solo el nombre de la variable). No impiden arrancar:
 - `DB_PASSWORD` igual a la de `.env.example`, o `DB_ROOT_PASSWORD` vacía o igual a la del ejemplo
   (vacía, el compose pone su valor por defecto, que es el mismo).
 - `INTERNAL_API_KEY` de menos de 32 caracteres.
-- `EXTERNAL_DB_ENCRYPT` distinto de `true` (o `strict`): el canal a SIESA va en claro.
+- `EXTERNAL_DB_ENCRYPT` distinto de `true` (o `strict`, ver abajo): el canal a SIESA va en claro.
 
 Tras cada despliegue: `docker compose logs bot --since 5m | grep "insecure configuration"`.
 
@@ -97,12 +97,18 @@ El compose publica `13308:3306` en todas las interfaces del servidor. Para cerra
    `ports`); desde otra máquina de la LAN `nc -zv <servidor> 13308` falla; el dashboard sigue cargando.
 5. Cambiar las contraseñas débiles es un paso aparte: `DB_PASSWORD` la usan el bot y el dashboard, y
    `DB_ROOT_PASSWORD` solo se aplica al crear el volumen (`botdbdata`); en uno existente hay que cambiarla
-   con `ALTER USER` dentro de MySQL y luego en el `.env`.
+   con `ALTER USER` dentro de MySQL y luego en el `.env`. Después hay que **recrear el bot y el dashboard**
+   (`docker compose up -d bot` y el `up -d` del compose del dashboard; un `restart` no relee el `.env`): ambos
+   cortan unos segundos mientras reinician, y entre el `ALTER USER` y la recreación el que siga con la
+   contraseña vieja falla al conectar. Hacerlo juntos, en un momento de poco uso.
 
 ### Cifrado del canal a SIESA (`EXTERNAL_DB_ENCRYPT`)
 
 Por defecto `disable`: las consultas y resultados (datos clínicos) viajan en claro hasta 192.168.1.207.
 Con `true` se cifra todo el canal y se confía en el certificado del servidor (sin validar la CA).
+`strict` (TDS 8.0) NO sirve con el certificado autofirmado de la LAN: fuerza verificar el certificado del
+servidor y, al no poder validarlo, corta la conexión a SIESA (`/health` pasa a `degraded`). Usar `true`
+mientras SIESA no tenga un certificado de una CA que el contenedor del bot reconozca.
 
 1. **Probar TLS sin tocar el bot**, desde el servidor del bot, con `sqlcmd` (en la versión 18 el
    cifrado es obligatorio por defecto y `-C` confía en el certificado):
