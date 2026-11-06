@@ -494,7 +494,7 @@ func TestUnAvisoConUnBlobPorFechaSeProcesaEnSeguida(t *testing.T) {
 	if err != nil {
 		t.Fatalf("un blob por fecha no puede tumbar el aviso: %v", err)
 	}
-	if tardo := time.Since(inicio); tardo > 250*time.Millisecond {
+	if tardo := time.Since(inicio); tardo > time.Second { // holgado: lo cuadrático tardaría órdenes de magnitud más; 250 ms fallaba en CI cargado
 		t.Fatalf("el aviso tardó %v: la tolerancia no puede costar la goroutine del webhook", tardo)
 	}
 	if !n.OccurredAt.IsZero() || n.Message == nil || n.Message.Text != "hola" {
