@@ -144,8 +144,9 @@ type Config struct {
 	// OpenAI
 	OpenAIAPIKey string
 	OpenAIModel  string
-	// OpenAIDocModel es el modelo de la segunda lectura del código CUPS (OCRService.ReadCupsCode),
-	// que solo corre cuando el código leído no sirve.
+	// OpenAIDocModel es el modelo de las llamadas extra de la orden: la segunda lectura del código CUPS
+	// (OCRService.ReadCupsCode, solo cuando el código leído no sirve) y la elección por nombre cuando
+	// la orden no trae código (OCRService.ChooseCupsByName).
 	OpenAIDocModel string
 
 	// Recuperación asistida por IA (capa antes de escalar; ver docs/RECUPERACION-IA.md).
