@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -317,4 +318,133 @@ func (r *EventRepo) CountAppointmentsCreated(ctx context.Context, from, to time.
 		return 0, fmt.Errorf("count appointments created: %w", err)
 	}
 	return count, nil
+}
+
+// === Retención de PII (C-04) ===
+
+// chatEventsPIIMark es la fila de scheduler_runs que guarda hasta qué created_at se enmascaró la
+// PII de chat_events: last_run_at hace de marca. No es una tarea; el scheduler no la lee.
+const chatEventsPIIMark = "chat_events_pii_masked_until"
+
+// chatEventsPIISlack es cuánto antes de la marca arranca la pasada siguiente: el id y el created_at
+// no van exactamente en el mismo orden (unos segundos de diferencia entre inserciones concurrentes)
+// y una fila vieja con id posterior a la primera reciente de un lote queda para esa pasada.
+const chatEventsPIISlack = time.Hour
+
+// piiMaskedPhoneSQL enmascara una columna de teléfono como utils.MaskPhoneAlways («+573***3616»;
+// idempotente, NULL queda NULL). Las claves nectar: no son un teléfono y se conservan: el dashboard
+// separa las líneas por ese prefijo.
+const piiMaskedPhoneSQL = `CASE WHEN %[1]s LIKE 'nectar:%%' THEN %[1]s
+	WHEN CHAR_LENGTH(%[1]s) < 7 THEN '***'
+	ELSE CONCAT(LEFT(%[1]s, 4), '***', RIGHT(%[1]s, 4)) END`
+
+// piiEventDataKeys son las claves de event_data que pueden llevar PII del paciente y se quitan al
+// vencer la retención: lo que escribe (input, last_input, text, query, description), su nombre,
+// documento y datos de contacto. El dashboard no lee ninguna (lee type, option, code, cups_*,
+// error, regimen, proactive…).
+var piiEventDataKeys = []string{
+	"name", "email", "phone", "text", "input", "last_input", "doc", "document", "query", "description",
+}
+
+// maskPIISQL enmascara la PII de las filas (id > ?, id <= ?) que ya pasaron la retención
+// (created_at < ?): teléfono y contacto enmascarados y event_data sin las claves de PII. El resto
+// de la fila (tipo, fecha, sesión, demás claves) queda igual para los KPIs.
+var maskPIISQL = func() string {
+	paths := make([]string, len(piiEventDataKeys))
+	for i, k := range piiEventDataKeys {
+		paths[i] = "'$." + k + "'"
+	}
+	return `UPDATE chat_events SET
+		phone_number = ` + fmt.Sprintf(piiMaskedPhoneSQL, "phone_number") + `,
+		contact_identifier = ` + fmt.Sprintf(piiMaskedPhoneSQL, "contact_identifier") + `,
+		event_data = CASE WHEN JSON_TYPE(event_data) = 'OBJECT'
+			THEN JSON_REMOVE(event_data, ` + strings.Join(paths, ", ") + `) ELSE event_data END
+		WHERE id > ? AND id <= ? AND created_at < ?`
+}()
+
+// chatEventStamp es el id y la fecha de una fila de chat_events, para decidir el tramo de un lote.
+type chatEventStamp struct {
+	id        int64
+	createdAt time.Time
+}
+
+// piiMaskRange dice hasta qué id de un lote (en orden de id) se enmascara: el tramo inicial con
+// created_at < cutoff; la primera fila reciente lo corta. until es el created_at más nuevo del tramo
+// (la marca). upTo = 0: nada que enmascarar en este lote.
+func piiMaskRange(rows []chatEventStamp, cutoff time.Time) (upTo int64, until time.Time) {
+	for _, r := range rows {
+		if !r.createdAt.Before(cutoff) {
+			break
+		}
+		upTo = r.id
+		if r.createdAt.After(until) {
+			until = r.createdAt
+		}
+	}
+	return upTo, until
+}
+
+// chatEventStamps lee id y created_at de hasta limit filas con id > afterID, en orden de id.
+func (r *EventRepo) chatEventStamps(ctx context.Context, afterID int64, limit int) ([]chatEventStamp, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, created_at FROM chat_events WHERE id > ? ORDER BY id LIMIT ?`, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pii mask read: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var stamps []chatEventStamp
+	for rows.Next() {
+		var s chatEventStamp
+		if err := rows.Scan(&s.id, &s.createdAt); err != nil {
+			return nil, fmt.Errorf("pii mask scan: %w", err)
+		}
+		stamps = append(stamps, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pii mask rows: %w", err)
+	}
+	return stamps, nil
+}
+
+// PIIMaskStart da el id después del cual arranca la retención: un poco antes de la marca guardada
+// (chatEventsPIISlack), o desde el principio si nunca corrió. Sin filas desde la marca, el último id.
+func (r *EventRepo) PIIMaskStart(ctx context.Context) (int64, error) {
+	until, err := NewSchedulerRunRepo(r.db).GetLastRun(ctx, chatEventsPIIMark)
+	if err != nil {
+		return 0, fmt.Errorf("pii mask mark: %w", err)
+	}
+	if until.IsZero() {
+		return 0, nil
+	}
+	var start int64
+	err = r.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MIN(id) - 1, (SELECT COALESCE(MAX(id), 0) FROM chat_events))
+		 FROM chat_events WHERE created_at >= ?`, until.Add(-chatEventsPIISlack)).Scan(&start)
+	if err != nil {
+		return 0, fmt.Errorf("pii mask start: %w", err)
+	}
+	return start, nil
+}
+
+// MaskPIIBatch enmascara la PII de hasta limit filas con id > afterID que ya pasaron la retención
+// (created_at < cutoff) y guarda la marca. Devuelve el último id enmascarado (afterID si no había
+// nada: la pasada terminó) y cuántas filas cambiaron. Idempotente: repetir un tramo no lo altera.
+func (r *EventRepo) MaskPIIBatch(ctx context.Context, afterID int64, cutoff time.Time, limit int) (lastID, masked int64, err error) {
+	stamps, err := r.chatEventStamps(ctx, afterID, limit)
+	if err != nil {
+		return afterID, 0, err
+	}
+	upTo, until := piiMaskRange(stamps, cutoff)
+	if upTo == 0 {
+		return afterID, 0, nil
+	}
+	res, err := r.db.ExecContext(ctx, maskPIISQL, afterID, upTo, cutoff)
+	if err != nil {
+		return afterID, 0, fmt.Errorf("pii mask update: %w", err)
+	}
+	masked, _ = res.RowsAffected()
+	if err := NewSchedulerRunRepo(r.db).SetLastRun(ctx, chatEventsPIIMark, until); err != nil {
+		return upTo, masked, fmt.Errorf("pii mask mark: %w", err)
+	}
+	return upTo, masked, nil
 }

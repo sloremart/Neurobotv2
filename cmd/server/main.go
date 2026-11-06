@@ -486,6 +486,7 @@ func main() {
 			InboxRepo:       inboxRepo,
 			NotifHistory:    eventRepo,
 			ReengageSource:  eventRepo, // re-enganche matutino (par.8.1 #9) // dedup del recordatorio de corta antelación (fail-closed si nil)
+			ChatEventsPII:   eventRepo, // retención de PII de chat_events (C-04)
 		}
 		// Reconciliación de invariantes (Fase 2 observabilidad): checks locales + SIESA (bot-filtered).
 		reconciler := observability.NewReconciler()

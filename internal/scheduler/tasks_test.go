@@ -173,9 +173,10 @@ func TestRegisterAll_RegistersFourTasks(t *testing.T) {
 	s := NewScheduler(time.UTC)
 	tasks.RegisterAll(s)
 	// 4 originales (data_cleanup, whatsapp_reminders, waiting_list_check_06, voice_reminders)
-	// + 11 corridas horarias del recordatorio de corta antelación (06:00–16:00).
-	if len(s.tasks) != 16 {
-		t.Fatalf("expected 16 tasks (4 + 11 same-day + reengage), got %d", len(s.tasks))
+	// + 11 corridas horarias del recordatorio de corta antelación (06:00–16:00) + la retención de
+	// PII de chat_events.
+	if len(s.tasks) != 17 {
+		t.Fatalf("expected 17 tasks (4 + 11 same-day + reengage + pii retention), got %d", len(s.tasks))
 	}
 }
 
@@ -194,6 +195,7 @@ func TestRegisterAll_TaskNames(t *testing.T) {
 		expected[fmt.Sprintf("same_day_reminders_%02d", h)] = false
 	}
 	expected["morning_reengage"] = false
+	expected["chat_events_pii_retention"] = false
 
 	for _, task := range s.tasks {
 		if _, ok := expected[task.Name]; !ok {

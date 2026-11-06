@@ -1,3 +1,5 @@
+// Package scheduler corre las tareas programadas del bot (recordatorios, IVR, lista de espera,
+// limpieza y retención) a su hora, con recuperación al arrancar y reintento acotado.
 package scheduler
 
 import (
