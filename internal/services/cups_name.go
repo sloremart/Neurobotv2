@@ -479,7 +479,8 @@ var qualifierGroups = []qualifierGroup{
 	{values: modalityValues, readSilentOK: true},
 	{values: words("DOPPLER")},
 	{values: contrastValues, silentAs: string(contrastSimple), exclusive: true},
-	{values: words("PRIMERA=PRIMERA_VEZ", "VEZ=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL"), exclusive: true},
+	// «VEZ» sola no dice cuál («2 VEZ»): solo PRIMERA (y «1 VEZ», «1A VEZ» por orderPhrases) es la primera vez.
+	{values: words("PRIMERA=PRIMERA_VEZ", "CONTROL", "SEGUIMIENTO=CONTROL"), exclusive: true},
 	{values: words("PEDIATRICA", "ADULTO", "ADULTOS=ADULTO"), silentAs: "ADULTO", exclusive: true},
 	{values: sideValues, readMayAdd: true, exclusive: true},
 	// El leído puede precisar superior/inferior cuando el código del catálogo vale para cualquier
