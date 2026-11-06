@@ -147,6 +147,53 @@ Tope por sesión: los desvíos (`escalation_no_agents`) y las escalaciones entre
 `escalation_cap_reached` y la sesión queda cortada: cada entrada que no sea un botón del corte o la palabra
 de reinicio deja `escalation_cap_input_ignored` (reason: tipo de mensaje) y no recibe respuesta.
 
+
+### 3.8 Pasos y motivos añadidos después del catálogo original
+La fuente de verdad del nivel y del desenlace de cada paso es `internal/observability/tracer.go`
+(`catalog`); esta lista resume los que las secciones de arriba no nombran. Nivel entre paréntesis.
+
+**Agendamiento (`agendar`)**
+- Lectura de la orden y CUPS: `ocr_page_appended` / `ocr_append_failed` (MILESTONE; página extra fusionada o no se pudo anexar y se
+  re-pide), `stashed_order_used` / `stashed_order_failed` (MILESTONE; orden guardada del menú), `photo_first_message` /
+  `photo_intent_scheduling` / `image_out_of_context` (MILESTONE; fotos fuera de paso), `ocr_no_cups_code` (OUTCOME, → agente; orden sin
+  CUPS válidos o sin código asignable).
+- Validación de CUPS (VALIDATE_OCR): `cups_asignado_nombre` (MILESTONE; código asignado por nombre, reason: vía) y `cups_corregido`
+  (MILESTONE; código leído corregido, reason: vía, attrs `leido`/`usado`) — el paciente aún confirma; `cups_duda` (OUTCOME, → agente;
+  posible mala lectura, attrs `leido`/`candidatos`, reason cuando no hay candidatos).
+- Reglas: `coverage_particular` (MILESTONE), `bloqueo_sanitas_escalated` (OUTCOME, → agente), `age_restriction_blocked` (OUTCOME),
+  `mrc_limit_blocked` (OUTCOME; reason `emg_consolidation` cuando es la consolidación EMG) / `mrc_month_filtered` (MILESTONE),
+  `reschedule_orphan` (ERROR; la cita vieja quedó sin cancelar tras reagendar).
+
+**Recordatorio (`notif_recordatorio`)**
+- SIESA caída (D-04): `siesa_pending` (MILESTONE; la respuesta queda pendiente, reason: confirm\|cancel), `siesa_retry_failed` (FULL; attrs
+  `n` = intento), `siesa_cancel_prompted` (OUTCOME; se abrió la confirmación de cancelación), `siesa_unattended` (ERROR; la cita pasó sin
+  poder escalar, revisar a mano).
+- Mismo día: `same_day_reminder_sent` (MILESTONE, ref bird_msg), `same_day_no_response` (OUTCOME; limpieza silenciosa).
+- Otros: `escalation_no_conversation` (ERROR; el agente NO se entera), `suppressed_no_whatsapp` (OUTCOME; teléfono sin WhatsApp).
+
+**Escalación (`escalacion`)**
+- `agent_return_window_closed` (ERROR; reason: estado de la sesión): el agente devolvió el caso con la ventana de 24 h de WhatsApp ya cerrada
+  (409 `window_closed`) y el turno de retoma del bot no llegó al paciente; es la única traza de ese caso.
+- `agent_takeover`, `agent_no_show`, `agent_reminder_sent`, `agent_input_rejected`, `ack_sent`, `aviso_tardio_ignorado` (aviso de Néctar anterior a la
+  escalación vigente), `cola_vencida`, `encolada_proximo_dia`, `equipo_sugerido`, `siguiente_procedimiento`, `escalation_disabled`,
+  `escalation_no_channel`, `escalation_suppressed_resume`, `retorno_estado_inexistente`.
+
+**Infra / apertura / Néctar**
+- `infra/send_retry_after_too_long` (OUTCOME; un 429 con Retry-After > 60 s no se reintenta, attrs `n` = segundos),
+  `infra/send_rate_limited_undelivered` (OUTCOME; 429 tras los dos reintentos), `infra/non_contactable_identifier` (OUTCOME; identificador
+  de contacto fuera de tamaño, una vez por sesión).
+- `apertura/solo_traza`, `apertura/aviso_invalido`, `apertura/replay_perdida`, `nectar/contacto_no_disponible`, `protocolo/version_desconocida`.
+
+**Motivos de escalación (`reason_detail`, `escalation_reason`)** — lista completa en `internal/statemachine/escalation_reasons.go`
+(`EscalationReasons()`). Suman al tope de 3 por sesión SOLO los que son un ciclo del paciente (`EscalationCountsTowardCap`): `paciente_pidio_asesor`,
+`ocr_pidio_agente`, `emg_pidio_agente`, `sin_convenio` (eligió «agente»), `max_reintentos`, `ia_recuperacion_agotada` (un motivo vacío o nuevo sin
+clasificar también suma). Los que dispara el bot NO suman ni cortan: `ocr_sin_codigo`, `ocr_lecturas_fallidas` (3 lecturas fallidas seguidas),
+`cups_posible_mala_lectura`, `cantidad_fuera_de_rango` (CUPS > 100), `ocr_json_invalido`, `bloqueo_sanitas`, `cups_no_validos`, `agrupacion_vacia`,
+`estudio_sueno`, `particular_sin_orden`, `particular_liga`, `sin_entidades`, `entidad_no_resuelta`, `medicamentos_error`,
+`consolidacion_emg_fallida`, `reprogramar_sin_horarios`, `dato_agente_rechazado`, `bot_desactivado`. De las notificaciones:
+`notificacion_sin_respuesta`, `notificacion_fallo_sistema`, `confirmacion_texto_libre`, `reprogramar_sin_procedimiento` y
+`notificacion_siesa_pendiente` (caso en `notif_siesa_case`: confirm\|cancel\|changed).
+
 ---
 
 ## 3A. Niveles de detalle y clasificación de acciones (todo el proyecto)
