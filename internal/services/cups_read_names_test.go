@@ -132,21 +132,29 @@ func TestCompareReadNames_AllGuardNamesOfOtherCodesAreNeverEqual(t *testing.T) {
 		}
 		readsOf[key][p.code] = true
 	}
+	// Las formas canónicas de cada nombre se calculan una vez (compareReadNames no cachea lecturas): son 9.000
+	// comparaciones, y con -race cada canonización cuenta.
+	catalogRow, readRow := make([]*catalogRow, len(pairs)), make([]*catalogRow, len(pairs))
+	for i, p := range pairs {
+		if p.verdict == "OK" {
+			catalogRow[i], readRow[i] = newCatalogRow(p.catalog), newCatalogRow(p.read)
+		}
+	}
 	checked := 0
-	for _, x := range pairs {
+	for i, x := range pairs {
 		if x.verdict != "OK" {
 			continue
 		}
 		validFor := readsOf[CupsNameKey(x.read)]
-		for _, y := range pairs {
+		for j, y := range pairs {
 			if y.verdict != "OK" || x.code == y.code {
 				continue
 			}
 			checked++
-			if compareReadNames(x.catalog, y.catalog) == CupsNamesEqual {
+			if compareReadRows(catalogRow[i], catalogRow[j], x.catalog, y.catalog) == CupsNamesEqual {
 				t.Errorf("catálogo: %s «%s» igual a %s «%s»", x.code, x.catalog, y.code, y.catalog)
 			}
-			if !validFor[y.code] && compareReadNames(x.read, y.catalog) == CupsNamesEqual {
+			if !validFor[y.code] && compareReadRows(readRow[i], catalogRow[j], x.read, y.catalog) == CupsNamesEqual {
 				t.Errorf("leído %s «%s» igual al catálogo %s «%s»", x.code, x.read, y.code, y.catalog)
 			}
 		}

@@ -56,6 +56,11 @@ func TestResolveCupsByName_DiagnosisIsAllOrNothing(t *testing.T) {
 			t.Errorf("%q → %v, quiero [%s]", read, got, want)
 		}
 	}
+	// La duda nunca se queda sin candidatos: con la mama del diagnóstico, la mamografía (que el catálogo no trae)
+	// llega al agente con las ecografías de mama.
+	if res := ResolveCupsByName("MAMOGRAFIA DX NODULO MAMA IZQUIERDA", catalog, false, nil); res.Code != "" || len(res.Candidates) == 0 {
+		t.Errorf("«MAMOGRAFIA DX NODULO MAMA IZQUIERDA» → %q / %d candidatos, quiero duda con candidatos", res.Code, len(res.Candidates))
+	}
 	// Los candidatos de la duda son los de lo anterior al DX; si la lectura empieza por DX, los de la entera.
 	if res := ResolveCupsByName("DX GONARTROSIS RX RODILLA DERECHA", catalog, false, nil); res.Code != "" || !containsCode(res.Candidates, "873420") {
 		t.Errorf("«DX GONARTROSIS RX RODILLA DERECHA» → %q / %v, quiero duda con 873420 entre los candidatos", res.Code, res.Candidates)

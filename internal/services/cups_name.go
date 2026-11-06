@@ -146,16 +146,16 @@ var cieCode = regexp.MustCompile(`^[A-Z]\d{2}\.?\d?X?$`)
 
 // withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) las colas de orderTailNoise, el
 // diagnóstico escrito tras DX (withoutDiagnosis) y los códigos CIE sueltos. dxDoubt: el diagnóstico trae
-// vocabulario de procedimiento y la lectura es duda.
-func withoutOrderTails(folded string, vocabulary func(string) bool) (stripped string, dxDoubt bool) {
+// vocabulario de procedimiento y la lectura es duda; dxTail: las palabras tras el DX.
+func withoutOrderTails(folded string, vocabulary func(string) bool) (stripped string, dxDoubt bool, dxTail []string) {
 	for _, tail := range orderTailNoise {
 		folded = tail.ReplaceAllString(folded, " ")
 	}
-	words, dxDoubt := withoutDiagnosis(strings.Fields(folded), vocabulary)
+	words, dxDoubt, dxTail := withoutDiagnosis(strings.Fields(folded), vocabulary)
 	words = slices.DeleteFunc(words, func(w string) bool {
 		return cieCode.MatchString(w) && !spineLevel.MatchString(w)
 	})
-	return strings.Join(words, " "), dxDoubt
+	return strings.Join(words, " "), dxDoubt, dxTail
 }
 
 // withoutDiagnosis quita «DX» (también «DX:», «DX,», «DX.») y TODO lo que lo sigue, pero solo si ninguna de esas
@@ -163,18 +163,18 @@ func withoutOrderTails(folded string, vocabulary func(string) bool) (stripped st
 // (procedureVocabulary). Si alguna lo es, la lectura es duda: todo o nada, cerrado a fallos (ronda 7). Cortar «hasta la primera palabra del procedimiento y conservarla» pegaba al procedimiento la región,
 // el lado o la primera vez del diagnóstico («RX COLUMNA DORSAL DX DOLOR LUMBAR» era la dorsolumbar), y cortarlo
 // todo se comía la angio, la sedación o la flexión escritas después.
-func withoutDiagnosis(words []string, vocabulary func(string) bool) (kept []string, doubt bool) {
+func withoutDiagnosis(words []string, vocabulary func(string) bool) (kept []string, doubt bool, tail []string) {
 	i := slices.IndexFunc(words, func(w string) bool { return strings.Trim(w, ".,:;") == "DX" })
 	if i < 0 {
-		return words, false
+		return words, false, nil
 	}
-	tail := make([]string, 0, len(words)-i-1)
+	tail = make([]string, 0, len(words)-i-1)
 	for _, w := range words[i+1:] {
 		tail = append(tail, strings.Trim(w, ".,:;"))
 	}
 	doubt = slices.ContainsFunc(slices.Concat(tail, strings.Fields(canonicalOrderName(strings.Join(tail, " ")))), vocabulary)
 	// En la duda se devuelve igualmente lo anterior al DX: con eso se buscan los candidatos que ve el agente.
-	return words[:i], doubt
+	return words[:i], doubt, tail
 }
 
 // procedureRoots son raíces de palabras de tipo o modalidad que el catálogo de prueba no trae tal cual y que
@@ -327,7 +327,12 @@ func CupsNameKey(name string) string { return canonicalOrderName(name) }
 //     «CONSULTA ESPECIALISTA» no dice con qué comparar.
 func compareReadNames(a, b string) CupsNameMatch {
 	// Son lecturas, no catálogo: se calculan sin guardarlas en la caché (texto de la orden del paciente).
-	rowA, rowB := newCatalogRow(a), newCatalogRow(b)
+	return compareReadRows(newCatalogRow(a), newCatalogRow(b), a, b)
+}
+
+// compareReadRows es compareReadNames con las formas canónicas de los dos nombres ya calculadas (a y b, tal cual,
+// solo para las marcas de cantidad).
+func compareReadRows(rowA, rowB *catalogRow, a, b string) CupsNameMatch {
 	ca, cb := rowA.canon, rowB.canon
 	wa, wb := readNameWords(ca), readNameWords(cb)
 	if !hasSpecificWord(wa) || !hasSpecificWord(wb) {
@@ -422,14 +427,20 @@ func ResolveCupsByName(
 	// vocabulario de procedimiento no se corta (ronda 7): en los dos casos es duda para un agente, con los
 	// candidatos de la lectura.
 	full := prefoldProcedureText(read)
-	stripped, dxDoubt := withoutOrderTails(full, procedureVocabulary(catalog))
+	vocabulary := procedureVocabulary(catalog)
+	stripped, dxDoubt, dxTail := withoutOrderTails(full, vocabulary)
 	fullCanon, strippedCanon := canonicalOrderName(full), canonicalOrderName(stripped)
 	if dxDoubt || tailsChangeMeaning(fullCanon, strippedCanon) {
-		// Los candidatos que ve el agente: los de lo que queda sin colas (sin el diagnóstico) y, si no hay nada
-		// —la lectura empieza por DX—, los de la lectura entera.
+		// Los candidatos que ve el agente: los de lo que queda sin colas (sin el diagnóstico); si no hay —la
+		// lectura empieza por DX—, los de la lectura entera; y si tampoco, los de lo anterior al DX más el
+		// vocabulario de procedimiento del diagnóstico («MAMOGRAFIA DX NODULO MAMA IZQUIERDA»: la mama).
 		cands := nameCandidates(strippedCanon, catalog)
 		if len(cands) == 0 {
 			cands = nameCandidates(fullCanon, catalog)
+		}
+		if len(cands) == 0 && dxDoubt {
+			vocab := slices.DeleteFunc(slices.Clone(dxTail), func(w string) bool { return !vocabulary(w) })
+			cands = nameCandidates(canonicalOrderName(stripped+" "+strings.Join(vocab, " ")), catalog)
 		}
 		return CupsNameResolution{Candidates: cands[:min(len(cands), maxNameCandidates)]}
 	}
