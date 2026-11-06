@@ -249,8 +249,8 @@ type NotificationManager struct {
 	passTimeout time.Duration
 	// siesaReadTimeout acota la lectura de SIESA de una fila pendiente (0 = siesaReadTimeout).
 	siesaReadTimeout time.Duration
-	// patientNoticeOpen decide si un aviso diferido puede salir a esa hora (nil = config.PatientNoticeOpen).
-	patientNoticeOpen func(time.Time) bool
+	// noticeWindow es la ventana de los avisos diferidos (nil = config.PatientNoticeWindow).
+	noticeWindow *config.NoticeWindow
 
 	// responses rastrea las respuestas a plantillas lanzadas en segundo plano (GoHandleResponse)
 	// para que el apagado las espere (WaitResponses, D-10). responsesMu y responsesClosed cierran la

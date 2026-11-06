@@ -251,7 +251,7 @@ func buildSiesaHarness(t *testing.T, nectarBridge bool) *siesaHarness {
 	}
 	h.mgr = NewNotificationManager(client, services.NewAppointmentService(h.siesa.repo(), nil), &config.Config{BirdTeamFallback: "team-fallback"})
 	h.mgr.SetSiesaPendingStore(h.store)
-	h.mgr.patientNoticeOpen = func(time.Time) bool { return true } // las pruebas no dependen de la hora en que corren
+	h.mgr.noticeWindow = &config.NoticeWindow{StartHour: 0, EndHour: 24} // las pruebas no dependen de la hora en que corren
 	h.mgr.SetTracker(h.tracker)
 	h.mgr.SetWaitingListDeps(nil, h.sess, h.wp)
 	return h
@@ -1141,7 +1141,7 @@ func tomorrowAt(hour, minute int) time.Time {
 }
 
 // realNoticeWindow vuelve a la ventana de verdad en este arnés, que la abre para no depender del reloj.
-func (h *siesaHarness) realNoticeWindow() { h.mgr.patientNoticeOpen = nil }
+func (h *siesaHarness) realNoticeWindow() { h.mgr.noticeWindow = nil }
 
 // D-04: de madrugada la confirmación espera entera (ni SIESA ni mensaje) y sale al abrir la ventana.
 func TestSiesaPending_NoticeWindow_ConfirmWaitsUntilOpen(t *testing.T) {
@@ -1189,7 +1189,7 @@ func TestSiesaPending_NoticeWindow_CancelWaitsUntilOpen(t *testing.T) {
 	}
 }
 
-// D-04: los dos topes no esperan a la ventana: pasan a un agente a la misma hora de siempre, y esa
+// D-04: la cita a menos de 2 h no espera a la ventana: pasa a un agente a la hora de siempre, y esa
 // escalación no le escribe al paciente. Una fila ya resuelta también se cierra de noche, en silencio.
 func TestSiesaPending_NoticeWindow_CapsAndClosuresDoNotWait(t *testing.T) {
 	night := tomorrowAt(3, 0)
@@ -1199,11 +1199,6 @@ func TestSiesaPending_NoticeWindow_CapsAndClosuresDoNotWait(t *testing.T) {
 		outcome string
 		escal   int
 	}{
-		{"más de 6 h", func(h *siesaHarness) {
-			h.store.mu.Lock()
-			defer h.store.mu.Unlock()
-			h.store.rows[1].PendingFor = siesaPendingMaxAge + time.Minute
-		}, siesaOutcomeGaveUp, 1},
 		{"cita a menos de 2 h", func(h *siesaHarness) {
 			slot := tomorrowAt(4, 0).Format("200601021504")
 			h.siesa.set(func(f *siesaFake) { f.appt.TimeSlot = slot })
@@ -1238,5 +1233,85 @@ func TestSiesaPending_NoticeWindow_CapsAndClosuresDoNotWait(t *testing.T) {
 				t.Error("de madrugada no sale otro texto al paciente: solo el acuse de cuando respondió")
 			}
 		})
+	}
+}
+
+// setPendingFor fija cuánto lleva pendiente la fila (lo mide la BD en el repo real).
+func (h *siesaHarness) setPendingFor(d time.Duration) {
+	h.store.mu.Lock()
+	defer h.store.mu.Unlock()
+	for _, r := range h.store.rows {
+		r.PendingFor = d
+	}
+}
+
+// I-2: la respuesta de la víspera con SIESA de vuelta de noche se aplica al abrir la ventana con su
+// mensaje de siempre: la noche no cuenta para el tope de 6 h, que por eso no la pasa a un agente.
+func TestSiesaPending_NoticeWindow_EveReplyAppliedNextMorning(t *testing.T) {
+	for _, replied := range []int{16, 19} {
+		t.Run(fmt.Sprintf("respondió a las %d:50", replied), func(t *testing.T) {
+			h := newSiesaHarness(t)
+			h.siesa.set(func(f *siesaFake) { f.readDown = true })
+			h.respond("confirm")
+			h.siesa.set(func(f *siesaFake) { f.readDown = false })
+			h.realNoticeWindow()
+			repliedAt := tomorrowAt(replied, 50).AddDate(0, 0, -1)
+
+			for _, at := range []time.Time{tomorrowAt(21, 0).AddDate(0, 0, -1), tomorrowAt(2, 0), tomorrowAt(6, 55)} {
+				h.setPendingFor(at.Sub(repliedAt))
+				h.pass(at)
+				if h.escalations() != 0 || h.siesa.confirms != 0 {
+					t.Fatalf("a las %s espera: escalaciones=%d confirms=%d", at.Format("15:04"), h.escalations(), h.siesa.confirms)
+				}
+			}
+			at := tomorrowAt(7, 0)
+			h.setPendingFor(at.Sub(repliedAt))
+			h.pass(at)
+			if h.escalations() != 0 || h.siesa.confirms != 1 || h.bird.count(confirmedDetailsPrefix) != 1 {
+				t.Errorf("a las 07:00 se aplica con su mensaje: escalaciones=%d confirms=%d avisos=%d",
+					h.escalations(), h.siesa.confirms, h.bird.count(confirmedDetailsPrefix))
+			}
+		})
+	}
+}
+
+// I-2: con la cita antes de las 09:00, esperar a las 07:00 la dejaría a menos de 2 h: se aplica de
+// noche, con su mensaje (la cita manda sobre el horario).
+func TestSiesaPending_NoticeWindow_EarlyAppointmentAppliedAtNight(t *testing.T) {
+	h := newSiesaHarness(t)
+	slot := tomorrowAt(8, 30).Format("200601021504")
+	h.siesa.set(func(f *siesaFake) { f.readDown = true; f.appt.TimeSlot = slot })
+	h.mgr.RegisterPending(PendingNotification{
+		Type: "confirmation", Phone: h.phone, AppointmentID: "APT001", AppointmentSlot: slot,
+	})
+	h.mgr.HandleResponse(h.phone, "confirm", h.conv)
+	h.siesa.set(func(f *siesaFake) { f.readDown = false })
+	h.realNoticeWindow()
+
+	h.setPendingFor(5 * time.Hour)
+	h.pass(tomorrowAt(23, 0).AddDate(0, 0, -1))
+	if h.escalations() != 0 || h.siesa.confirms != 1 || h.bird.count(confirmedDetailsPrefix) != 1 {
+		t.Errorf("se aplica de noche: escalaciones=%d confirms=%d avisos=%d",
+			h.escalations(), h.siesa.confirms, h.bird.count(confirmedDetailsPrefix))
+	}
+}
+
+// I-2: el tope de 6 h no corre con la ventana cerrada, ni con más de 6 h abiertas acumuladas: espera a
+// la apertura y pasa a un agente entonces, cuando hay asesores.
+func TestSiesaPending_NoticeWindow_MaxAgeWaitsForOpenWindow(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.siesa.set(func(f *siesaFake) { f.readDown = true })
+	h.respond("confirm")
+	h.realNoticeWindow()
+
+	h.setPendingFor(20 * time.Hour) // desde las 07:00 de ayer: 13 h abiertas
+	h.pass(tomorrowAt(3, 0))
+	if h.escalations() != 0 || len(h.store.pending()) != 1 {
+		t.Fatalf("de madrugada el tope no corre: escalaciones=%d", h.escalations())
+	}
+	h.setPendingFor(24 * time.Hour)
+	h.pass(tomorrowAt(7, 0))
+	if h.escalations() != 1 || h.store.outcomes[1] != siesaOutcomeGaveUp {
+		t.Errorf("al abrir la ventana pasa a un agente: escalaciones=%d desenlace=%q", h.escalations(), h.store.outcomes[1])
 	}
 }

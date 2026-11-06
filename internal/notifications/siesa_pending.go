@@ -18,7 +18,7 @@ import (
 // «Cancelar» y SIESA no responde, la respuesta queda marcada en su fila de notification_history
 // (migración 047) y un proceso de fondo la retoma cuando SIESA vuelve: la confirmación se aplica;
 // la cancelación NO, se le pide al paciente que la confirme, como al pulsar «Cancelar». Las dos cosas
-// le escriben al paciente: solo dentro de la ventana de avisos (config.PatientNoticeOpen).
+// le escriben al paciente: solo dentro de la ventana de avisos (config.PatientNoticeWindow).
 
 // Acciones que pueden quedar pendientes de SIESA (columna siesa_pending).
 const (
@@ -49,8 +49,10 @@ const siesaStillDownAgentNote = "SIESA sigue sin responder: la respuesta del pac
 
 // Topes de la espera: pasado cualquiera de ellos el bot deja de reintentar y escala a un agente.
 const (
-	// siesaPendingMaxAge: una respuesta que lleva más de esto pendiente ya no se aplica sola. Queda
-	// dentro de la ventana de 24 h de WhatsApp que abrió la respuesta del paciente.
+	// siesaPendingMaxAge: una respuesta que lleva más de esto pendiente ya no se aplica sola. Solo
+	// cuenta el tiempo con la ventana de avisos abierta y solo se mira con ella abierta: lo que la
+	// noche hace esperar no lo cobra el tope. Con 6 h abiertas cabe a lo sumo una noche (13 h abiertas al
+	// día), así que queda dentro de la ventana de 24 h de WhatsApp que abrió la respuesta del paciente.
 	siesaPendingMaxAge = 6 * time.Hour
 	// siesaPendingMinLead: con la cita a menos de esto, la atiende una persona.
 	siesaPendingMinLead = 2 * time.Hour
@@ -223,7 +225,8 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	defer m.unlockPhone(row.Phone)
 
 	pending := row.notification()
-	expired := row.PendingFor > siesaPendingMaxAge
+	window := m.patientNoticeWindow()
+	expired := window.Open(now) && window.OpenDuration(now.Add(-row.PendingFor), now) > siesaPendingMaxAge
 	appt, block, hung, err := m.readSiesaRow(ctx, row)
 	if err != nil {
 		if expired {
@@ -249,9 +252,9 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	}
 
 	// Lo que sigue le escribe al paciente, y eso no sale de madrugada: la fila espera, sin sumar
-	// intento, a que abra la ventana. Los cierres y los topes de arriba no le escriben: no esperan, así
-	// que una fila que cruza la noche puede llegar a uno de ellos y pasar a un agente sin aplicarse.
-	if !m.noticeWindowOpen(now) {
+	// intento, a que abra la ventana. La cita manda sobre el horario: si esperar a la apertura la dejaría
+	// a menos de siesaPendingMinLead, se aplica ya, de noche. Los cierres de arriba no le escriben.
+	if !window.Open(now) && !startsWithin(appt, window.NextOpen(now), siesaPendingMinLead) {
 		slog.Debug("respuesta pendiente de SIESA: fuera de la ventana de avisos, se espera",
 			"phone", utils.MaskPhone(row.Phone), "appointment_id", row.AppointmentID, "action", row.Action)
 		return false
@@ -287,12 +290,12 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	return false
 }
 
-// noticeWindowOpen dice si un aviso diferido al paciente puede salir a esa hora.
-func (m *NotificationManager) noticeWindowOpen(now time.Time) bool {
-	if m.patientNoticeOpen != nil {
-		return m.patientNoticeOpen(now)
+// patientNoticeWindow es la ventana de los avisos diferidos al paciente.
+func (m *NotificationManager) patientNoticeWindow() config.NoticeWindow {
+	if m.noticeWindow != nil {
+		return *m.noticeWindow
 	}
-	return config.PatientNoticeOpen(now)
+	return config.PatientNoticeWindow
 }
 
 // readSiesaRow lee la cita de la fila con el plazo corto de la lectura. hung: venció ese plazo (no el

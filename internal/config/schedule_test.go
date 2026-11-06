@@ -340,3 +340,45 @@ func TestConfigHours_PrefiereElProveedor(t *testing.T) {
 		t.Errorf("tras Set, Hours() = %q", got)
 	}
 }
+
+// La ventana de avisos: abierta, próxima apertura y tiempo abierto entre dos instantes (I-2 de D-04).
+func TestNoticeWindow(t *testing.T) {
+	w := PatientNoticeWindow
+	at := func(day, h, m int) time.Time { return time.Date(2026, 11, day, h, m, 0, 0, time.UTC) }
+	for _, tc := range []struct {
+		t    time.Time
+		open bool
+		next time.Time
+	}{
+		{at(5, 6, 59), false, at(5, 7, 0)},
+		{at(5, 7, 0), true, at(5, 7, 0)},
+		{at(5, 19, 59), true, at(5, 19, 59)},
+		{at(5, 20, 0), false, at(6, 7, 0)},
+		{at(5, 23, 30), false, at(6, 7, 0)},
+	} {
+		if got := w.Open(tc.t); got != tc.open {
+			t.Errorf("Open(%v) = %v", tc.t, got)
+		}
+		if got := w.NextOpen(tc.t); !got.Equal(tc.next) {
+			t.Errorf("NextOpen(%v) = %v, want %v", tc.t, got, tc.next)
+		}
+	}
+	for _, tc := range []struct {
+		from, to time.Time
+		want     time.Duration
+	}{
+		{at(5, 19, 50), at(6, 7, 0), 10 * time.Minute},
+		{at(5, 19, 50), at(6, 7, 30), 40 * time.Minute},
+		{at(5, 14, 0), at(6, 2, 0), 6 * time.Hour},
+		{at(5, 21, 0), at(6, 6, 0), 0},
+		{at(4, 7, 0), at(6, 8, 0), 27 * time.Hour},
+	} {
+		if got := w.OpenDuration(tc.from, tc.to); got != tc.want {
+			t.Errorf("OpenDuration(%v, %v) = %v, want %v", tc.from, tc.to, got, tc.want)
+		}
+	}
+	always := NoticeWindow{StartHour: 0, EndHour: 24}
+	if !always.Open(at(5, 3, 0)) || always.OpenDuration(at(5, 3, 0), at(5, 9, 0)) != 6*time.Hour {
+		t.Error("la ventana de 0 a 24 h está siempre abierta")
+	}
+}

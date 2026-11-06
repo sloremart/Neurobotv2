@@ -71,9 +71,52 @@ const (
 	PatientNoticeEndHour   = 20
 )
 
-// PatientNoticeOpen dice si un aviso tardío al paciente puede salir a la hora de t.
-func PatientNoticeOpen(t time.Time) bool {
-	return t.Hour() >= PatientNoticeStartHour && t.Hour() < PatientNoticeEndHour
+// NoticeWindow es una ventana diaria por hora del reloj [StartHour, EndHour), en la zona del instante.
+type NoticeWindow struct {
+	StartHour, EndHour int
+}
+
+// PatientNoticeWindow es la ventana de los avisos tardíos al paciente.
+var PatientNoticeWindow = NoticeWindow{StartHour: PatientNoticeStartHour, EndHour: PatientNoticeEndHour}
+
+// Open dice si la ventana está abierta a la hora de t.
+func (w NoticeWindow) Open(t time.Time) bool {
+	return t.Hour() >= w.StartHour && t.Hour() < w.EndHour
+}
+
+// NextOpen es t si la ventana está abierta, o su próxima apertura.
+func (w NoticeWindow) NextOpen(t time.Time) time.Time {
+	if w.Open(t) {
+		return t
+	}
+	open := w.opening(t)
+	if t.Hour() >= w.EndHour {
+		open = open.AddDate(0, 0, 1)
+	}
+	return open
+}
+
+// OpenDuration es cuánto de [from, to) cae con la ventana abierta.
+func (w NoticeWindow) OpenDuration(from, to time.Time) time.Duration {
+	var total time.Duration
+	for day := w.opening(from); day.Before(to); day = day.AddDate(0, 0, 1) {
+		start, end := day, day.Add(time.Duration(w.EndHour-w.StartHour)*time.Hour)
+		if start.Before(from) {
+			start = from
+		}
+		if end.After(to) {
+			end = to
+		}
+		if end.After(start) {
+			total += end.Sub(start)
+		}
+	}
+	return total
+}
+
+// opening es la apertura de la ventana en la fecha civil de t.
+func (w NoticeWindow) opening(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), w.StartHour, 0, 0, 0, t.Location())
 }
 
 // DefaultBusinessHours es el horario de SIEMPRE de Neuro: L-V 07:00-18:00 y S 07:00-12:00, con
