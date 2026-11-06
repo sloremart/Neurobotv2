@@ -285,13 +285,15 @@ curl -s "${H[@]}" "$BASE/api/internal/health/debug" | jq   # nota: ruta real es 
 
 Cuando un paciente escribe, el bot deja esta huella, en orden. Sirve para saber **exactamente dónde muere** un mensaje. Filtra con `GET /logs?phone=+57...` o `?search=<msg>`.
 
+> **El texto del paciente nunca sale en claro** (C-04/C-22): la clave `text` se registra como `[redactado: N caracteres]`, así que `?search=` por lo que escribió el paciente no encuentra nada; busca por teléfono, estado o tipo de evento. Al anotar hallazgos, copia ese formato y no pegues texto, documentos ni teléfonos completos. (Nota para la skill del auditor, `.claude/skills/auditor-neurobot`: sus ejemplos con `text:"..."` deben usar este formato; la skill no se edita desde aquí.)
+
 ```
 1.  request  POST /api/webhooks/whatsapp            ← Bird entregó un evento al bot
-2.  webhook_parsed  direction:"incoming" body_type:"text" text_text:"hola"   [DEBUG]
+2.  webhook_parsed  direction:"incoming" body_type:"text" has_text_actions:false   [DEBUG]  (el texto NO se registra)
         ↳ direction:"outgoing" → es un ECO de un saliente; se descarta (normal, 0ms)
 3.  phone not whitelisted, ignoring                 [DEBUG]  ← STOP si la whitelist filtra (§13.2)
 4.  (si pasa) → se inserta en el WAL (message_inbox) y se encola al worker
-5.  processing message  state:"..." type:"text|postback" text:"hola"  [INFO]  ← LLEGÓ al motor
+5.  processing message  state:"..." type:"text|postback" text:"[redactado: 4 caracteres]"  [INFO]  ← LLEGÓ al motor
 6.  conversation_lookup_success / conversation_id_refreshed   ← consiguió a quién responder
 7.  event  type:"greeting_sent" (o invalid_input, out_of_hours, escalated_to_agent…)  [INFO]
 8.  sending_message  type:"interactive_list" conversation_id:"..."   [DEBUG]  ← el bot ENVÍA

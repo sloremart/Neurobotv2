@@ -2002,7 +2002,7 @@ phone not whitelisted   → teléfono rechazado en testing
 
 ```
 session_state          → estado actual de la sesión (phone, state, retry_count)
-processing message     → mensaje en proceso (phone, state, type, text)
+processing message     → mensaje en proceso (phone, state, type, text; el texto sale como «[redactado: N caracteres]»)
 state_transition       → transición completada (from, to, messages_count, events_count)
 new session created    → sesión nueva (session_id, phone)
 event                  → evento de auditoría registrado (type, data)

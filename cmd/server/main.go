@@ -724,7 +724,8 @@ func initLogger(level, logDir string, maxFileMB int) {
 	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: logLevel,
 		// K3: redacción global de PII (Ley 1581) en TODOS los logs (stdout/archivo). Las claves
-		// sensibles (documento/nombre/teléfono) se enmascaran antes de escribirse. El handler de
+		// sensibles (documento/nombre/teléfono) se enmascaran antes de escribirse; el texto libre del
+		// paciente (clave `text`) queda como «[redactado: N caracteres]», nunca en claro. El handler de
 		// Telegram tiene además su propia redacción para su formato.
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
 			if a.Value.Kind() == slog.KindString {
