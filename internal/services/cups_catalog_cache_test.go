@@ -40,3 +40,18 @@ func TestCatalogRowCache_IsStableAndSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// R7-I1: la caché guarda SOLO nombres del catálogo. Las lecturas que se comparan entre hojas (texto de la orden
+// del paciente) se calculan sin guardarlas.
+func TestCatalogRowCache_DoesNotKeepReads(t *testing.T) {
+	const read = "RM CEREBRO PACIENTE DE PRUEBA 7 DX CEFALEA"
+	if m := compareReadNames(read, "RM CEREBRO SIMPLE"); m == CupsNamesEqual {
+		t.Errorf("compareReadNames = %v", m)
+	}
+	if _, cached := catalogRows.Load(read); cached {
+		t.Errorf("la lectura %q quedó en la caché del catálogo", read)
+	}
+	if _, cached := catalogRows.Load("RM CEREBRO SIMPLE"); cached {
+		t.Error("la otra lectura quedó en la caché del catálogo")
+	}
+}

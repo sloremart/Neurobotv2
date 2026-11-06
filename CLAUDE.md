@@ -560,22 +560,30 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   diagnóstico («CIE10 M545», un código CIE suelto que no es nivel de columna), la EPS de la lista CERRADA
   `epsNames` con la palabra EPS delante o detrás («EPS SANITAS», «SANITAS EPS», «NUEVA EPS»; cualquier otra
   palabra tras EPS se queda), «ORDEN <n>», «SEGUN EVOLUCION», «NO POS» y CITA PRIORITARIA son ruido
-  (`withoutOrderTails`, `orderNoise`); «DX» y el diagnóstico escrito se cortan SOLO hasta la primera palabra del
-  procedimiento (`withoutDiagnosis`/`procedureWord`: abreviatura, lado, contraste o negación, CONSULTA, nivel o
-  valor de un grupo: «TAC CRANEO DX TCE CON CONTRASTE» conserva el contraste, «CONSULTA DX CEFALEA CONTROL
-  NEUROLOGIA» el control); si una palabra cortada tras DX es palabra de contenido del nombre de algún
-  procedimiento del catálogo (TUNEL, STRESS, MASAS; `diagnosisNamesAProcedure`), es duda, nunca la asignación al
-  nombre recortado. INVARIANTE (ronda 6): el contraste y los grupos excluyentes se leen sobre la lectura
-  COMPLETA; si sin colas dicen otra cosa (`tailsChangeMeaning`, «TAC CRANEO NO POS CONTRASTE»), es duda para un
-  agente, nunca una asignación. Si sin colas no hay candidatos y la lectura acaba en «POR <motivo>», se quita
-  desde el último POR y sigue el camino normal; si aun así no hay candidatos, se reintenta con la lectura ENTERA
-  antes de descartar (un descarte silencioso solo queda para lo que no tiene candidatos ni entero ni sin colas:
-  EEG/PSG no están en el catálogo de prueba; «PET CT CUERPO ENTERO FDG» es el PET, `orderPhrases`). Al descartar
-  entre hojas el plazo, el CIE, la EPS y el DX siguen contando. Rendimiento (ronda 6c): las formas canónicas de
-  cada nombre del catálogo (canónico, palabras, grupos, sin anotaciones) se calculan una vez y se cachean por el
-  nombre tal cual (`cups_catalog_cache.go`, `sync.Map`, tope 4096 entradas; un nombre que cambia en el catálogo
-  es otra clave, así que una recarga no necesita invalidar nada; lo cacheado es de solo lectura); la lectura se
-  prepara una vez por resolución (`readSide`), no por candidato.
+  (`withoutOrderTails`, `orderNoise`). «DX» (también «DX:», «DX,», «DX.») y TODO lo que lo sigue se quitan solo si
+  ninguna de esas palabras —tal cual o canonizadas («COXO FEMORAL» es CADERA)— es vocabulario de procedimiento
+  (`withoutDiagnosis`/`procedureVocabulary`, ronda 7, todo o nada): palabra del contraste o negación, CONSULTA,
+  valor de cualquier grupo (región, segmento, nivel, lado, modalidad, primera vez/control, pediátrica…), palabra de
+  algún nombre canónico del catálogo —igual, en plural o por prefijo de 5+ letras (DORSALGIA~DORSAL,
+  CONTROLADA~CONTROL, MASA~MASAS)— o una raíz de tipo (`procedureRoots`: ANGIO, SEDA, ANESTES, FLEXION,
+  EXTENSION, DINAMIC, PROTOCOLO); los números sueltos no cuentan. Si alguna lo es → duda para un agente con los
+  candidatos de lo anterior al DX (o de la lectura entera si empieza por DX), nunca descarte ni asignación: «RX
+  COLUMNA DORSAL DX DOLOR LUMBAR», «TAC CRANEO DX TCE CON CONTRASTE», «RM CEREBRO DX ACV ANGIO», «CONSULTA DX
+  CEFALEA CONTROL NEUROLOGIA» → agente; «RX RODILLA DERECHA DX GONARTROSIS», «TAC CRANEO CON CONTRASTE DX TCE»,
+  «EMG MMII DX LUMBALGIA» → se asignan. INVARIANTE (ronda 6): los grupos excluyentes (el contraste entre ellos) se
+  leen sobre la lectura COMPLETA; si sin colas dicen otra cosa (`tailsChangeMeaning`, «TAC CRANEO NO POS
+  CONTRASTE»), es duda para un agente, nunca una asignación. Si sin colas no hay candidatos y la lectura acaba en
+  «POR <motivo>», se quita desde el último POR y sigue el camino normal; si aun así no hay candidatos, se reintenta
+  con la lectura ENTERA antes de descartar. Sigue sin candidatos (descarte silencioso, anotado en
+  `CtxOCRUnreadNames`) solo lo que no tiene candidatos ni entero ni sin colas: procedimientos que el catálogo no
+  trae (EEG/PSG no están en el catálogo de prueba) y una consulta o EMG con más de la mitad de palabras ajenas al
+  catálogo; «PET CT CUERPO ENTERO FDG» es el PET (`orderPhrases`). Al descartar entre hojas el plazo, el CIE, la EPS
+  y el DX siguen contando. Rendimiento (ronda 6c): las formas canónicas de cada nombre del CATÁLOGO (canónico,
+  palabras, grupos, sin anotaciones) se calculan una vez y se cachean por el nombre tal cual
+  (`cups_catalog_cache.go`, `sync.Map`, tope 4096 entradas; un nombre que cambia en el catálogo es otra clave, así
+  que una recarga no necesita invalidar nada; lo cacheado es de solo lectura); las lecturas del paciente NO entran
+  en la caché (`compareReadNames` calcula sin guardar); la lectura se prepara una vez por resolución (`readSide`),
+  no por candidato.
   Para ENCAJAR y para que una región sea la misma solo vale el plural (`pluralWord`); el prefijo de 5+ letras
   (`prefixWord`) solo busca candidatos y sospecha («NEURO», «RX ESTERNOCLAVICULAR», «RM CEREBELO» → agente). «VEZ»
   sola no es primera vez («2 VEZ» → agente; «1 VEZ», «1A VEZ» sí). Al

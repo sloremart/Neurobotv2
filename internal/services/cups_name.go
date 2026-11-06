@@ -145,71 +145,88 @@ var orderTailNoise = []*regexp.Regexp{
 var cieCode = regexp.MustCompile(`^[A-Z]\d{2}\.?\d?X?$`)
 
 // withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) las colas de orderTailNoise, el
-// diagnóstico escrito tras DX y los códigos CIE sueltos. Devuelve también las palabras del diagnóstico cortado.
-func withoutOrderTails(folded string) (stripped string, diagnosis []string) {
+// diagnóstico escrito tras DX (withoutDiagnosis) y los códigos CIE sueltos. dxDoubt: el diagnóstico trae
+// vocabulario de procedimiento y la lectura es duda.
+func withoutOrderTails(folded string, vocabulary func(string) bool) (stripped string, dxDoubt bool) {
 	for _, tail := range orderTailNoise {
 		folded = tail.ReplaceAllString(folded, " ")
 	}
-	words, diagnosis := withoutDiagnosis(strings.Fields(folded))
+	words, dxDoubt := withoutDiagnosis(strings.Fields(folded), vocabulary)
 	words = slices.DeleteFunc(words, func(w string) bool {
 		return cieCode.MatchString(w) && !spineLevel.MatchString(w)
 	})
-	return strings.Join(words, " "), diagnosis
+	return strings.Join(words, " "), dxDoubt
 }
 
-// withoutDiagnosis quita «DX» y el diagnóstico que lo sigue, pero solo hasta la primera palabra que habla del
-// procedimiento (procedureWord): «TAC CRANEO DX TCE CON CONTRASTE» conserva el contraste, «CONSULTA DX CEFALEA
-// CONTROL NEUROLOGIA» conserva el control y la especialidad (R6-C1, R6-I1). Hasta el final se comía las dos cosas.
-// Devuelve las palabras cortadas, sin el DX ni los signos.
-func withoutDiagnosis(words []string) (kept, diagnosis []string) {
-	for i := 0; i < len(words); i++ {
-		if strings.Trim(words[i], ".:") != "DX" {
-			continue
-		}
-		j := i + 1
-		for j < len(words) && !procedureWord(strings.Trim(words[j], ".,:;")) {
-			diagnosis = append(diagnosis, strings.Trim(words[j], ".,:;"))
-			j++
-		}
-		words = slices.Delete(words, i, j)
-		i--
+// withoutDiagnosis quita «DX» (también «DX:», «DX,», «DX.») y TODO lo que lo sigue, pero solo si ninguna de esas
+// palabras —tal cual o en su forma canónica («COXO FEMORAL» es CADERA)— es vocabulario de procedimiento
+// (procedureVocabulary). Si alguna lo es, la lectura es duda: todo o nada, cerrado a fallos (ronda 7). Cortar «hasta la primera palabra del procedimiento y conservarla» pegaba al procedimiento la región,
+// el lado o la primera vez del diagnóstico («RX COLUMNA DORSAL DX DOLOR LUMBAR» era la dorsolumbar), y cortarlo
+// todo se comía la angio, la sedación o la flexión escritas después.
+func withoutDiagnosis(words []string, vocabulary func(string) bool) (kept []string, doubt bool) {
+	i := slices.IndexFunc(words, func(w string) bool { return strings.Trim(w, ".,:;") == "DX" })
+	if i < 0 {
+		return words, false
 	}
-	return words, diagnosis
+	tail := make([]string, 0, len(words)-i-1)
+	for _, w := range words[i+1:] {
+		tail = append(tail, strings.Trim(w, ".,:;"))
+	}
+	doubt = slices.ContainsFunc(slices.Concat(tail, strings.Fields(canonicalOrderName(strings.Join(tail, " ")))), vocabulary)
+	// En la duda se devuelve igualmente lo anterior al DX: con eso se buscan los candidatos que ve el agente.
+	return words[:i], doubt
 }
 
-// diagnosisNamesAProcedure dice si alguna palabra cortada tras DX es palabra de contenido del nombre de algún
-// procedimiento del catálogo (TUNEL, STRESS, MASAS): entonces puede no ser un diagnóstico, y asignar el nombre
-// recortado sería elegir por el bot. Cerrado a fallos: duda (ronda 6).
-func diagnosisNamesAProcedure(diagnosis []string, catalog []CupsCandidate) bool {
-	if len(diagnosis) == 0 {
-		return false
-	}
-	words := distinctiveWords(canonicalOrderName(strings.Join(diagnosis, " ")))
+// procedureRoots son raíces de palabras de tipo o modalidad que el catálogo de prueba no trae tal cual y que
+// nunca son un diagnóstico: la angio (ANGIO, ANGIOTAC, ANGIORESONANCIA con una R), la sedación o anestesia
+// (asunto 17), la flexión/extensión y la dinámica (871070), el protocolo.
+var procedureRoots = []string{"ANGIO", "SEDA", "ANESTES", "FLEXION", "EXTENSION", "DINAMIC", "PROTOCOLO"}
+
+// procedureVocabulary dice, para un catálogo, si una palabra (en mayúsculas, sin tildes) es vocabulario de
+// procedimiento: una palabra del contraste o una negación, CONSULTA, un valor de algún grupo de calificadores
+// (región, segmento, nivel, lado, modalidad, primera vez/control, pediátrica…), una palabra de algún nombre
+// canónico del catálogo —igual, en plural o por prefijo de 5+ letras (DORSALGIA~DORSAL, CONTROLADA~CONTROL)— o
+// una de procedureRoots.
+func procedureVocabulary(catalog []CupsCandidate) func(string) bool {
+	catalogWords := map[string]bool{}
 	for _, c := range catalog {
-		rowWords := rowOf(c.Name).words
-		if slices.ContainsFunc(words, func(w string) bool { return allWordsIn([]string{w}, rowWords, pluralWord) }) {
+		for _, w := range rowOf(c.Name).words {
+			catalogWords[w] = true
+		}
+	}
+	return func(w string) bool {
+		// Un número suelto nunca decide: es cantidad, paquete o plazo, no vocabulario («PAQ. 2» tiene el 2).
+		if strings.Trim(w, "0123456789") == "" {
+			return false
+		}
+		if procedureWord(w) {
 			return true
 		}
+		for _, root := range procedureRoots {
+			if strings.HasPrefix(w, root) {
+				return true
+			}
+		}
+		for cw := range catalogWords {
+			if pluralWord(w, cw) || prefixWord(w, cw) {
+				return true
+			}
+		}
+		return false
 	}
-	return false
 }
 
-// procedureWord dice si una palabra de la lectura (en mayúsculas, sin tildes, antes de canonizar) habla del
-// procedimiento y no del diagnóstico: una abreviatura o sinónimo de las órdenes, el lado en corto, una palabra del
-// contraste o una negación, CONSULTA, un nivel de columna o un valor de algún grupo de calificadores (región,
-// lado, modalidad, primera vez/control…).
+// procedureWord dice si una palabra habla del procedimiento sin mirar el catálogo: una palabra del contraste o
+// una negación, CONSULTA, o un valor de algún grupo de calificadores (región, segmento, nivel, lado, modalidad,
+// primera vez/control, pediátrica…). Las abreviaturas y el lado en corto llegan ya expandidos en la forma
+// canónica de la cola.
 func procedureWord(w string) bool {
-	_, abbreviation := orderAbbreviations[w]
-	_, side := sideLetters[w]
-	return abbreviation || side || isContrastWord(w) || w == "CONSULTA" || spineLevel.MatchString(w) || isQualifierWord(w)
+	return isContrastWord(w) || w == "CONSULTA" || isQualifierWord(w)
 }
 
-// tailsChangeMeaning dice si quitar las colas cambió lo que la lectura dice del contraste o de algún grupo
-// excluyente (INVARIANTE de la ronda 6): entonces la cola no era cola, y la lectura es duda.
+// tailsChangeMeaning dice si quitar las colas cambió lo que la lectura dice de algún grupo excluyente —el
+// contraste entre ellos— (INVARIANTE de la ronda 6): entonces la cola no era cola, y la lectura es duda.
 func tailsChangeMeaning(fullCanon, strippedCanon string) bool {
-	if contrastOf(fullCanon) != contrastOf(strippedCanon) {
-		return true
-	}
 	for _, g := range qualifierGroups {
 		if g.exclusive && !sameSet(g.groupValues(fullCanon), g.groupValues(strippedCanon)) {
 			return true
@@ -308,9 +325,8 @@ func CupsNameKey(name string) string { return canonicalOrderName(name) }
 //   - CupsNamesDiffer (se conserva sin código): lo demás, también un nombre sin palabras que lo distingan:
 //     «CONSULTA ESPECIALISTA» no dice con qué comparar.
 func compareReadNames(a, b string) CupsNameMatch {
-	// Las formas canónicas se cachean también para las lecturas (con el tope de la caché): entre hojas se comparan
-	// las mismas pocas lecturas muchas veces.
-	rowA, rowB := rowOf(a), rowOf(b)
+	// Son lecturas, no catálogo: se calculan sin guardarlas en la caché (texto de la orden del paciente).
+	rowA, rowB := newCatalogRow(a), newCatalogRow(b)
 	ca, cb := rowA.canon, rowB.canon
 	wa, wb := readNameWords(ca), readNameWords(cb)
 	if !hasSpecificWord(wa) || !hasSpecificWord(wb) {
@@ -401,35 +417,39 @@ func ResolveCupsByName(
 	choose func(read string, candidates []CupsCandidate) string,
 ) CupsNameResolution {
 	// El plazo, el diagnóstico, la EPS y los códigos CIE de la orden no buscan ni encajan (R5-I3). Pero quitarlos
-	// no puede cambiar lo que la lectura dice del contraste ni de ningún grupo excluyente (ronda 6): si lo
-	// cambia, la cola no era cola, y es duda para un agente con los candidatos que haya.
+	// no puede cambiar lo que la lectura dice de ningún grupo excluyente (ronda 6), y un diagnóstico con
+	// vocabulario de procedimiento no se corta (ronda 7): en los dos casos es duda para un agente, con los
+	// candidatos de la lectura.
 	full := prefoldProcedureText(read)
-	stripped, diagnosis := withoutOrderTails(full)
-	if tailsChangeMeaning(canonicalOrderName(full), canonicalOrderName(stripped)) || diagnosisNamesAProcedure(diagnosis, catalog) {
-		cands := nameCandidates(canonicalOrderName(stripped), catalog)
+	stripped, dxDoubt := withoutOrderTails(full, procedureVocabulary(catalog))
+	fullCanon, strippedCanon := canonicalOrderName(full), canonicalOrderName(stripped)
+	if dxDoubt || tailsChangeMeaning(fullCanon, strippedCanon) {
+		// Los candidatos que ve el agente: los de lo que queda sin colas (sin el diagnóstico) y, si no hay nada
+		// —la lectura empieza por DX—, los de la lectura entera.
+		cands := nameCandidates(strippedCanon, catalog)
 		if len(cands) == 0 {
-			cands = nameCandidates(canonicalOrderName(full), catalog)
+			cands = nameCandidates(fullCanon, catalog)
 		}
 		return CupsNameResolution{Candidates: cands[:min(len(cands), maxNameCandidates)]}
 	}
-	res := resolveFoldedRead(stripped, catalog, interconsulta, choose)
+	res := resolveFoldedRead(stripped, strippedCanon, catalog, interconsulta, choose)
 	// Sin ningún candidato tras quitar las colas, la lectura entera antes que un descarte silencioso (ronda 6).
 	if len(res.Candidates) == 0 && stripped != full {
-		if whole := resolveFoldedRead(full, catalog, interconsulta, choose); len(whole.Candidates) > 0 {
+		if whole := resolveFoldedRead(full, fullCanon, catalog, interconsulta, choose); len(whole.Candidates) > 0 {
 			return whole
 		}
 	}
 	return res
 }
 
-// resolveFoldedRead es ResolveCupsByName sobre una lectura ya normalizada (prefoldProcedureText) y sin colas.
+// resolveFoldedRead es ResolveCupsByName sobre una lectura ya normalizada (prefoldProcedureText), sin colas y
+// con su forma canónica (retrievalRead).
 func resolveFoldedRead(
-	read string, catalog []CupsCandidate, interconsulta bool,
+	read, retrievalRead string, catalog []CupsCandidate, interconsulta bool,
 	choose func(read string, candidates []CupsCandidate) string,
 ) CupsNameResolution {
 	// La búsqueda de candidatos usa solo lo leído; el sufijo de primera vez de una interconsulta cuenta
 	// para el nombre igual y para encajar, no para encontrar candidatos de otra especialidad.
-	retrievalRead := canonicalOrderName(read)
 	canonRead := retrievalRead
 	if interconsulta {
 		canonRead += firstVisitSuffix
@@ -464,7 +484,7 @@ func resolveFoldedRead(
 	// DOLOR»), se quita desde el último POR y lo que queda sigue el camino normal (R5-I3).
 	if len(similar) == 0 {
 		if i := strings.LastIndex(read+" ", " POR "); i > 0 {
-			return resolveFoldedRead(read[:i], catalog, interconsulta, choose)
+			return resolveFoldedRead(read[:i], canonicalOrderName(read[:i]), catalog, interconsulta, choose)
 		}
 	}
 	res := CupsNameResolution{Candidates: similar[:min(len(similar), maxNameCandidates)]}
