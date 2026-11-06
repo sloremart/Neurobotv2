@@ -1,10 +1,13 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -837,5 +840,45 @@ func TestEvaluateTasks_MidMinuteTickIsOnTime(t *testing.T) {
 	}
 	if !s.Wait(2 * time.Second) {
 		t.Fatal("tasks did not drain")
+	}
+}
+
+// G1-M1: el cron que choca con una corrida manual en curso no sube un Error ni emite task_failed, y se
+// reintenta a los 5 min como cualquier fallo antes de enviar.
+func TestRunTask_ReminderClashIsWarnAndRetries(t *testing.T) {
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&lockedWriter{mu: &logMu, w: &logs}, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	sink := &observability.CaptureSink{}
+	stop := observability.StartCapture(sink)
+
+	s := NewScheduler(time.UTC)
+	var calls atomic.Int32
+	s.AddTask(ScheduledTask{
+		Name: "reminders", Hour: 7, Minute: 0,
+		Fn: func(_ context.Context) error {
+			if calls.Add(1) == 1 {
+				return nothingSent(ErrRemindersRunning)
+			}
+			return nil
+		},
+	})
+	tickUntil(context.Background(), t, s,
+		time.Date(2026, 3, 16, 7, 0, 0, 0, time.UTC), time.Date(2026, 3, 16, 7, 5, 0, 0, time.UTC))
+	stop()
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2 (el choque y su reintento)", got)
+	}
+	if n := sink.CountStep("scheduler", "task_failed"); n != 0 {
+		t.Errorf("task_failed = %d, want 0", n)
+	}
+	logMu.Lock()
+	out := logs.String()
+	logMu.Unlock()
+	if strings.Contains(out, "level=ERROR") || !strings.Contains(out, "otra corrida en curso") {
+		t.Errorf("el choque va en Warn, sin Error: %s", out)
 	}
 }

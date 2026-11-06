@@ -186,6 +186,13 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 		if err := task.Fn(taskCtx); err != nil {
 			elapsed := time.Since(start)
 			dur := elapsed.Milliseconds()
+			// El choque con otra corrida de los recordatorios en curso (una manual) no es un fallo: Warn,
+			// sin task_failed ni aviso a Telegram, y el reintento de siempre por si la otra muere a medias.
+			if errors.Is(err, ErrRemindersRunning) {
+				slog.Warn(label+": otra corrida en curso, se reintenta", "task", task.Name, "duration_ms", dur)
+				s.scheduleRetry(ctx, task, chain, runAt.Add(elapsed), err)
+				return
+			}
 			slog.Error(label+" failed", "task", task.Name, "error", err,
 				"duration_ms", dur)
 			attrs := map[string]interface{}{"duration_ms": dur, "retryable": errors.Is(err, ErrNothingSent)}
