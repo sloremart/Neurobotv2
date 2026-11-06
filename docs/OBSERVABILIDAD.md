@@ -551,7 +551,9 @@ en los pasos del tipo de documento (ASK_DOCUMENT_TYPE, REG_DOCUMENT_TYPE: el pac
 número). `msg_during_escalation` e `invalid_input`/`max_retries_reached` de los pasos de datos personales
 (nombres, fecha de nacimiento, dirección, celular, correo, ocupación, barrio; ASK_UPDATE_PHONE/EMAIL)
 guardan solo el largo («[redactado: N caracteres]»). En los demás pasos `invalid_input` sigue con el texto
-(fricción).
+(fricción), con las secuencias de 5 o más dígitos tapadas (`utils.MaskDigitRuns`: un documento o teléfono
+escrito donde no se pedía, p. ej. en CONFIRM_IDENTITY, queda «***89»; también en `entity_matched_by_name`),
+salvo en ASK_MANUAL_CUPS y MANUAL_PROCEDURE_INPUT, donde el código CUPS es la respuesta esperada.
 
 Retención: la tarea diaria `chat_events_pii_retention` (02:30; su catch-up al arrancar solo de noche,
 fuera de 7-20 h) enmascara `phone_number` y `contact_identifier` de las filas con más de 30 días (las claves
