@@ -1895,8 +1895,8 @@ func TestSendReminders_ConcurrentRunsSendOnce(t *testing.T) {
 	go func() { firstDone <- tasks.SendWhatsAppReminders(context.Background()) }()
 	<-entered
 
-	if err := tasks.sendWhatsAppReminders(context.Background()); err != nil {
-		t.Fatalf("el segundo disparo solo se anota, no falla: %v", err)
+	if err := tasks.sendWhatsAppReminders(context.Background()); !errors.Is(err, ErrNothingSent) {
+		t.Fatalf("el segundo disparo falla como reintentable (el cron lo reintenta): %v", err)
 	}
 	if got := reads.Load(); got != 1 {
 		t.Fatalf("el segundo disparo no debe leer citas: lecturas = %d", got)

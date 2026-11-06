@@ -186,10 +186,10 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 
 	// Single-flight: la idempotencia (HasPendingForContact) se mira antes de enviar, así que dos
 	// recorridos a la vez pasarían los dos el chequeo y la plantilla saldría (y se cobraría) dos veces.
-	// El segundo disparo no reintenta: la corrida en curso cubre las mismas citas.
+	// El segundo disparo no envía nada y falla como reintentable: si es el cron, su reintento a los 5 min
+	// completa la lista si la corrida en curso murió a medias, y no duplica (HasPendingForContact).
 	if !t.remindersRunning.CompareAndSwap(false, true) {
-		slog.Warn("whatsapp reminders: ya en curso, este disparo no envía nada")
-		return nil
+		return nothingSent(errRemindersRunning)
 	}
 	defer t.remindersRunning.Store(false)
 
@@ -1086,6 +1086,9 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 }
 
 // === Helpers ===
+
+// errRemindersRunning: otro disparo de los recordatorios sigue en curso (single-flight, A-08).
+var errRemindersRunning = errors.New("whatsapp reminders: ya hay una corrida en curso")
 
 // nothingSent marca el error de una tarea que falló antes de su primer envío: el scheduler puede
 // reintentarla sin duplicar mensajes ni llamadas (D-03).
