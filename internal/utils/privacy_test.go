@@ -199,3 +199,33 @@ func TestMaskDigitRuns(t *testing.T) {
 		}
 	}
 }
+
+// E1-M1: los umbrales exactos de MaskDigitRuns (5 dígitos tapan, 4 no) y de MaskPhoneAlways (de 5 a 9
+// caracteres dejan 2, de 10 en adelante dejan 4, hasta 4 ninguno).
+func TestMaskDigitRuns_Thresholds(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"12345", "***45"},
+		{"123456", "***56"},
+		{"1234", "1234"},
+		{"tel 1234 y 98765", "tel 1234 y ***65"},
+	}
+	for _, c := range cases {
+		if got := MaskDigitRuns(c.in); got != c.want {
+			t.Errorf("MaskDigitRuns(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestMaskPhoneAlways_LengthBoundaries(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"12345678", "***78"},     // 8 caracteres: 2
+		{"123456789", "***89"},    // 9 caracteres: 2
+		{"1234567890", "***7890"}, // 10 caracteres: 4
+		{"1234", "***"},           // 4: ninguno
+	}
+	for _, c := range cases {
+		if got := MaskPhoneAlways(c.in); got != c.want {
+			t.Errorf("MaskPhoneAlways(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
