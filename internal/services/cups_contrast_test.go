@@ -13,6 +13,8 @@ func TestReadContrast_Grammar(t *testing.T) {
 			"COLUMNA SEGMENTOS CERVICAL, TORACICO, LUMBAR Y/O SACRO", "RADIOGRAFIA DE TORAX (OBLICUAS Ó LATERAL CON BARIO)",
 			"RX PIE CON APOYO", "TAC OIDO MEDIO", "EMG/NC", "PET/CT", "CONSULTA NO CONTROL NEUROLOGIA", "EMG NO NC",
 			"", "RX RODILLA D.",
+			// Las abreviaturas de columna con barra no son el contraste (R5-I1).
+			"RX COLUMNA L/S", "RX COLUMNA L/S AP Y LATERAL", "RM COLUMNA L/S", "RX COLUMNA C/D", "RM COLUMNA D/L",
 		},
 		contrastSimple: {
 			"TAC CRANEO SIMPLE", "RADIOGRAFIA DE ABDOMEN SIMPLE", "TAC CRANEO SIN CONTRASTE", "SIN MEDIO DE CONTRASTE",
@@ -25,6 +27,7 @@ func TestReadContrast_Grammar(t *testing.T) {
 			"NO\nCONTRASTADO", "SIN-CONTRASTE", "tac craneo no contrastado",
 			// Lo de otros procedimientos del nombre no cambia la lectura.
 			"TAC CRANEO SIMPLE Y CUELLO", "TAC SIN CONTRASTE DE CRANEO", "RX ABDOMEN SIMPLE Y DE PIE",
+			"RM COLUMNA L/S SIMPLE",
 		},
 		contrastWith: {
 			"CON CONTRASTE", "CONTRASTADO", "CONTRASTADA", "CONTRASTE", "C/C", "C/CTE", "C/ CONTRASTE", "C/CONTRASTE",
@@ -54,8 +57,9 @@ func TestReadContrast_Grammar(t *testing.T) {
 			// Cortado o sin objeto.
 			"TAC CRANEO CON", "TAC CRANEO (CON)", "TAC CRANEO SIN", "CON Y SIN", "C/S", "CON O", "CON O SIN",
 			"TAC CRANEO SIMPLE Y", "TAC CRANEO CON CONTRASTE Y", "TAC CRANEO CON MEDIO", "TAC CRANEO SIN MEDIO",
-			// Barra o sigla que no se entiende.
-			"C/X", "X/C", "TAC C/X CRANEO", "CONTRASTE N/A", "S.C.", "C.C.", "CONTRASTE?",
+			// Barra o sigla que no se entiende (las demás barras con C o S siguen en duda: C/U, S/N).
+			"C/X", "X/C", "TAC C/X CRANEO", "CONTRASTE N/A", "S.C.", "C.C.", "CONTRASTE?", "RX RODILLAS AP Y LAT C/U",
+			"RX TORAX S/N",
 			// Palabra parecida a CONTRASTE pero que no es la de la gramática.
 			"CONTRASTES", "CONTRAST", "CONTRATE", "CONTRASE", "CONSTRASTE", "NOCONTRASTADO", "SIN CONTRAS",
 			"SIN CONTRATSE", "CON CONTRASET", "GADOLINOI",

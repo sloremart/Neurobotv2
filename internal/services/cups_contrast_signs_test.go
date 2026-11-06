@@ -47,6 +47,28 @@ func TestContrastSign_NeverAssignsAContrastedStudy(t *testing.T) {
 			t.Errorf("compareReadNames(%q, %q) = %v, quiero duda", pair[0], pair[1], got)
 		}
 	}
+	// R5-I1: la abreviatura de columna con barra (L/S, D/L, C/D) no es el contraste: con su código pasa la guarda
+	// sin nota, dos hojas iguales son iguales, y el contraste que sí trae el nombre se lee igual.
+	for _, read := range []string{"RX COLUMNA L/S", "RX COLUMNA L/S AP Y LATERAL", "RM COLUMNA L/S SIMPLE", "RX COLUMNA C/D"} {
+		if ContrastUnclear(read) {
+			t.Errorf("%q: el contraste no está en duda", read)
+		}
+		if got := compareReadNames(read, read); got != CupsNamesEqual {
+			t.Errorf("compareReadNames(%q, %q) = %v, quiero igual", read, read, got)
+		}
+	}
+	for read, catalog := range map[string]string{
+		"RX COLUMNA L/S":        "RADIOGRAFIA DE COLUMNA LUMBOSACRA",
+		"RM COLUMNA L/S SIMPLE": "RESONANCIA NUCLEAR MAGNETICA DE COLUMNA LUMBOSACRA SIMPLE",
+		"RX COLUMNA C/D":        "RADIOGRAFIA DE COLUMNA UNION CERVICO DORSAL",
+	} {
+		if CupsNamesConflict(read, catalog) {
+			t.Errorf("guarda: %q frente a «%s» no contradice", read, catalog)
+		}
+	}
+	if !CupsNamesConflict("RM COLUMNA L/S C/C", "RESONANCIA NUCLEAR MAGNETICA DE COLUMNA LUMBOSACRA SIMPLE") {
+		t.Error("guarda: «RM COLUMNA L/S C/C» frente al simple sí contradice")
+	}
 	// Un signo lejos de la mención no cambia nada: el guion entre niveles o entre regiones es un separador.
 	for read, want := range map[string]string{
 		"RM COLUMNA LUMBAR L4 - L5 CON CONTRASTE": "883231",

@@ -15,8 +15,9 @@ import (
 //     a sus letras («C / S» → «C/S»), las confusiones del OCR deshechas («N0» → «NO», «C0N» → «CON») y los
 //     signos y casillas («(-)», «Ø», «( )», «: 0», «✗») como la ficha «?» (contrastSigns, R5-C1).
 //   - La frase del contraste es el tramo seguido de palabras del contraste (contrastWords) que trae alguna
-//     mención: CONTRAST*, GADOLINIO, CTE, SIMPLE, una barra con C o S («C/S», «C/X»), «MEDIO» con CON o SIN, o un
-//     CON o SIN al final del nombre. La frase ENTERA tiene que estar en la gramática (contrastGrammar), que
+//     mención: CONTRAST*, GADOLINIO, CTE, SIMPLE, una barra con C o S («C/S», «C/X»; las abreviaturas de columna
+//     «L/S», «D/L» y «C/D» no), «MEDIO» con CON o SIN, o un CON o SIN al final del nombre. La frase ENTERA tiene
+//     que estar en la gramática (contrastGrammar), que
 //     es la tabla de TestReadContrast_Grammar: si no encaja con exactitud, o hay dos frases que dicen
 //     cosas distintas, o queda una negación suelta (NO, NI, NEGATIVO, SIN) junto a una mención, o un signo
 //     («?») pegado a ella, es DESCONOCIDO.
@@ -59,6 +60,11 @@ var negationWords = map[string]bool{"NO": true, "NI": true, "NEGATIVO": true, "S
 // contrastNear son las palabras a las que una mención con una letra de más, de menos, cambiada o dos trocadas se
 // parece («CONTRATE», «CONSTRASTE», «CONTRATSE»).
 var contrastNear = []string{"CONTRASTE", "CONTRASTADO", "CONTRASTADA", "GADOLINIO"}
+
+// spineSlashAbbreviations son las abreviaturas de columna con barra de las órdenes (lumbosacra, dorsolumbar,
+// cervicodorsal): no hablan del contraste (R5-I1). Cualquier otra barra con C o S sigue siendo una mención que no
+// se entiende («C/U», «S/N», «C/X»).
+var spineSlashAbbreviations = map[string]bool{"L/S": true, "D/L": true, "C/D": true}
 
 // contrastSlashForms son las abreviaturas con barra que la gramática entiende, puestas en palabras.
 var contrastSlashForms = []struct {
@@ -173,8 +179,12 @@ func classifyContrastPhrase(phrase string, atEnd bool) contrastReading {
 }
 
 // isContrastWord dice si la palabra puede formar parte de la frase del contraste. Con barra, todas sus
-// partes tienen que serlo, o ser letras sueltas («CON/SIN», «Y/O», «C/X», «N/A», «C/CONTRASTE»); «EMG/NC» no.
+// partes tienen que serlo, o ser letras sueltas («CON/SIN», «Y/O», «C/X», «N/A», «C/CONTRASTE»); «EMG/NC» y las
+// abreviaturas de columna («L/S») no.
 func isContrastWord(w string) bool {
+	if spineSlashAbbreviations[w] {
+		return false
+	}
 	if strings.Contains(w, "/") {
 		for _, part := range strings.Split(w, "/") {
 			if !contrastWords[part] && !isContrastMention(part) && len(part) != 1 {
