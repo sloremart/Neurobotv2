@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -93,6 +94,31 @@ var (
 		"observacion": true, "observaciones": true, "observations": true,
 	}
 )
+
+// digitRunRe reconoce una secuencia de dígitos con espacios, puntos o guiones sueltos entre ellos
+// («1.000.000.689», «300 123 4567», «601-456-7890»). La barra no cuenta: una fecha no es un número.
+var digitRunRe = regexp.MustCompile(`\d(?:[ .\-]?\d)+`)
+
+// minMaskedDigits es desde cuántos dígitos una secuencia puede ser un documento o un teléfono.
+const minMaskedDigits = 5
+
+// MaskDigitRuns tapa en un texto libre las secuencias de 5 o más dígitos (un documento o un teléfono
+// escrito donde no se pedía), dejando ver sus 2 últimos dígitos: «mi cédula es 1.000.000.689» → «mi
+// cédula es ***89». El resto del texto queda igual (C-04).
+func MaskDigitRuns(text string) string {
+	return digitRunRe.ReplaceAllStringFunc(text, func(run string) string {
+		var digits []byte
+		for i := 0; i < len(run); i++ {
+			if run[i] >= '0' && run[i] <= '9' {
+				digits = append(digits, run[i])
+			}
+		}
+		if len(digits) < minMaskedDigits {
+			return run
+		}
+		return "***" + string(digits[len(digits)-2:])
+	})
+}
 
 // MaskText reemplaza el texto libre del paciente (puede traer cédula, nombres, dirección o
 // síntomas) por su largo en runas. Vacío queda vacío. No depende de LOG_MASK_PHONES.

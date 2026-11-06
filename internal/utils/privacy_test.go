@@ -175,3 +175,27 @@ func TestMaskEmail(t *testing.T) {
 		})
 	}
 }
+
+// Solo se tapan las secuencias de 5 o más dígitos (documento, teléfono), con espacios, puntos o
+// guiones dentro; quedan a la vista como mucho sus 2 últimos dígitos. El resto del texto queda igual.
+func TestMaskDigitRuns(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"1000000689", "***89"},
+		{"1.000.000.689", "***89"},
+		{"100 000 0689", "***89"},
+		{"no, mi cedula es 1000000689 gracias", "no, mi cedula es ***89 gracias"},
+		{"mi cel 300 123 4567 y fijo 601-456-7890", "mi cel ***67 y fijo ***90"},
+		{"cc 1000000689.", "cc ***89."},
+		{"no soy yo", "no soy yo"},
+		{"opción 2", "opción 2"},
+		{"1234", "1234"},
+		{"12-34", "12-34"},
+		{"15/08/2026", "15/08/2026"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := MaskDigitRuns(c.in); got != c.want {
+			t.Errorf("MaskDigitRuns(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

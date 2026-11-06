@@ -14,6 +14,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // RegisterEntityManagementHandlers registers entity selection flow:
@@ -385,7 +386,7 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			WithContext("selected_entity_name", entityName)
 		if matchedByName {
 			// Medible en dashboard: cuántas selecciones se rescatan por nombre (antes eran invalid_input).
-			r.WithEvent("entity_matched_by_name", map[string]interface{}{"input": input, "index": index})
+			r.WithEvent("entity_matched_by_name", map[string]interface{}{"input": utils.MaskDigitRuns(input), "index": index})
 		}
 
 		return r, nil

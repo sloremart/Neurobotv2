@@ -140,3 +140,21 @@ func TestMedicationWithoutAuthorizationEvent_DocMasked(t *testing.T) {
 		t.Fatalf("el evento sigue saliendo con el medicamento: %s", ev)
 	}
 }
+
+// En la lista de entidades el rescate por nombre tapa un documento escrito junto al nombre.
+func TestEntityMatchedByNameEvent_MasksDigitRuns(t *testing.T) {
+	h := askEntityNumberHandler(nil)
+	sess := testSess(sm.StateAskEntityNumber)
+	sess.SetContext("entity_list_count", "3")
+	sess.SetContext("entity_list_codes", "EPS001,EPS002,EPS003")
+	sess.SetContext("entity_list_names", "SANITAS|CAPITAL SALUD|FOMAG")
+	r, err := h(context.Background(), sess, textM("capital salud 1000000689"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := eventsOf(t, r)
+	assertNoneIn(t, ev, "1000000689")
+	if !strings.Contains(ev, "capital salud ***89") {
+		t.Fatalf("el nombre de la entidad queda: %s", ev)
+	}
+}

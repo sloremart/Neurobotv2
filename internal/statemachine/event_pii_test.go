@@ -99,3 +99,31 @@ func TestInvalidInputEvent_DocumentTypeStatesMaskDocument(t *testing.T) {
 		})
 	}
 }
+
+// En los pasos que no son de dato personal (p. ej. CONFIRM_IDENTITY, botones) el paciente a veces
+// escribe su documento o su teléfono: el evento tapa esas secuencias y deja el resto del texto.
+func TestInvalidInputEvent_OtherStatesMaskDigitRuns(t *testing.T) {
+	r, _ := ValidateButtonResponse(helperSess(StateConfirmIdentity), textMsg("no, mi cedula es 1.000.000.689"), "identity_yes", "identity_no")
+	got := eventsJSON(t, r)
+	if strings.Contains(got, "000.689") || !strings.Contains(got, "no, mi cedula es ***89") {
+		t.Fatalf("invalid_input debe tapar el documento y dejar el texto: %s", got)
+	}
+	r, _ = ValidateButtonResponse(helperSess(StateConfirmIdentity), textMsg("no soy yo"), "identity_yes", "identity_no")
+	if got := eventsJSON(t, r); !strings.Contains(got, `"no soy yo"`) {
+		t.Fatalf("el texto normal queda igual: %s", got)
+	}
+	never := func(string) bool { return false }
+	if got := eventsJSON(t, ValidateWithRetry(helperSess(StateMainMenu), "mi numero 300 123 4567", never, "error")); strings.Contains(got, "4567") {
+		t.Fatalf("invalid_input (texto) debe tapar el teléfono: %s", got)
+	}
+}
+
+// Donde el código CUPS es la respuesta esperada, el evento conserva los dígitos (fricción).
+func TestInvalidInputEvent_CupsStatesKeepDigits(t *testing.T) {
+	never := func(string) bool { return false }
+	for _, state := range []string{StateAskManualCups, StateManualProcedure} {
+		if got := eventsJSON(t, ValidateWithRetry(helperSess(state), "883141", never, "error")); !strings.Contains(got, "883141") {
+			t.Fatalf("%s conserva el código escrito: %s", state, got)
+		}
+	}
+}

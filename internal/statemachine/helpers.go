@@ -43,14 +43,27 @@ var freeTextInputStates = map[string]bool{
 	StateAskUpdatePhone: true, StateAskUpdateEmail: true,
 }
 
+// digitContentStates: pasos donde un número largo es la respuesta esperada (el código CUPS): ahí el
+// evento conserva los dígitos.
+var digitContentStates = map[string]bool{
+	StateAskManualCups:   true,
+	StateManualProcedure: true,
+}
+
 // inputForEvent es lo que un evento guarda de lo que escribió el paciente: el documento
-// enmascarado (maskInputForLog), solo el largo en un paso de datos personales y, en los demás,
-// el texto tal cual (materia prima del análisis de fricción).
+// enmascarado (maskInputForLog), solo el largo en un paso de datos personales y, en los demás, el
+// texto (materia prima del análisis de fricción) con las secuencias de 5 o más dígitos tapadas: el
+// paciente a veces escribe su documento o su teléfono donde no se pedía (p. ej. CONFIRM_IDENTITY).
 func inputForEvent(state, input string) string {
-	if freeTextInputStates[state] {
+	switch {
+	case freeTextInputStates[state]:
 		return utils.MaskText(input)
+	case sensitiveInputStates[state]:
+		return utils.MaskDocument(input)
+	case digitContentStates[state]:
+		return input
 	}
-	return maskInputForLog(state, input)
+	return utils.MaskDigitRuns(input)
 }
 
 // maxLastInputRunes es el tope de lo último que el paciente escribió y se le muestra al agente.
