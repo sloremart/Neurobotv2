@@ -229,3 +229,27 @@ func TestMaskPhoneAlways_LengthBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// E1-M3: la búsqueda de procedimientos tapa lo que parece documento o teléfono (7 o más dígitos) pero
+// deja a la vista un CUPS de 6 dígitos con su sufijo opcional.
+func TestMaskLongDigitRuns(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"890274", "890274"},
+		{"891901-72", "891901-72"},
+		{"891901-7", "891901-7"},
+		{"890274 y 890375", "890274 y 890375"},
+		{"891901-72 890375", "891901-72 890375"},
+		{"1234567", "***67"},
+		{"1000000689", "***89"},
+		{"1.000.000.689", "***89"},
+		{"cel 300 123 4567", "cel ***67"},
+		{"123456-789012", "***12"},
+		{"resonancia cerebro", "resonancia cerebro"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := MaskLongDigitRuns(c.in); got != c.want {
+			t.Errorf("MaskLongDigitRuns(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

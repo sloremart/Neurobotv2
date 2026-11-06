@@ -106,14 +106,40 @@ const minMaskedDigits = 5
 // escrito donde no se pedía), dejando ver sus 2 últimos dígitos: «mi cédula es 1.000.000.689» → «mi
 // cédula es ***89». El resto del texto queda igual (C-04).
 func MaskDigitRuns(text string) string {
-	return digitRunRe.ReplaceAllStringFunc(text, func(run string) string {
+	return maskDigitRuns(digitRunRe, nil, text, minMaskedDigits)
+}
+
+// minMaskedLongDigits es desde cuántos dígitos MaskLongDigitRuns tapa: un CUPS tiene 6.
+const minMaskedLongDigits = 7
+
+// cupsOrLongRunRe reconoce primero un CUPS con su sufijo opcional («891901-72», 8 dígitos con el guion)
+// para que no se confunda con un número largo, y si no, la secuencia de dígitos de siempre.
+var cupsOrLongRunRe = regexp.MustCompile(`\b\d{6}-\d{1,2}\b|` + digitRunRe.String())
+
+// cupsWithSuffixRe dice si una secuencia reconocida por cupsOrLongRunRe es un CUPS con sufijo.
+var cupsWithSuffixRe = regexp.MustCompile(`^\d{6}-\d{1,2}$`)
+
+// MaskLongDigitRuns es MaskDigitRuns para un texto donde un CUPS puede ser legítimo (la búsqueda de
+// un procedimiento): tapa solo las secuencias de 7 o más dígitos y deja a la vista un CUPS de 6
+// dígitos con su sufijo opcional («890274», «891901-72»).
+func MaskLongDigitRuns(text string) string {
+	return maskDigitRuns(cupsOrLongRunRe, cupsWithSuffixRe, text, minMaskedLongDigits)
+}
+
+// maskDigitRuns tapa las secuencias que reconoce re con minDigits o más dígitos; las que cumplen
+// exempt (si no es nil) quedan a la vista.
+func maskDigitRuns(re, exempt *regexp.Regexp, text string, minDigits int) string {
+	return re.ReplaceAllStringFunc(text, func(run string) string {
+		if exempt != nil && exempt.MatchString(run) {
+			return run
+		}
 		var digits []byte
 		for i := 0; i < len(run); i++ {
 			if run[i] >= '0' && run[i] <= '9' {
 				digits = append(digits, run[i])
 			}
 		}
-		if len(digits) < minMaskedDigits {
+		if len(digits) < minDigits {
 			return run
 		}
 		return "***" + string(digits[len(digits)-2:])

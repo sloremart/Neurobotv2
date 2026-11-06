@@ -1086,3 +1086,32 @@ func TestAskMedicalOrderParticular_BirdExhaustedRetriesKeepsNotice(t *testing.T)
 	}
 	assertOnlyEscalationNotice(t, res)
 }
+
+// E1-M3: el evento procedure_not_found no guarda en crudo un documento o teléfono escrito en la
+// búsqueda (7 o más dígitos), pero deja a la vista un CUPS de 6 dígitos con su sufijo.
+func TestAskManualCups_NotFoundEventMasksLongDigitRuns(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"resonancia 1000000689", "resonancia ***89"},
+		{"891901-72", "891901-72"},
+		{"890274", "890274"},
+	}
+	for _, c := range cases {
+		m := sm.NewMachine()
+		m.Register(sm.StateAskManualCups, askManualCupsHandler(&mockProcedureRepo{}))
+		sess := testSess(sm.StateAskManualCups)
+		msg := bird.InboundMessage{ID: "msg-1", Phone: "+573001234567", MessageType: "text", Text: c.in}
+		result, err := m.Process(context.Background(), sess, msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got interface{}
+		for _, ev := range result.Events {
+			if ev.Type == "procedure_not_found" {
+				got = ev.Data["query"]
+			}
+		}
+		if got != c.want {
+			t.Errorf("query de %q = %v, want %q", c.in, got, c.want)
+		}
+	}
+}

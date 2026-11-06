@@ -1182,7 +1182,7 @@ func askManualCupsHandler(procedureRepo repository.ProcedureRepository) sm.State
 		if len(procs) == 0 {
 			return sm.NewResult(sess.CurrentState).
 				WithText("No encontramos procedimientos con ese nombre. Intenta con otro término.\n\nEjemplo: \"Electromiografía\", \"Resonancia\", \"Potenciales evocados\"").
-				WithEvent("procedure_not_found", map[string]interface{}{"query": input}), nil
+				WithEvent("procedure_not_found", map[string]interface{}{"query": utils.MaskLongDigitRuns(input)}), nil
 		}
 
 		if len(procs) == 1 {
