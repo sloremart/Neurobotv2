@@ -189,7 +189,7 @@ func (t *Tasks) sendWhatsAppReminders(ctx context.Context) error {
 	// El segundo disparo no envía nada y falla como reintentable: si es el cron, su reintento a los 5 min
 	// completa la lista si la corrida en curso murió a medias, y no duplica (HasPendingForContact).
 	if !t.remindersRunning.CompareAndSwap(false, true) {
-		return nothingSent(errRemindersRunning)
+		return nothingSent(ErrRemindersRunning)
 	}
 	defer t.remindersRunning.Store(false)
 
@@ -1087,8 +1087,14 @@ func (t *Tasks) checkWaitingList(ctx context.Context) error {
 
 // === Helpers ===
 
-// errRemindersRunning: otro disparo de los recordatorios sigue en curso (single-flight, A-08).
-var errRemindersRunning = errors.New("whatsapp reminders: ya hay una corrida en curso")
+// ErrRemindersRunning es el choque con otro disparo de los recordatorios en curso (single-flight, A-08). El
+// disparo manual lo distingue de un fallo: no es un error que avisar.
+var ErrRemindersRunning = errors.New("whatsapp reminders: ya hay una corrida en curso")
+
+// RemindersRunning dice si hay una corrida de recordatorios en curso, del cron o manual.
+func (t *Tasks) RemindersRunning() bool {
+	return t.remindersRunning.Load()
+}
 
 // nothingSent marca el error de una tarea que falló antes de su primer envío: el scheduler puede
 // reintentarla sin duplicar mensajes ni llamadas (D-03).

@@ -25,6 +25,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
+	"github.com/neuro-bot/neuro-bot/internal/scheduler"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -38,6 +39,8 @@ type WorkerPoolStats interface {
 // ReminderRunner can send WhatsApp reminders on demand.
 type ReminderRunner interface {
 	SendWhatsAppReminders(ctx context.Context) error
+	// RemindersRunning dice si ya hay una corrida en curso (cron o manual).
+	RemindersRunning() bool
 }
 
 // NotificationCounter provides pending notification count.
@@ -1212,11 +1215,23 @@ func (h *InternalHandler) HandleSendReminders(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Con una corrida en curso (otro clic, o el cron) no se dispara nada: 409 y sin aviso a Telegram.
+	if h.reminderRunner.RemindersRunning() {
+		slog.Info("manual send-reminders: ya hay una corrida en curso, no se dispara")
+		http.Error(w, "reminders already running", http.StatusConflict)
+		return
+	}
+
 	slog.Info("manual send-reminders triggered", "remote", r.RemoteAddr)
 
 	go func() {
 		defer recoverLog("manual-send-reminders")
-		if err := h.reminderRunner.SendWhatsAppReminders(context.Background()); err != nil {
+		err := h.reminderRunner.SendWhatsAppReminders(context.Background())
+		switch {
+		case errors.Is(err, scheduler.ErrRemindersRunning):
+			// Otra corrida empezó entre la comprobación y el disparo: la cubre ella.
+			slog.Warn("manual send-reminders: chocó con una corrida en curso, no envió nada")
+		case err != nil:
 			slog.Error("manual send-reminders failed", "error", err)
 		}
 	}()

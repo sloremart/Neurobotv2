@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +19,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
+	"github.com/neuro-bot/neuro-bot/internal/scheduler"
 )
 
 // --- local mock for AppointmentRepository ---
@@ -1255,4 +1259,109 @@ func TestHandleBirdAgents_NoBridgeKeepsBirdBehavior(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, esperaba 503", w.Code)
 	}
+}
+
+// fakeReminderRunner simula la tarea de recordatorios: running dice si hay corrida en curso; err es lo
+// que devuelve el disparo; done avisa que terminó.
+type fakeReminderRunner struct {
+	running bool
+	err     error
+	calls   atomic.Int32
+	done    chan struct{}
+}
+
+func (f *fakeReminderRunner) SendWhatsAppReminders(context.Context) error {
+	f.calls.Add(1)
+	defer close(f.done)
+	return f.err
+}
+
+func (f *fakeReminderRunner) RemindersRunning() bool { return f.running }
+
+// Con una corrida en curso el disparo manual responde 409, no dispara nada y no deja error (que el
+// AlertHandler subiría a Telegram).
+func TestHandleSendReminders_AlreadyRunning(t *testing.T) {
+	logs := captureHandlerLogs(t)
+	runner := &fakeReminderRunner{running: true, done: make(chan struct{})}
+	h := &InternalHandler{cfg: &config.Config{}}
+	h.SetReminderRunner(runner)
+
+	rec := httptest.NewRecorder()
+	h.HandleSendReminders(rec, httptest.NewRequest(http.MethodPost, "/api/internal/send-reminders", nil))
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", rec.Code)
+	}
+	if runner.calls.Load() != 0 {
+		t.Error("con una corrida en curso no se dispara otra")
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("no es un error: %s", logs.String())
+	}
+}
+
+// Si otra corrida empieza entre la comprobación y el disparo, el choque queda en Warn, no en Error; un
+// fallo de verdad sigue siendo Error.
+func TestHandleSendReminders_RaceWithRunningIsNotAnError(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantError bool
+		logLine   string // la línea que deja el disparo al terminar
+	}{
+		{"chocó con una corrida", fmt.Errorf("x: %w", scheduler.ErrRemindersRunning), false, "chocó con una corrida"},
+		{"fallo de verdad", errors.New("siesa down"), true, "manual send-reminders failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureHandlerLogs(t)
+			runner := &fakeReminderRunner{err: tc.err, done: make(chan struct{})}
+			h := &InternalHandler{cfg: &config.Config{}}
+			h.SetReminderRunner(runner)
+
+			rec := httptest.NewRecorder()
+			h.HandleSendReminders(rec, httptest.NewRequest(http.MethodPost, "/api/internal/send-reminders", nil))
+			<-runner.done
+			// El log sale después de que el disparo devuelve.
+			for deadline := time.Now().Add(2 * time.Second); !strings.Contains(logs.String(), tc.logLine); {
+				if time.Now().After(deadline) {
+					t.Fatalf("falta la línea %q: %s", tc.logLine, logs.String())
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200", rec.Code)
+			}
+			if got := strings.Contains(logs.String(), "level=ERROR"); got != tc.wantError {
+				t.Errorf("error en el log = %v, want %v: %s", got, tc.wantError, logs.String())
+			}
+		})
+	}
+}
+
+// handlerLogSink guarda lo que el handler escribe en slog, seguro para la goroutine del disparo.
+type handlerLogSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *handlerLogSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *handlerLogSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func captureHandlerLogs(t *testing.T) *handlerLogSink {
+	t.Helper()
+	sink := &handlerLogSink{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(sink, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return sink
 }
