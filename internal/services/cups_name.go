@@ -74,8 +74,6 @@ var orderAbbreviations = map[string]string{
 	// Errata del catálogo (930860 «ELECTROMIOGRAFÍIA»).
 	"ELECTROMIOGRAFIIA": "ELECTROMIOGRAFIA",
 	"DER":               "DERECHA", "DCHA": "DERECHA", "DERECHO": "DERECHA", "IZQ": "IZQUIERDA", "IZQUIERDO": "IZQUIERDA",
-	// El lado en corto se comporta igual que la palabra (ojo y miembro incluidos: OD, MD).
-	"D": "DERECHA", "OD": "DERECHA", "MD": "DERECHA", "I": "IZQUIERDA", "OI": "IZQUIERDA", "MI": "IZQUIERDA",
 	"BILAT": "BILATERAL",
 	// Sinónimos de región y de columna en las órdenes de Neuro.
 	"CEREBRAL": "CEREBRO", "ENCEFALO": "CEREBRO", "CRANEAL": "CEREBRO", "CRANEO": "CEREBRO",
@@ -91,6 +89,13 @@ var orderAbbreviations = map[string]string{
 	"ABDOMINAL": "ABDOMEN", "ABDOMINALES": "ABDOMEN", "CLAVICULARES": "CLAVICULA", "TEMPOROMAXILAR": "TEMPOROMANDIBULAR",
 	// 879201 escribe los cuatro segmentos: «TORACICO» es la dorsal, como TORACICA.
 	"TORACICO": "DORSAL",
+}
+
+// sideLetters son el lado en corto, que se comporta igual que la palabra (ojo y miembro incluidos: OD, MD;
+// con puntos, «M.D.», lo une foldProcedureText). En un nombre de columna no son el lado: «CERVICAL Y D» es la
+// dorsal, y no se sabe qué quiso decir la orden.
+var sideLetters = map[string]string{
+	"D": "DERECHA", "OD": "DERECHA", "MD": "DERECHA", "I": "IZQUIERDA", "OI": "IZQUIERDA", "MI": "IZQUIERDA",
 }
 
 // retrievalStopWords no aportan a la búsqueda de candidatos (encabezados de remisiones e interconsultas).
@@ -139,10 +144,16 @@ var separatedUnit = regexp.MustCompile(`\b(\d+) ([DH])\b`)
 // mayúsculas, sin tildes, con las frases y abreviaturas de orderPhrases y orderAbbreviations.
 func canonicalOrderName(text string) string {
 	folded := foldOrderName(text)
-	var out []string
-	for _, w := range strings.FieldsFunc(folded, func(r rune) bool {
+	raw := strings.FieldsFunc(folded, func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
-	}) {
+	})
+	spine := slices.ContainsFunc(raw, func(w string) bool { return w == "COLUMNA" || isSpineRegion(w) })
+	var out []string
+	for _, w := range raw {
+		if side, ok := sideLetters[w]; ok && !spine {
+			out = append(out, side)
+			continue
+		}
 		if exp, ok := orderAbbreviations[w]; ok {
 			if exp != "" {
 				out = append(out, exp)
