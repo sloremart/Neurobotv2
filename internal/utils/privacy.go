@@ -22,16 +22,30 @@ func MaskPhone(phone string) string {
 	if !maskPhones {
 		return phone
 	}
-	return MaskPhoneAlways(phone)
-}
-
-// MaskPhoneAlways es MaskPhone sin la bandera LOG_MASK_PHONES: para lo que se persiste (chat_events,
-// C-04), que no debe quedar en claro aunque los logs se destapen para depurar. Idempotente.
-func MaskPhoneAlways(phone string) string {
 	if len(phone) < 7 {
 		return "***"
 	}
 	return phone[:4] + "***" + phone[len(phone)-4:]
+}
+
+// MaskPhoneAlways enmascara un teléfono para lo que se persiste (chat_events, C-04), sin depender de
+// LOG_MASK_PHONES: deja ver como mucho los últimos 4 caracteres, sea móvil o fijo ("+573103343616"
+// → "***3616"), 2 si es corto (5 a 9) y ninguno con 4 o menos. Idempotente: lo que ya empieza por
+// "***" queda igual (la retención vuelve a pasar por filas ya enmascaradas). La misma regla está en
+// SQL en local.piiMaskedPhoneSQL.
+func MaskPhoneAlways(phone string) string {
+	if strings.HasPrefix(phone, "***") {
+		return phone
+	}
+	r := []rune(phone)
+	switch {
+	case len(r) <= 4:
+		return "***"
+	case len(r) < 10:
+		return "***" + string(r[len(r)-2:])
+	default:
+		return "***" + string(r[len(r)-4:])
+	}
 }
 
 // MaskEmail enmascara un correo para lo que se persiste: "juan.perez@gmail.com" → "ju***@gmail.com".

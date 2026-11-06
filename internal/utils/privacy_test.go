@@ -133,12 +133,17 @@ func TestRedactLogMap(t *testing.T) {
 func TestMaskPhoneAlways_IgnoresLogFlag(t *testing.T) {
 	SetMaskPhones(false)
 	defer SetMaskPhones(true)
+	// Como mucho los últimos 4 dígitos, sea móvil o fijo; menos si es corto.
 	cases := []struct{ in, want string }{
-		{"+573103343616", "+573***3616"},
-		{"310 334 3616", "310 ***3616"},
-		{"+573***3616", "+573***3616"}, // ya enmascarado queda igual
-		{"12345", "***"},
+		{"+573103343616", "***3616"},
+		{"+57 310 334 3616", "***3616"},
+		{"6014567890", "***7890"},
+		{"3001234", "***34"},
+		{"12345", "***45"},
+		{"1234", "***"},
 		{"", "***"},
+		{"***3616", "***3616"}, // ya enmascarado queda igual (la retención repasa filas)
+		{"***34", "***34"},
 	}
 	for _, c := range cases {
 		if got := MaskPhoneAlways(c.in); got != c.want {

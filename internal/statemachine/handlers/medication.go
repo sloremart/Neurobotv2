@@ -92,34 +92,7 @@ func medicationCheckExcelHandler(medRepo *local.MedicationPendingRepo) sm.StateH
 
 		// Verificar autorización antes de continuar
 		if !rec.HasAutorizacion() {
-			medDesc := buildMedDescription(rec)
-			list := &sm.ListMessage{
-				Body: fmt.Sprintf(
-					"Encontramos tu medicamento en nuestro listado:\n\n%s\n\n"+
-						"⚠️ *Tu medicamento aún no tiene autorización vigente.*\n\n"+
-						"Para poder agendar la cita de aplicación, debes dirigirte a tu EPS y solicitar la *autorización del medicamento*. "+
-						"Una vez obtenida la autorización, vuelve a contactarnos y con gusto te agendaremos. ¿En qué más puedo ayudarte?",
-					medDesc,
-				),
-				Title: "Ver opciones",
-				Sections: []sm.ListSection{{
-					Title: "Menú principal",
-					Rows: []sm.ListRow{
-						{ID: "agendar", Title: "Agendar cita", Description: "Si tienes una orden médica"},
-						{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
-						{ID: "ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
-						{ID: "ayuda", Title: "Cómo usar el bot", Description: "Guía rápida"},
-					},
-				}},
-			}
-			r := sm.NewResult(sm.StateMainMenu).
-				WithClearCtx("medication_flow").
-				WithEvent("medication_sin_autorizacion", map[string]interface{}{
-					"doc":         utils.MaskDocument(sess.GetContext("patient_doc")),
-					"medicamento": rec.Medicamento,
-				})
-			r.Messages = append(r.Messages, list)
-			return r, nil
+			return medicationWithoutAuthorization(sess, rec), nil
 		}
 
 		// Guardar datos del medicamento en sesión
@@ -142,6 +115,39 @@ func medicationCheckExcelHandler(medRepo *local.MedicationPendingRepo) sm.StateH
 			WithText(msg).
 			WithEvent("medication_excel_found", map[string]interface{}{"medicamento": rec.Medicamento}), nil
 	}
+}
+
+// medicationWithoutAuthorization es la salida de MEDICATION_CHECK_EXCEL cuando el medicamento del
+// paciente aún no tiene autorización vigente: vuelve al menú con el aviso.
+func medicationWithoutAuthorization(sess *session.Session, rec *local.MedicationPendingRecord) *sm.StateResult {
+	medDesc := buildMedDescription(rec)
+	list := &sm.ListMessage{
+		Body: fmt.Sprintf(
+			"Encontramos tu medicamento en nuestro listado:\n\n%s\n\n"+
+				"⚠️ *Tu medicamento aún no tiene autorización vigente.*\n\n"+
+				"Para poder agendar la cita de aplicación, debes dirigirte a tu EPS y solicitar la *autorización del medicamento*. "+
+				"Una vez obtenida la autorización, vuelve a contactarnos y con gusto te agendaremos. ¿En qué más puedo ayudarte?",
+			medDesc,
+		),
+		Title: "Ver opciones",
+		Sections: []sm.ListSection{{
+			Title: "Menú principal",
+			Rows: []sm.ListRow{
+				{ID: "agendar", Title: "Agendar cita", Description: "Si tienes una orden médica"},
+				{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
+				{ID: "ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
+				{ID: "ayuda", Title: "Cómo usar el bot", Description: "Guía rápida"},
+			},
+		}},
+	}
+	r := sm.NewResult(sm.StateMainMenu).
+		WithClearCtx("medication_flow").
+		WithEvent("medication_sin_autorizacion", map[string]interface{}{
+			"doc":         utils.MaskDocument(sess.GetContext("patient_doc")),
+			"medicamento": rec.Medicamento,
+		})
+	r.Messages = append(r.Messages, list)
+	return r
 }
 
 func backToMenuNoRecord(sess *session.Session) *sm.StateResult {

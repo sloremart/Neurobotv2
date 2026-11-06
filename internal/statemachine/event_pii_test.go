@@ -24,11 +24,20 @@ func eventsJSON(t *testing.T, r *StateResult) string {
 // solo su largo. Lo que ve el agente (CtxEscalationLastInput) no cambia.
 func TestInvalidInputEvent_FreeTextStatesStoreOnlyLength(t *testing.T) {
 	never := func(string) bool { return false }
+	// La lista va escrita a mano (no se recorre freeTextInputStates): quitar un paso de esa lista
+	// debe romper este test.
 	cases := []struct{ state, input string }{
+		{StateRegFirstSurname, "Pérez Gómez"},
+		{StateRegSecondSurname, "Pérez Gómez"},
 		{StateRegFirstName, "María José"},
+		{StateRegSecondName, "María José"},
 		{StateRegBirthDate, "31/02/1980"},
+		{StateRegOccupation, "docente Colegio San José"},
 		{StateRegAddress, "Cra 5 # 10-20"},
+		{StateRegPhone, "300 123"},
+		{StateRegPhone2, "300 123"},
 		{StateRegEmail, "maria.jose@correo"},
+		{StateRegBarrio, "barrio El Prado"},
 		{StateAskUpdateEmail, "maria.jose@correo"},
 		{StateAskUpdatePhone, "300 123"},
 	}
@@ -61,5 +70,32 @@ func TestInvalidInputEvent_OtherStatesKeepText(t *testing.T) {
 	r, _ := ValidateButtonResponse(sess, textMsg("quiero una cita"), "agendar", "consultar")
 	if got := eventsJSON(t, r); !strings.Contains(got, "quiero una cita") {
 		t.Fatalf("invalid_input de un menú conserva el texto: %s", got)
+	}
+}
+
+// Un paso de datos personales con botones también guarda solo el largo (ValidateButtonResponse).
+func TestInvalidInputEvent_FreeTextStateWithButtonsStoresOnlyLength(t *testing.T) {
+	sess := helperSess(StateRegAddress)
+	r, _ := ValidateButtonResponse(sess, textMsg("Cra 5 # 10-20"), "ok")
+	if got := eventsJSON(t, r); strings.Contains(got, "Cra 5") || !strings.Contains(got, "[redactado: ") {
+		t.Fatalf("invalid_input de un paso de datos personales con botones: %s", got)
+	}
+}
+
+// En los pasos del TIPO de documento el paciente suele escribir el número (con letras: «CC
+// 1000000689»): el evento lo guarda enmascarado como documento, por las dos vías de validación.
+func TestInvalidInputEvent_DocumentTypeStatesMaskDocument(t *testing.T) {
+	never := func(string) bool { return false }
+	for _, state := range []string{StateAskDocumentType, StateRegDocumentType} {
+		t.Run(state, func(t *testing.T) {
+			got := eventsJSON(t, ValidateWithRetry(helperSess(state), "CC 1000000689", never, "error"))
+			if strings.Contains(got, "1000000689") || !strings.Contains(got, "CC***89") {
+				t.Fatalf("invalid_input (texto) debe guardar el documento enmascarado: %s", got)
+			}
+			r, _ := ValidateButtonResponse(helperSess(state), textMsg("mi cedula 1000000689"), "CC", "TI")
+			if got := eventsJSON(t, r); strings.Contains(got, "1000000689") {
+				t.Fatalf("invalid_input (botones) debe guardar el documento enmascarado: %s", got)
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
@@ -127,4 +128,15 @@ func TestMedicationNotInListEvent_DocMasked(t *testing.T) {
 	sess := testSess(sm.StateMedicationCheckExcel)
 	sess.Context["patient_doc"] = "1000000689"
 	assertNoneIn(t, eventsOf(t, backToMenuNoRecord(sess)), "1000000689")
+}
+
+func TestMedicationWithoutAuthorizationEvent_DocMasked(t *testing.T) {
+	sess := testSess(sm.StateMedicationCheckExcel)
+	sess.Context["patient_doc"] = "1000000689"
+	r := medicationWithoutAuthorization(sess, &local.MedicationPendingRecord{Medicamento: "TOXINA BOTULINICA"})
+	ev := eventsOf(t, r)
+	assertNoneIn(t, ev, "1000000689")
+	if !strings.Contains(ev, "medication_sin_autorizacion") || !strings.Contains(ev, "TOXINA BOTULINICA") {
+		t.Fatalf("el evento sigue saliendo con el medicamento: %s", ev)
+	}
 }

@@ -16,9 +16,12 @@ var maxRetries = 3
 // sensitiveInputStates: estados donde el input del usuario es PII (número de documento) y NO
 // debe persistirse en claro en chat_events / logs (Ley 1581). El valor se enmascara antes de
 // adjuntarlo a los eventos (N-9). La validación sigue usando el valor real, solo se enmascara
-// lo que se registra.
+// lo que se registra. Los pasos del TIPO de documento entran porque ahí el paciente suele escribir
+// el número, a veces con letras («CC 1000000689») que no lo dejan pasar por número (C-04).
 var sensitiveInputStates = map[string]bool{
-	StateAskDocument: true,
+	StateAskDocument:     true,
+	StateAskDocumentType: true,
+	StateRegDocumentType: true,
 }
 
 // maskInputForLog enmascara el input si el estado actual es sensible; si no, lo deja igual.
