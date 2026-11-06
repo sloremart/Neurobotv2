@@ -12,12 +12,14 @@ import (
 // hojas y la guarda de los CUPS con código:
 //
 //   - El texto llega normalizado (foldProcedureText): mayúsculas sin tildes, un solo espacio, la barra pegada
-//     a sus letras («C / S» → «C/S»), las confusiones del OCR deshechas («N0» → «NO», «C0N» → «CON»).
+//     a sus letras («C / S» → «C/S»), las confusiones del OCR deshechas («N0» → «NO», «C0N» → «CON») y los
+//     signos y casillas («(-)», «Ø», «( )», «: 0», «✗») como la ficha «?» (contrastSigns, R5-C1).
 //   - La frase del contraste es el tramo seguido de palabras del contraste (contrastWords) que trae alguna
 //     mención: CONTRAST*, GADOLINIO, CTE, SIMPLE, una barra con C o S («C/S», «C/X»), «MEDIO» con CON o SIN, o un
 //     CON o SIN al final del nombre. La frase ENTERA tiene que estar en la gramática (contrastGrammar), que
 //     es la tabla de TestReadContrast_Grammar: si no encaja con exactitud, o hay dos frases que dicen
-//     cosas distintas, o queda una negación suelta (NO, NI, NEGATIVO) junto a una mención, es DESCONOCIDO.
+//     cosas distintas, o queda una negación suelta (NO, NI, NEGATIVO, SIN) junto a una mención, o un signo
+//     («?») pegado a ella, es DESCONOCIDO.
 //   - La frase se reemplaza en el nombre por su valor (contrastSimple, contrastWith, contrastBoth,
 //     contrastUnknown), que es una palabra del grupo del contraste. DESCONOCIDO no está en ningún nombre
 //     del catálogo: nunca se asigna por nombre igual ni por el modelo, y va al agente.

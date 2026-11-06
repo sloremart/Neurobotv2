@@ -65,6 +65,19 @@ var quantityMark = regexp.MustCompile(`#\s*\d+|\bX\s*\d+\b|\b(?:N|NRO|NUM)\s*[.:
 // («C/S»), y la interrogación («CONTRASTE?») lo deja en duda.
 var nonNameChars = regexp.MustCompile(`[^A-Z0-9/?]+`)
 
+// contrastSigns son los signos y casillas con que una orden niega, afirma o deja vacío un campo («CONTRASTE (-)»,
+// «Ø CONTRASTE», «CONTRASTE: 0», «CON CONTRASTE ( )», «CONTRASTE ✗»): una casilla vacía o con solo un signo, un
+// símbolo de negación o de marca, un guion o una raya que no une dos palabras, y un cero suelto. Se vuelven la
+// ficha «?» ANTES de quitar los signos, para que el contraste los vea (R5-C1): pegados a su mención dejan la
+// frase fuera de la gramática (DESCONOCIDO); lejos de ella se pierden como cualquier signo. El guion que une
+// dos palabras («L4-L5», «SIN-CONTRASTE», «PET-TC») sigue siendo un separador.
+var contrastSigns = []*regexp.Regexp{
+	regexp.MustCompile(`[(\[] *[-–—+_0]* *[)\]]`),
+	regexp.MustCompile(`[Ø∅✗✘✓✔☐☑☒×]`),
+	regexp.MustCompile(`(^|[^A-Z0-9])[-–—_]+($|[^A-Z0-9])`),
+	regexp.MustCompile(`(^|[^A-Z0-9])0($|[^A-Z0-9])`),
+}
+
 // slashSpaces pega la barra a sus letras: «C / S» es «C/S».
 var slashSpaces = regexp.MustCompile(` */ *`)
 
@@ -84,10 +97,14 @@ func prefoldProcedureText(text string) string {
 }
 
 // foldProcedureText normaliza un nombre de procedimiento: prefoldProcedureText, sin las marcas de cantidad
-// (compareReadNames las compara aparte), «+» como Y, sin signos salvo la barra pegada a sus letras, y un solo
-// espacio entre palabras. Es el texto que lee el contraste (readContrast) y que se parte en palabras.
+// (compareReadNames las compara aparte), los signos y casillas como «?» (contrastSigns), «+» como Y, sin otros
+// signos salvo la barra pegada a sus letras, y un solo espacio entre palabras. Es el texto que lee el contraste
+// (readContrast) y que se parte en palabras.
 func foldProcedureText(text string) string {
 	folded := quantityMark.ReplaceAllString(prefoldProcedureText(text), " ")
+	for _, sign := range contrastSigns {
+		folded = sign.ReplaceAllString(folded, "$1 ? $2")
+	}
 	folded = strings.NewReplacer("+", " Y ", "?", " ? ").Replace(folded)
 	folded = slashSpaces.ReplaceAllString(nonNameChars.ReplaceAllString(folded, " "), "/")
 	return strings.Join(strings.Fields(folded), " ")

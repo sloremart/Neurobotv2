@@ -65,6 +65,13 @@ func TestReadContrast_Grammar(t *testing.T) {
 			"SIN USO DE CONTRASTE", "RM CEREBRO NO FUNCIONAL CON CONTRASTE", "CON CONTRASTE NO IONICO",
 			// Dos lecturas distintas en el mismo nombre.
 			"TAC CRANEO SIMPLE Y TAC TORAX CON CONTRASTE", "SIMPLE Y CON CONTRASTE SIN CONTRASTE",
+			// Un signo o una casilla pegados a la mención (R5-C1): lo que niega, afirma o deja vacío con un signo
+			// no se entiende, y nunca vale CONTRASTE.
+			"TAC CRANEO CONTRASTE (-)", "TAC CRANEO CONTRASTE(-)", "CONTRASTE: ---", "(-) CONTRASTE", "CONTRASTE -",
+			"TAC CRANEO - CONTRASTE", "RM COLUMNA LUMBAR CON CONTRASTE (-)", "RM COLUMNA CERVICAL GADOLINIO (-)",
+			"CONTRASTE (+)", "TAC CRANEO Ø CONTRASTE", "CONTRASTE: Ø", "CONTRASTE: 0", "CONTRASTE (0)", "CONTRASTE = 0",
+			"TAC CRANEO 0 CONTRASTE", "TAC CRANEO CON CONTRASTE ( )", "CONTRASTE: [ ]", "CONTRASTE : __", "CONTRASTE ✗",
+			"CONTRASTE ✘", "CONTRASTE ✓", "SIMPLE (-)", "SIMPLE ( )", "CON CONTRASTE: SI ✓",
 		},
 	}
 	for want, texts := range cases {
@@ -87,6 +94,8 @@ func TestReadContrast_ReplacesThePhrase(t *testing.T) {
 		"TAC CRANEO SIMPLE Y TAC TORAX C/C":       "TAC CRANEO CONTRASTEDUDOSO Y TAC TORAX CONTRASTEDUDOSO",
 		"RM CEREBRO NO FUNCIONAL CON CONTRASTE":   "RM CEREBRO NO FUNCIONAL CONTRASTEDUDOSO",
 		"TAC CRANEO":                              "TAC CRANEO",
+		"TAC CRANEO CONTRASTE (-)":                "TAC CRANEO CONTRASTEDUDOSO",
+		"TAC CRANEO CON CONTRASTE ( ) Y CUELLO":   "TAC CRANEO CONTRASTEDUDOSO Y CUELLO",
 	}
 	for text, want := range cases {
 		if _, got := readContrast(foldProcedureText(text)); got != want {
@@ -119,6 +128,14 @@ func TestFoldProcedureText_Normalization(t *testing.T) {
 		"PAQ. 4 EMG + 2 NC":        "PAQ 4 EMG Y 2 NC",
 		"RM COLUMNA LUMBAR L4-L5":  "RM COLUMNA LUMBAR L4 L5",
 		"Resonancia de cráneo (1)": "RESONANCIA DE CRANEO 1",
+		// Los signos y las casillas quedan como una ficha propia («?»): el contraste los ve (R5-C1).
+		"TAC CRANEO CONTRASTE (-)":   "TAC CRANEO CONTRASTE ?",
+		"TAC CRANEO CONTRASTE : 0":   "TAC CRANEO CONTRASTE ?",
+		"TAC CRANEO CONTRASTE [ ]":   "TAC CRANEO CONTRASTE ?",
+		"TAC CRANEO Ø CONTRASTE":     "TAC CRANEO ? CONTRASTE",
+		"RM COLUMNA LUMBAR L4 - L5":  "RM COLUMNA LUMBAR L4 ? L5",
+		"RM COLUMNA LUMBAR L4 -L5":   "RM COLUMNA LUMBAR L4 L5",
+		"TAC CRANEO SIMPLE Y CUELLO": "TAC CRANEO SIMPLE Y CUELLO",
 	}
 	for text, want := range cases {
 		if got := foldProcedureText(text); got != want {
