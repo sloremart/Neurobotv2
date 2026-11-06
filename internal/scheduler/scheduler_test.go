@@ -881,4 +881,7 @@ func TestRunTask_ReminderClashIsWarnAndRetries(t *testing.T) {
 	if strings.Contains(out, "level=ERROR") || !strings.Contains(out, "otra corrida en curso") {
 		t.Errorf("el choque va en Warn, sin Error: %s", out)
 	}
+	if !strings.Contains(out, "retry=true") { // con cadena y sin apagado el Warn dice que SÍ se reintenta
+		t.Errorf("el Warn debe decir que se reintenta: %s", out)
+	}
 }

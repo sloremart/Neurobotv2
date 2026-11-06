@@ -138,7 +138,14 @@ func TestIVRDTMF_RereadsPendingUnderItsLock(t *testing.T) {
 	done := make(chan struct{})
 	go func() { mgr.HandleVoiceGatherResult("call-1", "1"); close(done) }()
 	<-written
-	time.Sleep(50 * time.Millisecond) // el DTMF ya listó la clave y espera su candado
+	// El DTMF ya listó la clave y espera su candado: el nuestro más el suyo en vuelo.
+	deadline := time.Now().Add(5 * time.Second)
+	for mgr.phoneLock.HoldersForTest(ivrKeyOther) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("el DTMF no llegó a esperar el candado del otro pending")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	mgr.storePending(ivrKeyOther, &PendingNotification{Type: "confirmation", Phone: ivrKeyOther, AppointmentID: "APT-OTRA"})
 	mgr.phoneLock.Unlock(ivrKeyOther)
 	<-done

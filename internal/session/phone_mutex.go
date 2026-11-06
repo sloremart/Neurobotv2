@@ -85,6 +85,17 @@ func (pm *PhoneMutex) Unlock(phone string) {
 	}
 }
 
+// HoldersForTest dice cuántos Lock hay en vuelo (sosteniendo o esperando) para el teléfono; las
+// pruebas lo usan para saber que una goroutine ya espera el candado sin dormir a ciegas.
+func (pm *PhoneMutex) HoldersForTest(phone string) int {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if pl := pm.locks[phone]; pl != nil {
+		return pl.refCount
+	}
+	return 0
+}
+
 // cleanupIdle borra las entradas con refCount==0 e inactivas antes de `threshold`.
 // Devuelve cuántas borró. Aislado para poder testearlo sin el ticker.
 func (pm *PhoneMutex) cleanupIdle(threshold time.Time) int {

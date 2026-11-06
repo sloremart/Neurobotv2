@@ -194,7 +194,9 @@ func (s *Scheduler) runTask(ctx context.Context, task ScheduledTask, runAt time.
 			// El choque con otra corrida de los recordatorios en curso (una manual) no es un fallo: Warn,
 			// sin task_failed ni aviso a Telegram, y el reintento de siempre por si la otra muere a medias.
 			if errors.Is(err, ErrRemindersRunning) {
-				slog.Warn(label+": otra corrida en curso, se reintenta", "task", task.Name, "duration_ms", dur)
+				// Solo hay reintento con cadena (no en el catch-up) y sin apagado: scheduleRetry lo decide.
+				retries := chain != nil && ctx.Err() == nil
+				slog.Warn(label+": otra corrida en curso", "task", task.Name, "duration_ms", dur, "retry", retries)
 				s.scheduleRetry(ctx, task, chain, runAt.Add(elapsed), err)
 				return
 			}
