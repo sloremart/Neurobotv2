@@ -508,20 +508,38 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (cuenta como omitido) y queda en `CtxOCRUnreadNames`; si la orden se queda sin CUPS, escala como la orden sin
   código. `/bot orden` con un procedimiento sin código se le rechaza al agente pidiendo el código. Lo asignado:
   `ocr_cups_name_assignments` («CUPS asignados por nombre»), `agendar/cups_asignado_nombre`, y el paciente ve
-  «<catálogo> (en tu orden: «<leído, ≤60>»)». «CON Y SIN CONTRASTE» (y sin y con, con/sin, c/s,
-  gadolinio) es contrastado: queda «SIMPLE Y CONTRASTE» antes de leer «SIN CONTRASTE»; «C/C», «C/CTE», «C/MEDIO» →
-  CONTRASTE y «S/C», «S/CONTRASTE» → SIMPLE; una abreviatura con barra desconocida («C/X») no vale como silencio
-  del contraste (solo asigna el nombre igual). «NO CONTRASTADO», «NO CON CONTRASTE», «SIN GADOLINIO», «CONTRASTE: NO»
-  son SIMPLE; «CON O SIN CONTRASTE», «SIMPLE O CONTRASTADO» o un nombre cortado en «CON» van al agente. Las palabras
+  «<catálogo> (en tu orden: «<leído, ≤60>»)».
+  Contraste (`services/cups_contrast.go`, ronda 4, cerrado a fallos): el nombre se normaliza antes
+  (`foldProcedureText`: siglas con punto unidas —P.A., M.D.—, un solo espacio, la barra pegada a sus letras, «+»
+  como Y, N0→NO, C0N→CON, 5IN→SIN; la marca de cantidad «NO» solo vale con signo o pegada a la cifra) y UN
+  clasificador (`readContrast`; su gramática ES la tabla de `TestReadContrast_Grammar`) lee la frase ENTERA del
+  contraste como SIMPLE («SIMPLE»; «SIN|NO [CON] [MEDIO [DE]] CONTRASTE|CONTRASTADO|GADOLINIO|CTE»; «S/C»,
+  «S/CONTRASTE»; «[CON] CONTRASTE: NO» al final), CONTRASTE («[CON] CONTRASTE», «CONTRASTADO», «C/C», «C/CTE»,
+  «C/MEDIO DE CONTRASTE»; «CONTRASTE: SI» al final) o AMBOS («CON Y|O SIN», «SIN Y|O CON», «CON/SIN», «C/S», con o
+  sin «MEDIO DE»; «SIN CONTRASTE O|Y CON CONTRASTE»; «SIMPLE Y [CON] CONTRASTE|CONTRASTADO»). Cualquier otra
+  mención —CONTRAST*, GADOLINIO, barra con C o S («C/X», «N/A» tras CONTRASTE), «CC»/«SC», «SIMPLE O CONTRASTADO»,
+  «CON Y/O SIN», dos frases distintas, una negación suelta junto a la mención («NO REQUIERE CONTRASTE»), un nombre
+  cortado en CON o SIN— es DESCONOCIDO: nunca se asigna por nombre igual ni por el modelo y va al agente
+  (`ocr_sin_codigo` con sus candidatos, o `cups_posible_mala_lectura` con nota propia si trae código). AMBOS solo es
+  igual a la fila «SIMPLE Y CON CONTRASTE» (879113): donde no la hay es duda, no el simple ni el contrastado; en la
+  guarda, AMBOS frente al código con contraste no es contradicción (está documentado), frente al simple sí. Al
+  descartar entre hojas, DESCONOCIDO o CONTRASTE frente a AMBOS es duda, nunca igual. Las palabras
   cortas cuentan (`procedureWords`), salvo `genericProcedureWords` (conectores, AP, PA): el lado en corto (D, OD, MD,
-  I, OI, MI) vale lo mismo que la palabra. Al ASIGNAR, el nivel de columna (L4, C5) y la marca de cantidad (#2, X2,
-  N 2, No. 1) son silencio si el catálogo no los menciona, y si lo menciona y es otro nivel, contradicción; también lo
-  es, en la asignación y en la guarda, el nivel que no cabe en la región escrita («COLUMNA CERVICAL L4»; C cervical, T o D
-  dorsal, L lumbar, S sacra, y los discos C7-T1, T12-L1, L5-S1 caben en las dos); al
+  I, OI, MI, también con puntos) vale lo mismo que la palabra, salvo en un nombre de columna («CERVICAL Y D» es la
+  dorsal: duda); el lado no busca candidatos (`retrievalWords`: «EMG MMII D» los tiene). Al ASIGNAR, el nivel de
+  columna (L4, C5) y la marca de cantidad (#2, X2, N 2, No. 1) son silencio si el catálogo no los menciona, y si lo
+  menciona y es otro nivel, contradicción; también lo es, en la asignación y en la guarda, el nivel que no cabe en la
+  región escrita («COLUMNA CERVICAL L4»; C cervical, T o D dorsal (TORACICA y TORACICO), L lumbar y lumbosacra hasta
+  S1 —S2 en adelante es duda—, DORSOLUMBAR T/D/L, S sacra y SACROCOXIGEA, y los discos C7-T1, T12-L1, L5-S1 caben
+  en las dos). Una lectura sin región ni segmento frente a DOS o más filas que son ese procedimiento con región es
+  duda aunque exista la fila a secas («RX COMPARATIVAS» → agente; «EMG» sigue a 930860: la de cara es una sola).
+  Para ENCAJAR y para que una región sea la misma solo vale el plural (`pluralWord`); el prefijo de 5+ letras
+  (`prefixWord`) solo busca candidatos y sospecha («NEURO», «RX ESTERNOCLAVICULAR», «RM CEREBELO» → agente). «VEZ»
+  sola no es primera vez («2 VEZ» → agente; «1 VEZ», «1A VEZ» sí). Al
   DESCARTAR una lectura (`compareReadNames`) cualquier diferencia de los dos es duda. PROCEDIMIENTO, EXAMEN y ESTUDIO
   no son una consulta: se comparan, salvo si el nombre escribe la modalidad («ESTUDIO DE RM CEREBRO» = «RM CEREBRO»).
   OBLICUAS sí distingue (873444, de extremidades; en una columna es ruido al asignar); «3 PROYECCIONES» es ruido al
-  asignar y se compara al descartar; EXTREMIDADES solo es ruido en EMG, NC y potenciales; al conservar nombres de otras hojas (`addUncodedFrom`), lo igual con otra cantidad, sedación, contraste u observaciones es duda; un doppler sin decir VASOS encaja también con el de vasos, y si encajan dos es duda.
+  asignar y se compara al descartar; EXTREMIDADES solo es ruido en EMG, NC y potenciales; al conservar nombres de otras hojas (`addUncodedFrom`) y al fusionar páginas (`mergeCupsJSON`, `CompareUncodedReadings`), lo igual con otra cantidad, sedación, contraste u observaciones es duda (nunca se pierde); un doppler sin decir VASOS encaja también con el de vasos, y si encajan dos es duda.
   Guarda: un CUPS CON código
   cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
   vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos
