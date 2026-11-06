@@ -537,3 +537,21 @@ func TestScheduleEnabled_RequiresAccountKey(t *testing.T) {
 		t.Errorf("un solo error que nombre la clave: %s", logs.String())
 	}
 }
+
+// G1-M3: la comprobación de la clave queda fijada también con NECTAR_SCHEDULE_ENABLED encendida: el roster
+// se lee una vez, no en cada tic junto al horario.
+func TestScheduleEnabled_ChecksAccountKeyOnce(t *testing.T) {
+	f := newFakeScheduleServer(t, withSaturday)
+	_, r, cache := refresherFor(t, f)
+	for range 3 {
+		if err := r.refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	agents := f.agentsHits
+	f.mu.Unlock()
+	if agents != 1 || f.calls() != 3 || cache.Version() != "v2" {
+		t.Errorf("roster leído %d veces (want 1); horario %d veces (want 3); versión %q", agents, f.calls(), cache.Version())
+	}
+}
