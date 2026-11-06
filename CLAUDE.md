@@ -426,6 +426,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   del proxy de confianza, reconocido por nombre (`TRUSTED_PROXY_HOSTS`, por defecto `ngrok`; definida vacía = no
   confiar en ninguno, con Warn al arrancar).
 - Logs: la clave `text` (mensaje del paciente) se registra como «[redactado: N caracteres]».
+- `chat_events` (C-04): sin nombre, con celular/correo/documento enmascarados y solo el largo de lo escrito en escalación y en los pasos de datos personales; a los 30 días `chat_events_pii_retention` (02:30) enmascara el teléfono (no `nectar:`) y quita las claves de PII de `event_data` sin borrar filas (`docs/OBSERVABILIDAD.md`).
 - Recordatorio con SIESA caída (D-04, migración 047): «Confirmar»/«Cancelar» quedan pendientes en `notification_history`
   (`siesa_pending`, `siesa_outcome`, `appointment_slot`); el paciente recibe un acuse y el proceso de fondo
   (`SIESA_PENDING_RETRY_MIN`, 5) las aplica al volver: confirma con el mensaje de siempre o abre la confirmación de
