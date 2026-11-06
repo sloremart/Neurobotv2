@@ -89,6 +89,8 @@ var orderAbbreviations = map[string]string{
 	// Adjetivos de región (ronda 4: el prefijo ya solo vale para el plural).
 	"PELVICA": "PELVIS", "PELVICO": "PELVIS", "PELVICAS": "PELVIS", "PELVICOS": "PELVIS",
 	"ABDOMINAL": "ABDOMEN", "ABDOMINALES": "ABDOMEN", "CLAVICULARES": "CLAVICULA", "TEMPOROMAXILAR": "TEMPOROMANDIBULAR",
+	// 879201 escribe los cuatro segmentos: «TORACICO» es la dorsal, como TORACICA.
+	"TORACICO": "DORSAL",
 }
 
 // retrievalStopWords no aportan a la búsqueda de candidatos (encabezados de remisiones e interconsultas).

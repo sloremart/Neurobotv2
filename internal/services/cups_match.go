@@ -141,8 +141,18 @@ func withoutSpineLevels(words []string) []string {
 // singleSpineLevel separa los niveles pegados («L4L5»).
 var singleSpineLevel = regexp.MustCompile(`[CTDLS]\d{1,2}`)
 
+// spineRegions son las regiones de columna que escriben las órdenes y el catálogo, ya canónicas (TORACICA y
+// TORACICO son DORSAL, LUMBOSACRA es LUMBAR).
+var spineRegions = map[string]bool{
+	"CERVICAL": true, "DORSAL": true, "LUMBAR": true, "SACRA": true, "SACRO": true, "COCCIX": true,
+	"DORSOLUMBAR": true, "SACROCOXIGEA": true,
+}
+
+func isSpineRegion(w string) bool { return spineRegions[w] }
+
 // levelFitsRegion dice si un nivel cabe en una región de columna (su valor canónico). Los discos entre dos
-// regiones (C7-T1, T12-L1, L5-S1) caben en las dos, y LUMBAR también es la lumbosacra.
+// regiones (C7-T1, T12-L1, L5-S1) caben en las dos. LUMBAR también es la lumbosacra, que llega a S1 y no más
+// abajo: S2 en adelante es la sacrocoxígea, así que es duda.
 func levelFitsRegion(level, region string) bool {
 	switch region {
 	case "CERVICAL":
@@ -150,8 +160,10 @@ func levelFitsRegion(level, region string) bool {
 	case "DORSAL":
 		return level[0] == 'T' || level[0] == 'D' || level == "C7" || level == "L1"
 	case "LUMBAR":
-		return level[0] == 'L' || level[0] == 'S' || level == "T12" || level == "D12"
-	default:
+		return level[0] == 'L' || level == "S1" || level == "T12" || level == "D12"
+	case "DORSOLUMBAR":
+		return level[0] == 'T' || level[0] == 'D' || level[0] == 'L' || level == "C7" || level == "S1"
+	default: // SACRA, SACRO, COCCIX, SACROCOXIGEA
 		return level[0] == 'S' || level == "L5"
 	}
 }
@@ -163,7 +175,7 @@ func levelsContradictRegion(canon string) bool {
 	words := strings.Fields(canon)
 	var regions []string
 	for _, w := range words {
-		if w == "CERVICAL" || w == "DORSAL" || w == "LUMBAR" || w == "SACRA" || w == "SACRO" || w == "COCCIX" {
+		if isSpineRegion(w) {
 			regions = append(regions, w)
 		}
 	}
