@@ -511,3 +511,29 @@ func TestHolidaysOnly_ChecksAccountKeyOnce(t *testing.T) {
 		t.Errorf("comprobaciones = %d, want 1; festivo aplicado = %v", agents, cfg.Hours().IsHoliday(holidayMonday))
 	}
 }
+
+// Con NECTAR_SCHEDULE_ENABLED encendida la clave global tampoco vale: no se publica nada (rige la semana
+// de siempre sin festivos de Néctar, nunca «cerrado toda la semana») y queda un solo error.
+func TestScheduleEnabled_RequiresAccountKey(t *testing.T) {
+	f := newFakeScheduleServer(t, `{"timezone":"America/Bogota","version":"v0","windows":[],
+		"holidays":[{"date":"2026-11-02","name":"Todos los Santos"}]}`)
+	f.globalKey = true
+	cfg, r, cache := refresherFor(t, f)
+	logs := captureSlog(t)
+
+	done := make(chan struct{})
+	go func() { r.Run(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("con la clave global el refresco se detiene")
+	}
+	h := cfg.Hours()
+	if f.calls() != 0 || cache.Version() != "" || h.String() != config.DefaultBusinessHours().String() ||
+		!h.Open(saturday) || h.IsHoliday(holidayMonday) {
+		t.Errorf("rige la semana de siempre sin festivos: lecturas=%d versión=%q horario=%q", f.calls(), cache.Version(), h.String())
+	}
+	if n := strings.Count(logs.String(), "level=ERROR"); n != 1 || !strings.Contains(logs.String(), "clave de CUENTA") {
+		t.Errorf("un solo error que nombre la clave: %s", logs.String())
+	}
+}

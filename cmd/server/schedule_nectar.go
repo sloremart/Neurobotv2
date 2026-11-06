@@ -26,15 +26,16 @@ import (
 //   - encendida: mandan las ventanas y los festivos publicados.
 
 // scheduleReader es lo único que se necesita de Néctar: la lectura, y el roster para comprobar que la
-// clave es de cuenta (solo festivos). Interfaz para probar el bucle con un servidor de mentira.
+// clave es de cuenta. Interfaz para probar el bucle con un servidor de mentira.
 type scheduleReader interface {
 	GetSchedule(ctx context.Context, channelID int64, version string) (nectar.Schedule, error)
 	GetAgents(ctx context.Context) ([]nectar.ReportAgent, error)
 }
 
-// errScheduleGlobalKey detiene el refresco de solo festivos: con la clave global Néctar lee los
-// festivos de TODAS las entidades (la instalación entera), y un cierre de otra cerraría a Neuro.
-var errScheduleGlobalKey = errors.New("festivos de Néctar: NECTAR_SERVICE_KEY es la clave global, se necesita la clave de CUENTA")
+// errScheduleGlobalKey detiene el refresco: con la clave global Néctar lee como la instalación
+// entera, y mezclaría las ventanas y los festivos de TODAS las entidades (un cierre de otra cerraría a
+// Neuro). Rige entonces la semana de siempre, sin festivos de Néctar.
+var errScheduleGlobalKey = errors.New("horario de Néctar: NECTAR_SERVICE_KEY es la clave global, se necesita la clave de CUENTA")
 
 // nectarScheduleRefresher relee el horario cada tanto y publica la última lectura VÁLIDA. Nunca
 // borra lo publicado: una lectura fallida deja un aviso y el bot sigue con lo último bueno.
@@ -45,7 +46,7 @@ type nectarScheduleRefresher struct {
 	every     time.Duration
 	// holidaysOnly: de la lectura solo se toman los festivos (NECTAR_SCHEDULE_ENABLED apagada).
 	holidaysOnly bool
-	// accountKey: ya se comprobó que la clave es de cuenta (solo festivos).
+	// accountKey: ya se comprobó que la clave es de cuenta.
 	accountKey bool
 }
 
@@ -95,15 +96,15 @@ func (r *nectarScheduleRefresher) Run(ctx context.Context) {
 
 // stopForGlobalKey deja el único error del refresco detenido por la clave global.
 func (r *nectarScheduleRefresher) stopForGlobalKey() {
-	slog.Error("horario: sin festivos de Néctar, el refresco se detiene", "error", errScheduleGlobalKey,
+	slog.Error("horario: rige el de siempre sin festivos de Néctar, el refresco se detiene", "error", errScheduleGlobalKey,
 		"horario", r.cache.Current().String())
 }
 
 // refresh es UNA pasada: leer (condicional), validar y publicar solo si todo cuadró. Un 304 no
-// es un fallo: la fuente contestó, se marca viva (Touch) y se vuelve sin error. Solo festivos, la
-// primera pasada comprueba antes que la clave sea de cuenta.
+// es un fallo: la fuente contestó, se marca viva (Touch) y se vuelve sin error. Hasta que lo logre,
+// cada pasada comprueba antes que la clave sea de cuenta (nada se publica sin esa comprobación).
 func (r *nectarScheduleRefresher) refresh(ctx context.Context) error {
-	if r.holidaysOnly && !r.accountKey {
+	if !r.accountKey {
 		if _, err := r.read.GetAgents(ctx); errors.Is(err, nectar.ErrAccountKeyRequired) {
 			return errScheduleGlobalKey
 		} else if err != nil {
