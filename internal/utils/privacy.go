@@ -22,10 +22,34 @@ func MaskPhone(phone string) string {
 	if !maskPhones {
 		return phone
 	}
+	return MaskPhoneAlways(phone)
+}
+
+// MaskPhoneAlways es MaskPhone sin la bandera LOG_MASK_PHONES: para lo que se persiste (chat_events,
+// C-04), que no debe quedar en claro aunque los logs se destapen para depurar. Idempotente.
+func MaskPhoneAlways(phone string) string {
 	if len(phone) < 7 {
 		return "***"
 	}
 	return phone[:4] + "***" + phone[len(phone)-4:]
+}
+
+// MaskEmail enmascara un correo para lo que se persiste: "juan.perez@gmail.com" → "ju***@gmail.com".
+// Conserva el dominio (sirve para ver errores de tipeo) y a lo sumo dos runas del usuario; sin «@»
+// no hay dominio que conservar y queda "***". Vacío queda vacío.
+func MaskEmail(email string) string {
+	if email == "" {
+		return email
+	}
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return "***"
+	}
+	user := []rune(email[:at])
+	if len(user) <= 3 {
+		return "***" + email[at:]
+	}
+	return string(user[:2]) + "***" + email[at:]
 }
 
 // MaskDocument masks a patient document number for logs/events (Ley 1581 PII):

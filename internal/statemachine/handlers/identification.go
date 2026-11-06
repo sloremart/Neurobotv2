@@ -133,7 +133,7 @@ func askDocumentTypeHandler() sm.StateHandler {
 		if isGreetingOrIntent(input) {
 			return sm.NewResult(sess.CurrentState).
 				WithText("¡Hola! 👍 Vamos en eso.\n\n"+docTypeMenuText()).
-				WithEvent("greeting_midflow_redirected", map[string]interface{}{"input": input}), nil
+				WithEvent("greeting_midflow_redirected", map[string]interface{}{"input": utils.MaskDocument(input)}), nil
 		}
 		if parseDocType(input) == "" && looksLikeDocNumber(input) {
 			sess.RetryCount = 0
@@ -227,10 +227,7 @@ func patientLookupHandler(patientSvc *services.PatientService) sm.StateHandler {
 				sm.Button{Text: "Sí, soy yo", Payload: "identity_yes"},
 				sm.Button{Text: "No, no soy yo", Payload: "identity_no"},
 			).
-			WithEvent("patient_found", map[string]interface{}{
-				"patient_id": patient.ID,
-				"name":       fullName,
-			}), nil
+			WithEvent("patient_found", map[string]interface{}{"patient_id": patient.ID}), nil // sin el nombre (C-04)
 	}
 }
 
@@ -437,8 +434,8 @@ func showContactInfoHandler() sm.StateHandler {
 				sm.Button{Text: "No, actualizar", Payload: "contact_update"},
 			).
 			WithEvent("contact_info_shown", map[string]interface{}{
-				"phone": phoneDisplay,
-				"email": rawEmail,
+				"phone": utils.MaskPhoneAlways(phoneDisplay),
+				"email": utils.MaskEmail(rawEmail),
 			}), nil
 	}
 }
@@ -489,7 +486,7 @@ func askUpdatePhoneHandler() sm.StateHandler {
 		return sm.NewResult(sm.StateAskUpdateEmail).
 			WithContext("contact_new_phone", parsed).
 			WithText(contactEmailQuestion).
-			WithEvent("contact_phone_updated", map[string]interface{}{"phone": parsed}), nil
+			WithEvent("contact_phone_updated", map[string]interface{}{"phone": utils.MaskPhoneAlways(parsed)}), nil
 	}
 }
 
@@ -516,7 +513,7 @@ func askUpdateEmailHandler() sm.StateHandler {
 		sess.RetryCount = 0
 		return sm.NewResult(sm.StateUpdateContactInfo).
 			WithContext("contact_new_email", lower).
-			WithEvent("contact_email_updated", map[string]interface{}{"email": lower}), nil
+			WithEvent("contact_email_updated", map[string]interface{}{"email": utils.MaskEmail(lower)}), nil
 	}
 }
 
@@ -546,8 +543,8 @@ func updateContactInfoHandler(patientSvc *services.PatientService) sm.StateHandl
 			WithContext("patient_email", newEmail).
 			WithText("Datos de contacto actualizados correctamente.").
 			WithEvent("contact_info_updated", map[string]interface{}{
-				"phone": newPhone,
-				"email": newEmail,
+				"phone": utils.MaskPhoneAlways(newPhone),
+				"email": utils.MaskEmail(newEmail),
 			})
 		routeAfterContactInfo(ctx, sess, r, patientSvc)
 		return r, nil

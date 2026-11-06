@@ -128,3 +128,45 @@ func TestRedactLogMap(t *testing.T) {
 		t.Error("un mapa nil sigue nil")
 	}
 }
+
+// Lo que se persiste (chat_events) no depende de LOG_MASK_PHONES: esa bandera solo destapa logs.
+func TestMaskPhoneAlways_IgnoresLogFlag(t *testing.T) {
+	SetMaskPhones(false)
+	defer SetMaskPhones(true)
+	cases := []struct{ in, want string }{
+		{"+573103343616", "+573***3616"},
+		{"310 334 3616", "310 ***3616"},
+		{"+573***3616", "+573***3616"}, // ya enmascarado queda igual
+		{"12345", "***"},
+		{"", "***"},
+	}
+	for _, c := range cases {
+		if got := MaskPhoneAlways(c.in); got != c.want {
+			t.Errorf("MaskPhoneAlways(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	if got := MaskPhone("+573103343616"); got != "+573103343616" {
+		t.Errorf("MaskPhone con la bandera apagada sigue destapando el log: %q", got)
+	}
+}
+
+func TestMaskEmail(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"típico", "juan.perez@gmail.com", "ju***@gmail.com"},
+		{"usuario corto", "ab@x.co", "***@x.co"},
+		{"usuario con tilde", "josé.núñez@correo.co", "jo***@correo.co"},
+		{"sin arroba", "juanperez", "***"},
+		{"vacío", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := MaskEmail(c.in)
+			if got != c.want {
+				t.Errorf("MaskEmail(%q) = %q, want %q", c.in, got, c.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("MaskEmail(%q) produjo UTF-8 inválido: %q", c.in, got)
+			}
+		})
+	}
+}

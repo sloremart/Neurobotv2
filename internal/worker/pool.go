@@ -957,7 +957,7 @@ func (p *MessageWorkerPool) processMessage(parentCtx context.Context, msg bird.I
 		}
 		if p.tracker != nil {
 			p.tracker.LogEvent(parentCtx, sess.ID, msg.Phone, "msg_during_escalation", map[string]interface{}{
-				"text": msg.Text,
+				"text": utils.MaskText(msg.Text), // solo el largo (C-04): el texto lo tiene el agente
 				"type": msg.MessageType,
 			})
 		}

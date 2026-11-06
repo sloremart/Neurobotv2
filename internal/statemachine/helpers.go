@@ -29,6 +29,27 @@ func maskInputForLog(state, input string) string {
 	return input
 }
 
+// freeTextInputStates: pasos donde el paciente escribe datos personales (nombres, fecha de
+// nacimiento, dirección, celular, correo, ocupación, barrio). En los eventos (chat_events) solo
+// queda el largo de lo escrito (C-04); al agente le llega igual que antes (lastInputForAgent).
+var freeTextInputStates = map[string]bool{
+	StateRegFirstSurname: true, StateRegSecondSurname: true,
+	StateRegFirstName: true, StateRegSecondName: true,
+	StateRegBirthDate: true, StateRegOccupation: true, StateRegAddress: true,
+	StateRegPhone: true, StateRegPhone2: true, StateRegEmail: true, StateRegBarrio: true,
+	StateAskUpdatePhone: true, StateAskUpdateEmail: true,
+}
+
+// inputForEvent es lo que un evento guarda de lo que escribió el paciente: el documento
+// enmascarado (maskInputForLog), solo el largo en un paso de datos personales y, en los demás,
+// el texto tal cual (materia prima del análisis de fricción).
+func inputForEvent(state, input string) string {
+	if freeTextInputStates[state] {
+		return utils.MaskText(input)
+	}
+	return maskInputForLog(state, input)
+}
+
 // maxLastInputRunes es el tope de lo último que el paciente escribió y se le muestra al agente.
 const maxLastInputRunes = 120
 
@@ -122,7 +143,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
 				"retries":    maxRetries,
-				"last_input": maskInputForLog(sess.CurrentState, input),
+				"last_input": inputForEvent(sess.CurrentState, input),
 			})
 	}
 
@@ -131,7 +152,7 @@ func ValidateWithRetry(sess *session.Session, input string, validate func(string
 		WithEvent("invalid_input", map[string]interface{}{
 			"state": sess.CurrentState,
 			"retry": sess.RetryCount,
-			"input": maskInputForLog(sess.CurrentState, input),
+			"input": inputForEvent(sess.CurrentState, input),
 		})
 }
 
@@ -182,6 +203,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 	if loggedInput == "" && msg.IsPostback {
 		loggedInput = msg.PostbackPayload
 	}
+	eventInput := inputForEvent(sess.CurrentState, loggedInput)
 	loggedInput = maskInputForLog(sess.CurrentState, loggedInput)
 
 	sess.RetryCount++
@@ -194,7 +216,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 			WithContext(CtxEscalationLastInput, lastInputForAgent(sess.CurrentState, loggedInput)).
 			WithEvent("max_retries_reached", map[string]interface{}{
 				"state":      sess.CurrentState,
-				"last_input": loggedInput,
+				"last_input": eventInput,
 			}), ""
 	}
 
@@ -203,7 +225,7 @@ func ValidateButtonResponse(sess *session.Session, msg bird.InboundMessage, vali
 		WithEvent("invalid_input", map[string]interface{}{
 			"state": sess.CurrentState,
 			"retry": sess.RetryCount,
-			"input": loggedInput,
+			"input": eventInput,
 		}), ""
 }
 

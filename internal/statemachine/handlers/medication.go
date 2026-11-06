@@ -12,6 +12,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/utils"
 )
 
 // RegisterMedicationHandlers registra los handlers del flujo de Aplicación de Medicamentos.
@@ -114,7 +115,7 @@ func medicationCheckExcelHandler(medRepo *local.MedicationPendingRepo) sm.StateH
 			r := sm.NewResult(sm.StateMainMenu).
 				WithClearCtx("medication_flow").
 				WithEvent("medication_sin_autorizacion", map[string]interface{}{
-					"doc":         sess.GetContext("patient_doc"),
+					"doc":         utils.MaskDocument(sess.GetContext("patient_doc")),
 					"medicamento": rec.Medicamento,
 				})
 			r.Messages = append(r.Messages, list)
@@ -161,7 +162,7 @@ func backToMenuNoRecord(sess *session.Session) *sm.StateResult {
 	}
 	r := sm.NewResult(sm.StateMainMenu).
 		WithClearCtx("medication_flow").
-		WithEvent("medication_not_in_list", map[string]interface{}{"doc": sess.GetContext("patient_doc")})
+		WithEvent("medication_not_in_list", map[string]interface{}{"doc": utils.MaskDocument(sess.GetContext("patient_doc"))})
 	r.Messages = append(r.Messages, list)
 	return r
 }
