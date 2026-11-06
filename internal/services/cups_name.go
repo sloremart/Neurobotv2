@@ -50,6 +50,8 @@ var orderPhrases = strings.NewReplacer(
 	"VASOS ARTERIALES", " ARTERIAL ", "VASOS VENOSOS", " VENOSO ", "COXO FEMORAL", " CADERA ",
 	"1A VEZ", " PRIMERA VEZ ", "1RA VEZ", " PRIMERA VEZ ", "1 VEZ", " PRIMERA VEZ ",
 	"RAYOS X", " RADIOGRAFIA ",
+	// El PET es siempre de cuerpo entero (asunto 12): la extensión escrita no lo distingue (R6-M1).
+	"CUERPO ENTERO", " ", "CUERPO COMPLETO", " ",
 )
 
 // orderAbbreviations expande (o quita, con "") las palabras de las órdenes a la forma del catálogo.
@@ -116,18 +118,23 @@ var orderNoise = map[string]bool{
 	"LATERAL": true, "LAT": true, "PROYECCIONES": true, "VISTAS": true,
 }
 
+// epsNames son las EPS de las órdenes de Neuro, lista CERRADA (ronda 6): «EPS <palabra>» se comía un SIN o un NO.
+// Con la palabra EPS delante o detrás («EPS SANITAS», «SANITAS EPS», «NUEVA EPS»).
+const epsNames = `SANITAS|SALUD TOTAL|CAPITAL SALUD|FOMAG|COMPENSAR|SURA|FAMISANAR|COOSALUD|COLSANITAS|MEDISANITAS|` +
+	`MUTUAL SER|ASMET(?: SALUD)?|EMSSANAR|SAVIA(?: SALUD)?|ALIANSALUD`
+
 // orderTailNoise son colas de la orden que no describen el procedimiento y dejaban una lectura típica sin
-// candidatos, y por tanto descartada en silencio (R5-I3 y ronda 5b): el plazo («EN 1 MES», «6 MESES», «PARA 2
-// SEMANAS»), las sesiones («1 SESION»), la cantidad escrita («CANT 1», «CANTIDAD: 2»), el diagnóstico («CIE10
-// M545», «CIE-10: G40», «DX LUMBALGIA» hasta el final), la EPS («EPS SANITAS»), el número de la orden («ORDEN
-// 123456»), «SEGUN EVOLUCION» y «NO POS». Se quitan solo al asignar (withoutOrderTails); al descartar entre hojas
-// siguen contando, porque otro plazo, otra sesión u otro diagnóstico puede ser otra cita.
+// candidatos, y por tanto descartada en silencio (R5-I3, rondas 5b y 6): el plazo («EN 1 MES», «6 MESES», «PARA 2
+// SEMANAS»), las sesiones («1 SESION»), la cantidad escrita («CANT 1», «CANTIDAD: 2»), el código del diagnóstico
+// («CIE10 M545», «CIE-10: G40»), la EPS de la lista cerrada («EPS SANITAS», «NUEVA EPS»), el número de la orden
+// («ORDEN 123456»), «SEGUN EVOLUCION» y «NO POS». El diagnóstico escrito («DX LUMBALGIA») lo corta
+// withoutDiagnosis. Se quitan solo al asignar (withoutOrderTails); al descartar entre hojas siguen contando, porque
+// otro plazo, otra sesión u otro diagnóstico puede ser otra cita.
 var orderTailNoise = []*regexp.Regexp{
 	regexp.MustCompile(`\b(?:(?:EN|PARA|A|CADA) )?\d+ (?:MES|MESES|SEMANA|SEMANAS|DIA|DIAS|SESION|SESIONES)\b`),
 	regexp.MustCompile(`\bCANT(?:IDAD)?[ .:]*\d+\b`),
 	regexp.MustCompile(`\bCIE[ -]?10\b`),
-	regexp.MustCompile(`\bDX\b.*$`),
-	regexp.MustCompile(`\bEPS [A-Z]+\b`),
+	regexp.MustCompile(`\bNUEVA EPS\b|\bEPS (?:` + epsNames + `)\b|\b(?:` + epsNames + `) EPS\b`),
 	regexp.MustCompile(`\bORDEN[ .:#NRO°º]*\d+\b`),
 	regexp.MustCompile(`\bSEGUN EVOLUCION\b`),
 	regexp.MustCompile(`\bNO POS\b`),
@@ -137,16 +144,59 @@ var orderTailNoise = []*regexp.Regexp{
 // columna («T12», «L5») tiene la misma forma y no lo es.
 var cieCode = regexp.MustCompile(`^[A-Z]\d{2}\.?\d?X?$`)
 
-// withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) el plazo, el diagnóstico y los códigos
-// CIE sueltos.
+// withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) las colas de orderTailNoise, el
+// diagnóstico escrito tras DX y los códigos CIE sueltos.
 func withoutOrderTails(folded string) string {
 	for _, tail := range orderTailNoise {
 		folded = tail.ReplaceAllString(folded, " ")
 	}
-	words := slices.DeleteFunc(strings.Fields(folded), func(w string) bool {
+	words := withoutDiagnosis(strings.Fields(folded))
+	words = slices.DeleteFunc(words, func(w string) bool {
 		return cieCode.MatchString(w) && !spineLevel.MatchString(w)
 	})
 	return strings.Join(words, " ")
+}
+
+// withoutDiagnosis quita «DX» y el diagnóstico que lo sigue, pero solo hasta la primera palabra que habla del
+// procedimiento (procedureWord): «TAC CRANEO DX TCE CON CONTRASTE» conserva el contraste, «CONSULTA DX CEFALEA
+// CONTROL NEUROLOGIA» conserva el control y la especialidad (R6-C1, R6-I1). Hasta el final se comía las dos cosas.
+func withoutDiagnosis(words []string) []string {
+	for i := 0; i < len(words); i++ {
+		if strings.Trim(words[i], ".:") != "DX" {
+			continue
+		}
+		j := i + 1
+		for j < len(words) && !procedureWord(strings.Trim(words[j], ".,:;")) {
+			j++
+		}
+		words = slices.Delete(words, i, j)
+		i--
+	}
+	return words
+}
+
+// procedureWord dice si una palabra de la lectura (en mayúsculas, sin tildes, antes de canonizar) habla del
+// procedimiento y no del diagnóstico: una abreviatura o sinónimo de las órdenes, el lado en corto, una palabra del
+// contraste o una negación, CONSULTA, un nivel de columna o un valor de algún grupo de calificadores (región,
+// lado, modalidad, primera vez/control…).
+func procedureWord(w string) bool {
+	_, abbreviation := orderAbbreviations[w]
+	_, side := sideLetters[w]
+	return abbreviation || side || isContrastWord(w) || w == "CONSULTA" || spineLevel.MatchString(w) || isQualifierWord(w)
+}
+
+// tailsChangeMeaning dice si quitar las colas cambió lo que la lectura dice del contraste o de algún grupo
+// excluyente (INVARIANTE de la ronda 6): entonces la cola no era cola, y la lectura es duda.
+func tailsChangeMeaning(fullCanon, strippedCanon string) bool {
+	if contrastOf(fullCanon) != contrastOf(strippedCanon) {
+		return true
+	}
+	for _, g := range qualifierGroups {
+		if g.exclusive && !sameSet(g.groupValues(fullCanon), g.groupValues(strippedCanon)) {
+			return true
+		}
+	}
+	return false
 }
 
 // limbWords dicen dónde se hacen la EMG, la NC o los potenciales («4 EXTREMIDADES»), que el catálogo factura por
@@ -328,8 +378,33 @@ func ResolveCupsByName(
 	read string, catalog []CupsCandidate, interconsulta bool,
 	choose func(read string, candidates []CupsCandidate) string,
 ) CupsNameResolution {
-	// El plazo, el diagnóstico y los códigos CIE de la orden no buscan ni encajan (R5-I3).
-	read = withoutOrderTails(prefoldProcedureText(read))
+	// El plazo, el diagnóstico, la EPS y los códigos CIE de la orden no buscan ni encajan (R5-I3). Pero quitarlos
+	// no puede cambiar lo que la lectura dice del contraste ni de ningún grupo excluyente (ronda 6): si lo
+	// cambia, la cola no era cola, y es duda para un agente con los candidatos que haya.
+	full := prefoldProcedureText(read)
+	stripped := withoutOrderTails(full)
+	if tailsChangeMeaning(canonicalOrderName(full), canonicalOrderName(stripped)) {
+		cands := nameCandidates(canonicalOrderName(stripped), catalog)
+		if len(cands) == 0 {
+			cands = nameCandidates(canonicalOrderName(full), catalog)
+		}
+		return CupsNameResolution{Candidates: cands[:min(len(cands), maxNameCandidates)]}
+	}
+	res := resolveFoldedRead(stripped, catalog, interconsulta, choose)
+	// Sin ningún candidato tras quitar las colas, la lectura entera antes que un descarte silencioso (ronda 6).
+	if len(res.Candidates) == 0 && stripped != full {
+		if whole := resolveFoldedRead(full, catalog, interconsulta, choose); len(whole.Candidates) > 0 {
+			return whole
+		}
+	}
+	return res
+}
+
+// resolveFoldedRead es ResolveCupsByName sobre una lectura ya normalizada (prefoldProcedureText) y sin colas.
+func resolveFoldedRead(
+	read string, catalog []CupsCandidate, interconsulta bool,
+	choose func(read string, candidates []CupsCandidate) string,
+) CupsNameResolution {
 	// La búsqueda de candidatos usa solo lo leído; el sufijo de primera vez de una interconsulta cuenta
 	// para el nombre igual y para encajar, no para encontrar candidatos de otra especialidad.
 	retrievalRead := canonicalOrderName(read)
@@ -364,7 +439,7 @@ func ResolveCupsByName(
 	// DOLOR»), se quita desde el último POR y lo que queda sigue el camino normal (R5-I3).
 	if len(similar) == 0 {
 		if i := strings.LastIndex(read+" ", " POR "); i > 0 {
-			return ResolveCupsByName(read[:i], catalog, interconsulta, choose)
+			return resolveFoldedRead(read[:i], catalog, interconsulta, choose)
 		}
 	}
 	res := CupsNameResolution{Candidates: similar[:min(len(similar), maxNameCandidates)]}

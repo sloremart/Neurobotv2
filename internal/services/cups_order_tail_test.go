@@ -54,6 +54,15 @@ func TestResolveCupsByName_OrderTailsNeverDiscardSilently(t *testing.T) {
 			t.Errorf("%q → %v, quiero %v", read, got, want)
 		}
 	}
+	// El PET de cuerpo entero es el PET (R6-M1): no se descarta en silencio.
+	if got := acceptedByAdversary("PET CT CUERPO ENTERO FDG", catalog, false); !slices.Equal(got, []string{"921402"}) {
+		t.Errorf("«PET CT CUERPO ENTERO FDG» → %v, quiero [921402]", got)
+	}
+	for _, read := range []string{"PET CT CUERPO ENTERO", "PET CUERPO COMPLETO FDG", "PET CT CUERPO ENTERO PSMA"} {
+		if res := ResolveCupsByName(read, catalog, false, nil); len(res.Candidates) == 0 {
+			t.Errorf("%q: sin candidatos, se descartaría en silencio", read)
+		}
+	}
 	// Un nombre con POR que sí tiene candidatos no se corta.
 	if res := ResolveCupsByName("ONDA F POR NERVIO", catalog, false, nil); res.Code != "891514" {
 		t.Errorf("«ONDA F POR NERVIO» → %q, quiero 891514", res.Code)
@@ -69,5 +78,92 @@ func TestResolveCupsByName_OrderTailsNeverDiscardSilently(t *testing.T) {
 		if got := compareReadNames(pair[0], pair[1]); got == CupsNamesEqual {
 			t.Errorf("compareReadNames(%q, %q) es igual: se descartaría una", pair[0], pair[1])
 		}
+	}
+}
+
+// Revisión del lote C, ronda 6 (R6-C1, C2, I1): la cola de la 5b se pasaba. «DX …» hasta el final se comía el
+// contraste escrito después («TAC CRANEO DX TCE CON CONTRASTE» → el simple) y la especialidad («CONSULTA DX
+// CEFALEA CONTROL NEUROLOGIA» → descarte); «EPS <palabra>» se comía un SIN o un NO («TAC CRANEO EPS SIN
+// CONTRASTE» → el contrastado por nombre igual). Ahora: EPS solo con la lista cerrada de EPS; DX corta hasta la
+// primera palabra del procedimiento; el contraste y los grupos excluyentes se leen sobre la lectura COMPLETA, y si
+// sin colas dicen otra cosa es duda; y si sin colas no hay candidatos se reintenta con la lectura entera.
+func TestResolveCupsByName_OrderTailsNeverChangeTheMeaning(t *testing.T) {
+	catalog := catalogFromTSV(t, "testdata/cups_catalog_active.tsv")
+	simple := map[string]bool{"879111": true, "883230": true, "883210": true, "883101": true}
+	contrasted := map[string]bool{"879112": true, "883231": true, "883211": true}
+	// Con contraste tras DX o tras EPS: nunca el simple.
+	for _, read := range []string{
+		"TAC CRANEO DX TCE CON CONTRASTE", "TAC CRANEO DX: TCE. CON CONTRASTE", "RM COLUMNA LUMBAR DX HERNIA CON CONTRASTE",
+		"RM COLUMNA DX LUMBALGIA LUMBAR CON CONTRASTE", "RM COLUMNA LUMBAR EPS CON CONTRASTE", "TAC CRANEO EPS CON CONTRASTE",
+		"RM CEREBRO DX EPILEPSIA CON CONTRASTE", "TAC CRANEO PARA 2 DIAS CON CONTRASTE", "RM CEREBRO EN 1 MES CON CONTRASTE",
+	} {
+		for _, code := range acceptedByAdversary(read, catalog, false) {
+			if simple[code] {
+				t.Errorf("%q: se asignaría el SIMPLE %s", read, code)
+			}
+		}
+	}
+	// Sin contraste tras EPS o DX: nunca el contrastado.
+	for _, read := range []string{
+		"TAC CRANEO EPS SIN CONTRASTE", "TAC CRANEO EPS NO CONTRASTADO", "RM COLUMNA LUMBAR EPS SIN CONTRASTE",
+		"TAC CRANEO SANITAS EPS SIN CONTRASTE", "RM COLUMNA LUMBAR DX HERNIA SIN CONTRASTE", "TAC CRANEO DX TCE SIN CONTRASTE",
+		"TAC CRANEO EPS SIMPLE", "RM CEREBRO EPS SIMPLE",
+	} {
+		for _, code := range acceptedByAdversary(read, catalog, false) {
+			if contrasted[code] {
+				t.Errorf("%q: se asignaría el CONTRASTADO %s", read, code)
+			}
+		}
+	}
+	// Lo que se asigna bien: la cola quitada deja el procedimiento entero.
+	for read, want := range map[string][]string{
+		"TAC CRANEO DX TCE CON CONTRASTE":               {"879112"},
+		"TAC CRANEO CON CONTRASTE DX TCE":               {"879112"},
+		"TAC CRANEO SIMPLE DX TCE":                      {"879111"},
+		"TAC CRANEO DX TCE SIN CONTRASTE":               {"879111"},
+		"RM COLUMNA LUMBAR DX HERNIA CON CONTRASTE":     {"883231"},
+		"RM COLUMNA DX LUMBALGIA LUMBAR CON CONTRASTE":  {"883231"},
+		"RX DX RODILLA DERECHA":                         {"873420"},
+		"RX RODILLA DX GONARTROSIS DERECHA":             {"873420"},
+		"CONSULTA DX CEFALEA CONTROL NEUROLOGIA":        {"890374"},
+		"CONSULTA DX EPILEPSIA PRIMERA VEZ NEUROLOGIA":  {"890274"},
+		"CONSULTA NEUROLOGIA DX CEFALEA PRIMERA VEZ":    {"890274"},
+		"EMG DX RADICULOPATIA MMII":                     {"930860"},
+		"NC DX TUNEL CARPIANO MMSS":                     {"891509"},
+		"TAC CRANEO EPS SANITAS SIMPLE":                 {"879111"},
+		"TAC CRANEO SANITAS EPS SIN CONTRASTE":          {"879111"},
+		"CONSULTA NEUROLOGIA NUEVA EPS CONTROL":         {"890374"},
+		"CONSULTA CONTROL NEUROLOGIA EPS SALUD TOTAL":   {"890374"},
+		"CONSULTA CONTROL NEUROPEDIATRIA EPS FAMISANAR": {"890375"},
+		"RX RODILLA IZQUIERDA EPS SANITAS":              {"873420"},
+		"RM CEREBRO SIMPLE EPS CAPITAL SALUD":           {"883101"},
+		// Una palabra tras EPS que no es una EPS de la lista se queda, y la lectura va al agente como antes.
+		"TAC CRANEO EPS CON CONTRASTE": nil, "TAC CRANEO EPS SIN CONTRASTE": nil, "RX RODILLA EPS DERECHA": nil,
+		"CONSULTA NEUROLOGIA EPS CONTROL": nil, "CONSULTA EPS PRIMERA VEZ NEUROLOGIA": nil,
+		// Quitar la cola cambiaría lo que dice del contraste: duda, aunque sin ella encajara.
+		"TAC CRANEO NO POS CONTRASTE": nil,
+	} {
+		if got := acceptedByAdversary(read, catalog, false); !slices.Equal(got, want) {
+			t.Errorf("%q → %v, quiero %v", read, got, want)
+		}
+	}
+	// Nada de esto se descarta en silencio: con duda, al agente con candidatos.
+	for _, read := range []string{
+		"CONSULTA DX CEFALEA CONTROL NEUROLOGIA", "CONSULTA DX EPILEPSIA PRIMERA VEZ NEUROLOGIA", "TAC CRANEO EPS SIN CONTRASTE",
+		"CONSULTA NEUROLOGIA EPS CONTROL", "TAC CRANEO NO POS CONTRASTE", "CONSULTA NEUROLOGIA EPS SALUD TOTAL",
+		"CONSULTA NEUROLOGIA EPS CAPITAL SALUD",
+	} {
+		if res := ResolveCupsByName(read, catalog, false, nil); len(res.Candidates) == 0 {
+			t.Errorf("%q: sin candidatos, se descartaría en silencio", read)
+		}
+	}
+	// Un nivel de dos cifras no es un código CIE (R6-M2): «COLUMNA CERVICAL T12» sigue siendo contradicción.
+	for _, read := range []string{"RM COLUMNA CERVICAL T12", "RM COLUMNA CERVICAL D12", "RX COLUMNA CERVICAL T12 AP"} {
+		if got := acceptedByAdversary(read, catalog, false); len(got) != 0 {
+			t.Errorf("%q → %v, quiero agente (el nivel no cabe en la región)", read, got)
+		}
+	}
+	if got := acceptedByAdversary("RM COLUMNA DORSAL T12", catalog, false); !slices.Equal(got, []string{"883220"}) {
+		t.Errorf("«RM COLUMNA DORSAL T12» → %v, quiero [883220]", got)
 	}
 }

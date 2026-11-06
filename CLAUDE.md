@@ -555,11 +555,20 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   de su familia (misma modalidad y región, sus palabras de contenido) y el leído no lo dice, es duda («TAC MIEMBROS
   INFERIORES PEDIATRICA» frente a 879523-1 «(AXIALES DE ROTULA O LONGITUD…)»; `annotationDistinguishes`); «(54)»,
   «(TEJIDOS BLANDOS)» o «(UNO O MAS MUSCULOS)» no tienen esa otra fila y siguen sin obligar. Al asignar, el plazo
-  («EN 1 MES», «6 MESES», «2 SEMANAS», «1 SESION»), la cantidad escrita («CANT 1», «CANTIDAD: 2»), el diagnóstico
-  («CIE10 M545», un código CIE suelto que no es nivel de columna, «DX …» hasta el final), «EPS <nombre>», «ORDEN
-  <n>», «SEGUN EVOLUCION», «NO POS» y CITA PRIORITARIA son ruido (`withoutOrderTails`, `orderNoise`); si aun así no hay candidatos y la
-  lectura acaba en «POR <motivo>», se quita desde el último POR y sigue el camino normal (nunca un descarte
-  silencioso de una consulta o una EMG con cola); al descartar entre hojas el plazo y el CIE siguen contando.
+  («EN 1 MES», «6 MESES», «2 SEMANAS», «1 SESION»), la cantidad escrita («CANT 1», «CANTIDAD: 2»), el código del
+  diagnóstico («CIE10 M545», un código CIE suelto que no es nivel de columna), la EPS de la lista CERRADA
+  `epsNames` con la palabra EPS delante o detrás («EPS SANITAS», «SANITAS EPS», «NUEVA EPS»; cualquier otra
+  palabra tras EPS se queda), «ORDEN <n>», «SEGUN EVOLUCION», «NO POS» y CITA PRIORITARIA son ruido
+  (`withoutOrderTails`, `orderNoise`); «DX» y el diagnóstico escrito se cortan SOLO hasta la primera palabra del
+  procedimiento (`withoutDiagnosis`/`procedureWord`: abreviatura, lado, contraste o negación, CONSULTA, nivel o
+  valor de un grupo: «TAC CRANEO DX TCE CON CONTRASTE» conserva el contraste, «CONSULTA DX CEFALEA CONTROL
+  NEUROLOGIA» el control). INVARIANTE (ronda 6): el contraste y los grupos excluyentes se leen sobre la lectura
+  COMPLETA; si sin colas dicen otra cosa (`tailsChangeMeaning`, «TAC CRANEO NO POS CONTRASTE»), es duda para un
+  agente, nunca una asignación. Si sin colas no hay candidatos y la lectura acaba en «POR <motivo>», se quita
+  desde el último POR y sigue el camino normal; si aun así no hay candidatos, se reintenta con la lectura ENTERA
+  antes de descartar (un descarte silencioso solo queda para lo que no tiene candidatos ni entero ni sin colas:
+  EEG/PSG no están en el catálogo de prueba; «PET CT CUERPO ENTERO FDG» es el PET, `orderPhrases`). Al descartar
+  entre hojas el plazo, el CIE, la EPS y el DX siguen contando.
   Para ENCAJAR y para que una región sea la misma solo vale el plural (`pluralWord`); el prefijo de 5+ letras
   (`prefixWord`) solo busca candidatos y sospecha («NEURO», «RX ESTERNOCLAVICULAR», «RM CEREBELO» → agente). «VEZ»
   sola no es primera vez («2 VEZ» → agente; «1 VEZ», «1A VEZ» sí). Al
@@ -576,5 +585,6 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   contradicción, como «RX COLUMNA» a secas con ese código). Pares de prueba de la guarda en
   `internal/services/testdata/cups_guard_pairs.txt`; barrido catálogo × catálogo a un dígito (el nombre exacto de
   uno con el código del otro) en `TestCupsNamesConflict_OneDigitSiblingsSweep` con sus pares de oro en
-  `testdata/cups_one_digit_conflicts.txt` (regenerar con `CUPS_SWEEP_WRITE=1`; ninguno puede perderse) sobre el
-  catálogo activo `testdata/cups_catalog_active.tsv`.
+  `testdata/cups_one_digit_conflicts.txt` (regenerar con `CUPS_SWEEP_WRITE=1`, que falla si algún par del oro se
+  perdería y solo con `CUPS_SWEEP_WRITE=force` los borra, diciendo cuáles) sobre el catálogo activo
+  `testdata/cups_catalog_active.tsv`.
