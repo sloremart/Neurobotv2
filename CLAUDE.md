@@ -515,17 +515,23 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   código. `/bot orden` con un procedimiento sin código se le rechaza al agente pidiendo el código. Lo asignado:
   `ocr_cups_name_assignments` («CUPS asignados por nombre»), `agendar/cups_asignado_nombre`, y el paciente ve
   «<catálogo> (en tu orden: «<leído, ≤60>»)».
-  Contraste (`services/cups_contrast.go`, ronda 4, cerrado a fallos): el nombre se normaliza antes
+  Contraste (`services/cups_contrast.go`, rondas 4 y 5, cerrado a fallos): el nombre se normaliza antes
   (`foldProcedureText`: siglas con punto unidas —P.A., M.D.—, un solo espacio, la barra pegada a sus letras, «+»
-  como Y, N0→NO, C0N→CON, 5IN→SIN; la marca de cantidad «NO» solo vale con signo o pegada a la cifra) y UN
-  clasificador (`readContrast`; su gramática ES la tabla de `TestReadContrast_Grammar`) lee la frase ENTERA del
-  contraste como SIMPLE («SIMPLE»; «SIN|NO [CON] [MEDIO [DE]] CONTRASTE|CONTRASTADO|GADOLINIO|CTE»; «S/C»,
-  «S/CONTRASTE»; «[CON] CONTRASTE: NO» al final), CONTRASTE («[CON] CONTRASTE», «CONTRASTADO», «C/C», «C/CTE»,
-  «C/MEDIO DE CONTRASTE»; «CONTRASTE: SI» al final) o AMBOS («CON Y|O SIN», «SIN Y|O CON», «CON/SIN», «C/S», con o
-  sin «MEDIO DE»; «SIN CONTRASTE O|Y CON CONTRASTE»; «SIMPLE Y [CON] CONTRASTE|CONTRASTADO»). Cualquier otra
-  mención —CONTRAST*, GADOLINIO, barra con C o S («C/X», «N/A» tras CONTRASTE), «CC»/«SC», «SIMPLE O CONTRASTADO»,
-  «CON Y/O SIN», dos frases distintas, una negación suelta junto a la mención («NO REQUIERE CONTRASTE»), un nombre
-  cortado en CON o SIN— es DESCONOCIDO: nunca se asigna por nombre igual ni por el modelo y va al agente
+  como Y, N0→NO, C0N→CON, 5IN→SIN; la marca de cantidad «NO» solo vale con signo o pegada a la cifra; los signos y
+  casillas —«(-)», «(+)», «( )», «[ ]», «Ø», «✗», «✓», un guion o raya que no une dos palabras, un 0 suelto— quedan
+  como la ficha «?», `contrastSigns`) y UN clasificador (`readContrast`; su gramática ES la tabla de
+  `TestReadContrast_Grammar`) lee la frase ENTERA del contraste como SIMPLE («SIMPLE»; «SIN|NO [CON] [MEDIO [DE]]
+  CONTRASTE|CONTRASTADO|GADOLINIO|CTE»; «S/C», «S/CONTRASTE»; «CONTRASTE: NO» al final y SIN el CON delante: «CON
+  CONTRASTE NO» es un nombre cortado, duda), CONTRASTE («[CON] CONTRASTE», «CONTRASTADO», «C/C», «C/CTE», «C/MEDIO
+  DE CONTRASTE»; «CONTRASTE: SI» al final) o AMBOS («CON Y|O SIN», «SIN Y|O CON», «CON/SIN», «C/S» seguidos del
+  objeto, con o sin «MEDIO DE»; «SIN CONTRASTE O|Y CON CONTRASTE»; «SIMPLE Y [CON] CONTRASTE|CONTRASTADO»). Dos o
+  más frases de la gramática seguidas (con Y u O entre ellas) valen si TODAS dicen lo mismo («SIMPLE (SIN
+  CONTRASTE)», «SIN CONTRASTE Y SIN CONTRASTE»). Cualquier otra mención —CONTRAST*, GADOLINIO, «C/S» sola, barra con
+  C o S («C/X», «C/U», «S/N», «N/A» tras CONTRASTE; las abreviaturas de columna «L/S», «D/L» y «C/D» NO son el
+  contraste), «CC»/«SC», «SIMPLE O CONTRASTADO», «CON Y/O SIN», dos frases distintas, una negación suelta junto a la
+  mención (NO, NI, NEGATIVO, SIN: «NO REQUIERE CONTRASTE»), un signo o casilla pegado a la mención («CONTRASTE
+  (-)», «Ø CONTRASTE», «CONTRASTE: 0», «CON CONTRASTE ( )»: nunca vale CONTRASTE), un nombre cortado en CON o SIN—
+  es DESCONOCIDO: nunca se asigna por nombre igual ni por el modelo y va al agente
   (`ocr_sin_codigo` con sus candidatos, o `cups_posible_mala_lectura` con nota propia si trae código). AMBOS solo es
   igual a la fila «SIMPLE Y CON CONTRASTE» (879113): donde no la hay es duda, no el simple ni el contrastado; en la
   guarda, AMBOS frente al código con contraste no es contradicción (está documentado), frente al simple sí. Al
@@ -536,9 +542,20 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   columna (L4, C5) y la marca de cantidad (#2, X2, N 2, No. 1) son silencio si el catálogo no los menciona, y si lo
   menciona y es otro nivel, contradicción; también lo es, en la asignación y en la guarda, el nivel que no cabe en la
   región escrita («COLUMNA CERVICAL L4»; C cervical, T o D dorsal (TORACICA y TORACICO), L lumbar y lumbosacra hasta
-  S1 —S2 en adelante es duda—, DORSOLUMBAR T/D/L, S sacra y SACROCOXIGEA, y los discos C7-T1, T12-L1, L5-S1 caben
-  en las dos). Una lectura sin región ni segmento frente a DOS o más filas que son ese procedimiento con región es
-  duda aunque exista la fila a secas («RX COMPARATIVAS» → agente; «EMG» sigue a 930860: la de cara es una sola).
+  S1 —S2 en adelante es duda—, S sacro y coxis, y los discos C7-T1, T12-L1, L5-S1 caben en las dos; DORSOLUMBAR y
+  TORACOLUMBAR son «DORSAL LUMBAR» y SACROCOXIGEA es «SACRO COXIS», `orderAbbreviations`; los segmentos viven en
+  un solo sitio, `spineGroup`). Una lectura sin región ni segmento frente a DOS o más filas que son ese procedimiento
+  MÁS una región —las mismas palabras de contenido, sin lo que el catálogo pone entre paréntesis, sin
+  `catalogNoise` ni calificadores— es duda aunque exista la fila a secas («RX COMPARATIVAS» → agente, por PELVIS y
+  MASTOIDES; «EMG» sigue a 930860: la de cara es una sola; «RX MIEMBRO INFERIOR AP Y LATERAL» es 873340: MAXILAR
+  INFERIOR es otra anatomía). Si el ÚNICO candidato que encaja pone entre paréntesis lo que lo distingue de otra fila
+  de su familia (misma modalidad y región, sus palabras de contenido) y el leído no lo dice, es duda («TAC MIEMBROS
+  INFERIORES PEDIATRICA» frente a 879523-1 «(AXIALES DE ROTULA O LONGITUD…)»; `annotationDistinguishes`); «(54)»,
+  «(TEJIDOS BLANDOS)» o «(UNO O MAS MUSCULOS)» no tienen esa otra fila y siguen sin obligar. Al asignar, el plazo
+  («EN 1 MES», «6 MESES», «2 SEMANAS»), el diagnóstico («CIE10 M545», un código CIE suelto que no es nivel de
+  columna) y CITA PRIORITARIA son ruido (`withoutOrderTails`, `orderNoise`); si aun así no hay candidatos y la
+  lectura acaba en «POR <motivo>», se quita desde el último POR y sigue el camino normal (nunca un descarte
+  silencioso de una consulta o una EMG con cola); al descartar entre hojas el plazo y el CIE siguen contando.
   Para ENCAJAR y para que una región sea la misma solo vale el plural (`pluralWord`); el prefijo de 5+ letras
   (`prefixWord`) solo busca candidatos y sospecha («NEURO», «RX ESTERNOCLAVICULAR», «RM CEREBELO» → agente). «VEZ»
   sola no es primera vez («2 VEZ» → agente; «1 VEZ», «1A VEZ» sí). Al
@@ -550,4 +567,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   cuyo nombre leído contradice EXPLÍCITAMENTE el del catálogo en un grupo excluyente (contraste, primera
   vez/control, pediátrica/adultos, lado, superior/inferior, vía, marcador PET, nivel de columna, región; los dos
   lo mencionan y no comparten ningún valor tras los sinónimos; NO modalidad) → agente (`cups_posible_mala_lectura`).
-  Pares de prueba de la guarda en `internal/services/testdata/cups_guard_pairs.txt`.
+  ESTERNOCLAVICULAR es región (frente a TORAX y ESTERNON), y SACRO/COXIS son segmento y además región propia
+  (871050 «SACRO COXIS» se escribe sin COLUMNA: frente a «COLUMNA VERTEBRAL TOTAL» o «DINÁMICA DE COLUMNA» es
+  contradicción, como «RX COLUMNA» a secas con ese código). Pares de prueba de la guarda en
+  `internal/services/testdata/cups_guard_pairs.txt`; barrido catálogo × catálogo a un dígito (el nombre exacto de
+  uno con el código del otro) en `TestCupsNamesConflict_OneDigitSiblingsSweep` con sus pares de oro en
+  `testdata/cups_one_digit_conflicts.txt` (regenerar con `CUPS_SWEEP_WRITE=1`; ninguno puede perderse) sobre el
+  catálogo activo `testdata/cups_catalog_active.tsv`.

@@ -39,8 +39,9 @@ func TestMergeCupsJSON(t *testing.T) {
 }
 
 // Ronda 4 (R4-M1): la página añadida no pierde la duda ni la cantidad. Lo que llega marcado como duda
-// (ReadDoubtWith) entra siempre; el mismo nombre sin código con otra cantidad, sedación o contraste entra
-// como duda frente al ya leído, en vez de desaparecer.
+// (ReadDoubtWith) entra con su marca, salvo que sea IGUAL, con los mismos datos, a uno ya leído sin código (esa
+// lectura sigue, así que no se pierde nada); el mismo nombre sin código con otra cantidad, sedación o contraste
+// entra como duda frente al ya leído, en vez de desaparecer.
 func TestMergeCupsJSON_KeepsDoubtsAndOtherQuantities(t *testing.T) {
 	merged, added := mergeCupsJSON(`[{"cups_code":"879301","cups_name":"TAC TORAX"}]`, []services.CUPSEntry{
 		{Name: "RX RODILLA", Quantity: 1},

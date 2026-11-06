@@ -363,8 +363,9 @@ func ResolveCupsByName(
 	if len(res.Candidates) == 0 || choose == nil || regionless {
 		return res
 	}
-	// Sin un único candidato que encaje no hay nada que confirmar: no se gasta la llamada.
-	if len(fitting) != 1 || !containsCode(res.Candidates, fitting[0].Code) {
+	// Sin un único candidato que encaje no hay nada que confirmar: no se gasta la llamada. Tampoco si lo que
+	// ese candidato pone entre paréntesis es lo que lo distingue de otra fila (R5-M2).
+	if len(fitting) != 1 || !containsCode(res.Candidates, fitting[0].Code) || annotationDistinguishes(canonRead, fitting[0], catalog) {
 		return res
 	}
 	if code := strings.TrimSpace(choose(read, res.Candidates)); code == fitting[0].Code {
@@ -701,6 +702,43 @@ func candidateFits(canonRead, candName string) bool {
 		candCore = slices.DeleteFunc(candCore, func(w string) bool { return w == "VASOS" })
 	}
 	return allWordsIn(candCore, distinctiveWords(canonRead), pluralWord)
+}
+
+// familyGroups son los grupos que dicen qué estudio es y dónde: dos filas de la misma familia los comparten.
+var familyGroups = []qualifierGroup{{values: modalityValues}, spineGroup, regionGroup}
+
+// annotationDistinguishes dice si lo que el candidato pone entre paréntesis nombra un subtipo o una subregión que
+// el leído no dice y que otra fila de la misma familia (misma modalidad y región, y las palabras de contenido del
+// candidato) escribe en su nombre: 879523-1 «TOMOGRAFIA … DE MIEMBROS INFERIORES (AXIALES DE ROTULA O LONGITUD DE
+// MIEMBROS INFERIORES) - PEDIATRICA» frente a 879523, que lo escribe sin paréntesis. Entonces la anotación sí
+// distingue y asignar «TAC MIEMBROS INFERIORES PEDIATRICA» sería elegir por el leído: es duda (R5-M2). Las
+// anotaciones de facturación o de equipo («(54)», «(UNO O MAS MUSCULOS)», «(TEJIDOS BLANDOS)») no tienen esa
+// otra fila.
+func annotationDistinguishes(canonRead string, cand CupsCandidate, catalog []CupsCandidate) bool {
+	notes := strings.Join(catalogAnnotation.FindAllString(cand.Name, -1), " ")
+	readWords := distinctiveWords(canonRead)
+	missing := slices.DeleteFunc(contentWords(canonicalOrderName(notes), catalogNoise), func(w string) bool {
+		return slices.ContainsFunc(readWords, func(r string) bool { return pluralWord(w, r) })
+	})
+	if len(missing) == 0 {
+		return false
+	}
+	canonCand := canonicalOrderName(catalogAnnotation.ReplaceAllString(cand.Name, " "))
+	core := contentWords(canonCand, catalogNoise)
+	for _, other := range catalog {
+		if other.Code == cand.Code {
+			continue
+		}
+		canonOther := canonicalOrderName(catalogAnnotation.ReplaceAllString(other.Name, " "))
+		sameFamily := !slices.ContainsFunc(familyGroups, func(g qualifierGroup) bool {
+			return !sameSet(g.groupValues(canonCand), g.groupValues(canonOther))
+		})
+		words := distinctiveWords(canonOther)
+		if sameFamily && allWordsIn(core, words, pluralWord) && allWordsIn(missing, words, pluralWord) {
+			return true
+		}
+	}
+	return false
 }
 
 // namesLimbStudy dice si el nombre es de los que se facturan por extremidad o nervio: EMG, NC y potenciales.
