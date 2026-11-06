@@ -540,20 +540,35 @@ otras dos (no guarda cada mensaje, ni *stack traces*, ni errores crudos; y Teleg
 - `slog.Debug` (verboso) → **se queda** (depuración a nivel de código).
 - `slog.Info` de un **punto de decisión** que se promueve a `flow_event` → se **degrada a `slog.Debug`**
   (no se borra): deja de inflar Info pero sigue disponible para depurar en vivo.
-- `chat_events` → **intacto** (granularidad mensaje-a-mensaje, distinta de los hitos de negocio).
+- `chat_events` → **intacto** en su granularidad (mensaje a mensaje, distinta de los hitos de negocio);
+  lo que sí cambia es la PII que guarda (párrafo siguiente).
 
 **PII en `chat_events` (C-04, auditoría 2026-11-03).** Al escribir: `patient_found` va sin el nombre;
 `contact_info_shown`, `contact_phone_updated`, `contact_email_updated` y `contact_info_updated` llevan
-celular y correo enmascarados (`utils.MaskPhoneAlways`, `utils.MaskEmail`); los documentos van con
-`MaskDocument`; `msg_during_escalation` e `invalid_input`/`max_retries_reached` de los pasos de datos
-personales (registro, ASK_UPDATE_PHONE/EMAIL) guardan solo el largo («[redactado: N caracteres]»). En
-los demás pasos `invalid_input` sigue con el texto (fricción). Retención: la tarea diaria
-`chat_events_pii_retention` (02:30) enmascara `phone_number` y `contact_identifier` de las filas con más
-de 30 días (las claves `nectar:` se conservan: el dashboard separa líneas por ese prefijo) y les quita a
-`event_data` las claves `name`, `email`, `phone`, `text`, `input`, `last_input`, `doc`, `document`,
-`query`, `description`; no borra filas (los KPIs siguen). Lotes de 500 por id desde la marca
-`chat_events_pii_masked_until` de `scheduler_runs`. Consecuencia: `GET /events?phone=` solo encuentra por
-teléfono lo de los últimos 30 días (las de Néctar siguen por el contacto de la sesión, ya sin PII).
+celular y correo enmascarados (`utils.MaskPhoneAlways`: como mucho los últimos 4 caracteres;
+`utils.MaskEmail`: dos letras y el dominio); el documento va con `MaskDocument`, también lo que se escribe
+en los pasos del tipo de documento (ASK_DOCUMENT_TYPE, REG_DOCUMENT_TYPE: el paciente suele escribir ahí el
+número). `msg_during_escalation` e `invalid_input`/`max_retries_reached` de los pasos de datos personales
+(nombres, fecha de nacimiento, dirección, celular, correo, ocupación, barrio; ASK_UPDATE_PHONE/EMAIL)
+guardan solo el largo («[redactado: N caracteres]»). En los demás pasos `invalid_input` sigue con el texto
+(fricción).
+
+Retención: la tarea diaria `chat_events_pii_retention` (02:30; su catch-up al arrancar solo de noche,
+fuera de 7-20 h) enmascara `phone_number` y `contact_identifier` de las filas con más de 30 días (las claves
+`nectar:` se conservan: el dashboard separa líneas por ese prefijo) y les quita a `event_data` las claves
+`name`, `email`, `phone`, `text`, `input`, `last_input`, `doc`, `document`, `query`, `description` y, en
+`registration_failed`, `error` (el de SQL Server puede citar el valor). JSON_REMOVE quita solo claves de
+primer nivel: un evento nuevo con PII anidada no quedaría cubierto. No borra filas (los KPIs siguen). Lotes
+de 500 por id, con una pausa corta entre lotes, desde la marca `chat_events_pii_masked_until` de
+`scheduler_runs`; vencer los 10 min de la pasada es lo esperado mientras recorre el histórico (Info, sigue
+mañana) y el apagado la corta con un Warn; solo un error de la base es Error. El SQL real solo lo comprueba
+el test de integración (`make test-integration`); en `go test ./...` se fija su forma.
+
+Lo que **no** cubre: la tabla `sessions` conserva `phone_number` y `contact_identifier`, así que pasados los
+30 días el teléfono de una fila de `chat_events` sigue recuperable por su `session_id`, y con él lo que quede
+en `event_data` (`medicamento`, `cups_name`…). La retención de `sessions` es una decisión aparte del dueño,
+pendiente. `GET /events?phone=` solo encuentra por teléfono lo de los últimos 30 días (las de Néctar siguen
+por el contacto de la sesión).
 
 **Regla de rollout:** durante las fases NO se quita nada; `flow_events` se construye en paralelo. El
 *downgrade* Info→Debug de un `slog.Info` promovido se hace **solo** cuando ese flujo ya quedó
