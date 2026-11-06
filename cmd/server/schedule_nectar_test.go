@@ -57,11 +57,27 @@ type fakeScheduleServer struct {
 	code  int
 	hits  int
 	conds []string // el If-None-Match de cada llamada ("" = sin cabecera)
+	// globalKey: la lectura del roster responde 403 account_key_required (la clave global).
+	globalKey  bool
+	agentsHits int
 }
 
 func newFakeScheduleServer(t *testing.T, body string) *fakeScheduleServer {
 	f := &fakeScheduleServer{body: body, code: http.StatusOK}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == nectar.AgentsPath {
+			f.mu.Lock()
+			f.agentsHits++
+			global := f.globalKey
+			f.mu.Unlock()
+			if global {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"account_key_required"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"agents":[]}`))
+			return
+		}
 		if r.URL.Path != nectar.SchedulePath {
 			t.Errorf("ruta inesperada: %s", r.URL.Path)
 		}
@@ -451,5 +467,47 @@ func TestStartNectarSchedule_ConPuenteLeeSegunLaBandera(t *testing.T) {
 				t.Errorf("abierto el sábado = %v, want %v", got, tc.openSaturday)
 			}
 		})
+	}
+}
+
+// M-7: con la clave global Néctar mezclaría los festivos de todas las entidades. Solo festivos exige la
+// clave de CUENTA: la comprueba una vez con el roster (que la global no puede leer) y, con la global,
+// no aplica nada y se detiene con un solo error.
+func TestHolidaysOnly_RequiresAccountKey(t *testing.T) {
+	f := newFakeScheduleServer(t, withSaturday)
+	f.globalKey = true
+	cfg, r, cache := holidaysOnlyRefresher(t, f)
+	logs := captureSlog(t)
+
+	done := make(chan struct{})
+	go func() { r.Run(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("con la clave global el refresco se detiene")
+	}
+	if f.calls() != 0 || cache.Version() != "" || cfg.Hours().IsHoliday(holidayMonday) {
+		t.Errorf("no se lee ni se aplica ningún festivo: lecturas=%d versión=%q", f.calls(), cache.Version())
+	}
+	if n := strings.Count(logs.String(), "level=ERROR"); n != 1 || !strings.Contains(logs.String(), "clave de CUENTA") {
+		t.Errorf("un solo error que nombre la clave: %s", logs.String())
+	}
+}
+
+// M-7: la clave se comprueba una sola vez; si Néctar no responde a esa comprobación, no se aplica nada y
+// se vuelve a intentar en el tic siguiente.
+func TestHolidaysOnly_ChecksAccountKeyOnce(t *testing.T) {
+	f := newFakeScheduleServer(t, withSaturday)
+	cfg, r, _ := holidaysOnlyRefresher(t, f)
+	for range 3 {
+		if err := r.refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	agents := f.agentsHits
+	f.mu.Unlock()
+	if agents != 1 || !cfg.Hours().IsHoliday(holidayMonday) {
+		t.Errorf("comprobaciones = %d, want 1; festivo aplicado = %v", agents, cfg.Hours().IsHoliday(holidayMonday))
 	}
 }
