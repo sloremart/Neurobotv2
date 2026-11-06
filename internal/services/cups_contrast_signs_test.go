@@ -69,6 +69,23 @@ func TestContrastSign_NeverAssignsAContrastedStudy(t *testing.T) {
 	if !CupsNamesConflict("RM COLUMNA L/S C/C", "RESONANCIA NUCLEAR MAGNETICA DE COLUMNA LUMBOSACRA SIMPLE") {
 		t.Error("guarda: «RM COLUMNA L/S C/C» frente al simple sí contradice")
 	}
+	// R5-I4: dos frases del mismo valor, juntas, son ese valor: se asigna, pasa la guarda y entre hojas es igual.
+	// R5-M1: «CON CONTRASTE NO» al final no es una respuesta: duda.
+	if res := ResolveCupsByName("TAC CRANEO SIMPLE (SIN CONTRASTE)", contrastCatalog, false, nil); res.Code != "879111" {
+		t.Errorf("«TAC CRANEO SIMPLE (SIN CONTRASTE)» → %q, quiero 879111", res.Code)
+	}
+	if CupsNamesConflict("TAC CRANEO SIMPLE (SIN CONTRASTE)", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE") {
+		t.Error("guarda: «TAC CRANEO SIMPLE (SIN CONTRASTE)» frente al simple no contradice")
+	}
+	if got := compareReadNames("TAC CRANEO SIMPLE (SIN CONTRASTE)", "TAC CRANEO SIMPLE"); got != CupsNamesEqual {
+		t.Errorf("compareReadNames(SIMPLE (SIN CONTRASTE), SIMPLE) = %v, quiero igual", got)
+	}
+	if res := ResolveCupsByName("TAC CRANEO CON CONTRASTE NO", contrastCatalog, false, nil); res.Code != "" {
+		t.Errorf("«TAC CRANEO CON CONTRASTE NO» → %q, quiero duda", res.Code)
+	}
+	if !CupsNamesConflict("TAC CRANEO CON CONTRASTE NO", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE") {
+		t.Error("guarda: «TAC CRANEO CON CONTRASTE NO» frente al simple es duda")
+	}
 	// Un signo lejos de la mención no cambia nada: el guion entre niveles o entre regiones es un separador.
 	for read, want := range map[string]string{
 		"RM COLUMNA LUMBAR L4 - L5 CON CONTRASTE": "883231",

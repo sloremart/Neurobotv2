@@ -82,7 +82,8 @@ var contrastSlashForms = []struct {
 const contrastObject = `(?:MEDIO (?:DE )?)?(?:CONTRASTE|CONTRASTADO|CONTRASTADA|GADOLINIO|CTE)`
 
 // contrastGrammar son las frases que se entienden (la frase entera, ya sin barras). onlyAtEnd: la respuesta
-// «CONTRASTE: NO» solo vale al final del nombre («CONTRASTE NO IONICO» lleva contraste).
+// «CONTRASTE: NO» solo vale al final del nombre («CONTRASTE NO IONICO» lleva contraste) y sin el CON delante:
+// «CON CONTRASTE NO» es más probablemente un nombre cortado («CON CONTRASTE NO IONICO») que una respuesta (R5-M1).
 var contrastGrammar = []struct {
 	re        *regexp.Regexp
 	reading   contrastReading
@@ -91,7 +92,7 @@ var contrastGrammar = []struct {
 	{regexp.MustCompile(`^SIMPLE$`), contrastSimple, false},
 	{regexp.MustCompile(`^SIN ` + contrastObject + `$`), contrastSimple, false},
 	{regexp.MustCompile(`^NO (?:CON )?` + contrastObject + `$`), contrastSimple, false},
-	{regexp.MustCompile(`^(?:CON )?` + contrastObject + ` NO$`), contrastSimple, true},
+	{regexp.MustCompile(`^` + contrastObject + ` NO$`), contrastSimple, true},
 	{regexp.MustCompile(`^(?:CON )?` + contrastObject + `$`), contrastWith, false},
 	{regexp.MustCompile(`^(?:CON )?` + contrastObject + ` SI$`), contrastWith, true},
 	{regexp.MustCompile(`^CON (?:Y|O) SIN ` + contrastObject + `$`), contrastBoth, false},
@@ -145,7 +146,7 @@ func readContrast(folded string) (contrastReading, string) {
 		for i < len(tokens) && len(run) > 0 && contrastEdgeWords[run[len(run)-1]] {
 			after, run = append([]string{run[len(run)-1]}, after...), run[:len(run)-1]
 		}
-		got := classifyContrastPhrase(strings.Join(run, " "), i == len(tokens))
+		got := classifyContrastPhrase(run, i == len(tokens))
 		switch {
 		case reading == contrastSilent:
 			reading = got
@@ -165,8 +166,31 @@ func readContrast(folded string) (contrastReading, string) {
 	return reading, strings.Join(out, " ")
 }
 
-// classifyContrastPhrase busca la frase entera en la gramática.
-func classifyContrastPhrase(phrase string, atEnd bool) contrastReading {
+// classifyContrastPhrase busca el tramo entero en la gramática. Si no está, puede ser dos o más frases de la
+// gramática seguidas, con un Y u O entre ellas: «SIMPLE (SIN CONTRASTE)», «SIN CONTRASTE Y SIN CONTRASTE» (R5-I4).
+// Vale solo si TODAS dicen lo mismo; si no («SIMPLE CON CONTRASTE»), o si alguna no está, es DESCONOCIDO.
+func classifyContrastPhrase(run []string, atEnd bool) contrastReading {
+	if got := grammarReading(strings.Join(run, " "), atEnd); got != contrastUnknown {
+		return got
+	}
+	for cut := 1; cut < len(run); cut++ {
+		head := grammarReading(strings.Join(run[:cut], " "), false)
+		if head == contrastUnknown {
+			continue
+		}
+		rest := run[cut:]
+		if rest[0] == "Y" || rest[0] == "O" {
+			rest = rest[1:]
+		}
+		if len(rest) > 0 && classifyContrastPhrase(rest, atEnd) == head {
+			return head
+		}
+	}
+	return contrastUnknown
+}
+
+// grammarReading busca la frase entera en la gramática.
+func grammarReading(phrase string, atEnd bool) contrastReading {
 	for _, f := range contrastSlashForms {
 		phrase = f.re.ReplaceAllString(phrase, f.repl)
 	}
