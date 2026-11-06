@@ -163,3 +163,66 @@ func TestPair_NoCycleAbsent(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func closedAs(c nectar.WaitingCycle, reason string) nectar.WaitingCycle {
+	c.CloseReason = &reason
+	return c
+}
+
+// Plan 49: una reapertura (resuelta → en espera) trae previous_cycle_id al tramo resuelto, pero es otra
+// atención (manual, sin escalación del bot): no se pega a la anterior ni le pasa respuesta, agente ni
+// mensajes.
+func TestPair_ReopenedAfterResolvedIsNotChained(t *testing.T) {
+	c1 := closedAs(cyc(100, 10, t0), "resolved")
+	c1.AgentID = ptrI(7)
+	reopened := cyc(200, 10, t0.Add(3*time.Hour))
+	reopened.PreviousCycleID = ptrI(100)
+	reopened.ClosedAt = nil
+	reopened.AgentID = ptrI(8)
+	reopened.FirstResponseAt = ptrT(t0.Add(3*time.Hour + time.Minute))
+	reopened.ContactMessagesBeforeFirstResponse = 4
+
+	got := Pair([]Escalation{esc(1, 10, t0)}, []nectar.WaitingCycle{reopened, c1})
+	if len(got) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	a := got[0]
+	if !reflect.DeepEqual(a.CycleIDs, []int64{100}) || !a.Closed {
+		t.Fatalf("la atención es solo el tramo resuelto y cerrado: %+v", a)
+	}
+	if a.FirstResponseAt != nil || a.AgentID == nil || *a.AgentID != 7 || a.ContactMsgs != 0 {
+		t.Fatalf("nada de la reapertura pasa a la atención: %+v", a)
+	}
+}
+
+// Néctar no impone un solo hijo por tramo: de un resuelto no se sigue ninguno.
+func TestPair_ResolvedWithTwoChildrenChainsNone(t *testing.T) {
+	c1 := closedAs(cyc(100, 10, t0), "resolved")
+	a := cyc(200, 10, t0.Add(time.Hour))
+	a.PreviousCycleID = ptrI(100)
+	b := cyc(300, 10, t0.Add(2*time.Hour))
+	b.PreviousCycleID = ptrI(100)
+	b.FirstResponseAt = ptrT(t0.Add(2*time.Hour + time.Minute))
+
+	got := Pair([]Escalation{esc(1, 10, t0)}, []nectar.WaitingCycle{c1, a, b})
+	if len(got) != 1 || !reflect.DeepEqual(got[0].CycleIDs, []int64{100}) || got[0].FirstResponseAt != nil {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// Traspaso y liberación siguen siendo la misma atención.
+func TestPair_TransferredAndReleasedStillChain(t *testing.T) {
+	for _, reason := range []string{"transferred", "released"} {
+		t.Run(reason, func(t *testing.T) {
+			c1 := closedAs(cyc(100, 10, t0), reason)
+			c2 := cyc(200, 10, t0.Add(time.Hour))
+			c2.PreviousCycleID = ptrI(100)
+			c2.FirstResponseAt = ptrT(t0.Add(70 * time.Minute))
+			c2.AgentID = ptrI(8)
+			got := Pair([]Escalation{esc(1, 10, t0)}, []nectar.WaitingCycle{c1, c2})
+			if len(got) != 1 || !reflect.DeepEqual(got[0].CycleIDs, []int64{100, 200}) || got[0].FirstResponseAt == nil {
+				t.Fatalf("got %+v", got)
+			}
+		})
+	}
+}

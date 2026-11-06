@@ -198,3 +198,26 @@ func TestGetAgentsDecodes(t *testing.T) {
 		t.Fatalf("403: err = %v", err)
 	}
 }
+
+// Un tramo con `escalada_por` (objeto o null) se lee igual: el bot no lo usa y no rompe la lectura.
+func TestGetWaitingCyclesToleratesEscalatedBy(t *testing.T) {
+	const body = `{"cycles":[
+	  {"id":1,"conversation_id":10,"previous_cycle_id":null,"team_id":null,"agent_id":9,
+	   "opened_at":"2026-11-02T13:00:00Z","assigned_at":null,"first_response_at":null,"closed_at":null,
+	   "close_reason":null,"backfilled":false,"contact_messages_before_first_response":1,
+	   "escalada_por":{"clase":"agente","agent_id":9}},
+	  {"id":2,"conversation_id":11,"previous_cycle_id":1,"team_id":null,"agent_id":null,
+	   "opened_at":"2026-11-02T14:00:00Z","assigned_at":null,"first_response_at":null,"closed_at":null,
+	   "close_reason":null,"backfilled":false,"contact_messages_before_first_response":0,
+	   "escalada_por":null}
+	],"next_cursor":null,"history_since":null}`
+	f := newFakeReports(t, http.StatusOK, body)
+	page, err := f.client().GetWaitingCycles(t.Context(), time.Now().Add(-time.Hour), time.Now(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Cycles) != 2 || page.Cycles[0].ID != 1 || page.Cycles[0].AgentID == nil || *page.Cycles[0].AgentID != 9 ||
+		page.Cycles[1].PreviousCycleID == nil || *page.Cycles[1].PreviousCycleID != 1 {
+		t.Fatalf("tramos = %+v", page.Cycles)
+	}
+}

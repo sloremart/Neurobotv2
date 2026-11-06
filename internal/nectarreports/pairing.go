@@ -107,7 +107,10 @@ func Pair(escalations []Escalation, cycles []nectar.WaitingCycle) []Attention {
 			}
 		}
 
-		// 2) Atención = tramo + sucesores por previous_cycle_id, cortando en el tramo de otra escalación.
+		// 2) Atención = tramo + sucesores por previous_cycle_id, cortando en el tramo de otra escalación
+		// y en un tramo resuelto: desde el Plan 49 de Néctar, una reapertura (resuelta → en espera) apunta
+		// al tramo resuelto, pero es otra atención (manual, sin escalación del bot). Néctar no impone un
+		// solo hijo por tramo, así que de un resuelto no se sigue ninguno.
 		children := map[int64][]nectar.WaitingCycle{}
 		for _, c := range cs {
 			if c.PreviousCycleID != nil {
@@ -124,6 +127,9 @@ func Pair(escalations []Escalation, cycles []nectar.WaitingCycle) []Attention {
 			for queue := []nectar.WaitingCycle{root}; len(queue) > 0; {
 				cur := queue[0]
 				queue = queue[1:]
+				if cur.CloseReason != nil && *cur.CloseReason == closeReasonResolved {
+					continue
+				}
 				for _, ch := range children[cur.ID] {
 					if seen[ch.ID] {
 						continue
@@ -148,6 +154,9 @@ func Pair(escalations []Escalation, cycles []nectar.WaitingCycle) []Attention {
 	sort.Slice(out, func(i, j int) bool { return out[i].EscalationID < out[j].EscalationID })
 	return out
 }
+
+// closeReasonResolved es la causa de cierre de un tramo que un agente resolvió (Néctar).
+const closeReasonResolved = "resolved"
 
 // summarize resume una cadena de tramos (ya en orden de apertura) en una atención.
 func summarize(escalationID uint64, chain []nectar.WaitingCycle) Attention {

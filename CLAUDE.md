@@ -364,7 +364,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Informes de asesores (D5, `internal/nectarreports`): con puente, cada `NECTAR_REPORTS_SYNC_MIN` (5) el bot copia tramos
   (`waiting-cycles`, receta §3(a), desde `DataFloor`) y roster (`agents`) a las tablas de la migración 046 y completa las
   escalaciones `nectar:*` (`agent_id` = `nectar:<id>`, primera respuesta, mensajes, solo `expired` sin respuesta→`agent_no_show`; `completed` = un agente pulsó «Resolver», igual que en Bird; la cola vencida la marca el worker); exige la
-  clave de CUENTA: con la global (403) se detiene con un solo error en el log.
+  clave de CUENTA: con la global (403) se detiene con un solo error en el log. La atención sigue `previous_cycle_id` salvo
+  desde un tramo `resolved`: desde el Plan 49 una reapertura apunta al resuelto y es otra atención.
 - Menús del agente por paso: cada paso escalable registra sus opciones/campos (`sm.RegisterReturnMenu` y afines, llamado
   donde se registra el estado), más las universales `bot_reanudar`/`bot_reiniciar`/`bot_cerrar`; no hay lista de pasos aplazados.
 - Transición (dos líneas): `NEW_LINE_ANNOUNCEMENT` (vacía = apagado) antepone el anuncio de la línea nueva al saludo
