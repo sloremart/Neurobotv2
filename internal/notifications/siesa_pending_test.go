@@ -837,6 +837,35 @@ func TestSiesaPending_RunPassHonoursDeadline(t *testing.T) {
 	}
 }
 
+// m12: la fila que consume el plazo de la pasada termina con su ctx vivo y la siguiente NO arranca en
+// esa pasada (corte por fila); la pasada siguiente vuelve a empezar.
+func TestSiesaPending_RowCutAfterPassDeadline(t *testing.T) {
+	h := newSiesaHarness(t)
+	h.mgr.passTimeout = 20 * time.Millisecond
+	h.markRows(t, 2)
+	var calls int
+	var firstCtxErr error
+	repo := h.siesa.repo()
+	repo.findByIDFn = func(ctx context.Context, _ string) (*domain.Appointment, error) {
+		calls++
+		if calls == 1 {
+			time.Sleep(60 * time.Millisecond) // la primera fila gasta el plazo de la pasada
+			firstCtxErr = ctx.Err()
+		}
+		return nil, errSiesaDown
+	}
+	h.mgr.apptSvc = services.NewAppointmentService(repo, nil)
+
+	h.mgr.runSiesaPendingPass(context.Background())
+	if calls != 1 || firstCtxErr != nil {
+		t.Fatalf("pasada 1: lecturas=%d (want 1), ctx de la fila=%v (want vivo)", calls, firstCtxErr)
+	}
+	h.mgr.runSiesaPendingPass(context.Background())
+	if calls < 2 {
+		t.Fatalf("la pasada siguiente debía arrancar normal, lecturas=%d", calls)
+	}
+}
+
 // Cada caso de D-04 viaja con su motivo y su caso en la vista de la escalación, que es lo que elige
 // el menú del agente (handlers.siesaPendingReturnOptions; aquí un menú que los devuelve tal cual).
 func TestSiesaPending_EscalationCarriesCase(t *testing.T) {
