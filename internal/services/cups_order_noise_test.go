@@ -100,6 +100,8 @@ func TestResolveCupsByName_NoiseOnlyInItsCase(t *testing.T) {
 			t.Errorf("%q: %+v, quiero 873123", read, res)
 		}
 	}
+	// La comparativa a secas sin otra fila con región se asigna; con varias con región es duda (R4-I3,
+	// TestResolveCupsByName_RegionlessReadWithRegionalRowsIsADoubt).
 	if res := ResolveCupsByName("RX COMPARATIVAS", catalog, false, nil); res.Code != "1005927" {
 		t.Errorf("la comparativa a secas: %+v", res)
 	}

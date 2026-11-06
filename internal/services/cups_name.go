@@ -278,13 +278,16 @@ func ResolveCupsByName(
 	if interconsulta {
 		canonRead += firstVisitSuffix
 	}
+	// Una lectura sin región frente a varias filas que son ese procedimiento con región es duda, aunque
+	// exista la fila a secas: «RX COMPARATIVAS» puede ser cualquiera de las comparativas con región.
+	regionless := regionalRows(canonRead, catalog) >= minRegionalRowsForDoubt
 	var equal []CupsCandidate
 	for _, c := range catalog {
 		if CompareCupsNames(canonRead, canonicalOrderName(c.Name)) == CupsNamesEqual {
 			equal = append(equal, c)
 		}
 	}
-	if len(equal) == 1 {
+	if len(equal) == 1 && !regionless {
 		return CupsNameResolution{Code: equal[0].Code, Name: equal[0].Name, Via: CupsNameViaEqual, Candidates: equal}
 	}
 	// La lista corta pone primero los que encajan: un nombre de catálogo con muchas anotaciones (la EMG
@@ -299,7 +302,7 @@ func ResolveCupsByName(
 	}
 	similar := append(append([]CupsCandidate{}, fitting...), rest...)
 	res := CupsNameResolution{Candidates: similar[:min(len(similar), maxNameCandidates)]}
-	if len(res.Candidates) == 0 || choose == nil {
+	if len(res.Candidates) == 0 || choose == nil || regionless {
 		return res
 	}
 	// Sin un único candidato que encaje no hay nada que confirmar: no se gasta la llamada.
@@ -310,6 +313,31 @@ func ResolveCupsByName(
 		res.Code, res.Name, res.Via = fitting[0].Code, fitting[0].Name, CupsNameViaModel
 	}
 	return res
+}
+
+// minRegionalRowsForDoubt: con cuántas filas con región de un procedimiento leído sin región la lectura es
+// duda. Una sola no basta: la EMG a secas sigue siendo la de cada extremidad aunque exista la de cara.
+const minRegionalRowsForDoubt = 2
+
+// regionalRows cuenta las filas del catálogo que son el leído más una región (decisión del dueño, R4-I3):
+// el leído no dice región ni segmento de columna, y la fila trae todas las palabras con las que busca
+// (retrievalWords: sin el lado, el nivel ni el ruido) y una región.
+func regionalRows(canonRead string, catalog []CupsCandidate) int {
+	if len(regionGroup.groupValues(canonRead)) > 0 || len(spineGroup.groupValues(canonRead)) > 0 {
+		return 0
+	}
+	readWords := retrievalWords(canonRead)
+	if len(readWords) == 0 {
+		return 0
+	}
+	n := 0
+	for _, c := range catalog {
+		cc := canonicalOrderName(c.Name)
+		if len(regionGroup.groupValues(cc)) > 0 && allWordsIn(readWords, distinctiveWords(cc), prefixWord) {
+			n++
+		}
+	}
+	return n
 }
 
 func containsCode(list []CupsCandidate, code string) bool {
@@ -432,6 +460,19 @@ var sideValues = words("DERECHA", "IZQUIERDA", "BILATERAL")
 var modalityValues = words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "RADIOGRAFIA=RX", "PET",
 	"ELECTROMIOGRAFIA=EMG", "NEUROCONDUCCION=NC", "ELECTROENCEFALOGRAMA=EEG", "POLISOMNOGRAFIA")
 
+// spineGroup son los segmentos de columna; regionGroup, las regiones anatómicas.
+var (
+	spineGroup  = qualifierGroup{values: words("CERVICAL", "DORSAL", "LUMBAR", "SACRA", "SACRO=SACRA", "COCCIX"), exclusive: true}
+	regionGroup = qualifierGroup{prefix: true, exclusive: true, values: words(
+		"CEREBRO", "CARA", "ORBITA", "SENOS", "OIDO", "MASTOIDES", "SILLA",
+		"CUELLO", "COLUMNA", "TORAX", "ABDOMEN", "PELVIS", "HOMBRO", "BRAZO", "CODO",
+		"ANTEBRAZO", "MUNECA", "MANO", "DEDOS", "CADERA", "MUSLO", "RODILLA", "PIERNA",
+		"TOBILLO", "PIE", "CALCANEO", "MAXILAR", "MANDIBULA", "PROSTATA", "TIROIDES", "MAMA",
+		"RINON", "HIGADO", "VESICULA", "TESTICULO", "SACROILIACA", "CLAVICULA", "ESTERNON",
+		"COSTILLAS", "PARRILLA", "TEMPOROMANDIBULAR", "PIES=PIE",
+	)}
+)
+
 var qualifierGroups = []qualifierGroup{
 	{numbers: true},
 	{levels: true, exclusive: true},
@@ -448,15 +489,8 @@ var qualifierGroups = []qualifierGroup{
 	{values: words("TRANSFONTANELAR", "TRANSCRANEAL")},
 	{values: words("FLUOR=FDG", "FDG", "FLUORODESOXIGLUCOSA=FDG", "PSMA", "COLINA", "DOTATATE"), exclusive: true},
 	{values: words("FUNCIONAL", "TRACTOGRAFIA", "ESPECTROSCOPIA", "PERFUSION")},
-	{values: words("CERVICAL", "DORSAL", "LUMBAR", "SACRA", "SACRO=SACRA", "COCCIX"), exclusive: true},
-	{prefix: true, exclusive: true, values: words(
-		"CEREBRO", "CARA", "ORBITA", "SENOS", "OIDO", "MASTOIDES", "SILLA",
-		"CUELLO", "COLUMNA", "TORAX", "ABDOMEN", "PELVIS", "HOMBRO", "BRAZO", "CODO",
-		"ANTEBRAZO", "MUNECA", "MANO", "DEDOS", "CADERA", "MUSLO", "RODILLA", "PIERNA",
-		"TOBILLO", "PIE", "CALCANEO", "MAXILAR", "MANDIBULA", "PROSTATA", "TIROIDES", "MAMA",
-		"RINON", "HIGADO", "VESICULA", "TESTICULO", "SACROILIACA", "CLAVICULA", "ESTERNON",
-		"COSTILLAS", "PARRILLA", "TEMPOROMANDIBULAR", "PIES=PIE",
-	)},
+	spineGroup,
+	regionGroup,
 }
 
 // groupValues son los valores del grupo que menciona un nombre canónico.
