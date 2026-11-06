@@ -431,7 +431,8 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (`SIESA_PENDING_RETRY_MIN`, 5) las aplica al volver: confirma con el mensaje de siempre o abre la confirmación de
   cancelación de siempre, solo en la ventana de avisos (7-20 h, `config.PatientNoticeWindow`; fuera, la fila espera
   sin sumar intento, salvo que esperar a las 07:00 deje la cita a <2 h: entonces se aplica y se avisa de noche). El
-  tope de >6 h solo cuenta el tiempo con la ventana abierta y solo se mira con ella abierta. Cita movida (otro `appointment_slot`), sesión ocupada, >6 h o cita a <2 h → agente
+  tope de >6 h solo cuenta el tiempo con la ventana abierta y solo se mira con ella abierta; la cita a <2 h (la leída o, con SIESA
+  caída, la recordada en `appointment_slot`) va al agente a cualquier hora. Cita movida (otro `appointment_slot`), sesión ocupada, >6 h o cita a <2 h → agente
   (`notificacion_siesa_pendiente`).
 - Topes: cantidad por CUPS >100 → agente (`cantidad_fuera_de_rango`; EMG/NC sin cambios; `/bot cups` de Bird y el
   campo de CUPS de Néctar se le rechazan al asesor con `services.AgentCupsQuantityProblem`); 3 lecturas fallidas

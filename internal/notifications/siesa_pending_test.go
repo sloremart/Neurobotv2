@@ -1315,3 +1315,30 @@ func TestSiesaPending_NoticeWindow_MaxAgeWaitsForOpenWindow(t *testing.T) {
 		t.Errorf("al abrir la ventana pasa a un agente: escalaciones=%d desenlace=%q", h.escalations(), h.store.outcomes[1])
 	}
 }
+
+// G1-I1: con SIESA caída toda la noche, la cita recordada a menos de 2 h pasa a un agente aunque la
+// ventana esté cerrada y el tope de 6 h no corra: queda en cola antes de la cita, no después.
+func TestSiesaPending_SiesaDownAllNight_EarlyAppointmentEscalatesBeforeIt(t *testing.T) {
+	h := newSiesaHarness(t)
+	slot := tomorrowAt(8, 30).Format("200601021504")
+	h.siesa.set(func(f *siesaFake) { f.readDown = true; f.appt.TimeSlot = slot })
+	h.mgr.RegisterPending(PendingNotification{
+		Type: "confirmation", Phone: h.phone, AppointmentID: "APT001", AppointmentSlot: slot,
+	})
+	h.mgr.HandleResponse(h.phone, "confirm", h.conv)
+	h.realNoticeWindow()
+	repliedAt := tomorrowAt(19, 50).AddDate(0, 0, -1)
+
+	at := tomorrowAt(1, 55)
+	h.setPendingFor(at.Sub(repliedAt))
+	h.pass(at)
+	if h.escalations() != 0 {
+		t.Fatalf("a la 01:55 la cita está lejos: escalaciones=%d", h.escalations())
+	}
+	at = tomorrowAt(6, 35)
+	h.setPendingFor(at.Sub(repliedAt))
+	h.pass(at)
+	if h.escalations() != 1 || h.store.outcomes[1] != siesaOutcomeGaveUp {
+		t.Errorf("a las 06:35 la cita está a menos de 2 h: escalaciones=%d desenlace=%q", h.escalations(), h.store.outcomes[1])
+	}
+}

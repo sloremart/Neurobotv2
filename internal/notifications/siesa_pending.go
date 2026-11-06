@@ -229,7 +229,10 @@ func (m *NotificationManager) retrySiesaRow(ctx context.Context, row SiesaPendin
 	expired := window.Open(now) && window.OpenDuration(now.Add(-row.PendingFor), now) > siesaPendingMaxAge
 	appt, block, hung, err := m.readSiesaRow(ctx, row)
 	if err != nil {
-		if expired {
+		// Con SIESA caída la cita también manda: la hora recordada a menos de siesaPendingMinLead pasa a un
+		// agente a cualquier hora, como el corte de abajo con la cita leída. Si no, el tope de 6 h, que no
+		// corre de noche, la dejaría escalar después de la cita.
+		if expired || slotStartsWithin(row.AppointmentSlot, now, siesaPendingMinLead) {
 			m.handOverSiesaRow(ctx, row, pending, nil, siesaOutcomeGaveUp, true, now)
 			return hung
 		}
@@ -424,7 +427,12 @@ func siesaCheck(row SiesaPendingRow, appt *domain.Appointment) string {
 
 // startsWithin dice si la cita empieza antes de now+lead (o ya empezó). Sin hora legible, no.
 func startsWithin(appt *domain.Appointment, now time.Time, lead time.Duration) bool {
-	start, err := time.ParseInLocation("200601021504", appt.TimeSlot, time.Local)
+	return slotStartsWithin(appt.TimeSlot, now, lead)
+}
+
+// slotStartsWithin es startsWithin sobre una hora YYYYMMDDHHmm. Vacía o ilegible, no.
+func slotStartsWithin(slot string, now time.Time, lead time.Duration) bool {
+	start, err := time.ParseInLocation("200601021504", slot, time.Local)
 	if err != nil {
 		return false
 	}
