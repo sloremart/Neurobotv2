@@ -475,6 +475,12 @@ func (m *NotificationManager) finishSiesaRow(ctx context.Context, row SiesaPendi
 // escalación misma falla (Bird o Néctar caídos), solo queda el error en el log; el monitor
 // escalation_failing lo cubre.
 //
+// Riesgo aceptado (m23): entre mirar la sesión aquí y escalar median la relectura de SIESA y el POST
+// de la escalación (segundos). Si el paciente escribe justo entonces, la escalación de Néctar reusa
+// esa sesión nueva y la deja ESCALATED (escalatedNotifSession), coherente con Néctar, que ya le dio la
+// conversación al agente. No reusarla sería peor: el bot seguiría respondiendo una conversación que ya
+// no es suya (404 ErrNotMine) y el retorno del agente se descartaría.
+//
 // appt es la cita releída, si se pudo leer (nil con SIESA caída o si no existe).
 func (m *NotificationManager) handOverSiesaRow(ctx context.Context, row SiesaPendingRow, pending *PendingNotification, appt *domain.Appointment, outcome string, capped bool, now time.Time) {
 	_, busy, err := m.patientSession(ctx, row, now)
