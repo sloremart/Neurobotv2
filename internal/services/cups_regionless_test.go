@@ -83,3 +83,31 @@ func TestResolveCupsByName_RegionalRowsAreTheReadPlusARegion(t *testing.T) {
 		}
 	}
 }
+
+// Ronda 6 (R6-M2): las dos condiciones de regionalRows que no tenían prueba. Una fila con región y una palabra DE
+// MÁS no es «el leído más la región» (las palabras van en los dos sentidos), y lo que la fila pone entre
+// paréntesis no cuenta: «RX TUNEL» a secas es la fila a secas.
+func TestResolveCupsByName_RegionalRowsNeedTheSameWordsAndIgnoreParentheses(t *testing.T) {
+	extraWords := []CupsCandidate{
+		{"X1", "RADIOGRAFIA DE TUNEL"},
+		{"X2", "RADIOGRAFIA DE TUNEL DE RODILLA CON STRESS"},
+		{"X3", "RADIOGRAFIA DE TUNEL DE CODO BILATERAL FUNCIONAL"},
+	}
+	annotated := []CupsCandidate{
+		{"X1", "RADIOGRAFIA DE TUNEL"},
+		{"X2", "RADIOGRAFIA DE TUNEL (RODILLA)"},
+		{"X3", "RADIOGRAFIA DE TUNEL (CODO)"},
+	}
+	for _, catalog := range [][]CupsCandidate{extraWords, annotated} {
+		if res := ResolveCupsByName("RX TUNEL", catalog, false, nil); res.Code != "X1" {
+			t.Errorf("«RX TUNEL» → %q, quiero X1 por nombre igual (regionalRows = %d)", res.Code, regionalRows("RADIOGRAFIA TUNEL", catalog))
+		}
+	}
+	// Con dos filas que SÍ son el leído más la región, duda.
+	regional := []CupsCandidate{
+		{"X1", "RADIOGRAFIA DE TUNEL"}, {"X2", "RADIOGRAFIA DE TUNEL DE RODILLA"}, {"X3", "RADIOGRAFIA DE TUNEL DE CODO (54)"},
+	}
+	if res := ResolveCupsByName("RX TUNEL", regional, false, nil); res.Code != "" {
+		t.Errorf("«RX TUNEL» con dos filas con región → %q, quiero duda", res.Code)
+	}
+}

@@ -57,7 +57,20 @@ func TestCupsNamesConflict_OneDigitSiblingsSweep(t *testing.T) {
 		}
 	}
 	const golden = "testdata/cups_one_digit_conflicts.txt"
-	if os.Getenv("CUPS_SWEEP_WRITE") == "1" {
+	expected := goldenPairs(t, golden)
+	var lost []string
+	for pair := range expected {
+		if !conflicts[pair] {
+			lost = append(lost, pair)
+		}
+	}
+	sort.Strings(lost)
+	// Modo escritura (R6-M4): reescribe el oro con lo que la guarda ve, pero NUNCA borra un par en silencio: con
+	// pares perdidos falla, salvo CUPS_SWEEP_WRITE=force, y en los dos casos dice cuántos entran y cuáles salen.
+	if mode := os.Getenv("CUPS_SWEEP_WRITE"); mode == "1" || mode == "force" {
+		if len(lost) > 0 && mode != "force" {
+			t.Fatalf("no se reescribe el oro: la guarda dejó de ver %d pares (%s); CUPS_SWEEP_WRITE=force para borrarlos", len(lost), strings.Join(lost, " "))
+		}
 		keys := make([]string, 0, len(conflicts))
 		for k := range conflicts {
 			keys = append(keys, k)
@@ -68,26 +81,34 @@ func TestCupsNamesConflict_OneDigitSiblingsSweep(t *testing.T) {
 		if err := os.WriteFile(golden, []byte(header+strings.Join(keys, "\n")+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		t.Logf("oro reescrito: %d pares (antes %d; nuevos %d; borrados %d: %s)", len(keys), len(expected), len(keys)-len(expected)+len(lost), len(lost), strings.Join(lost, " "))
+		return
 	}
-	f, err := os.Open(golden)
+	for _, pair := range lost {
+		t.Errorf("la guarda dejó de ver el par %s", pair)
+	}
+	t.Logf("pares a un dígito: %d; la guarda ve %d (esperados %d, perdidos %d)", pairs, len(conflicts), len(expected), len(lost))
+}
+
+// goldenPairs lee los pares del oro (vacío si el archivo no existe aún).
+func goldenPairs(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return out
+		}
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	expected, lost := 0, 0
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		expected++
-		if !conflicts[line] {
-			lost++
-			t.Errorf("la guarda dejó de ver el par %s", line)
+		if line := strings.TrimSpace(sc.Text()); line != "" && !strings.HasPrefix(line, "#") {
+			out[line] = true
 		}
 	}
-	t.Logf("pares a un dígito: %d; la guarda ve %d (esperados %d, perdidos %d)", pairs, len(conflicts), expected, lost)
+	return out
 }
 
 // Los ocho pares dirigidos que la ronda 4 perdió (ESTERNOCLAVICULARES frente a TORAX; SACRO COXIS frente a

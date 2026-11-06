@@ -59,3 +59,19 @@ func TestSpineLevel_AllWrittenRegions(t *testing.T) {
 		t.Errorf("sacrocoxígea S2: %v", got)
 	}
 }
+
+// Ronda 6 (R6-M2): el coxis es segmento de columna por sí mismo (no solo región): el nivel se mira contra él.
+func TestSpineLevel_CoxisIsASegment(t *testing.T) {
+	const sacroCoxis = "RADIOGRAFIA DE SACRO COXIS"
+	for read, want := range map[string]bool{
+		"RX COXIS L4": true, "RX COCCIX L4": true, "RX COXIS C5": true,
+		"RX COXIS S4": false, "RX COXIS L5 S1": false, "RX SACRO S2": false,
+	} {
+		if got := CupsNamesConflict(read, sacroCoxis); got != want {
+			t.Errorf("CupsNamesConflict(%q, sacro coxis) = %v, quiero %v", read, got, want)
+		}
+	}
+	if !levelsContradictRegion(canonicalOrderName("RX COXIS L4")) {
+		t.Error("«RX COXIS L4»: L4 no cabe en el coxis")
+	}
+}
