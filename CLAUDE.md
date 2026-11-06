@@ -518,8 +518,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   Contraste (`services/cups_contrast.go`, rondas 4 y 5, cerrado a fallos): el nombre se normaliza antes
   (`foldProcedureText`: siglas con punto unidas —P.A., M.D.—, un solo espacio, la barra pegada a sus letras, «+»
   como Y, N0→NO, C0N→CON, 5IN→SIN; la marca de cantidad «NO» solo vale con signo o pegada a la cifra; los signos y
-  casillas —«(-)», «(+)», «( )», «[ ]», «Ø», «✗», «✓», un guion o raya que no une dos palabras, un 0 suelto— quedan
-  como la ficha «?», `contrastSigns`) y UN clasificador (`readContrast`; su gramática ES la tabla de
+  casillas —«(-)», «(+)», «( )», «[ ]», «Ø», «✗», «✓», un guion o raya que no une dos palabras, un 0 suelto, y el
+  campo vacío «CONTRASTE:» (dos puntos o igual al final sin valor)— quedan como la ficha «?», `contrastSigns`) y UN
+  clasificador (`readContrast`; su gramática ES la tabla de
   `TestReadContrast_Grammar`) lee la frase ENTERA del contraste como SIMPLE («SIMPLE»; «SIN|NO [CON] [MEDIO [DE]]
   CONTRASTE|CONTRASTADO|GADOLINIO|CTE»; «S/C», «S/CONTRASTE»; «CONTRASTE: NO» al final y SIN el CON delante: «CON
   CONTRASTE NO» es un nombre cortado, duda), CONTRASTE («[CON] CONTRASTE», «CONTRASTADO», «C/C», «C/CTE», «C/MEDIO

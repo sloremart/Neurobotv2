@@ -13,6 +13,8 @@ func TestContrastSign_NeverAssignsAContrastedStudy(t *testing.T) {
 		"TAC CRANEO Ø CONTRASTE", "TAC CRANEO CONTRASTE: Ø", "TAC CRANEO CONTRASTE: 0", "TAC CRANEO CONTRASTE (0)",
 		"TAC CRANEO CONTRASTE = 0", "TAC CRANEO CON CONTRASTE ( )", "TAC CRANEO CONTRASTE: [ ]", "TAC CRANEO CONTRASTE ✗",
 		"TAC CRANEO CONTRASTE (+)", "TAC CRANEO SIMPLE (-)",
+		// Ronda 5b: el campo vacío tampoco.
+		"TAC CRANEO CONTRASTE:", "TAC CRANEO CON CONTRASTE :", "TAC CRANEO CONTRASTE: .",
 	}
 	for _, read := range reads {
 		if res := ResolveCupsByName(read, contrastCatalog, false, nil); res.Code != "" {
@@ -32,8 +34,10 @@ func TestContrastSign_NeverAssignsAContrastedStudy(t *testing.T) {
 	for _, catalog := range []string{
 		"TOMOGRAFIA AXIAL COMPUTADA DE CRANEO CON CONTRASTE", "TOMOGRAFIA AXIAL COMPUTADA DE CRANEO SIMPLE",
 	} {
-		if !CupsNamesConflict("TAC CRANEO CONTRASTE (-)", catalog) {
-			t.Errorf("guarda: «TAC CRANEO CONTRASTE (-)» frente a «%s» debe ser duda", catalog)
+		for _, read := range []string{"TAC CRANEO CONTRASTE (-)", "TAC CRANEO CONTRASTE:"} {
+			if !CupsNamesConflict(read, catalog) {
+				t.Errorf("guarda: %q frente a «%s» debe ser duda", read, catalog)
+			}
 		}
 	}
 	// Entre hojas, el signo frente a la palabra es duda, nunca igual.

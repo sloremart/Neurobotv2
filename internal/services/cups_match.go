@@ -67,15 +67,17 @@ var nonNameChars = regexp.MustCompile(`[^A-Z0-9/?]+`)
 
 // contrastSigns son los signos y casillas con que una orden niega, afirma o deja vacío un campo («CONTRASTE (-)»,
 // «Ø CONTRASTE», «CONTRASTE: 0», «CON CONTRASTE ( )», «CONTRASTE ✗»): una casilla vacía o con solo un signo, un
-// símbolo de negación o de marca, un guion o una raya que no une dos palabras, y un cero suelto. Se vuelven la
-// ficha «?» ANTES de quitar los signos, para que el contraste los vea (R5-C1): pegados a su mención dejan la
-// frase fuera de la gramática (DESCONOCIDO); lejos de ella se pierden como cualquier signo. El guion que une
-// dos palabras («L4-L5», «SIN-CONTRASTE», «PET-TC») sigue siendo un separador.
+// símbolo de negación o de marca, un guion o una raya que no une dos palabras, un cero suelto, y el campo vacío
+// (dos puntos o igual al final, sin valor: «CONTRASTE:»; ronda 5b). Se vuelven la ficha «?» ANTES de quitar los
+// signos, para que el contraste los vea (R5-C1): pegados a su mención dejan la frase fuera de la gramática
+// (DESCONOCIDO); lejos de ella se pierden como cualquier signo. El guion que une dos palabras («L4-L5»,
+// «SIN-CONTRASTE», «PET-TC») sigue siendo un separador, y el dos puntos con valor («CONTRASTE: NO») también.
 var contrastSigns = []*regexp.Regexp{
 	regexp.MustCompile(`[(\[] *[-–—+_0]* *[)\]]`),
 	regexp.MustCompile(`[Ø∅✗✘✓✔☐☑☒×]`),
 	regexp.MustCompile(`(^|[^A-Z0-9])[-–—_]+($|[^A-Z0-9])`),
 	regexp.MustCompile(`(^|[^A-Z0-9])0($|[^A-Z0-9])`),
+	regexp.MustCompile(`[:=][ .]*$`),
 }
 
 // slashSpaces pega la barra a sus letras: «C / S» es «C/S».

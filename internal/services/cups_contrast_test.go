@@ -84,6 +84,9 @@ func TestReadContrast_Grammar(t *testing.T) {
 			"CONTRASTE (+)", "TAC CRANEO Ø CONTRASTE", "CONTRASTE: Ø", "CONTRASTE: 0", "CONTRASTE (0)", "CONTRASTE = 0",
 			"TAC CRANEO 0 CONTRASTE", "TAC CRANEO CON CONTRASTE ( )", "CONTRASTE: [ ]", "CONTRASTE : __", "CONTRASTE ✗",
 			"CONTRASTE ✘", "CONTRASTE ✓", "SIMPLE (-)", "SIMPLE ( )", "CON CONTRASTE: SI ✓",
+			// El campo vacío (dos puntos y nada, o solo signos) no dice que lleve contraste (ronda 5b).
+			"TAC CRANEO CONTRASTE:", "TAC CRANEO CON CONTRASTE :", "CONTRASTE: .", "CONTRASTE =", "CONTRASTE: (-)",
+			"TAC CRANEO SIMPLE:", "CON MEDIO DE CONTRASTE:",
 		},
 	}
 	for want, texts := range cases {
@@ -145,6 +148,9 @@ func TestFoldProcedureText_Normalization(t *testing.T) {
 		"TAC CRANEO CONTRASTE : 0":   "TAC CRANEO CONTRASTE ?",
 		"TAC CRANEO CONTRASTE [ ]":   "TAC CRANEO CONTRASTE ?",
 		"TAC CRANEO Ø CONTRASTE":     "TAC CRANEO ? CONTRASTE",
+		"TAC CRANEO CONTRASTE:":      "TAC CRANEO CONTRASTE ?",
+		"TAC CRANEO CONTRASTE: NO":   "TAC CRANEO CONTRASTE NO",
+		"RX TORAX:":                  "RX TORAX ?",
 		"RM COLUMNA LUMBAR L4 - L5":  "RM COLUMNA LUMBAR L4 ? L5",
 		"RM COLUMNA LUMBAR L4 -L5":   "RM COLUMNA LUMBAR L4 L5",
 		"TAC CRANEO SIMPLE Y CUELLO": "TAC CRANEO SIMPLE Y CUELLO",
