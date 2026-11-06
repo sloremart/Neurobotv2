@@ -68,6 +68,12 @@ func TestResolveCupsByName_RegionalRowsAreTheReadPlusARegion(t *testing.T) {
 			t.Errorf("%q → %v, quiero [873340]", read, got)
 		}
 	}
+	// Un calificador que el leído sí dice (PERFUSION) cuenta: «RM PERFUSION» no es «RM <región>» con región.
+	for read, want := range map[string]string{"RM PERFUSION": "883904", "TAC PERFUSION": "879903"} {
+		if res := ResolveCupsByName(read, catalog, false, nil); res.Code != want {
+			t.Errorf("%q → %q, quiero %s por nombre igual", read, res.Code, want)
+		}
+	}
 	for _, read := range []string{"RX COMPARATIVAS", "RX COMPARATIVA", "RX COMPARATIVAS AP Y LATERAL"} {
 		if got := acceptedByAdversary(read, catalog, false); len(got) != 0 {
 			t.Errorf("%q → %v, quiero agente", read, got)

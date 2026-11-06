@@ -379,16 +379,17 @@ func ResolveCupsByName(
 const minRegionalRowsForDoubt = 2
 
 // regionalRows cuenta las filas del catálogo que son el leído MÁS una región (decisión del dueño, R4-I3 y
-// R5-I2): el leído no dice región ni segmento de columna, y la fila trae una región y, fuera de ella, de sus
-// calificadores y de sus anotaciones (lo entre paréntesis y catalogNoise), las mismas palabras de contenido que
-// el leído (pluralWord). Otra anatomía o subtipo no cuenta: «MAXILAR INFERIOR» no es «RX de miembro inferior
-// con región», ni «MEDICION DE MIEMBROS INFERIORES … (PIES CON APOYO)».
+// R5-I2): el leído no dice región ni segmento de columna, y la fila trae una región y, fuera de ella, del lado, el
+// nivel, el ruido y sus anotaciones (lo entre paréntesis y catalogNoise), las mismas palabras que el leído
+// (regionalRowWords, pluralWord en los dos sentidos). Otra anatomía o subtipo no cuenta: «MAXILAR INFERIOR» no es
+// «RX de miembro inferior con región», ni «MEDICION DE MIEMBROS INFERIORES … (PIES CON APOYO)»; y «RM CEREBRO» no
+// es «RM PERFUSION con región».
 func regionalRows(canonRead string, catalog []CupsCandidate) int {
 	if len(regionGroup.groupValues(canonRead)) > 0 || len(spineGroup.groupValues(canonRead)) > 0 {
 		return 0
 	}
-	readContent := contentWords(canonRead, orderNoise)
-	if len(readContent) == 0 {
+	readWords := regionalRowWords(canonRead, orderNoise)
+	if len(readWords) == 0 {
 		return 0
 	}
 	n := 0
@@ -397,12 +398,27 @@ func regionalRows(canonRead string, catalog []CupsCandidate) int {
 		if len(regionGroup.groupValues(cc)) == 0 {
 			continue
 		}
-		rowContent := contentWords(cc, catalogNoise)
-		if allWordsIn(readContent, rowContent, pluralWord) && allWordsIn(rowContent, readContent, pluralWord) {
+		rowWords := regionalRowWords(cc, catalogNoise)
+		if allWordsIn(readWords, rowWords, pluralWord) && allWordsIn(rowWords, readWords, pluralWord) {
 			n++
 		}
 	}
 	return n
+}
+
+// regionalRowWords son las palabras con que se compara una fila con región frente al leído sin región: las
+// distintivas sin encabezados, ruido, números, nivel, lado ni la región o el segmento. La modalidad y los demás
+// calificadores (PERFUSION, CONTRASTE, PEDIATRICA…) sí cuentan: cambian el procedimiento.
+func regionalRowWords(canon string, noise map[string]bool) []string {
+	var out []string
+	for _, w := range distinctiveWords(canon) {
+		if retrievalStopWords[w] || noise[w] || strings.Trim(w, "0123456789") == "" || spineLevel.MatchString(w) ||
+			sideValues[w] != "" || len(regionGroup.groupValues(w)) > 0 || len(spineGroup.groupValues(w)) > 0 {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 func containsCode(list []CupsCandidate, code string) bool {
