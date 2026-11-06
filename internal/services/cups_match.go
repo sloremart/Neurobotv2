@@ -203,7 +203,9 @@ func allWordsIn(words, other []string, match func(a, b string) bool) bool {
 
 func sameWord(a, b string) bool { return a == b }
 
-// prefixWord: iguales, o una es prefijo de la otra con 5+ letras (RODILLA ~ RODILLAS).
+// prefixWord: iguales, o una es prefijo de la otra con 5+ letras (RODILLA ~ RODILLAS, OTORRINO ~
+// OTORRINOLARINGOLOGIA). Sirve para buscar candidatos y para sospechar (CupsNamesByPrefix), nunca para dar
+// por igual: eso lo hace pluralWord.
 func prefixWord(a, b string) bool {
 	if a == b {
 		return true
@@ -212,6 +214,19 @@ func prefixWord(a, b string) bool {
 		return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
 	}
 	return false
+}
+
+// pluralWord: iguales, o una es el plural de la otra (RODILLA ~ RODILLAS, EXTREMIDAD ~ EXTREMIDADES). Es lo
+// que vale para que un candidato ENCAJE o una región sea la misma: un prefijo cualquiera no (ESTERNON no es
+// ESTERNOCLAVICULAR, NEURO no es NEUROLOGIA, CEREBRO no es CEREBELO; ronda 4).
+func pluralWord(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if len(a) < len(b) {
+		a, b = b, a
+	}
+	return len(b) >= 4 && strings.HasPrefix(a, b) && (a[len(b):] == "S" || a[len(b):] == "ES")
 }
 
 // procedureWords parte el texto en palabras en mayúsculas y sin tildes. Todas, también las cortas y los

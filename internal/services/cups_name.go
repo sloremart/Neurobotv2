@@ -86,6 +86,9 @@ var orderAbbreviations = map[string]string{
 	"TIBIA": "PIERNA", "PERONE": "PIERNA", "HUMERO": "BRAZO", "FEMUR": "MUSLO",
 	"ESCROTO": "TESTICULO", "ESCROTAL": "TESTICULO", "ESCROTALES": "TESTICULO", "TESTICULAR": "TESTICULO",
 	"PUNO": "MUNECA", "RENAL": "RINON", "RENALES": "RINON", "RINONES": "RINON",
+	// Adjetivos de región (ronda 4: el prefijo ya solo vale para el plural).
+	"PELVICA": "PELVIS", "PELVICO": "PELVIS", "PELVICAS": "PELVIS", "PELVICOS": "PELVIS",
+	"ABDOMINAL": "ABDOMEN", "ABDOMINALES": "ABDOMEN", "CLAVICULARES": "CLAVICULA", "TEMPOROMAXILAR": "TEMPOROMANDIBULAR",
 }
 
 // retrievalStopWords no aportan a la búsqueda de candidatos (encabezados de remisiones e interconsultas).
@@ -416,9 +419,9 @@ func retrievalWords(canonRead string) []string {
 type qualifierGroup struct {
 	// values: palabra canónica → valor del grupo.
 	values map[string]string
-	// prefix: además de la palabra exacta, vale un prefijo común de 5+ letras (regiones: PELVIS ~
-	// PELVICA, HOMBRO ~ HOMBROS).
-	prefix bool
+	// plural: además de la palabra exacta, vale su plural (regiones: HOMBRO ~ HOMBROS; pluralWord). Los
+	// adjetivos (PELVICA, ABDOMINAL) son sinónimos de orderAbbreviations.
+	plural bool
 	// silentAs: en la comparación estricta, el nombre que no dice nada vale este valor (contraste: un
 	// nombre sin la palabra es SIMPLE).
 	silentAs string
@@ -463,7 +466,7 @@ var modalityValues = words("RESONANCIA=RM", "TOMOGRAFIA=TC", "ECOGRAFIA=ECO", "R
 // spineGroup son los segmentos de columna; regionGroup, las regiones anatómicas.
 var (
 	spineGroup  = qualifierGroup{values: words("CERVICAL", "DORSAL", "LUMBAR", "SACRA", "SACRO=SACRA", "COCCIX"), exclusive: true}
-	regionGroup = qualifierGroup{prefix: true, exclusive: true, values: words(
+	regionGroup = qualifierGroup{plural: true, exclusive: true, values: words(
 		"CEREBRO", "CARA", "ORBITA", "SENOS", "OIDO", "MASTOIDES", "SILLA",
 		"CUELLO", "COLUMNA", "TORAX", "ABDOMEN", "PELVIS", "HOMBRO", "BRAZO", "CODO",
 		"ANTEBRAZO", "MUNECA", "MANO", "DEDOS", "CADERA", "MUSLO", "RODILLA", "PIERNA",
@@ -514,11 +517,11 @@ func (g qualifierGroup) groupValues(canon string) map[string]bool {
 			out[v] = true
 			continue
 		}
-		if !g.prefix || len(w) < 5 {
+		if !g.plural {
 			continue
 		}
 		for k, v := range g.values {
-			if len(k) >= 5 && w[:5] == k[:5] {
+			if pluralWord(w, k) {
 				out[v] = true
 			}
 		}
@@ -575,9 +578,9 @@ func CupsNamesConflict(read, catalog string) bool {
 
 // candidateFits es la comparación estricta para aceptar un candidato elegido por el modelo (canonRead ya
 // canónico; candName, el nombre del catálogo tal cual). Encaja si:
-//   - toda palabra de contenido del leído tiene su par en el candidato (igual, por prefijo, o por una
-//     abreviatura o sinónimo de orderAbbreviations): ANGIOTAC, GAMAGRAFÍA, BIOPSIA o DINÁMICA sin par
-//     descartan al candidato;
+//   - toda palabra de contenido del leído tiene su par en el candidato (igual, en plural, o por una
+//     abreviatura o sinónimo de orderAbbreviations; una palabra cortada, NEURO, no es la entera): ANGIOTAC,
+//     GAMAGRAFÍA, BIOPSIA o DINÁMICA sin par descartan al candidato;
 //   - el candidato no trae palabras de contenido propias que el leído no diga (subtipo, región, vía:
 //     FIBRA ÚNICA, CERVICO DORSAL, PÍLORO), salvo sus anotaciones (catalogNoise y lo que va entre
 //     paréntesis);
@@ -619,7 +622,7 @@ func candidateFits(canonRead, candName string) bool {
 	if slices.Contains(readWords, "COLUMNA") {
 		readContent = slices.DeleteFunc(readContent, func(w string) bool { return w == "OBLICUA" || w == "OBLICUAS" })
 	}
-	if !allWordsIn(readContent, distinctiveWords(canonCand), prefixWord) {
+	if !allWordsIn(readContent, distinctiveWords(canonCand), pluralWord) {
 		return false
 	}
 	candCore := contentWords(canonicalOrderName(catalogAnnotation.ReplaceAllString(candName, " ")), catalogNoise)
@@ -628,7 +631,7 @@ func candidateFits(canonRead, candName string) bool {
 	if slices.Contains(strings.Fields(canonCand), "DOPPLER") {
 		candCore = slices.DeleteFunc(candCore, func(w string) bool { return w == "VASOS" })
 	}
-	return allWordsIn(candCore, distinctiveWords(canonRead), prefixWord)
+	return allWordsIn(candCore, distinctiveWords(canonRead), pluralWord)
 }
 
 // namesLimbStudy dice si el nombre es de los que se facturan por extremidad o nervio: EMG, NC y potenciales.
