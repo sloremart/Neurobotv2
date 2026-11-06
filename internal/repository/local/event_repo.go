@@ -331,20 +331,28 @@ const chatEventsPIIMark = "chat_events_pii_masked_until"
 // y una fila vieja con id posterior a la primera reciente de un lote queda para esa pasada.
 const chatEventsPIISlack = time.Hour
 
-// piiMaskedPhoneSQL enmascara una columna de teléfono como utils.MaskPhoneAlways («+573***3616»;
-// idempotente, NULL queda NULL). Las claves nectar: no son un teléfono y se conservan: el dashboard
-// separa las líneas por ese prefijo.
-const piiMaskedPhoneSQL = `CASE WHEN %[1]s LIKE 'nectar:%%' THEN %[1]s
-	WHEN CHAR_LENGTH(%[1]s) < 7 THEN '***'
-	ELSE CONCAT(LEFT(%[1]s, 4), '***', RIGHT(%[1]s, 4)) END`
+// piiMaskedPhoneSQL enmascara una columna de teléfono con la regla de utils.MaskPhoneAlways (como
+// mucho los últimos 4: «***3616»; 2 si es corto; ninguno con 4 o menos). Idempotente: lo que ya
+// empieza por *** queda igual, y NULL queda NULL. Las claves nectar: no son un teléfono y se
+// conservan: el dashboard separa las líneas por ese prefijo.
+const piiMaskedPhoneSQL = `CASE WHEN %[1]s LIKE 'nectar:%%' OR %[1]s LIKE '***%%' THEN %[1]s
+	WHEN CHAR_LENGTH(%[1]s) <= 4 THEN '***'
+	WHEN CHAR_LENGTH(%[1]s) < 10 THEN CONCAT('***', RIGHT(%[1]s, 2))
+	ELSE CONCAT('***', RIGHT(%[1]s, 4)) END`
 
 // piiEventDataKeys son las claves de event_data que pueden llevar PII del paciente y se quitan al
 // vencer la retención: lo que escribe (input, last_input, text, query, description), su nombre,
 // documento y datos de contacto. El dashboard no lee ninguna (lee type, option, code, cups_*,
-// error, regimen, proactive…).
+// error, regimen, proactive…). JSON_REMOVE quita solo claves de PRIMER nivel: un evento que anide
+// PII (p. ej. {"patient": {"name": …}}) no queda cubierto; hoy ningún escritor lo hace.
 var piiEventDataKeys = []string{
 	"name", "email", "phone", "text", "input", "last_input", "doc", "document", "query", "description",
 }
+
+// piiErrorEventType es el evento cuyo `error` puede traer valores del paciente (el error de SQL
+// Server al registrarlo cita el valor truncado: nombre, dirección). Solo a ese se le quita: el
+// dashboard lee el `error` de ocr_failed.
+const piiErrorEventType = "registration_failed"
 
 // maskPIISQL enmascara la PII de las filas (id > ?, id <= ?) que ya pasaron la retención
 // (created_at < ?): teléfono y contacto enmascarados y event_data sin las claves de PII. El resto
@@ -358,9 +366,17 @@ var maskPIISQL = func() string {
 		phone_number = ` + fmt.Sprintf(piiMaskedPhoneSQL, "phone_number") + `,
 		contact_identifier = ` + fmt.Sprintf(piiMaskedPhoneSQL, "contact_identifier") + `,
 		event_data = CASE WHEN JSON_TYPE(event_data) = 'OBJECT'
-			THEN JSON_REMOVE(event_data, ` + strings.Join(paths, ", ") + `) ELSE event_data END
+			THEN JSON_REMOVE(
+				IF(event_type = '` + piiErrorEventType + `', JSON_REMOVE(event_data, '$.error'), event_data),
+				` + strings.Join(paths, ", ") + `)
+			ELSE event_data END
 		WHERE id > ? AND id <= ? AND created_at < ?`
 }()
+
+// piiMaskSince es desde qué created_at arranca la pasada siguiente, dada la marca.
+func piiMaskSince(mark time.Time) time.Time {
+	return mark.Add(-chatEventsPIISlack)
+}
 
 // chatEventStamp es el id y la fecha de una fila de chat_events, para decidir el tramo de un lote.
 type chatEventStamp struct {
@@ -419,7 +435,7 @@ func (r *EventRepo) PIIMaskStart(ctx context.Context) (int64, error) {
 	var start int64
 	err = r.db.QueryRowContext(ctx,
 		`SELECT COALESCE(MIN(id) - 1, (SELECT COALESCE(MAX(id), 0) FROM chat_events))
-		 FROM chat_events WHERE created_at >= ?`, until.Add(-chatEventsPIISlack)).Scan(&start)
+		 FROM chat_events WHERE created_at >= ?`, piiMaskSince(until)).Scan(&start)
 	if err != nil {
 		return 0, fmt.Errorf("pii mask start: %w", err)
 	}

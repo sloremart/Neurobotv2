@@ -92,8 +92,10 @@ type Tasks struct {
 	Urgent          UrgentReporter            // aviso urgente de volver a Bird (optional; nil = sin aviso)
 	ChatEventsPII   ChatEventsPIIMasker       // retención de PII de chat_events (C-04, optional)
 
-	// piiPassTimeout acota la pasada de la retención de PII (0 = chatEventsPIIPassTimeout).
+	// piiPassTimeout acota la pasada de la retención de PII (0 = chatEventsPIIPassTimeout) y
+	// piiBatchPause es la pausa entre sus lotes (0 = chatEventsPIIBatchPause); para las pruebas.
 	piiPassTimeout time.Duration
+	piiBatchPause  time.Duration
 
 	// remindersRunning: hay una corrida de recordatorios en curso, del cron o manual (single-flight).
 	remindersRunning atomic.Bool
@@ -110,10 +112,13 @@ func (t *Tasks) RegisterAll(s *Scheduler) {
 	})
 
 	// 02:30 — Retención de PII de chat_events (C-04): lo que pasó 30 días queda enmascarado.
+	// CatchupNighttime: un arranque de día no la recupera (UPDATEs en horario de atención); espera
+	// a las 02:30.
 	s.AddTask(ScheduledTask{
 		Name: "chat_events_pii_retention",
 		Hour: 2, Minute: 30,
-		Fn: t.maskOldChatEventsPII,
+		Fn:      t.maskOldChatEventsPII,
+		Catchup: CatchupNighttime,
 	})
 
 	// 07:00 — WhatsApp reminders for tomorrow's appointments
@@ -1047,18 +1052,23 @@ func (t *Tasks) cleanup(ctx context.Context) error {
 // === Task 02:30: retención de PII de chat_events (C-04) ===
 
 // Retención de PII de chat_events: a los 30 días el teléfono queda enmascarado y event_data sin las
-// claves de PII. No se borra (los KPIs del dashboard leen la tabla entera). Lotes cortos para no
-// retener bloqueos; la pasada tiene más plazo que la de los bucles de fondo porque la primera
-// recorre todo el histórico (lo que no alcance sigue al día siguiente desde la marca).
+// claves de PII. No se borra (los KPIs del dashboard leen la tabla entera). Lotes cortos con una
+// pausa entre ellos para no encadenar UPDATEs; la pasada tiene más plazo que la de los bucles de
+// fondo porque la primera recorre todo el histórico (lo que no alcance sigue al día siguiente desde
+// la marca).
 const (
 	chatEventsPIIRetentionDays = 30
 	chatEventsPIIBatchSize     = 500
 	chatEventsPIIPassTimeout   = 10 * time.Minute
+	chatEventsPIIBatchTimeout  = 2 * time.Minute
+	chatEventsPIIBatchPause    = 200 * time.Millisecond
 )
 
 // maskOldChatEventsPII corre UNA pasada de la retención: lote tras lote hasta que no queda nada
-// vencido o vence el plazo de la pasada (que solo impide arrancar el lote siguiente). Cada lote
-// tiene su propio ctx (utils.RowContext). Un lote fallido corta la pasada y se reporta.
+// vencido o vence el plazo de la pasada, que solo impide arrancar el lote siguiente. Cada lote tiene
+// su propio ctx, derivado del de la tarea y no del plazo de la pasada. Vencer el plazo es lo
+// esperado mientras se recorre el histórico (Info, sigue mañana) y el apagado corta sin más (Warn):
+// ninguno es un fallo de la tarea ni sube a Telegram. Solo un error de la base corta y se reporta.
 func (t *Tasks) maskOldChatEventsPII(ctx context.Context) error {
 	if t.ChatEventsPII == nil {
 		return nil
@@ -1067,39 +1077,54 @@ func (t *Tasks) maskOldChatEventsPII(ctx context.Context) error {
 	if timeout <= 0 {
 		timeout = chatEventsPIIPassTimeout
 	}
+	pause := t.piiBatchPause
+	if pause <= 0 {
+		pause = chatEventsPIIBatchPause
+	}
+	deadline := time.Now().Add(timeout)
 	cutoff := time.Now().AddDate(0, 0, -chatEventsPIIRetentionDays)
+
 	var total int64
-	var failed error
-	utils.RunPass(ctx, "chat-events-pii", timeout, func(passCtx context.Context) {
-		batchCtx, cancel := utils.RowContext(passCtx)
-		afterID, err := t.ChatEventsPII.PIIMaskStart(batchCtx)
+	stopped := func(reason string) error {
+		slog.Warn("chat_events PII: pasada cortada", "reason", reason, "rows", total)
+		return nil
+	}
+	batchCtx, cancel := context.WithTimeout(ctx, chatEventsPIIBatchTimeout)
+	afterID, err := t.ChatEventsPII.PIIMaskStart(batchCtx)
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return stopped("apagado")
+		}
+		return fmt.Errorf("chat_events pii retention: %w", err)
+	}
+	for {
+		batchCtx, cancel := context.WithTimeout(ctx, chatEventsPIIBatchTimeout)
+		lastID, masked, err := t.ChatEventsPII.MaskPIIBatch(batchCtx, afterID, cutoff, chatEventsPIIBatchSize)
 		cancel()
+		total += masked
 		if err != nil {
-			failed = err
-			return
-		}
-		for passCtx.Err() == nil {
-			batchCtx, cancel := utils.RowContext(passCtx)
-			lastID, masked, err := t.ChatEventsPII.MaskPIIBatch(batchCtx, afterID, cutoff, chatEventsPIIBatchSize)
-			cancel()
-			total += masked
-			if err != nil {
-				failed = err
-				return
+			if ctx.Err() != nil {
+				return stopped("apagado")
 			}
-			if lastID <= afterID {
-				return
-			}
-			afterID = lastID
+			return fmt.Errorf("chat_events pii retention (%d filas enmascaradas): %w", total, err)
 		}
-	})
-	if total > 0 {
-		slog.Info("chat_events PII masked", "rows", total)
+		if lastID <= afterID {
+			slog.Info("chat_events PII: retención al día", "rows", total)
+			return nil
+		}
+		afterID = lastID
+		if time.Now().After(deadline) {
+			slog.Info("chat_events PII: venció el plazo de la pasada, sigue mañana desde la marca",
+				"rows", total, "last_id", afterID, "timeout", timeout)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return stopped("apagado")
+		case <-time.After(pause):
+		}
 	}
-	if failed != nil {
-		return fmt.Errorf("chat_events pii retention: %w", failed)
-	}
-	return nil
 }
 
 // === Task 08:00: Waiting List Check ===

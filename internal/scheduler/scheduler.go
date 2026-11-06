@@ -75,9 +75,10 @@ type CatchupMode int
 
 // Modos de catch-up de una tarea perdida al arrancar (L14).
 const (
-	CatchupAlways  CatchupMode = iota // default: recupera a cualquier hora (tareas internas)
-	CatchupDaytime                    // recupera solo en ventana diurna (notificaciones WhatsApp)
-	CatchupNever                      // nunca recupera (IVR: solo a su hora, tras el WA matutino)
+	CatchupAlways    CatchupMode = iota // default: recupera a cualquier hora (tareas internas)
+	CatchupDaytime                      // recupera solo en ventana diurna (notificaciones WhatsApp)
+	CatchupNever                        // nunca recupera (IVR: solo a su hora, tras el WA matutino)
+	CatchupNighttime                    // recupera solo fuera de la ventana diurna (trabajo pesado de BD)
 )
 
 // lateStartMaxDelay es cuánto después de su hora puede arrancar todavía una tarea cuyo minuto no vio
@@ -100,6 +101,8 @@ func catchupAllowed(mode CatchupMode, hour int) bool {
 		return false
 	case CatchupDaytime:
 		return hour >= config.PatientNoticeStartHour && hour < config.PatientNoticeEndHour
+	case CatchupNighttime:
+		return hour < config.PatientNoticeStartHour || hour >= config.PatientNoticeEndHour
 	default: // CatchupAlways
 		return true
 	}

@@ -29,16 +29,22 @@ func TestMaskPIIBatch_SQL(t *testing.T) {
 	})
 
 	oldAt := time.Now().AddDate(0, 0, -40)
-	data := map[string]interface{}{"name": "Juan Perez", "email": "juan@correo.com", "text": "hola", "type": "confirmation", "patient_id": "PAT1"}
+	data := map[string]interface{}{"name": "Juan Perez", "email": "juan@correo.com", "text": "hola", "type": "confirmation", "patient_id": "PAT1", "error": "boom"}
 	for _, ev := range []ChatEvent{
 		{SessionID: sessID, PhoneNumber: phone, EventType: "itest_pii_old", EventData: data, CreatedAt: oldAt},
 		{SessionID: sessID, PhoneNumber: nectarKey, EventType: "itest_pii_old_nectar", EventData: data, CreatedAt: oldAt},
+		{SessionID: sessID, PhoneNumber: phone, EventType: "registration_failed", EventData: data, CreatedAt: oldAt},
 		{SessionID: sessID, PhoneNumber: phone, EventType: "itest_pii_recent", EventData: data, CreatedAt: time.Now()},
 	} {
 		if err := events.Insert(ctx, &ev); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
 	}
+	// El contacto de Néctar (copiado de la sesión al insertar) también se enmascara.
+	if _, err := db.ExecContext(ctx, "UPDATE chat_events SET contact_identifier = ? WHERE session_id = ?", phone, sessID); err != nil {
+		t.Fatal(err)
+	}
+	maskedPhone := "***" + phone[len(phone)-4:]
 	var firstID int64
 	if err := db.QueryRowContext(ctx, "SELECT MIN(id) FROM chat_events WHERE session_id = ?", sessID).Scan(&firstID); err != nil {
 		t.Fatal(err)
@@ -49,29 +55,36 @@ func TestMaskPIIBatch_SQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mask: %v", err)
 	}
-	if masked < 2 || lastID < firstID+1 {
-		t.Fatalf("debía enmascarar las dos filas viejas: lastID=%d masked=%d", lastID, masked)
+	if masked < 3 || lastID < firstID+2 {
+		t.Fatalf("debía enmascarar las tres filas viejas: lastID=%d masked=%d", lastID, masked)
 	}
 
-	type row struct{ phone, name, typ, pid string }
+	type row struct{ phone, contact, name, text, typ, pid, errMsg string }
 	read := func(eventType string) row {
 		var r row
-		if err := db.QueryRowContext(ctx, `SELECT phone_number,
+		if err := db.QueryRowContext(ctx, `SELECT phone_number, COALESCE(contact_identifier,''),
 			COALESCE(JSON_UNQUOTE(JSON_EXTRACT(event_data,'$.name')),''),
+			COALESCE(JSON_UNQUOTE(JSON_EXTRACT(event_data,'$.text')),''),
 			COALESCE(JSON_UNQUOTE(JSON_EXTRACT(event_data,'$.type')),''),
-			COALESCE(JSON_UNQUOTE(JSON_EXTRACT(event_data,'$.patient_id')),'')
-			FROM chat_events WHERE session_id = ? AND event_type = ?`, sessID, eventType).Scan(&r.phone, &r.name, &r.typ, &r.pid); err != nil {
+			COALESCE(JSON_UNQUOTE(JSON_EXTRACT(event_data,'$.patient_id')),''),
+			COALESCE(JSON_UNQUOTE(JSON_EXTRACT(event_data,'$.error')),'')
+			FROM chat_events WHERE session_id = ? AND event_type = ?`, sessID, eventType).Scan(
+			&r.phone, &r.contact, &r.name, &r.text, &r.typ, &r.pid, &r.errMsg); err != nil {
 			t.Fatalf("read %s: %v", eventType, err)
 		}
 		return r
 	}
-	if got := read("itest_pii_old"); got.phone != phone[:4]+"***"+phone[len(phone)-4:] || got.name != "" || got.typ != "confirmation" || got.pid != "PAT1" {
+	if got := read("itest_pii_old"); got.phone != maskedPhone || got.contact != maskedPhone || got.name != "" ||
+		got.text != "" || got.typ != "confirmation" || got.pid != "PAT1" || got.errMsg != "boom" {
 		t.Fatalf("fila vieja: %+v", got)
 	}
 	if got := read("itest_pii_old_nectar"); got.phone != nectarKey || got.name != "" {
 		t.Fatalf("fila vieja de Néctar: %+v", got)
 	}
-	if got := read("itest_pii_recent"); got.phone != phone || got.name != "Juan Perez" {
+	if got := read("registration_failed"); got.errMsg != "" {
+		t.Fatalf("registration_failed vieja pierde su error: %+v", got)
+	}
+	if got := read("itest_pii_recent"); got.phone != phone || got.name != "Juan Perez" || got.text != "hola" {
 		t.Fatalf("la fila reciente no se toca: %+v", got)
 	}
 
@@ -88,7 +101,7 @@ func TestMaskPIIBatch_SQL(t *testing.T) {
 	if _, _, err := events.MaskPIIBatch(ctx, firstID-1, cutoff, 500); err != nil {
 		t.Fatal(err)
 	}
-	if got := read("itest_pii_old"); got.phone != phone[:4]+"***"+phone[len(phone)-4:] {
+	if got := read("itest_pii_old"); got.phone != maskedPhone || got.contact != maskedPhone {
 		t.Fatalf("segunda pasada: %+v", got)
 	}
 }

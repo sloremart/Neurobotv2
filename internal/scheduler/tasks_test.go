@@ -1498,6 +1498,8 @@ func TestCatchupAllowed(t *testing.T) {
 		{CatchupDaytime, 6, false}, {CatchupDaytime, 20, false}, {CatchupDaytime, 23, false}, // fuera de ventana
 		{CatchupDaytime, 7, true}, {CatchupDaytime, 14, true}, {CatchupDaytime, 19, true}, // dentro
 		{CatchupAlways, 2, true}, {CatchupAlways, 23, true}, // interno: siempre
+		{CatchupNighttime, 2, true}, {CatchupNighttime, 6, true}, {CatchupNighttime, 20, true}, // de noche
+		{CatchupNighttime, 7, false}, {CatchupNighttime, 13, false}, {CatchupNighttime, 19, false}, // de día no
 	}
 	for _, c := range cases {
 		if got := catchupAllowed(c.mode, c.hour); got != c.want {
