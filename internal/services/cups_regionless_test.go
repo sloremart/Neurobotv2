@@ -111,3 +111,20 @@ func TestResolveCupsByName_RegionalRowsNeedTheSameWordsAndIgnoreParentheses(t *t
 		t.Errorf("«RX TUNEL» con dos filas con región → %q, quiero duda", res.Code)
 	}
 }
+
+// R7-M2 (I2_annot sobre el código de la 6c): la fila con región cuenta aunque su paréntesis traiga palabras de más:
+// «RADIOGRAFIA DE TUNEL DE RODILLA (CON STRESS)» es «RX TUNEL» más una región. Con el paréntesis la fila no
+// contaría, y «RX TUNEL» se asignaría a la fila a secas.
+func TestResolveCupsByName_RegionalRowsIgnoreTheParenthesesOfTheRow(t *testing.T) {
+	catalog := []CupsCandidate{
+		{"X1", "RADIOGRAFIA DE TUNEL"},
+		{"X2", "RADIOGRAFIA DE TUNEL DE RODILLA (CON STRESS)"},
+		{"X3", "RADIOGRAFIA DE TUNEL DE CODO (54)"},
+	}
+	if n := regionalRows("RADIOGRAFIA TUNEL", catalog); n != 2 {
+		t.Errorf("regionalRows = %d, quiero 2", n)
+	}
+	if res := ResolveCupsByName("RX TUNEL", catalog, false, nil); res.Code != "" {
+		t.Errorf("«RX TUNEL» → %q, quiero duda", res.Code)
+	}
+}

@@ -57,7 +57,8 @@ func TestCupsNamesConflict_OneDigitSiblingsSweep(t *testing.T) {
 		}
 	}
 	const golden = "testdata/cups_one_digit_conflicts.txt"
-	expected := goldenPairs(t, golden)
+	writeMode := os.Getenv("CUPS_SWEEP_WRITE") == "1" || os.Getenv("CUPS_SWEEP_WRITE") == "force"
+	expected := goldenPairs(t, golden, writeMode)
 	var lost []string
 	for pair := range expected {
 		if !conflicts[pair] {
@@ -90,16 +91,17 @@ func TestCupsNamesConflict_OneDigitSiblingsSweep(t *testing.T) {
 	t.Logf("pares a un dígito: %d; la guarda ve %d (esperados %d, perdidos %d)", pairs, len(conflicts), len(expected), len(lost))
 }
 
-// goldenPairs lee los pares del oro (vacío si el archivo no existe aún).
-func goldenPairs(t *testing.T, path string) map[string]bool {
+// goldenPairs lee los pares del oro. Sin el archivo el barrido no puede pasar (R7-M3): solo el modo escritura
+// tolera que falte, para crearlo.
+func goldenPairs(t *testing.T, path string, creating bool) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
 	f, err := os.Open(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && creating {
 			return out
 		}
-		t.Fatal(err)
+		t.Fatalf("sin el oro del barrido no hay nada que comprobar: %v", err)
 	}
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
