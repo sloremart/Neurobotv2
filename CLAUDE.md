@@ -434,8 +434,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   cancelación de siempre, solo en la ventana de avisos (7-20 h, `config.PatientNoticeWindow`; fuera, la fila espera
   sin sumar intento, salvo que esperar a las 07:00 deje la cita a <2 h: entonces se aplica y se avisa de noche). El
   tope de >6 h solo cuenta el tiempo con la ventana abierta y solo se mira con ella abierta; la cita a <2 h (la leída o, con SIESA
-  caída, la recordada en `appointment_slot`) va al agente a cualquier hora. Cita movida (otro `appointment_slot`), sesión ocupada o >6 h → agente
-  (`notificacion_siesa_pendiente`).
+  caída, la recordada en `appointment_slot`) va al agente a cualquier hora. Cita movida (otro `appointment_slot`) o >6 h → agente
+  (`notificacion_siesa_pendiente`). Sesión ocupada: la fila espera sin sumar intento; vencido el tope, en Bird → agente y en Néctar sigue
+  esperando y, si la hora de la cita pasa sin quedar libre, se cierra `unattended` sin escalar (ERROR a Telegram, evento `notification_siesa_unattended`).
 - Topes: cantidad por CUPS >100 → agente (`cantidad_fuera_de_rango`; EMG/NC sin cambios; `/bot cups` de Bird y el
   campo de CUPS de Néctar se le rechazan al asesor con `services.AgentCupsQuantityProblem`); 3 lecturas fallidas
   seguidas de la orden (también la de la EMG, UPLOAD_EMG_ORDER) → agente (`ocr_lecturas_fallidas`); al tope de 3
