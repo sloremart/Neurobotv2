@@ -100,3 +100,47 @@ func linesOf(t *testing.T, path string) []string {
 	}
 	return out
 }
+
+// Ronda 9 (R9-I1, R9-I2): con el diagnóstico largo DELANTE del procedimiento («DX: RADICULOPATIA LUMBAR CRONICA
+// EMG MMII») la lectura entera no llegaba a minCandidateScore y se descartaba; y la marca pegada a la puntuación
+// («EMG MMII.DX:»), con IMP./IMPRESION, en plural o numerada no se reconocía. Los candidatos se buscan por separado en
+// lo anterior, lo posterior y cada prefijo y sufijo de lo posterior; y cualquier signo separa la marca.
+func TestResolveCupsByName_DiagnosisBeforeTheProcedureKeepsCandidates(t *testing.T) {
+	catalog := catalogFromTSV(t, "testdata/cups_catalog_active.tsv")
+	for _, line := range linesOf(t, "testdata/cups_diagnosis_before_probes.txt") {
+		read := strings.ReplaceAll(line, `\n`, "\n")
+		if got := acceptedByAdversary(read, catalog, false); len(got) != 0 {
+			t.Errorf("%q → %v, quiero agente", read, got)
+		}
+		if res := ResolveCupsByName(read, catalog, false, nil); len(res.Candidates) == 0 {
+			t.Errorf("%q: sin candidatos, se descartaría en silencio", read)
+		}
+	}
+	// El estudio escrito tras el diagnóstico está entre los candidatos.
+	for read, want := range map[string]string{
+		"DX: RADICULOPATIA LUMBAR CRONICA EMG MMII": "930860", "DX: SINDROME DE TUNEL DEL CARPO BILATERAL NC MMSS": "891509",
+		"DX PRINCIPAL: LUMBALGIA CRONICA MECANICA TAC CRANEO SIMPLE": "879111", "DX1: EPILEPSIA DX2: CEFALEA RM CEREBRO SIMPLE": "883101",
+		"EMG MMII.DX: RADICULOPATIA LUMBAR CRONICA": "930860", "RM CEREBRO SIMPLE DIAGNOSTICOS: EPILEPSIA, CEFALEA": "883101",
+	} {
+		if res := ResolveCupsByName(read, catalog, false, nil); res.Code != "" || !containsCode(res.Candidates, want) {
+			t.Errorf("%q → %q / %v, quiero duda con %s entre los candidatos", read, res.Code, res.Candidates, want)
+		}
+	}
+	// La marca y sus separadores; y lo que no es marca (DXA, ELECTRODIAGNOSTICO, DIAGNOSTICA sola).
+	for read, head := range map[string]string{
+		"EMG MMII.DX: RADICULOPATIA": "EMG MMII", "RM CEREBRO SIMPLE,DX: EPILEPSIA": "RM CEREBRO SIMPLE", "RM CEREBRO SIMPLE -DX: EPILEPSIA": "RM CEREBRO SIMPLE",
+		"RM CEREBRO SIMPLE [DX EPILEPSIA": "RM CEREBRO SIMPLE", "EMG MMII IMP. DX: RADICULOPATIA": "EMG MMII", "EMG MMII IMP DX TCE": "EMG MMII",
+		"EMG MMII IMP. DIAGNOSTICA: RADICULOPATIA": "EMG MMII", "RM CEREBRO SIMPLE DIAGNOSTICOS: EPILEPSIA": "RM CEREBRO SIMPLE",
+		"RM CEREBRO SIMPLE DX1: EPILEPSIA FOCAL DX2: CEFALEA": "RM CEREBRO SIMPLE", "DX2: CEFALEA RM CEREBRO": "",
+	} {
+		got, _, found := splitDiagnosis(prefoldProcedureText(read))
+		if !found || got != head {
+			t.Errorf("splitDiagnosis(%q) = %q/%v, quiero %q", read, got, found, head)
+		}
+	}
+	for _, read := range []string{"DENSITOMETRIA DXA", "ELECTRODIAGNOSTICO MMII", "ECO DIAGNOSTICA TIROIDES", "ULTRASONOGRAFIA DIAGNOSTICA DE TEJIDOS BLANDOS"} {
+		if _, _, found := splitDiagnosis(prefoldProcedureText(read)); found {
+			t.Errorf("%q no lleva marca de diagnóstico", read)
+		}
+	}
+}

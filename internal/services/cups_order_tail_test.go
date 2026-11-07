@@ -84,9 +84,10 @@ func TestResolveCupsByName_OrderTailsNeverDiscardSilently(t *testing.T) {
 // Revisión del lote C, ronda 6 (R6-C1, C2, I1): la cola de la 5b se pasaba. «DX …» hasta el final se comía el
 // contraste escrito después («TAC CRANEO DX TCE CON CONTRASTE» → el simple) y la especialidad («CONSULTA DX
 // CEFALEA CONTROL NEUROLOGIA» → descarte); «EPS <palabra>» se comía un SIN o un NO («TAC CRANEO EPS SIN
-// CONTRASTE» → el contrastado por nombre igual). Ahora: EPS solo con la lista cerrada de EPS; DX corta hasta la
-// primera palabra del procedimiento; el contraste y los grupos excluyentes se leen sobre la lectura COMPLETA, y si
-// sin colas dicen otra cosa es duda; y si sin colas no hay candidatos se reintenta con la lectura entera.
+// CONTRASTE» → el contrastado por nombre igual). Lo que queda de aquella ronda: EPS solo con la lista cerrada de
+// EPS; los grupos excluyentes se leen sobre la lectura COMPLETA, y si sin colas dicen otra cosa es duda; y si sin
+// colas no hay candidatos se reintenta con la lectura entera. El corte de DX (historia: hasta el final, hasta la
+// primera palabra del procedimiento, todo o nada) se retiró en la ronda 8: con diagnóstico escrito, siempre duda.
 func TestResolveCupsByName_OrderTailsNeverChangeTheMeaning(t *testing.T) {
 	catalog := catalogFromTSV(t, "testdata/cups_catalog_active.tsv")
 	simple := map[string]bool{"879111": true, "883230": true, "883210": true, "883101": true}
@@ -120,8 +121,7 @@ func TestResolveCupsByName_OrderTailsNeverChangeTheMeaning(t *testing.T) {
 		// Ronda 8: el diagnóstico escrito es duda siempre, también al final.
 		"TAC CRANEO CON CONTRASTE DX TCE": nil, "TAC CRANEO SIMPLE DX TCE": nil, "RM COLUMNA LUMBAR CON CONTRASTE DX HERNIA": nil,
 		"RX RODILLA DERECHA DX GONARTROSIS": nil, "CONSULTA CONTROL NEUROLOGIA DX CEFALEA": nil, "EMG MMII DX RADICULOPATIA": nil,
-		// Ronda 7: con vocabulario de procedimiento tras DX (contraste, región, lado, primera vez/control, MMII,
-		// TUNEL) la lectura es duda; solo el diagnóstico solo, al final, se corta.
+		// Ronda 7 (y 8): con el diagnóstico escrito la lectura es duda, vaya lo que vaya tras la marca.
 		"TAC CRANEO DX TCE CON CONTRASTE": nil, "TAC CRANEO DX TCE SIN CONTRASTE": nil, "RM COLUMNA LUMBAR DX HERNIA CON CONTRASTE": nil,
 		"RM COLUMNA DX LUMBALGIA LUMBAR CON CONTRASTE": nil, "RX DX RODILLA DERECHA": nil, "RX RODILLA DX GONARTROSIS DERECHA": nil,
 		"CONSULTA DX CEFALEA CONTROL NEUROLOGIA": nil, "CONSULTA DX EPILEPSIA PRIMERA VEZ NEUROLOGIA": nil,

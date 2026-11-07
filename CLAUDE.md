@@ -562,12 +562,15 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   `epsNames` con la palabra EPS delante o detrás («EPS SANITAS», «SANITAS EPS», «NUEVA EPS»; cualquier otra
   palabra tras EPS se queda), «ORDEN <n>», «SEGUN EVOLUCION», «NO POS» y CITA PRIORITARIA son ruido
   (`withoutOrderTails`, `orderNoise`). DIAGNÓSTICO ESCRITO (decisión definitiva, ronda 8): una lectura con marca de
-  diagnóstico junto al nombre —«DX», «Dx», «DX:», «DX,», «DX.», «DX:TCE», «(DX», «D/X», «IDX», «DIAG»,
-  «DIAGNOSTICO», «IMPRESION DX», «IMPRESION DIAGNOSTICA» (`diagnosisMarker`; DIAGNOSTICA sola es palabra del
-  catálogo)— NUNCA se asigna, ni por nombre igual ni por el modelo: es duda para un agente con candidatos
-  (`splitDiagnosis`: los de lo anterior a la marca, si no los de la lectura entera, si no los del diagnóstico, que
-  suele nombrar la región); solo sin candidatos en las tres formas queda como la orden sin candidatos («DX
-  CEFALEA»). Cuatro rondas de cortar el diagnóstico para asignar (hasta el final, hasta la primera palabra del
+  diagnóstico junto al nombre —lista cerrada `diagnosisMarker`: «DX», «Dx», «DX:», «DX,», «DX.», «DX:TCE»,
+  «DX1:», «(DX», «[DX», «D/X», «IDX», «DIAG», «DIAGNOSTICO(S)», «IMP. DX», «IMPRESION DX», «IMPRESION
+  DIAGNOSTICA», con cualquier signo o un salto de línea como separador delante («MMII.DX:», «,DX:», «-DX:»);
+  DIAGNOSTICA sola, DXA y ELECTRODIAGNOSTICO no son marca— NUNCA se asigna, ni por nombre igual ni por el modelo: es
+  duda para un agente con candidatos (`splitDiagnosis` + `diagnosisCandidates`: la unión de los de lo anterior a
+  la marca, los de lo posterior y los de cada prefijo y sufijo por palabras de lo posterior, porque el
+  procedimiento puede ir tras el diagnóstico, «DX: RADICULOPATIA LUMBAR CRONICA EMG MMII»); solo sin candidatos en
+  todas esas formas queda como la orden sin candidatos («DX CEFALEA»). Una marca que el OCR rompe («D X», «0X»,
+  «DlAGNOSTICO») no se reconoce y la lectura sigue el camino normal. Cuatro rondas de cortar el diagnóstico para asignar (hasta el final, hasta la primera palabra del
   procedimiento, todo o nada con vocabulario) dejaron escapar variantes (ANGIO, FLEXOEXTENSION, IV, YODADO, ALTA RES,
   AMBAS…) y asignaban otro procedimiento: no hay lista de vocabulario. INVARIANTE (ronda 6): los grupos excluyentes
   (el contraste entre ellos) se leen sobre la lectura COMPLETA; si sin colas dicen otra cosa (`tailsChangeMeaning`,

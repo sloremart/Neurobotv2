@@ -157,9 +157,12 @@ func withoutOrderTails(folded string) string {
 }
 
 // diagnosisMarker es la marca con que la orden escribe el diagnóstico junto al nombre: «DX», «Dx», «DX:», «DX,»,
-// «DX:TCE», «(DX», «D/X», «IDX», «DIAG», «DIAGNOSTICO», «IMPRESION DX», «IMPRESION DIAGNOSTICA» (sola, DIAGNOSTICA
-// es palabra del catálogo: «ULTRASONOGRAFIA DIAGNOSTICA»). Sobre el texto normalizado (prefoldProcedureText).
-var diagnosisMarker = regexp.MustCompile(`(?:^| )\(?(?:IMPRESION (?:DX|DIAGNOSTICA)|DX|D/X|IDX|DIAGNOSTICO|DIAG)\b[.:,;)-]*`)
+// «DX:TCE», «DX1:», «(DX», «[DX», «D/X», «IDX», «DIAG», «DIAGNOSTICO(S)», «IMP. DX», «IMPRESION DX», «IMPRESION
+// DIAGNOSTICA» (sola, DIAGNOSTICA es palabra del catálogo: «ULTRASONOGRAFIA DIAGNOSTICA»; DXA tampoco es marca).
+// Cualquier signo vale como separador delante («MMII.DX:», «,DX:», «-DX:»), no solo el espacio (ronda 9). Sobre el
+// texto normalizado (prefoldProcedureText). Nota: 998702 «SOPORTE DE SEDACION PARA CONSULTA O APOYO DIAGNOSTICO»
+// (inactivo hoy) lleva la marca en su nombre: si se activa, nunca se asignará por nombre igual.
+var diagnosisMarker = regexp.MustCompile(`(?:^|[^A-Z0-9])(?:IMP(?:RESION)?\.? (?:DX\d?|DIAGNOSTICA)|DX\d?|D/X|IDX|DIAGNOSTICOS?|DIAG)\b[.:,;)\]-]*`)
 
 // splitDiagnosis parte la lectura en lo anterior a la marca del diagnóstico y lo que la sigue. found: hay marca.
 // DECISIÓN DEFINITIVA (ronda 8): una lectura con diagnóstico escrito NUNCA se asigna, ni por nombre igual ni por el
@@ -379,12 +382,8 @@ func ResolveCupsByName(
 	full := prefoldProcedureText(read)
 	stripped := withoutOrderTails(full)
 	if head, tail, found := splitDiagnosis(stripped); found {
-		for _, text := range []string{head, stripped, tail} {
-			if cands := nameCandidates(canonicalOrderName(text), catalog); len(cands) > 0 {
-				return CupsNameResolution{Candidates: cands[:min(len(cands), maxNameCandidates)]}
-			}
-		}
-		return CupsNameResolution{}
+		cands := diagnosisCandidates(head, tail, catalog)
+		return CupsNameResolution{Candidates: cands[:min(len(cands), maxNameCandidates)]}
 	}
 	fullCanon, strippedCanon := canonicalOrderName(full), canonicalOrderName(stripped)
 	if tailsChangeMeaning(fullCanon, strippedCanon) {
@@ -399,6 +398,36 @@ func ResolveCupsByName(
 		}
 	}
 	return res
+}
+
+// diagnosisCandidates son los candidatos que ve el agente con una lectura con diagnóstico (ronda 9): la unión, sin
+// repetir, de los de lo anterior a la marca, los de lo posterior y los de cada prefijo y sufijo por palabras de lo
+// posterior, porque el procedimiento puede ir después del diagnóstico («DX: RADICULOPATIA LUMBAR CRONICA EMG
+// MMII») y un diagnóstico largo baja el parecido de la lectura entera por debajo de minCandidateScore. Primero los
+// que ENCAJAN con el trozo que los trajo (como en la lista corta normal), así el estudio escrito cabe en los cinco
+// que ve el agente. Vacío solo si ninguna forma tiene candidatos: entonces queda como la orden sin candidatos.
+func diagnosisCandidates(head, tail string, catalog []CupsCandidate) []CupsCandidate {
+	texts := []string{head, tail}
+	words := strings.Fields(tail)
+	for i := 1; i < len(words); i++ {
+		texts = append(texts, strings.Join(words[i:], " "), strings.Join(words[:i], " "))
+	}
+	var fitting, rest []CupsCandidate
+	for _, text := range texts {
+		canon := canonicalOrderName(text)
+		side := newReadSide(canon)
+		for _, c := range nameCandidates(canon, catalog) {
+			if containsCode(fitting, c.Code) || containsCode(rest, c.Code) {
+				continue
+			}
+			if rowFits(side, rowOf(c.Name)) {
+				fitting = append(fitting, c)
+			} else {
+				rest = append(rest, c)
+			}
+		}
+	}
+	return append(fitting, rest...)
 }
 
 // resolveFoldedRead es ResolveCupsByName sobre una lectura ya normalizada (prefoldProcedureText), sin colas y
