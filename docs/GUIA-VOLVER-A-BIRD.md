@@ -70,6 +70,10 @@ advertencia y no salen ahí. Hacer igual las comprobaciones de abajo.
      `NECTAR_BASE_URL` el bot ya no anuncia la línea nueva aunque el texto siga puesto.
    - Las demás variables `NECTAR_*` se dejan como están: sin `NECTAR_BASE_URL` no se usan, y así
      volver es solo poner la URL otra vez.
+   - **Se pierden los festivos de Néctar:** sin `NECTAR_BASE_URL` no se lee nada de Néctar, así que rige el
+     horario de siempre sin festivos: **el bot abre en festivo**, y las escalaciones de ese día se
+     desvían por «no hay asesores» (la disponibilidad de Bird), no por horario. Si el cambio cae cerca de
+     un festivo, avisar al call center.
 4. Guardar y reiniciar el bot para que lea el `.env` nuevo:
    ```bash
    docker compose up -d bot
