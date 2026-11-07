@@ -127,9 +127,9 @@ const epsNames = `SANITAS|SALUD TOTAL|CAPITAL SALUD|FOMAG|COMPENSAR|SURA|FAMISAN
 // candidatos, y por tanto descartada en silencio (R5-I3, rondas 5b y 6): el plazo («EN 1 MES», «6 MESES», «PARA 2
 // SEMANAS»), las sesiones («1 SESION»), la cantidad escrita («CANT 1», «CANTIDAD: 2»), el código del diagnóstico
 // («CIE10 M545», «CIE-10: G40»), la EPS de la lista cerrada («EPS SANITAS», «NUEVA EPS»), el número de la orden
-// («ORDEN 123456»), «SEGUN EVOLUCION» y «NO POS». El diagnóstico escrito («DX LUMBALGIA») lo corta
-// withoutDiagnosis. Se quitan solo al asignar (withoutOrderTails); al descartar entre hojas siguen contando, porque
-// otro plazo, otra sesión u otro diagnóstico puede ser otra cita.
+// («ORDEN 123456»), «SEGUN EVOLUCION» y «NO POS». El diagnóstico escrito («DX LUMBALGIA») no es una cola: deja la
+// lectura en duda (splitDiagnosis). Se quitan solo al asignar (withoutOrderTails); al descartar entre hojas siguen
+// contando, porque otro plazo, otra sesión u otro diagnóstico puede ser otra cita.
 var orderTailNoise = []*regexp.Regexp{
 	regexp.MustCompile(`\b(?:(?:EN|PARA|A|CADA) )?\d+ (?:MES|MESES|SEMANA|SEMANAS|DIA|DIAS|SESION|SESIONES)\b`),
 	regexp.MustCompile(`\bCANT(?:IDAD)?[ .:]*\d+\b`),
@@ -144,85 +144,36 @@ var orderTailNoise = []*regexp.Regexp{
 // columna («T12», «L5») tiene la misma forma y no lo es.
 var cieCode = regexp.MustCompile(`^[A-Z]\d{2}\.?\d?X?$`)
 
-// withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) las colas de orderTailNoise, el
-// diagnóstico escrito tras DX (withoutDiagnosis) y los códigos CIE sueltos. dxDoubt: el diagnóstico trae
-// vocabulario de procedimiento y la lectura es duda; dxTail: las palabras tras el DX.
-func withoutOrderTails(folded string, vocabulary func(string) bool) (stripped string, dxDoubt bool, dxTail []string) {
+// withoutOrderTails quita de la lectura (ya en mayúsculas y sin tildes) las colas de orderTailNoise y los códigos
+// CIE sueltos.
+func withoutOrderTails(folded string) string {
 	for _, tail := range orderTailNoise {
 		folded = tail.ReplaceAllString(folded, " ")
 	}
-	words, dxDoubt, dxTail := withoutDiagnosis(strings.Fields(folded), vocabulary)
-	words = slices.DeleteFunc(words, func(w string) bool {
+	words := slices.DeleteFunc(strings.Fields(folded), func(w string) bool {
 		return cieCode.MatchString(w) && !spineLevel.MatchString(w)
 	})
-	return strings.Join(words, " "), dxDoubt, dxTail
+	return strings.Join(words, " ")
 }
 
-// withoutDiagnosis quita «DX» (también «DX:», «DX,», «DX.») y TODO lo que lo sigue, pero solo si ninguna de esas
-// palabras —tal cual o en su forma canónica («COXO FEMORAL» es CADERA)— es vocabulario de procedimiento
-// (procedureVocabulary). Si alguna lo es, la lectura es duda: todo o nada, cerrado a fallos (ronda 7). Cortar «hasta la primera palabra del procedimiento y conservarla» pegaba al procedimiento la región,
-// el lado o la primera vez del diagnóstico («RX COLUMNA DORSAL DX DOLOR LUMBAR» era la dorsolumbar), y cortarlo
-// todo se comía la angio, la sedación o la flexión escritas después.
-func withoutDiagnosis(words []string, vocabulary func(string) bool) (kept []string, doubt bool, tail []string) {
-	i := slices.IndexFunc(words, func(w string) bool { return strings.Trim(w, ".,:;") == "DX" })
-	if i < 0 {
-		return words, false, nil
-	}
-	tail = make([]string, 0, len(words)-i-1)
-	for _, w := range words[i+1:] {
-		tail = append(tail, strings.Trim(w, ".,:;"))
-	}
-	doubt = slices.ContainsFunc(slices.Concat(tail, strings.Fields(canonicalOrderName(strings.Join(tail, " ")))), vocabulary)
-	// En la duda se devuelve igualmente lo anterior al DX: con eso se buscan los candidatos que ve el agente.
-	return words[:i], doubt, tail
-}
+// diagnosisMarker es la marca con que la orden escribe el diagnóstico junto al nombre: «DX», «Dx», «DX:», «DX,»,
+// «DX:TCE», «(DX», «D/X», «IDX», «DIAG», «DIAGNOSTICO», «IMPRESION DX», «IMPRESION DIAGNOSTICA» (sola, DIAGNOSTICA
+// es palabra del catálogo: «ULTRASONOGRAFIA DIAGNOSTICA»). Sobre el texto normalizado (prefoldProcedureText).
+var diagnosisMarker = regexp.MustCompile(`(?:^| )\(?(?:IMPRESION (?:DX|DIAGNOSTICA)|DX|D/X|IDX|DIAGNOSTICO|DIAG)\b[.:,;)-]*`)
 
-// procedureRoots son raíces de palabras de tipo o modalidad que el catálogo de prueba no trae tal cual y que
-// nunca son un diagnóstico: la angio (ANGIO, ANGIOTAC, ANGIORESONANCIA con una R), la sedación o anestesia
-// (asunto 17), la flexión/extensión y la dinámica (871070), el protocolo, la alta resolución (TACAR) y el paquete
-// de EMG («PAQ. 2», que es otra fila).
-var procedureRoots = []string{"ANGIO", "SEDA", "ANESTES", "FLEXION", "EXTENSION", "DINAMIC", "PROTOCOLO", "RESOLUCION", "PAQ"}
-
-// procedureVocabulary dice, para un catálogo, si una palabra (en mayúsculas, sin tildes) es vocabulario de
-// procedimiento: una palabra del contraste o una negación, CONSULTA, un valor de algún grupo de calificadores
-// (región, segmento, nivel, lado, modalidad, primera vez/control, pediátrica…), una palabra de algún nombre
-// canónico del catálogo —igual, en plural o por prefijo de 5+ letras (DORSALGIA~DORSAL, CONTROLADA~CONTROL)— o
-// una de procedureRoots.
-func procedureVocabulary(catalog []CupsCandidate) func(string) bool {
-	catalogWords := map[string]bool{}
-	for _, c := range catalog {
-		for _, w := range rowOf(c.Name).words {
-			catalogWords[w] = true
-		}
+// splitDiagnosis parte la lectura en lo anterior a la marca del diagnóstico y lo que la sigue. found: hay marca.
+// DECISIÓN DEFINITIVA (ronda 8): una lectura con diagnóstico escrito NUNCA se asigna, ni por nombre igual ni por el
+// modelo. Cuatro rondas de cortar el diagnóstico para asignar (hasta el final, hasta la primera palabra del
+// procedimiento, todo o nada con una lista de vocabulario) dejaron escapar cada vez alguna variante de escritura
+// (ANGIO, FLEXOEXTENSION, IV, YODADO, ALTA RES, AMBAS…) y la lectura se asignaba a otro procedimiento. La marca
+// solo sirve para que la duda llegue al agente con candidatos: los de lo anterior a la marca, si no los de la
+// lectura entera, si no los del diagnóstico (que suele nombrar la región).
+func splitDiagnosis(folded string) (head, tail string, found bool) {
+	loc := diagnosisMarker.FindStringIndex(folded)
+	if loc == nil {
+		return folded, "", false
 	}
-	return func(w string) bool {
-		// Un número suelto nunca decide: es cantidad, paquete o plazo, no vocabulario («PAQ. 2» tiene el 2).
-		if strings.Trim(w, "0123456789") == "" {
-			return false
-		}
-		if procedureWord(w) {
-			return true
-		}
-		for _, root := range procedureRoots {
-			if strings.HasPrefix(w, root) {
-				return true
-			}
-		}
-		for cw := range catalogWords {
-			if pluralWord(w, cw) || prefixWord(w, cw) {
-				return true
-			}
-		}
-		return false
-	}
-}
-
-// procedureWord dice si una palabra habla del procedimiento sin mirar el catálogo: una palabra del contraste o
-// una negación, CONSULTA, o un valor de algún grupo de calificadores (región, segmento, nivel, lado, modalidad,
-// primera vez/control, pediátrica…). Las abreviaturas y el lado en corto llegan ya expandidos en la forma
-// canónica de la cola.
-func procedureWord(w string) bool {
-	return isContrastWord(w) || w == "CONSULTA" || isQualifierWord(w)
+	return strings.TrimSpace(folded[:loc[0]]), strings.TrimSpace(folded[loc[1]:]), true
 }
 
 // tailsChangeMeaning dice si quitar las colas cambió lo que la lectura dice de algún grupo excluyente —el
@@ -422,26 +373,22 @@ func ResolveCupsByName(
 	read string, catalog []CupsCandidate, interconsulta bool,
 	choose func(read string, candidates []CupsCandidate) string,
 ) CupsNameResolution {
-	// El plazo, el diagnóstico, la EPS y los códigos CIE de la orden no buscan ni encajan (R5-I3). Pero quitarlos
-	// no puede cambiar lo que la lectura dice de ningún grupo excluyente (ronda 6), y un diagnóstico con
-	// vocabulario de procedimiento no se corta (ronda 7): en los dos casos es duda para un agente, con los
-	// candidatos de la lectura.
+	// El plazo, la EPS y los códigos CIE de la orden no buscan ni encajan (R5-I3). Una lectura con el diagnóstico
+	// escrito (splitDiagnosis) es duda para un agente, siempre (ronda 8). Y quitar las colas no puede cambiar lo
+	// que la lectura dice de ningún grupo excluyente (ronda 6): si lo cambia, la cola no era cola, y es duda.
 	full := prefoldProcedureText(read)
-	vocabulary := procedureVocabulary(catalog)
-	stripped, dxDoubt, dxTail := withoutOrderTails(full, vocabulary)
+	stripped := withoutOrderTails(full)
+	if head, tail, found := splitDiagnosis(stripped); found {
+		for _, text := range []string{head, stripped, tail} {
+			if cands := nameCandidates(canonicalOrderName(text), catalog); len(cands) > 0 {
+				return CupsNameResolution{Candidates: cands[:min(len(cands), maxNameCandidates)]}
+			}
+		}
+		return CupsNameResolution{}
+	}
 	fullCanon, strippedCanon := canonicalOrderName(full), canonicalOrderName(stripped)
-	if dxDoubt || tailsChangeMeaning(fullCanon, strippedCanon) {
-		// Los candidatos que ve el agente: los de lo que queda sin colas (sin el diagnóstico); si no hay —la
-		// lectura empieza por DX—, los de la lectura entera; y si tampoco, los de lo anterior al DX más el
-		// vocabulario de procedimiento del diagnóstico («MAMOGRAFIA DX NODULO MAMA IZQUIERDA»: la mama).
+	if tailsChangeMeaning(fullCanon, strippedCanon) {
 		cands := nameCandidates(strippedCanon, catalog)
-		if len(cands) == 0 {
-			cands = nameCandidates(fullCanon, catalog)
-		}
-		if len(cands) == 0 && dxDoubt {
-			vocab := slices.DeleteFunc(slices.Clone(dxTail), func(w string) bool { return !vocabulary(w) })
-			cands = nameCandidates(canonicalOrderName(stripped+" "+strings.Join(vocab, " ")), catalog)
-		}
 		return CupsNameResolution{Candidates: cands[:min(len(cands), maxNameCandidates)]}
 	}
 	res := resolveFoldedRead(stripped, strippedCanon, catalog, interconsulta, choose)

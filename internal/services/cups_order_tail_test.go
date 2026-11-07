@@ -44,7 +44,7 @@ func TestResolveCupsByName_OrderTailsNeverDiscardSilently(t *testing.T) {
 		"RM COLUMNA LUMBAR T12 L1 CIE10 M545":      {"883230"},
 		"CONSULTA NEUROLOGIA EN 1 MES":             nil,
 		"CONSULTA NEUROLOGIA POR CEFALEA":          nil,
-		"EMG MMII DX LUMBALGIA":                    {"930860"},
+		"EMG MMII DX LUMBALGIA":                    nil, // ronda 8: el diagnóstico escrito es duda, siempre
 		"EMG MMII NO POS":                          {"930860"},
 		"CONSULTA CONTROL NEUROLOGIA EPS SANITAS":  {"890374"},
 		"CONSULTA NEUROLOGIA CONTROL ORDEN 123456": {"890374"},
@@ -117,12 +117,9 @@ func TestResolveCupsByName_OrderTailsNeverChangeTheMeaning(t *testing.T) {
 	}
 	// Lo que se asigna bien: la cola quitada deja el procedimiento entero.
 	for read, want := range map[string][]string{
-		"TAC CRANEO CON CONTRASTE DX TCE":           {"879112"},
-		"TAC CRANEO SIMPLE DX TCE":                  {"879111"},
-		"RM COLUMNA LUMBAR CON CONTRASTE DX HERNIA": {"883231"},
-		"RX RODILLA DERECHA DX GONARTROSIS":         {"873420"},
-		"CONSULTA CONTROL NEUROLOGIA DX CEFALEA":    {"890374"},
-		"EMG MMII DX RADICULOPATIA":                 {"930860"},
+		// Ronda 8: el diagnóstico escrito es duda siempre, también al final.
+		"TAC CRANEO CON CONTRASTE DX TCE": nil, "TAC CRANEO SIMPLE DX TCE": nil, "RM COLUMNA LUMBAR CON CONTRASTE DX HERNIA": nil,
+		"RX RODILLA DERECHA DX GONARTROSIS": nil, "CONSULTA CONTROL NEUROLOGIA DX CEFALEA": nil, "EMG MMII DX RADICULOPATIA": nil,
 		// Ronda 7: con vocabulario de procedimiento tras DX (contraste, región, lado, primera vez/control, MMII,
 		// TUNEL) la lectura es duda; solo el diagnóstico solo, al final, se corta.
 		"TAC CRANEO DX TCE CON CONTRASTE": nil, "TAC CRANEO DX TCE SIN CONTRASTE": nil, "RM COLUMNA LUMBAR DX HERNIA CON CONTRASTE": nil,
@@ -167,25 +164,19 @@ func TestResolveCupsByName_OrderTailsNeverChangeTheMeaning(t *testing.T) {
 	}
 }
 
-// Ronda 6, duda 3 (cerrado a fallos): si lo que se corta tras DX es una palabra de contenido del nombre de algún
-// procedimiento del catálogo (TUNEL, STRESS, MASAS), puede que no fuera un diagnóstico: duda para un agente, nunca
-// la asignación al nombre recortado. Un diagnóstico que no está en el catálogo (GONARTROSIS, TCE) sigue cortándose
-// (desde la ronda 7, solo si va al final: la cola tras DX se quita entera o la lectura es duda).
+// Rondas 6b-8: el diagnóstico que nombra un procedimiento del catálogo (TUNEL, STRESS, MASAS) era duda desde la 6b;
+// desde la ronda 8 lo es cualquier diagnóstico escrito, también el que no está en el catálogo (GONARTROSIS, TCE).
 func TestResolveCupsByName_DiagnosisThatNamesAProcedureIsADoubt(t *testing.T) {
 	catalog := catalogFromTSV(t, "testdata/cups_catalog_active.tsv")
-	for _, read := range []string{"RX RODILLA DX TUNEL", "RX RODILLA DX: TUNEL", "RX RODILLA DX STRESS", "ECO DX MASA ABDOMEN", "NC DX TUNEL CARPIANO MMSS"} {
+	for _, read := range []string{
+		"RX RODILLA DX TUNEL", "RX RODILLA DX: TUNEL", "RX RODILLA DX STRESS", "ECO DX MASA ABDOMEN", "NC DX TUNEL CARPIANO MMSS",
+		"RX RODILLA DX GONARTROSIS", "RX RODILLA DERECHA DX GONARTROSIS", "TAC CRANEO SIN CONTRASTE DX TCE",
+	} {
 		if got := acceptedByAdversary(read, catalog, false); len(got) != 0 {
 			t.Errorf("%q → %v, quiero agente", read, got)
 		}
 		if res := ResolveCupsByName(read, catalog, false, nil); len(res.Candidates) == 0 {
 			t.Errorf("%q debe ir al agente con candidatos", read)
-		}
-	}
-	for read, want := range map[string]string{
-		"RX RODILLA DX GONARTROSIS": "873420", "RX RODILLA DERECHA DX GONARTROSIS": "873420", "TAC CRANEO SIN CONTRASTE DX TCE": "879111",
-	} {
-		if got := acceptedByAdversary(read, catalog, false); !slices.Equal(got, []string{want}) {
-			t.Errorf("%q → %v, quiero [%s]", read, got, want)
 		}
 	}
 }
