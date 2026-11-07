@@ -480,7 +480,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   sigue saliendo de la hora programada).
 - Despliegue: al arrancar, `WARN insecure configuration` (no fatal, sin valores) si `DB_PASSWORD`/`DB_ROOT_PASSWORD`
   son las de `.env.example` (root vacía también), `INTERNAL_API_KEY` < 32 caracteres o `EXTERNAL_DB_ENCRYPT` ≠ `true`
-  (`config.SecurityWarnings`). `GOMEMLIMIT=1536MiB` va en el compose junto a `memory: 2048M` (cambiar los dos). La
+  (`config.SecurityWarnings`). `GOMEMLIMIT=1536MiB` va en el compose junto a `memory: 2048M`, y el overlay high-load fija `GOMEMLIMIT=768MiB` junto a su `memory: 1024M` (cambiar cada par). La
   zona horaria se fija antes de la primera goroutine. Cerrar el MySQL publicado (13308; el dashboard entra por él),
   activar el cifrado a SIESA, el riesgo aceptado de la API interna por el túnel y cómo comprobar en logs si Bird firma
   el DTMF: `docs/MONITOREO-EXTERNO.md` («Revisiones de despliegue»).

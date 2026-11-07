@@ -15,6 +15,10 @@ services:
     env_file:
       - .env
       - .env.high-load
+    # Límite blando del GC de Go, ~75 % de `memory` (1024M). Sin esto heredaría el 1536MiB del
+    # compose base, por encima del cgroup de este perfil (OOM-kill). Si cambia `memory`, cambiar esto.
+    environment:
+      - GOMEMLIMIT=768MiB
     deploy:
       resources:
         limits:

@@ -45,8 +45,9 @@ nproc                              # cores del HOST (puede ser MAYOR que el de a
 | Bot CPU | 2.0 | 4.0 |
 | DB RAM (límite) | 1024M | 2048M (buffer 1G) |
 
-> El bot mantiene 1024M de RAM en ambos perfiles; lo que sube es CPU, workers, conexiones y los
-> recursos del DB.
+> El bot tiene 2048M de RAM en el perfil normal (`GOMEMLIMIT=1536MiB`) y 1024M en high-load, cuyo
+> overlay fija su propio `GOMEMLIMIT=768MiB` (~75 % del límite); si cambia uno, cambiar el otro.
+> Lo que sube con high-load es CPU, workers, conexiones y los recursos del DB.
 
 ---
 
