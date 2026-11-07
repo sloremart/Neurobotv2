@@ -398,7 +398,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   «Tu mensaje anterior…» sale una vez y solo tras 30 s de espera. `virtual-`/`agent-` siguen como antes.
 - Reintentos de envío (`retrySend`, solo turnos del worker, nunca aperturas ni Bird, que sigue con su único reintento
   a los 10 s): en Néctar hasta 2 (10 s, 30 s) solo ante 5xx, transporte o 429, con la MISMA clave en duda; el 429 espera
-  su Retry-After si es mayor (≤60 s; más: no se reintenta, evento `infra/send_retry_after_too_long`; 429 tras los dos reintentos: `infra/send_rate_limited_undelivered`). Corren fuera del
+  su Retry-After si es mayor (≤60 s; más: no se reintenta, evento `infra/send_retry_after_too_long`; 429 tras los dos reintentos o con el reintento descartado por un turno posterior: `infra/send_rate_limited_undelivered`). Corren fuera del
   candado y no dependen del plazo del turno. Ante 5xx, transporte o abandono por plazo nada queda peor que con un solo reintento (tres excepciones a propósito: un 408, un 3xx o un 2xx
   ilegible ya no se reintentan; un Retry-After >60 s tampoco; y el 1.º que un Retry-After alarga se descarta si ya empezó un turno
   posterior): el primero a los 10 s sale siempre; el 2.º, y

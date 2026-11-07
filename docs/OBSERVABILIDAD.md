@@ -180,7 +180,7 @@ La fuente de verdad del nivel y del desenlace de cada paso es `internal/observab
 
 **Infra / apertura / Néctar**
 - `infra/send_retry_after_too_long` (OUTCOME; un 429 con Retry-After > 60 s no se reintenta, attrs `n` = segundos),
-  `infra/send_rate_limited_undelivered` (OUTCOME; 429 tras los dos reintentos), `infra/non_contactable_identifier` (OUTCOME; identificador
+  `infra/send_rate_limited_undelivered` (OUTCOME; 429 tras los dos reintentos, o con el reintento descartado porque ya empezó un turno posterior), `infra/non_contactable_identifier` (OUTCOME; identificador
   de contacto fuera de tamaño, una vez por sesión).
 - `apertura/solo_traza`, `apertura/aviso_invalido`, `apertura/replay_perdida`, `nectar/contacto_no_disponible`, `protocolo/version_desconocida`.
 
