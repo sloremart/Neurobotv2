@@ -333,6 +333,22 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 				WithEvent("particular_liga_escalated", map[string]interface{}{"code": entityCode, "name": entityName}), nil
 		}
 
+		// SOAT: las citas con SOAT requieren gestión manual (autorización y facturación especial).
+		if strings.Contains(strings.ToUpper(entityName), "SOAT") {
+			slog.Info("entity_number: entidad SOAT detectada, escalando a agente", "phone", sess.PhoneNumber, "entity", entityName)
+			observability.Emit(observability.TraceSession(sess.ID), "entidad", "soat_escalated",
+				observability.EmitOpts{
+					Phone:  sess.PhoneNumber,
+					Reason: "soat_requires_agent",
+					Attrs:  map[string]interface{}{"entity_code": entityCode, "entity_name": entityName},
+				})
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithContext("selected_entity_code", entityCode).
+				WithContext("selected_entity_name", entityName).
+				WithText("Las citas con *SOAT* requieren gestión especial. Te voy a comunicar con uno de nuestros agentes para ayudarte. 🙏").
+				WithEvent("soat_entity_escalated", map[string]interface{}{"entity_code": entityCode, "entity_name": entityName}), nil
+		}
+
 		observability.Emit(observability.TraceSession(sess.ID), "entidad", "entity_selected",
 			observability.EmitOpts{Phone: sess.PhoneNumber})
 		r := sm.NewResult(sm.StateAskDocumentType).
