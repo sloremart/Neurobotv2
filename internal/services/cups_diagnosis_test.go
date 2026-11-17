@@ -144,3 +144,31 @@ func TestResolveCupsByName_DiagnosisBeforeTheProcedureKeepsCandidates(t *testing
 		}
 	}
 }
+
+// R10-M1 y M3: con el diagnóstico LARGO, antes o después del procedimiento, el estudio escrito en la orden va el
+// primero entre los candidatos que ve el agente (los trozos de lo posterior a la marca se recorren de más largo a más
+// corto, y primero los que encajan). Nunca un código.
+func TestDiagnosisCandidates_LongestSegmentsFirst(t *testing.T) {
+	catalog := catalogFromTSV(t, "testdata/cups_catalog_active.tsv")
+	for read, want := range map[string]string{
+		"RX RODILLA DERECHA DX: LUMBALGIA CRONICA MECANICA DEGENERATIVA SEVERA":                             "873420",
+		"DX: LUMBALGIA CRONICA MECANICA DEGENERATIVA SEVERA RX RODILLA DERECHA":                             "873420",
+		"DX: RADICULOPATIA LUMBAR CRONICA BILATERAL L5 S1 SEVERA EMG MMII":                                  "930860",
+		"DIAGNOSTICO: TRAUMA CRANEOENCEFALICO LEVE CON PERDIDA DE CONCIENCIA TAC CRANEO SIMPLE":             "879111",
+		"IMPRESION DIAGNOSTICA: EPILEPSIA FOCAL REFRACTARIA AL TRATAMIENTO FARMACOLOGICO RM CEREBRO SIMPLE": "883101",
+		"DX1: CEFALEA CRONICA DIARIA DX2: TRASTORNO DEL SUENO CONSULTA NEUROLOGIA PRIMERA VEZ":              "890274",
+		"DX: SINDROME DE TUNEL DEL CARPO BILATERAL SEVERO DE LARGA DATA NC MMSS":                            "891509",
+	} {
+		res := ResolveCupsByName(read, catalog, false, nil)
+		if res.Code != "" || len(res.Candidates) == 0 || res.Candidates[0].Code != want {
+			t.Errorf("%q → %q / %v, quiero duda con %s el primero", read, res.Code, res.Candidates, want)
+		}
+	}
+	// El orden fijado: con dos estudios en lo posterior, el del trozo más largo va antes (RODILLA, de tres palabras,
+	// antes que TOBILLO, de dos), aunque TOBILLO esté al final.
+	synthetic := []CupsCandidate{{"A", "RADIOGRAFIA DE RODILLA"}, {"B", "RADIOGRAFIA DE TOBILLO"}}
+	got := diagnosisCandidates("", "RX RODILLA DERECHA RX TOBILLO", synthetic)
+	if len(got) != 2 || got[0].Code != "A" || got[1].Code != "B" {
+		t.Errorf("diagnosisCandidates = %v, quiero [A B]", got)
+	}
+}

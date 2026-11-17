@@ -169,8 +169,9 @@ var diagnosisMarker = regexp.MustCompile(`(?:^|[^A-Z0-9])(?:IMP(?:RESION)?\.? (?
 // modelo. Cuatro rondas de cortar el diagnóstico para asignar (hasta el final, hasta la primera palabra del
 // procedimiento, todo o nada con una lista de vocabulario) dejaron escapar cada vez alguna variante de escritura
 // (ANGIO, FLEXOEXTENSION, IV, YODADO, ALTA RES, AMBAS…) y la lectura se asignaba a otro procedimiento. La marca
-// solo sirve para que la duda llegue al agente con candidatos: los de lo anterior a la marca, si no los de la
-// lectura entera, si no los del diagnóstico (que suele nombrar la región).
+// solo sirve para que la duda llegue al agente con candidatos (diagnosisCandidates): la unión de los de lo anterior
+// a la marca, los de lo posterior y los de cada prefijo y sufijo por palabras de lo posterior, de más largo a más
+// corto; solo sin candidatos en todas esas formas queda como la orden sin candidatos.
 func splitDiagnosis(folded string) (head, tail string, found bool) {
 	loc := diagnosisMarker.FindStringIndex(folded)
 	if loc == nil {
@@ -403,26 +404,31 @@ func ResolveCupsByName(
 // diagnosisCandidates son los candidatos que ve el agente con una lectura con diagnóstico (ronda 9): la unión, sin
 // repetir, de los de lo anterior a la marca, los de lo posterior y los de cada prefijo y sufijo por palabras de lo
 // posterior, porque el procedimiento puede ir después del diagnóstico («DX: RADICULOPATIA LUMBAR CRONICA EMG
-// MMII») y un diagnóstico largo baja el parecido de la lectura entera por debajo de minCandidateScore. Primero los
-// que ENCAJAN con el trozo que los trajo (como en la lista corta normal), así el estudio escrito cabe en los cinco
-// que ve el agente. Vacío solo si ninguna forma tiene candidatos: entonces queda como la orden sin candidatos.
+// MMII») y un diagnóstico largo baja el parecido de la lectura entera por debajo de minCandidateScore. Los trozos
+// van de más largo a más corto y primero los candidatos que ENCAJAN con el trozo que los trajo (como en la lista
+// corta normal): así el estudio escrito en la orden cabe en los cinco que ve el agente antes que lo que traen las
+// palabras sueltas del diagnóstico (R10-M3). Vacío solo si ninguna forma tiene candidatos: entonces queda como la
+// orden sin candidatos.
 func diagnosisCandidates(head, tail string, catalog []CupsCandidate) []CupsCandidate {
 	texts := []string{head, tail}
 	words := strings.Fields(tail)
-	for i := 1; i < len(words); i++ {
-		texts = append(texts, strings.Join(words[i:], " "), strings.Join(words[:i], " "))
+	for n := len(words) - 1; n >= 1; n-- {
+		texts = append(texts, strings.Join(words[len(words)-n:], " "), strings.Join(words[:n], " "))
 	}
 	var fitting, rest []CupsCandidate
 	for _, text := range texts {
 		canon := canonicalOrderName(text)
 		side := newReadSide(canon)
 		for _, c := range nameCandidates(canon, catalog) {
-			if containsCode(fitting, c.Code) || containsCode(rest, c.Code) {
+			if containsCode(fitting, c.Code) {
 				continue
 			}
-			if rowFits(side, rowOf(c.Name)) {
+			switch {
+			case rowFits(side, rowOf(c.Name)):
+				// Un candidato que ya salió por parecido sube si un trozo lo hace encajar.
+				rest = slices.DeleteFunc(rest, func(r CupsCandidate) bool { return r.Code == c.Code })
 				fitting = append(fitting, c)
-			} else {
+			case !containsCode(rest, c.Code):
 				rest = append(rest, c)
 			}
 		}
