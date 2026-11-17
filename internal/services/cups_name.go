@@ -404,11 +404,12 @@ func ResolveCupsByName(
 // diagnosisCandidates son los candidatos que ve el agente con una lectura con diagnóstico (ronda 9): la unión, sin
 // repetir, de los de lo anterior a la marca, los de lo posterior y los de cada prefijo y sufijo por palabras de lo
 // posterior, porque el procedimiento puede ir después del diagnóstico («DX: RADICULOPATIA LUMBAR CRONICA EMG
-// MMII») y un diagnóstico largo baja el parecido de la lectura entera por debajo de minCandidateScore. Los trozos
-// van de más largo a más corto y primero los candidatos que ENCAJAN con el trozo que los trajo (como en la lista
-// corta normal): así el estudio escrito en la orden cabe en los cinco que ve el agente antes que lo que traen las
-// palabras sueltas del diagnóstico (R10-M3). Vacío solo si ninguna forma tiene candidatos: entonces queda como la
-// orden sin candidatos.
+// MMII») y un diagnóstico largo baja el parecido de la lectura entera por debajo de minCandidateScore. Primero lo
+// anterior a la marca, a propósito: casi siempre es el procedimiento; después lo posterior entero y sus trozos de
+// más largo a más corto (sufijo y prefijo de cada largo). Delante van los candidatos que ENCAJAN con el trozo que
+// los trajo (como en la lista corta normal), y uno que ya salió por parecido sube si un trozo lo hace encajar: así
+// el estudio escrito en la orden cabe en los cinco que ve el agente antes que lo que traen las palabras sueltas del
+// diagnóstico (R10-M3). Vacío solo si ninguna forma tiene candidatos: entonces queda como la orden sin candidatos.
 func diagnosisCandidates(head, tail string, catalog []CupsCandidate) []CupsCandidate {
 	texts := []string{head, tail}
 	words := strings.Fields(tail)

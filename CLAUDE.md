@@ -568,8 +568,11 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   DIAGNOSTICA sola, DXA y ELECTRODIAGNOSTICO no son marca— NUNCA se asigna, ni por nombre igual ni por el modelo: es
   duda para un agente con candidatos (`splitDiagnosis` + `diagnosisCandidates`: la unión de los de lo anterior a
   la marca, los de lo posterior y los de cada prefijo y sufijo por palabras de lo posterior, porque el
-  procedimiento puede ir tras el diagnóstico, «DX: RADICULOPATIA LUMBAR CRONICA EMG MMII»); solo sin candidatos en
-  todas esas formas queda como la orden sin candidatos («DX CEFALEA»). Una marca que el OCR rompe («D X», «0X»,
+  procedimiento puede ir tras el diagnóstico, «DX: RADICULOPATIA LUMBAR CRONICA EMG MMII»); en orden: primero lo
+  anterior a la marca, luego lo posterior y sus trozos de más largo a más corto, y los que encajan con su trozo
+  delante de los que solo se parecen (un candidato sube si un trozo lo hace encajar), para que el estudio escrito
+  quede entre los cinco que ve el agente; solo sin candidatos en todas esas formas queda como la orden sin
+  candidatos («DX CEFALEA»). Una marca que el OCR rompe («D X», «0X»,
   «DlAGNOSTICO») no se reconoce y la lectura sigue el camino normal. Cuatro rondas de cortar el diagnóstico para asignar (hasta el final, hasta la primera palabra del
   procedimiento, todo o nada con vocabulario) dejaron escapar variantes (ANGIO, FLEXOEXTENSION, IV, YODADO, ALTA RES,
   AMBAS…) y asignaban otro procedimiento: no hay lista de vocabulario. INVARIANTE (ronda 6): los grupos excluyentes

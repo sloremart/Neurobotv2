@@ -158,15 +158,27 @@ func TestDiagnosisCandidates_LongestSegmentsFirst(t *testing.T) {
 		"IMPRESION DIAGNOSTICA: EPILEPSIA FOCAL REFRACTARIA AL TRATAMIENTO FARMACOLOGICO RM CEREBRO SIMPLE": "883101",
 		"DX1: CEFALEA CRONICA DIARIA DX2: TRASTORNO DEL SUENO CONSULTA NEUROLOGIA PRIMERA VEZ":              "890274",
 		"DX: SINDROME DE TUNEL DEL CARPO BILATERAL SEVERO DE LARGA DATA NC MMSS":                            "891509",
+		// El ascenso (R10-I2): «RADICULOPATIA EMG» entero trae todas las filas de EMG por parecido, y la de cada
+		// extremidad (930860, seis palabras) queda la última, fuera de los cinco; el trozo «EMG» la hace encajar y
+		// sube la primera. Sin el ascenso se quedaría sexta.
+		"DX: RADICULOPATIA EMG": "930860", "DX RADICULOPATIA EMG": "930860", "DIAGNOSTICO: RADICULOPATIA EMG": "930860",
+		// R10-M3: el procedimiento justo tras la marca y el diagnóstico largo detrás: solo los prefijos de lo
+		// posterior lo traen.
+		"DX: EMG MMII RADICULOPATIA LUMBAR CRONICA BILATERAL SEVERA":                   "930860",
+		"DX: RX RODILLA DERECHA GONARTROSIS SEVERA BILATERAL DEGENERATIVA":             "873420",
+		"DX: TAC CRANEO SIMPLE TRAUMA CRANEOENCEFALICO LEVE CON PERDIDA DE CONCIENCIA": "879111",
+		"DX: NC MMSS SINDROME DE TUNEL DEL CARPO BILATERAL SEVERO DE LARGA DATA":       "891509",
 	} {
 		res := ResolveCupsByName(read, catalog, false, nil)
 		if res.Code != "" || len(res.Candidates) == 0 || res.Candidates[0].Code != want {
 			t.Errorf("%q → %q / %v, quiero duda con %s el primero", read, res.Code, res.Candidates, want)
 		}
 	}
-	// El orden fijado: con dos estudios en lo posterior, el del trozo más largo va antes (RODILLA, de tres palabras,
-	// antes que TOBILLO, de dos), aunque TOBILLO esté al final.
-	synthetic := []CupsCandidate{{"A", "RADIOGRAFIA DE RODILLA"}, {"B", "RADIOGRAFIA DE TOBILLO"}}
+	// El orden fijado (R10-I1): lo posterior entero trae A y B por parecido (ninguna encaja: dos regiones), en el
+	// orden del catálogo (B antes que A). De más largo a más corto, «RX RODILLA DERECHA RX» hace encajar a A antes de
+	// que «DERECHA RX TOBILLO» haga encajar a B, y el ascenso las saca de «parecido»: [A B]. Con el orden intercalado
+	// por posición, o sin el ascenso, saldría [B A].
+	synthetic := []CupsCandidate{{"B", "RADIOGRAFIA DE TOBILLO"}, {"A", "RADIOGRAFIA DE RODILLA"}}
 	got := diagnosisCandidates("", "RX RODILLA DERECHA RX TOBILLO", synthetic)
 	if len(got) != 2 || got[0].Code != "A" || got[1].Code != "B" {
 		t.Errorf("diagnosisCandidates = %v, quiero [A B]", got)
