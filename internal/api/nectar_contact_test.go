@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
 )
 
@@ -405,5 +406,46 @@ func TestNectarInbound_AdoptedUnsent_OtherTemplateButtonGoesToWorker(t *testing.
 	case r := <-notify.responses:
 		t.Fatalf("no llega a HandleResponse: %v", r)
 	default:
+	}
+}
+
+// legacyFailBridge falla por transporte solo al preguntar por el contacto de las conversaciones viejas.
+type legacyFailBridge struct {
+	*fakenectar.Bridge
+	legacy map[int64]bool
+}
+
+func (b *legacyFailBridge) Contact(ctx context.Context, id int64) (bird.NectarContact, error) {
+	if b.legacy[id] {
+		return bird.NectarContact{}, fmt.Errorf("nectar: GET state: %w",
+			&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})
+	}
+	return b.Bridge.Contact(ctx, id)
+}
+
+// Fallos de transporte del contacto de una conversación de la línea vieja (p. ej. su clave rechazada)
+// abren el corte solo para esa línea: una conversación de la principal sigue consultando.
+func TestContactCircuit_LegacyFailureDoesNotBlockMain(t *testing.T) {
+	sink := &sinkRecorder{}
+	fb := &fakenectar.Bridge{ContactValue: bird.NectarContact{Identifier: "573001112233"}}
+	h := newNectarHandler(newMemInbox(), sink)
+	h.birdClient.SetNectar(&legacyFailBridge{Bridge: fb, legacy: map[int64]bool{9001: true, 9002: true}})
+	h.SetNectarLines(nectar.NewLineRegistry(&recordingLineStore{
+		log: &orderLog{}, lines: map[int64]nectar.Line{9001: nectar.LineLegacy, 9002: nectar.LineLegacy},
+	}))
+	now := time.Now()
+	h.nectarContacts.now = func() time.Time { return now }
+
+	if c := h.nectarContact(context.Background(), 9001); c.Identifier != "" {
+		t.Fatalf("la vieja falla, got %+v", c)
+	}
+	// Otra conversación vieja: el corte de su línea ya está abierto (no pregunta).
+	h.nectarContact(context.Background(), 9002)
+	// La principal sigue consultando.
+	if c := h.nectarContact(context.Background(), 1234); c.Identifier != "573001112233" {
+		t.Fatalf("la principal no debe quedar cortada, got %+v", c)
+	}
+	if asks := fb.ContactQuestions(); len(asks) != 1 || asks[0] != 1234 {
+		t.Fatalf("solo la principal llegó al puente (9002 cortada), got %v", asks)
 	}
 }

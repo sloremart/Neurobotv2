@@ -169,7 +169,7 @@ type nectarContactCache struct {
 	entries          sync.Map         // int64 → nectarContactEntry
 	mu               sync.Mutex
 	lastSweep        time.Time
-	unreachableUntil time.Time // protegido por mu
+	unreachableUntil map[nectar.Line]time.Time // protegido por mu; un corte por línea
 }
 
 type nectarContactEntry struct {
@@ -224,17 +224,21 @@ func (c *nectarContactCache) put(conversationID int64, e nectarContactEntry) {
 	})
 }
 
-// unreachable dice si un fallo de transporte reciente manda no preguntar a Néctar por nadie.
-func (c *nectarContactCache) unreachable(now time.Time) bool {
+// unreachable dice si un fallo de transporte reciente de esa línea manda no preguntar por nadie de
+// ella. El corte es por línea: la clave vieja rechazada no debe cortar los contactos de la nueva.
+func (c *nectarContactCache) unreachable(line nectar.Line, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return now.Before(c.unreachableUntil)
+	return now.Before(c.unreachableUntil[line])
 }
 
-func (c *nectarContactCache) markUnreachable(now time.Time) {
+func (c *nectarContactCache) markUnreachable(line nectar.Line, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.unreachableUntil = now.Add(nectarContactFailTTL)
+	if c.unreachableUntil == nil {
+		c.unreachableUntil = map[nectar.Line]time.Time{}
+	}
+	c.unreachableUntil[line] = now.Add(nectarContactFailTTL)
 }
 
 // isNectarUnreachable reconoce un fallo de TRANSPORTE (conexión rechazada, DNS, timeout): Néctar
@@ -254,7 +258,12 @@ func (h *WebhookHandler) nectarContact(ctx context.Context, conversationID int64
 	if c, ok := cache.get(conversationID, now); ok {
 		return c
 	}
-	if cache.unreachable(now) {
+	// Sin registro (puente apagado o sin línea vieja) todo es la principal: un solo corte, como siempre.
+	line := nectar.LineMain
+	if h.nectarLines != nil {
+		line = h.nectarLines.Line(ctx, conversationID)
+	}
+	if cache.unreachable(line, now) {
 		return bird.NectarContact{} // Néctar no contesta: ni se pregunta (ya quedó en la traza)
 	}
 	key := nectar.SessionKey(conversationID)
@@ -270,7 +279,7 @@ func (h *WebhookHandler) nectarContact(ctx context.Context, conversationID int64
 		observability.Emit(observability.TraceSession(key), "nectar", "contacto_no_disponible", observability.EmitOpts{})
 		cache.put(conversationID, nectarContactEntry{at: now, failed: true})
 		if isNectarUnreachable(err) {
-			cache.markUnreachable(now)
+			cache.markUnreachable(line, now)
 		}
 		return bird.NectarContact{}
 	}
