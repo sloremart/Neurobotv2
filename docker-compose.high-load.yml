@@ -29,7 +29,7 @@ services:
 
   db:
     command: >
-      --default-authentication-plugin=mysql_native_password
+      --mysql-native-password=ON
       --tls-version=TLSv1.2
       --mysqlx=0
       --innodb-buffer-pool-size=1G

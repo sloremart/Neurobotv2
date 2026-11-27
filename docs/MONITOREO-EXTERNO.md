@@ -75,32 +75,44 @@ del secreto, solo el nombre de la variable). No impiden arrancar:
 
 Tras cada despliegue: `docker compose logs bot --since 5m | grep "insecure configuration"`.
 
-### MySQL local publicado (`DB_EXTERNAL_PORT`, 13308)
+### Puertos del bot solo en el servidor (desde 2026-11-27)
 
-El compose publica `13308:3306` en todas las interfaces del servidor. Para cerrarlo:
+El compose publica el bot (`PORT`, 8085 en producción), su base (13308) y la API de ngrok (14041) solo en
+`127.0.0.1` (`HOST_BIND_IP`): la red de la IPS ya no llega a ellos. Desde el propio servidor siguen sirviendo
+`curl localhost:8085/health`, `mysql -h 127.0.0.1 -P 13308` y `curl localhost:14041/api/tunnels`. ngrok y el
+dashboard entran por la red interna `neurobotv2_botnet`. El dashboard se une a ella como red externa y usa
+`neuro_bot_db:3306` y `http://neuro_bot:${BOT_PORT:-8085}` (rama `feat/migracion-nectar` de neuro-dashboard).
 
-1. **Antes, ver quién lo usa.** El dashboard (`neuro-dashboard/docker-compose.yml`) entra por
-   `DB_HOST=host.docker.internal` y `DB_PORT=13308`, o sea, por el puerto publicado. Ese compose no
-   declara `extra_hosts` y en un Linux sin él ese nombre no resuelve, así que el servidor puede tener otra
-   configuración: confirmar lo que usa de verdad con `docker exec neuro_dashboard env | grep -E "^DB_(HOST|PORT)="`.
-   Ver también si alguien más entra desde la LAN (DBeaver, respaldos, scripts con `13308`):
-   `sudo ss -tnp | grep 13308` en horario de uso.
-2. **Opción A (recomendada): sacar el dashboard del puerto publicado.** Unir el servicio del dashboard a
-   la red del bot (`networks: botnet: {external: true, name: neurobotv2_botnet}` en su compose, con el
-   nombre real que da `docker network ls`) y poner `DB_HOST=neuro_bot_db`, `DB_PORT=3306`. Comprobar que
-   el dashboard carga datos y, después, quitar el bloque `ports` del servicio `db`.
-3. **Opción B: bind restringido.** `"127.0.0.1:${DB_EXTERNAL_PORT:-13308}:3306"` solo sirve a procesos
-   del propio host. **Rompe el dashboard en Linux**: `host.docker.internal` llega por la IP del puente de
-   Docker, no por 127.0.0.1. Con el dashboard en contenedor, usar la opción A o el bind a la IP del puente
-   (`ip -4 addr show docker0`, p. ej. `172.17.0.1:13308:3306`), que no queda expuesta a la LAN.
-4. Verificar: `docker compose config | grep -A3 published` muestra el `host_ip` esperado (o no hay
-   `ports`); desde otra máquina de la LAN `nc -zv <servidor> 13308` falla; el dashboard sigue cargando.
-5. Cambiar las contraseñas débiles es un paso aparte: `DB_PASSWORD` la usan el bot y el dashboard, y
-   `DB_ROOT_PASSWORD` solo se aplica al crear el volumen (`botdbdata`); en uno existente hay que cambiarla
-   con `ALTER USER` dentro de MySQL y luego en el `.env`. Después hay que **recrear el bot y el dashboard**
-   (`docker compose up -d bot` y el `up -d` del compose del dashboard; un `restart` no relee el `.env`): ambos
-   cortan unos segundos mientras reinician, y entre el `ALTER USER` y la recreación el que siga con la
-   contraseña vieja falla al conectar. Hacerlo juntos, en un momento de poco uso.
+1. **Antes de desplegar, ver si alguien más entra desde la red.** Correr varias veces en horario de uso:
+   `ss -tn state established '( sport = :13308 or sport = :8085 )'`. Las IP `172.x` son contenedores; una
+   `192.168.x` es un equipo de la red que dejaría de conectar. Quien necesite la base desde su PC entra por
+   túnel SSH: `ssh -L 13308:127.0.0.1:13308 root@<servidor>` y apunta su programa a `127.0.0.1:13308`.
+2. **Orden:** primero el bot (crea la red con su nombre fijo), después el dashboard (`docker compose up -d
+   --build` en su carpeta). Entre los dos, el dashboard viejo pierde la base por un minuto.
+3. Verificar: `docker port neuro_bot` y `docker port neuro_bot_db` muestran `127.0.0.1`; el dashboard carga
+   datos y su `/api/health` dice `bot_reachable: true`; desde otro equipo, `nc -zv <servidor> 13308` falla.
+4. En un PC de desarrollo que necesite entrar desde otra máquina o por `host.docker.internal` (el harness e2e),
+   `HOST_BIND_IP=0.0.0.0` en su `.env`.
+
+### MySQL 8.4 (desde 2026-11-27)
+
+La base del bot pasa de `mysql:8.0` a `mysql:8.4.13` (la 8.0 salió de soporte en abril de 2026). La subida es en
+el sitio al recrear el contenedor y **no tiene vuelta atrás**: la 8.0 ya no abre los datos convertidos. Por
+eso, antes del despliegue, `scripts/backup-db.sh` y comprobar que el `.gz` no está vacío. Volver atrás =
+volumen nuevo con 8.0 y restaurar ese respaldo. Los usuarios siguen con `mysql_native_password`, que en 8.4 va
+apagado por defecto: el compose lo enciende (`--mysql-native-password=ON`; la opción
+`--default-authentication-plugin` ya no existe). Pasar a `caching_sha2_password` es un paso aparte (`ALTER USER`
+del bot y root, y recrear bot y dashboard). Probado en local con la copia de producción: subida de datos 8.0.46 →
+8.4.13 sin errores, migraciones en 48 y el dashboard con todas sus rutas.
+
+### Contraseñas débiles de la base
+
+Cambiarlas es un paso aparte: `DB_PASSWORD` la usan el bot y el dashboard, y
+`DB_ROOT_PASSWORD` solo se aplica al crear el volumen (`botdbdata`); en uno existente hay que cambiarla
+con `ALTER USER` dentro de MySQL y luego en el `.env`. Después hay que **recrear el bot y el dashboard**
+(`docker compose up -d bot` y el `up -d` del compose del dashboard; un `restart` no relee el `.env`): ambos
+cortan unos segundos mientras reinician, y entre el `ALTER USER` y la recreación el que siga con la
+contraseña vieja falla al conectar. Hacerlo juntos, en un momento de poco uso.
 
 ### Cifrado del canal a SIESA (`EXTERNAL_DB_ENCRYPT`)
 

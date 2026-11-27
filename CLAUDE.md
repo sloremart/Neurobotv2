@@ -473,6 +473,11 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (arrastra el init); 3) `docker compose exec bot id -u` = 10001 y `/api/internal/logs` con líneas de hoy. Tras un
   rollback a la imagen vieja (root), volver adelante con `docker compose up -d bot`, NUNCA `restart`: solo `up`
   corre el init y la vieja deja el log del día de root.
+- Puertos y base (2026-11-27): bot, base (13308) y API de ngrok (14041) publicados solo en `127.0.0.1`
+  (`HOST_BIND_IP`; `0.0.0.0` en un PC que lo necesite, p. ej. el harness e2e por `host.docker.internal`). El
+  dashboard entra por la red `neurobotv2_botnet` (nombre fijo; su compose la declara externa): desplegar el bot
+  ANTES que el dashboard. La base es `mysql:8.4.13` (`--mysql-native-password=ON`; la subida desde 8.0 no tiene
+  vuelta atrás: respaldar antes). Detalle y verificación: `docs/MONITOREO-EXTERNO.md`.
 - Migraciones (merge de main, 2026-11-26): la 044 es `044_add_via_administracion` de main; las de la rama son 045-048
   (antes 044-047). Producción en la 44 de main (o en la 43) no necesita nada. Una BD que ya corrió las viejas 044-047 de la rama
   (versión 47) se realinea a mano antes de arrancar: `ALTER TABLE medication_pending ADD COLUMN via_administracion VARCHAR(100)
@@ -489,8 +494,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 - Despliegue: al arrancar, `WARN insecure configuration` (no fatal, sin valores) si `DB_PASSWORD`/`DB_ROOT_PASSWORD`
   son las de `.env.example` (root vacía también), `INTERNAL_API_KEY` < 32 caracteres o `EXTERNAL_DB_ENCRYPT` ≠ `true`
   (`config.SecurityWarnings`). `GOMEMLIMIT=1536MiB` va en el compose junto a `memory: 2048M`, y el overlay high-load fija `GOMEMLIMIT=768MiB` junto a su `memory: 1024M` (cambiar cada par). La
-  zona horaria se fija antes de la primera goroutine. Cerrar el MySQL publicado (13308; el dashboard entra por él),
-  activar el cifrado a SIESA, el riesgo aceptado de la API interna por el túnel y cómo comprobar en logs si Bird firma
+  zona horaria se fija antes de la primera goroutine. Activar el cifrado a SIESA, el riesgo aceptado de la API interna por el túnel y cómo comprobar en logs si Bird firma
   el DTMF: `docs/MONITOREO-EXTERNO.md` («Revisiones de despliegue»).
 
 ## OCR DE LA ORDEN (mejoras tomadas de hdg-bot, 2026-11-03; plan en `docs/PLAN-MEJORA-OCR-CUPS.md`)

@@ -11,8 +11,12 @@ services:
     stop_grace_period: 75s
     env_file:
       - .env
+    # Puertos solo en 127.0.0.1 (HOST_BIND_IP): la red de la IPS no llega al bot ni a su base. ngrok y el
+    # dashboard entran por la red interna `botnet`; desde el propio servidor siguen sirviendo
+    # `curl localhost:$PORT/health` y `mysql -h 127.0.0.1 -P 13308`. En un PC de desarrollo que necesite
+    # entrar desde otra máquina (o por host.docker.internal), HOST_BIND_IP=0.0.0.0 en su .env.
     ports:
-      - "${PORT:-8080}:${PORT:-8080}"
+      - "${HOST_BIND_IP:-127.0.0.1}:${PORT:-8080}:${PORT:-8080}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -68,7 +72,9 @@ services:
     restart: "no"
 
   db:
-    image: mysql:8.0
+    # MySQL 8.4 LTS (la 8.0 salió de soporte en abril de 2026). La subida desde 8.0 es en el sitio y SIN
+    # vuelta atrás: la 8.0 ya no abre los datos convertidos. Respaldar antes (scripts/backup-db.sh).
+    image: mysql:8.4.13
     container_name: neuro_bot_db
     restart: unless-stopped
     environment:
@@ -78,7 +84,7 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:-botpass}
       TZ: America/Bogota
     command: >
-      --default-authentication-plugin=mysql_native_password
+      --mysql-native-password=ON
       --tls-version=TLSv1.2
       --mysqlx=0
       --innodb-buffer-pool-size=256M
@@ -86,7 +92,7 @@ services:
       --table-open-cache=200
       --sort-buffer-size=256K
     ports:
-      - "${DB_EXTERNAL_PORT:-13308}:3306"
+      - "${HOST_BIND_IP:-127.0.0.1}:${DB_EXTERNAL_PORT:-13308}:3306"
     volumes:
       - botdbdata:/var/lib/mysql
     healthcheck:
@@ -133,7 +139,7 @@ services:
       # El healthcheck usa /api/tunnels, que sigue disponible con inspect apagado.
       - "--inspect=false"
     ports:
-      - "14041:4040"
+      - "${HOST_BIND_IP:-127.0.0.1}:14041:4040"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:4040/api/tunnels | grep -q tunnels"]
       interval: 20s
@@ -200,3 +206,6 @@ volumes:
 
 networks:
   botnet:
+    # Nombre fijo (el mismo que Docker ya le daba por el proyecto neurobotv2): el compose del dashboard
+    # se une a ella como red externa con este nombre.
+    name: neurobotv2_botnet
