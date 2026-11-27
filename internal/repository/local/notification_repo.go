@@ -20,8 +20,8 @@ func NewNotificationRepo(db *sql.DB) *NotificationRepo {
 
 // Upsert inserts or updates a pending notification (keyed by phone).
 // call_id is NOT updated here — use UpdateCallID for that. contactPhone vacío (Bird) se guarda NULL.
-// unsent marca el pending de un recordatorio que no salió (migración 045). apptSlot es la fecha y
-// hora de la cita recordada (migración 047; vacía se guarda NULL).
+// unsent marca el pending de un recordatorio que no salió (migración 046). apptSlot es la fecha y
+// hora de la cita recordada (migración 048; vacía se guarda NULL).
 func (r *NotificationRepo) Upsert(ctx context.Context, phone, nType, apptID, apptSlot, wlID, birdMsgID, convID, contactPhone string, unsent bool, retryCount int, expiresAt time.Time) error {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO notification_pending (phone, type, appointment_id, appointment_slot, waiting_list_id, bird_message_id, conversation_id, contact_phone, unsent, retry_count, expires_at)
@@ -142,7 +142,7 @@ func (r *NotificationRepo) queryRows(ctx context.Context, query string) ([]notif
 	return result, rows.Err()
 }
 
-// MarkSiesaPending deja la respuesta del paciente pendiente de SIESA (migración 047) en la última
+// MarkSiesaPending deja la respuesta del paciente pendiente de SIESA (migración 048) en la última
 // fila del historial de ese teléfono y cita, que Resolve acaba de escribir, con la conversación y la
 // fecha y hora de la cita si llegan (la fila puede no tenerlas). Si no hay fila (Resolve falló)
 // inserta una con status, para que la respuesta no se pierda. Volver a marcar una fila ya cerrada

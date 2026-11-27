@@ -347,14 +347,14 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   sigue por Bird Voice). 409 `already_open` con `mine=false` no envía nada; ante duda (502, 504, `attempt_in_doubt`) no hay reintento
   (evento `notification_in_doubt`); en esos casos el recordatorio del día antes deja un pending `Unsent` para el IVR (abajo) y lo
   demás (mismo día incluido) no deja pending; solo el 503 o el 429 con `Retry-After` se reintentan (máx. 2, misma clave).
-- Recordatorio del día antes que no salió → pending de confirmación `Unsent` bajo el teléfono (`+57…`, migración 045) para el IVR:
+- Recordatorio del día antes que no salió → pending de confirmación `Unsent` bajo el teléfono (`+57…`, migración 046) para el IVR:
   solo un botón de esa plantilla (Confirmar/Reprogramar/Cancelar) cuenta como respuesta (con Néctar lo adopta por el contacto, `AdoptPhonePending`, no si la sesión está
   escalada); cualquier otro mensaje sigue el flujo normal y el pending queda para el IVR.
 - Los botones de las plantillas en Meta deben titularse EXACTAMENTE (sin importar mayúsculas ni tildes; fuente
   `internal/notifications/template_buttons.go`): confirmación/reprogramación «Confirmar», «Reprogramar», «Cancelar»; cancelación admin
   «Entendido», «Reprogramar»; lista de espera «Agendar», «No, gracias». Néctar entrega el título como `interactive_reply_id` y el bot lo traduce a payload.
 - Contacto (D2): el bot lee `contact` de `GET state` una vez por conversación (caché 24 h) y lo guarda en `contact_identifier`
-  (migración 044); `TESTING_WHITELIST_PHONES` rige para los entrantes de Néctar con ese contacto (contacto vacío pasa).
+  (migración 045); `TESTING_WHITELIST_PHONES` rige para los entrantes de Néctar con ese contacto (contacto vacío pasa).
 - Horario: `NECTAR_SCHEDULE_ENABLED` (por defecto false) hace que el horario y festivos de Néctar manden en atención y escalación; encenderlo
   solo cuando los tres equipos tengan horario en Néctar (si no, publica «cerrado toda la semana» y las escalaciones se desvían).
   Apagada y con puente rige la semana de siempre con los festivos de Néctar (`GET /api/bot/schedule`; son de la entidad, no de equipo ni
@@ -364,7 +364,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   semana de siempre sin festivos de Néctar, nunca «cerrado toda la semana») y se detiene con un solo error; si Néctar no responde, como siempre.
 - Lo que Neuro pide a Néctar es aditivo: no debe romper a hdg-bot.
 - Informes de asesores (D5, `internal/nectarreports`): con puente, cada `NECTAR_REPORTS_SYNC_MIN` (5) el bot copia tramos
-  (`waiting-cycles`, receta §3(a), desde `DataFloor`) y roster (`agents`) a las tablas de la migración 046 y completa las
+  (`waiting-cycles`, receta §3(a), desde `DataFloor`) y roster (`agents`) a las tablas de la migración 047 y completa las
   escalaciones `nectar:*` (`agent_id` = `nectar:<id>`, primera respuesta, mensajes, solo `expired` sin respuesta→`agent_no_show`; `completed` = un agente pulsó «Resolver», igual que en Bird; la cola vencida la marca el worker); exige la
   clave de CUENTA: con la global (403) se detiene con un solo error en el log. La atención sigue `previous_cycle_id` salvo
   desde un tramo `resolved`: desde el Plan 49 una reapertura apunta al resuelto y es otra atención.
@@ -428,7 +428,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   confiar en ninguno, con Warn al arrancar).
 - Logs: la clave `text` (mensaje del paciente) se registra como «[redactado: N caracteres]».
 - `chat_events` (C-04): sin nombre, con celular/correo/documento enmascarados (también lo escrito en los pasos del tipo de documento) y solo el largo de lo escrito en escalación y en los pasos de datos personales; en los demás pasos, las secuencias de 5+ dígitos tapadas (`utils.MaskDigitRuns`, salvo los pasos de CUPS manual); a los 30 días `chat_events_pii_retention` (02:30, catch-up solo de noche) enmascara el teléfono de la fila (no `nectar:`) y quita las claves de PII de primer nivel de `event_data` sin borrar filas. `sessions` conserva el teléfono (recuperable por `session_id`): su retención la decide el dueño (`docs/OBSERVABILIDAD.md`).
-- Recordatorio con SIESA caída (D-04, migración 047): «Confirmar»/«Cancelar» quedan pendientes en `notification_history`
+- Recordatorio con SIESA caída (D-04, migración 048): «Confirmar»/«Cancelar» quedan pendientes en `notification_history`
   (`siesa_pending`, `siesa_outcome`, `appointment_slot`); el paciente recibe un acuse y el proceso de fondo
   (`SIESA_PENDING_RETRY_MIN`, 5) las aplica al volver: confirma con el mensaje de siempre o abre la confirmación de
   cancelación de siempre, solo en la ventana de avisos (7-20 h, `config.PatientNoticeWindow`; fuera, la fila espera

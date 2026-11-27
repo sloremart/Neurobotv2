@@ -77,7 +77,7 @@ func (r *EventRepo) WasAppointmentNotified(ctx context.Context, appointmentID st
 }
 
 // chatEventInsertSQL inserta un chat_event copiando el contacto de Néctar de su sesión
-// (sessions.contact_identifier, migración 044): sin sesión o en Bird queda NULL. Se copia en el
+// (sessions.contact_identifier, migración 045): sin sesión o en Bird queda NULL. Se copia en el
 // INSERT, y no desde cada llamador, porque los eventos salen de decenas de sitios que solo
 // conocen el id de la sesión. El último parámetro es otra vez el session_id.
 const chatEventInsertSQL = `INSERT INTO chat_events

@@ -1,7 +1,7 @@
 //go:build integration
 
 // Rekey contra MySQL real: la fila del pending de un recordatorio fallido pasa de la clave del
-// teléfono a la de la conversación de Néctar, sin mover su vencimiento y con su marca unsent (045).
+// teléfono a la de la conversación de Néctar, sin mover su vencimiento y con su marca unsent (046).
 // Correr con: make test-integration (requiere LOCAL_TEST_DSN).
 package local
 
@@ -60,7 +60,7 @@ func TestNotificationRepo_Rekey(t *testing.T) {
 	}
 }
 
-// D-04 (migración 047): la respuesta queda pendiente de SIESA en la fila que dejó Resolve, con la
+// D-04 (migración 048): la respuesta queda pendiente de SIESA en la fila que dejó Resolve, con la
 // conversación del webhook; el proceso de fondo la lee, suma intentos y la saca UNA sola vez.
 func TestNotificationRepo_SiesaPendingLifecycle(t *testing.T) {
 	db := openLocalTestDB(t)

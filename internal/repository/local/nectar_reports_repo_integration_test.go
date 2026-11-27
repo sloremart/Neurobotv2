@@ -1,6 +1,6 @@
 //go:build integration
 
-// Los informes de asesores con Néctar (migración 046) contra MySQL real: upsert de tramos sin pisar
+// Los informes de asesores con Néctar (migración 047) contra MySQL real: upsert de tramos sin pisar
 // escalation_id, tramo abierto más viejo, atención de Néctar sobre escalations y estado de la
 // sincronización. Correr con: make test-integration (requiere LOCAL_TEST_DSN).
 package local

@@ -13,7 +13,7 @@ import (
 
 // NectarReportsRepo guarda en la BD local los datos que la sincronización lee de Néctar para los
 // informes de asesores: los tramos de espera, el roster de agentes y el estado de la propia
-// sincronización (migración 046).
+// sincronización (migración 047).
 //
 // Las columnas DATETIME van en UTC, sin zona. La conexión del bot usa loc=America/Bogota, así que
 // aquí se escribe el texto UTC a mano y se lee el reloj de pared como UTC; si no, el driver las

@@ -29,7 +29,7 @@
 - **Variables nuevas:**
   - `NECTAR_CHANNEL_ID` (int64; 0 = la apertura no está configurada → error tipado, nada se envía).
   - `NECTAR_SCHEDULE_ENABLED` (por defecto false), `NECTAR_SCHEDULE_CHANNEL_ID` (0) y `NECTAR_SCHEDULE_REFRESH_MIN` (5).
-- **Migración nueva:** `migrations/044_nectar_contact.sql`. La última hoy es la 043. Las columnas de teléfono ya son VARCHAR(63) desde la 040.
+- **Migración nueva:** `migrations/045_nectar_contact.sql` (era la 044; se renumeró al traer de main su `044_add_via_administracion`). La última hoy es la 043. Las columnas de teléfono ya son VARCHAR(63) desde la 040.
 
 ## Review Focus
 
@@ -121,10 +121,10 @@
 - [ ] **Step 4:** ejecutar los tests del Step 2 y `gotest test ./...`. Esperado: solo la línea base.
 - [ ] **Step 5:** commit `feat(nectar): la respuesta a una notificación por Néctar llega a NotificationManager`.
 
-### Task 3: El pending sabe el teléfono del paciente (migración 044 + IVR)
+### Task 3: El pending sabe el teléfono del paciente (migración 045 + IVR)
 
 **Files:**
-- Create: `migrations/044_nectar_contact.sql`
+- Create: `migrations/045_nectar_contact.sql`
 - Modify: `internal/notifications/manager.go`, `internal/repository/local/notification_repo.go`, `internal/scheduler/tasks.go` (`sendVoiceReminders`)
 - Test: `internal/notifications/manager_test.go` (o el archivo de tests vecino), `internal/scheduler/tasks_test.go`
 
@@ -133,7 +133,7 @@
   - `PendingNotification.ContactPhone string`: E.164 del paciente; vacío = `Phone` ya es el teléfono (Bird).
   - `func (p PendingNotification) DialPhone() string`: `ContactPhone` si no está vacío, si no `Phone`.
   - `func (m *NotificationManager) HasPendingForContact(phone string) bool`: verdadero si algún pending tiene `Phone == phone` o `ContactPhone == phone`. Va con un índice en memoria contacto → clave, mantenido en Register, Delete, Restore y Resolve.
-- Migración 044, todo aditivo y anulable:
+- Migración 045, todo aditivo y anulable:
   - `notification_pending.contact_phone VARCHAR(63) NULL` y `notification_history.contact_phone VARCHAR(63) NULL`;
   - `sessions.contact_identifier VARCHAR(63) NULL` con el índice `idx_sessions_contact`;
   - `chat_events.contact_identifier VARCHAR(63) NULL` y `escalations.contact_identifier VARCHAR(63) NULL`.
@@ -147,7 +147,7 @@
 - [ ] **Step 3: implementar.**
   - `Upsert`, `FindAll`, `FindExpired` y `Resolve` leen y escriben `contact_phone`. La copia a history también.
   - El emparejamiento `apptByPhone[pending.Phone]` pasa a `apptByPhone[pending.DialPhone()]`.
-- [ ] **Step 4:** ejecutar los tests y la suite. Con MySQL local levantado, aplicar la 044 con el mecanismo que ya use el repo y comprobar que arranca.
+- [ ] **Step 4:** ejecutar los tests y la suite. Con MySQL local levantado, aplicar la 045 con el mecanismo que ya use el repo y comprobar que arranca.
 - [ ] **Step 5:** commit `feat(nectar): el pending guarda el teléfono del paciente y el IVR marca a ese número`.
 
 ### Task 4: Las plantillas proactivas abren la conversación en Néctar
@@ -220,7 +220,7 @@
 - Test: los tests vecinos de cada uno
 
 **Interfaces:**
-- Consumes: `Bridge.Contact` (Tarea 1); columnas de la 044 (Tarea 3).
+- Consumes: `Bridge.Contact` (Tarea 1); columnas de la 045 (Tarea 3).
 - Produces:
   - `const sm.CtxContactIdentifier = "contact_identifier"`.
   - `func ContactPhoneOf(sess *session.Session) string`: el E.164 del contacto, o `""` si es BSUID u oculto. Vive en `handlers` o en `session`; elegir según dónde no cree ciclo.

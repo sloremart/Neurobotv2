@@ -99,10 +99,10 @@ Vite (frontend del dashboard).
 - [ ] **Step 4:** Mismo comando → PASS; `gotest vet ./internal/nectar/`.
 - [ ] **Step 5: Commit** `feat(d5): lecturas de waiting-cycles y agents de Néctar`.
 
-### Task 2: Migración 046 y repositorio de informes
+### Task 2: Migración 047 y repositorio de informes
 
 **Files:**
-- Create: `migrations/046_nectar_reports.up.sql`, `migrations/046_nectar_reports.down.sql`
+- Create: `migrations/047_nectar_reports.up.sql`, `migrations/047_nectar_reports.down.sql`
 - Create: `internal/repository/local/nectar_reports_repo.go`
 - Modify: `internal/repository/local/escalation_repo.go`
 - Test: `internal/repository/local/nectar_reports_repo_integration_test.go` (`//go:build integration`)
@@ -146,7 +146,7 @@ Vite (frontend del dashboard).
   documenta en su reporte; **no** se toca el MySQL del bot.
 - [ ] **Step 3:** Migración (con `down` que revierte todo) y repos. `gotest build ./...`.
 - [ ] **Step 4:** Integración → PASS; `gotest test ./internal/repository/...` (unitarias) sin regresiones.
-- [ ] **Step 5: Commit** `feat(d5): tablas locales de tramos y asesores de Néctar (migración 046)`.
+- [ ] **Step 5: Commit** `feat(d5): tablas locales de tramos y asesores de Néctar (migración 047)`.
 
 ### Task 3: Emparejamiento escalación ↔ atención (lógica pura)
 

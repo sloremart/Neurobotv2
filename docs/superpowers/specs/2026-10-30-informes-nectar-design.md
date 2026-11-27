@@ -52,7 +52,7 @@ los Planes 45, 46 y 43 (al final).
 
 ## 4. Lo que hay hoy (verificado)
 
-- Fuente de verdad del SLA: tabla local `escalations` (migración 031, + `contact_identifier` en 044): una fila por
+- Fuente de verdad del SLA: tabla local `escalations` (migración 031, + `contact_identifier` en 045): una fila por
   escalación con `agent_id`, `agent_name`, `escalated_at`, `first_agent_msg_at`, `last_agent_msg_at`, `outcome` ∈
   {`returned`, `completed`, `expired`, `agent_no_show`, NULL=abierta}. En Néctar `phone_number` = `nectar:<id>`.
 - Las marcas del agente solo las sella el webhook saliente de Bird (`TouchAgentActivity` → `EscalationRepo.TouchAgent`).
@@ -83,7 +83,7 @@ Una tarea periódica del bot (con el puente encendido) que lee de Néctar:
   petición (si no, `401 replay`).
 - `GET /api/bot/agents` (roster completo, activos e inactivos).
 
-Se guardan en tablas locales nuevas (migración 046), tal como llegan: los tramos (todos los campos, incluido
+Se guardan en tablas locales nuevas (migración 047), tal como llegan: los tramos (todos los campos, incluido
 `contact_messages_before_first_response`) y los asesores (id, nombre, activo, presencia, equipos, chats abiertos,
 hora de lectura). Son la materia prima; las cifras salen de ahí y de `escalations`.
 
@@ -170,7 +170,7 @@ Endpoint interno nuevo, hermano de `/api/internal/agents/bird`, que sirve el ros
 - Todo aditivo para Bird: con el puente apagado, el bot y el dashboard se comportan exactamente como hoy.
 - Las dos rutas de Néctar exigen la **clave de cuenta** (la global da 403). Neuro tiene una sola cuenta.
 - Las rutas no traen datos del paciente; el bot tampoco debe añadirlos a las tablas nuevas ni a los logs.
-- Las tablas nuevas y columnas nuevas, en una migración (046) con su `down`; `ADD COLUMN NULL` en `escalations`.
+- Las tablas nuevas y columnas nuevas, en una migración (047) con su `down`; `ADD COLUMN NULL` en `escalations`.
 - Pruebas en Docker (`golang:1.26-alpine`); línea base: exactamente las 3 fallas conocidas del bot.
 - No hay tráfico real de Neuro en Néctar (falta la WABA): todo se prueba con respuestas simuladas del contrato.
 - Reglas de siempre: nada de `--no-verify`, no se suben archivos ajenos (`auditoria/`, `bin/`, `web/` del

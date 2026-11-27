@@ -1,6 +1,6 @@
 //go:build integration
 
-// El contacto de Néctar (migración 044) contra MySQL real: la sesión lo guarda, chat_events y
+// El contacto de Néctar (migración 045) contra MySQL real: la sesión lo guarda, chat_events y
 // escalations lo copian de su sesión al insertar, y las búsquedas "por teléfono" lo casan con y
 // sin «+». Correr con: make test-integration (requiere LOCAL_TEST_DSN).
 package local

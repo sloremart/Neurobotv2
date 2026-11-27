@@ -16,7 +16,7 @@ import (
 
 // Respuesta al recordatorio pendiente de SIESA (D-04). Si el paciente pulsa «Confirmar» o
 // «Cancelar» y SIESA no responde, la respuesta queda marcada en su fila de notification_history
-// (migración 047) y un proceso de fondo la retoma cuando SIESA vuelve: la confirmación se aplica;
+// (migración 048) y un proceso de fondo la retoma cuando SIESA vuelve: la confirmación se aplica;
 // la cancelación NO, se le pide al paciente que la confirme, como al pulsar «Cancelar». Las dos cosas
 // le escriben al paciente: solo dentro de la ventana de avisos (config.PatientNoticeWindow).
 
