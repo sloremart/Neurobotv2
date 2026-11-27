@@ -151,16 +151,25 @@ func TestLegacyLineReporter_OncePerWindowAndTrigger(t *testing.T) {
 	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
 	r := newLegacyLineReporter(func() time.Time { return now })
 	ctx := context.Background()
-	r.Count(ctx, monitor.TriggerNectarDown, 5, 5*time.Minute, "a")
-	r.Count(ctx, monitor.TriggerNectarDown, 5, 5*time.Minute, "b")
-	r.Count(ctx, monitor.TriggerEscalationFailing, 3, 5*time.Minute, "c")
+	// Bajo el umbral (2 de 2 y 1 de 1) no se avisa; al alcanzarlo, una vez por ventana.
+	r.Count(ctx, monitor.TriggerNectarDown, 2, 5*time.Minute, "a")
+	if n := strings.Count(buf.String(), "level=ERROR"); n != 0 {
+		t.Fatalf("bajo el umbral no avisa: %d", n)
+	}
+	r.Count(ctx, monitor.TriggerNectarDown, 2, 5*time.Minute, "b")
+	r.Count(ctx, monitor.TriggerNectarDown, 2, 5*time.Minute, "b2")
+	r.Count(ctx, monitor.TriggerEscalationFailing, 1, 5*time.Minute, "c")
 	if n := strings.Count(buf.String(), "level=ERROR"); n != 2 {
 		t.Fatalf("errores = %d, quiero 2: %s", n, buf.String())
 	}
 	now = now.Add(6 * time.Minute)
-	r.Count(ctx, monitor.TriggerNectarDown, 5, 5*time.Minute, "d")
+	r.Count(ctx, monitor.TriggerNectarDown, 2, 5*time.Minute, "d") // los viejos salieron de la ventana: 1 < 2
+	if n := strings.Count(buf.String(), "level=ERROR"); n != 2 {
+		t.Fatalf("un solo fallo nuevo no alcanza el umbral: %d", n)
+	}
+	r.Count(ctx, monitor.TriggerNectarDown, 2, 5*time.Minute, "e")
 	if n := strings.Count(buf.String(), "level=ERROR"); n != 3 {
-		t.Fatalf("pasada la ventana vuelve a avisar: %d", n)
+		t.Fatalf("pasada la ventana y con el umbral vuelve a avisar: %d", n)
 	}
 }
 

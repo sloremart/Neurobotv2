@@ -75,26 +75,41 @@ func nectarBridgeFromConfig(cfg *config.Config, store nectar.LineStore) (mainCli
 // volver a Bird (la línea vieja caída no deja muda a la principal); van a un ERROR del log, que
 // llega a Telegram, a lo sumo una vez por disparador y ventana.
 type legacyLineReporter struct {
-	now  func() time.Time
-	mu   sync.Mutex
-	last map[monitor.UrgentTrigger]time.Time
+	now   func() time.Time
+	mu    sync.Mutex
+	fails map[monitor.UrgentTrigger][]time.Time // fallos dentro de la ventana, por disparador
+	last  map[monitor.UrgentTrigger]time.Time   // último ERROR emitido
 }
 
 func newLegacyLineReporter(now func() time.Time) *legacyLineReporter {
-	return &legacyLineReporter{now: now, last: map[monitor.UrgentTrigger]time.Time{}}
+	return &legacyLineReporter{
+		now:   now,
+		fails: map[monitor.UrgentTrigger][]time.Time{},
+		last:  map[monitor.UrgentTrigger]time.Time{},
+	}
 }
 
-func (r *legacyLineReporter) Count(_ context.Context, trigger monitor.UrgentTrigger, _ int, window time.Duration, detail string) {
+// Count anota un fallo y emite el ERROR solo al llegar al umbral dentro de la ventana, y a lo sumo
+// una vez por ventana.
+func (r *legacyLineReporter) Count(_ context.Context, trigger monitor.UrgentTrigger, threshold int, window time.Duration, detail string) {
 	now := r.now()
 	r.mu.Lock()
+	kept := r.fails[trigger][:0]
+	for _, t := range r.fails[trigger] {
+		if now.Sub(t) < window {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	r.fails[trigger] = kept
 	prev, seen := r.last[trigger]
-	if seen && now.Sub(prev) < window {
+	if len(kept) < threshold || (seen && now.Sub(prev) < window) {
 		r.mu.Unlock()
 		return
 	}
 	r.last[trigger] = now
 	r.mu.Unlock()
-	slog.Error("nectar línea vieja: fallos", "trigger", string(trigger), "detail", detail)
+	slog.Error("nectar línea vieja: fallos", "trigger", string(trigger), "detail", detail, "failures", len(kept))
 }
 
 // nectarHealth es el valor de `nectar_host` en /health: SOLO el host (ni claves ni ruta), o "none".
