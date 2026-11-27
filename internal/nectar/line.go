@@ -64,13 +64,20 @@ func (r *LineRegistry) Line(ctx context.Context, id int64) Line {
 	return l
 }
 
-// Register guarda la línea y la deja en caché solo si el store lo aceptó. No relee el store:
-// quien registra lo hace al ver la conversación por primera vez.
+// Register guarda la línea y deja en caché la que el store REALMENTE tiene: si ya había una, el store
+// conserva la primera y esa es la que vale. Se relee tras guardar; si la lectura falla no se cachea
+// nada (la siguiente consulta preguntará al store).
 func (r *LineRegistry) Register(ctx context.Context, id int64, l Line) error {
 	if err := r.store.Register(ctx, id, l); err != nil {
 		return err
 	}
-	r.cache.Store(id, l)
+	stored, found, err := r.store.LineOf(ctx, id)
+	if err != nil || !found {
+		slog.Warn("nectar: no se pudo releer la línea tras registrarla; no se cachea",
+			"conversation_id", id, "error", err)
+		return nil //nolint:nilerr // el registro se guardó; solo falta la caché
+	}
+	r.cache.Store(id, stored)
 	return nil
 }
 

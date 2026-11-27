@@ -25,7 +25,9 @@ func (f *fakeLineStore) Register(_ context.Context, id int64, l Line) error {
 	if f.err != nil {
 		return f.err
 	}
-	f.lines[id] = l
+	if _, ok := f.lines[id]; !ok { // como el real: conserva la primera
+		f.lines[id] = l
+	}
 	return nil
 }
 
@@ -45,8 +47,19 @@ func TestLineRegistry_RegisterThenLineFromCache(t *testing.T) {
 	if got := r.Line(context.Background(), 7); got != LineLegacy {
 		t.Fatalf("got %q, want legacy", got)
 	}
-	if st.reads != 0 {
-		t.Fatalf("reads = %d, want 0", st.reads)
+	if st.reads != 1 {
+		t.Fatalf("reads = %d, want 1 (la relectura tras Register; luego caché)", st.reads)
+	}
+}
+
+func TestLineRegistry_RegisterCachesWhatTheStoreKept(t *testing.T) {
+	st := &fakeLineStore{lines: map[int64]Line{7: LineLegacy}}
+	r := NewLineRegistry(st)
+	if err := r.Register(context.Background(), 7, LineMain); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Line(context.Background(), 7); got != LineLegacy {
+		t.Fatalf("got %q, want legacy (la que ya tenía el store)", got)
 	}
 }
 

@@ -77,7 +77,7 @@ func newLegacyHandler(inbox InboxPersister, sink *sinkRecorder, reg *nectar.Line
 	h := newNectarHandler(inbox, sink)
 	h.cfg = &config.Config{
 		NectarNoticeSecret: nectarTestSecret, NectarLegacyNoticeSecret: legacyNoticeSecret,
-		NectarLegacyServiceKey: "kv", NectarLegacyChannelID: 9,
+		NectarLegacyServiceKey: "kv", NectarLegacyChannelID: 9, NectarLegacyArmed: true,
 	}
 	h.SetNectarLines(reg)
 	return h
@@ -184,6 +184,7 @@ func TestMainNotice_RegistersMainWhenUnknown(t *testing.T) {
 	store := &recordingLineStore{log: log, lines: map[int64]nectar.Line{}}
 	inbox := &loggingInbox{memInbox: newMemInbox(), log: log}
 	h := newNectarHandler(inbox, &sinkRecorder{})
+	h.cfg.NectarLegacyArmed = true
 	h.SetNectarLines(nectar.NewLineRegistry(store))
 
 	if rec := postNotice(h, signedNotice(nectarTestSecret, inboundBody("m-1"))); rec.Code != http.StatusOK {
@@ -217,5 +218,59 @@ func TestCapabilities_AcceptsEitherSecret(t *testing.T) {
 		if rec.Code != want {
 			t.Fatalf("secreto %q: got %d, quiero %d", secret, rec.Code, want)
 		}
+	}
+}
+
+// Configurada pero NO armada (p. ej. sin secreto de ida): como puente apagado, sin registro, WAL ni despacho.
+func TestLegacyNotice_ConfiguredNotArmedIs200Discard(t *testing.T) {
+	inbox, sink := newMemInbox(), &sinkRecorder{}
+	log := &orderLog{}
+	store := &recordingLineStore{log: log, lines: map[int64]nectar.Line{}}
+	h := newLegacyHandler(inbox, sink, nectar.NewLineRegistry(store))
+	h.cfg.NectarLegacyArmed = false
+
+	rec := postLegacyNotice(h, signedLegacyNotice(legacyNoticeSecret, inboundBody("l-na")))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "bridge_off") {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+	if len(inbox.rows) != 0 || len(log.snapshot()) != 0 {
+		t.Fatalf("nada en el WAL ni en el registro: rows=%v log=%v", inbox.rows, log.snapshot())
+	}
+	if m, c := sink.counts(); m+c != 0 {
+		t.Fatal("nada al pool")
+	}
+	if rec := postLegacyNotice(h, signedLegacyNotice("ajeno", inboundBody("l-na2"))); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("firma ajena → 401, got %d", rec.Code)
+	}
+}
+
+// Sin la línea vieja armada, la ruta principal no escribe en el registro.
+func TestMainNotice_LegacyNotArmedDoesNotRegister(t *testing.T) {
+	log := &orderLog{}
+	store := &recordingLineStore{log: log, lines: map[int64]nectar.Line{}}
+	h := newNectarHandler(&loggingInbox{memInbox: newMemInbox(), log: log}, &sinkRecorder{})
+	h.SetNectarLines(nectar.NewLineRegistry(store))
+	if rec := postNotice(h, signedNotice(nectarTestSecret, inboundBody("m-na"))); rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+	if got := log.snapshot(); len(got) != 1 || got[0] != "wal" {
+		t.Fatalf("solo el WAL, sin registro: %v", got)
+	}
+}
+
+// El cuarto aviso por la ruta vieja registra la línea vieja.
+func TestLegacyNotice_OpenedByAgentRegistersLegacy(t *testing.T) {
+	log := &orderLog{}
+	store := &recordingLineStore{log: log, lines: map[int64]nectar.Line{}}
+	h := newLegacyHandler(&loggingInbox{memInbox: newMemInbox(), log: log}, &sinkRecorder{}, nectar.NewLineRegistry(store))
+	rec := postLegacyNotice(h, signedLegacyNotice(legacyNoticeSecret, openedBody))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "agent") {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+	if store.lines[9001] != nectar.LineLegacy {
+		t.Fatalf("línea = %q", store.lines[9001])
+	}
+	if got := log.snapshot(); len(got) < 1 || got[0] != "register:legacy" {
+		t.Fatalf("el registro va antes del WAL: %v", got)
 	}
 }

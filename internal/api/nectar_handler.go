@@ -347,7 +347,8 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 // HandleNectarLegacyNotice atiende POST /api/webhooks/nectar/legacy: los mismos cuatro avisos, pero de
 // la línea vieja, firmados con su propio secreto. Sin la línea vieja configurada (NECTAR_LEGACY_*) la
 // ruta no existe para quien la sondee: 404. Configurada pero con el puente principal apagado (vuelta a
-// Bird), se comporta como la ruta principal apagada: verifica la firma y acusa con 200 sin guardar nada.
+// Bird) o sin quedar armada (le falta, p. ej., el secreto de ida), se comporta como la ruta principal
+// apagada: verifica la firma y acusa con 200 sin guardar ni despachar nada, porque no habría cómo contestar.
 func (h *WebhookHandler) HandleNectarLegacyNotice(w http.ResponseWriter, r *http.Request) {
 	if ok, _ := h.cfg.NectarLegacyConfigured(); !ok {
 		http.NotFound(w, r)
@@ -369,10 +370,10 @@ func (h *WebhookHandler) noticeSecret(line nectar.Line) string {
 }
 
 // registerNoticeLine deja registrada la línea de la conversación si aún no se conoce. Debe correr antes
-// de guardar el aviso en el WAL: el envío y el replay reparten por ese registro, y un aviso ya acusado
+// de guardar el aviso en el WAL, y solo con la línea vieja armada (sin ella todo es main y no se escribe nada): el envío y el replay reparten por ese registro, y un aviso ya acusado
 // con 200 no se vuelve a pedir. Un fallo se devuelve: el llamador contesta 5xx para que Néctar reintente.
 func (h *WebhookHandler) registerNoticeLine(ctx context.Context, conversationID int64, line nectar.Line) error {
-	if h.nectarLines == nil || h.nectarLines.Known(conversationID) {
+	if h.nectarLines == nil || !h.cfg.NectarLegacyArmed || h.nectarLines.Known(conversationID) {
 		return nil
 	}
 	return h.nectarLines.Register(ctx, conversationID, line)
@@ -410,8 +411,8 @@ func (h *WebhookHandler) handleNectarNotice(w http.ResponseWriter, r *http.Reque
 	// la ventana de 24 h y, al volver el puente, entregaría el atraso entero (con mensajes viejos)
 	// en tandas de 100. Esos pacientes los rescata a mano un supervisor. El cuarto aviso recibe su
 	// respuesta de siempre («agent», la única de Neuro), porque Néctar la necesita para enrutar.
-	if !h.nectarBridgeOn {
-		slog.Warn("nectar: aviso descartado, el puente está apagado", "reason", "bridge_off")
+	if !h.nectarBridgeOn || (line == nectar.LineLegacy && !h.cfg.NectarLegacyArmed) {
+		slog.Warn("nectar: aviso descartado, el puente está apagado", "reason", "bridge_off", "line", string(line))
 		if err == nil && n.Kind == nectar.KindConversationOpenedByAgent {
 			writeNectarReplyToAgent(w)
 			return
