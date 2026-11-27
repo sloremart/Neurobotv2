@@ -125,6 +125,20 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 			sess.SetContext("entity_list_codes", "50001")
 			return must(askEntityNumberHandler(nil)(ctx, sess, textM("1")))(t)
 		}},
+		{"poliza", sm.EscalationReasonPolicy, false, func(t *testing.T) *sm.StateResult {
+			return must(askClientTypeHandler(nil)(ctx, testSess(sm.StateAskClientType), postbackM("ct_6")))(t)
+		}},
+		{"entidad_soat", sm.EscalationReasonSoatEntity, false, func(t *testing.T) *sm.StateResult {
+			repo := &testutil.MockEntityRepo{
+				FindByCodeFn: func(_ context.Context, code string) (*domain.Entity, error) {
+					return &domain.Entity{Code: code, Name: "SEGUROS SOAT COLOMBIA", IsActive: true}, nil
+				},
+			}
+			sess := testSess(sm.StateAskEntityNumber)
+			sess.SetContext("entity_list_count", "1")
+			sess.SetContext("entity_list_codes", "SOA001")
+			return must(askEntityNumberHandler(repo)(ctx, sess, textM("1")))(t)
+		}},
 		{"agrupacion_vacia", sm.EscalationReasonEmptyGrouping, false, func(t *testing.T) *sm.StateResult {
 			sess := testSess(sm.StateConfirmOCRResult)
 			sess.SetContext("ocr_cups_json", "[]")

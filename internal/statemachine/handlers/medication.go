@@ -20,6 +20,12 @@ import (
 // ocrSvc puede ser nil (la orden se acepta sin validación de nombre).
 func RegisterMedicationHandlers(m *sm.Machine, medRepo *local.MedicationPendingRepo, ocrSvc *services.OCRService) {
 	m.Register(sm.StateMedicationCheckExcel, medicationCheckExcelHandler(medRepo))
+	// Paso automático sin campo que escala con la vía endovenosa: reanudarlo tal cual repetiría la
+	// misma consulta y la misma escalación (P1-5).
+	sm.HidePlainResume(sm.StateMedicationCheckExcel)
+	sm.RegisterStaticReturnMenu(sm.StateMedicationCheckExcel,
+		sm.ReturnOption{Label: "Volver al menú principal", Value: "menu_principal", Target: sm.StateMainMenu},
+	)
 	m.Register(sm.StateMedicationAskLastDate, medicationAskLastDateHandler())
 	m.Register(sm.StateMedicationAskDose, medicationAskDoseHandler())
 	m.Register(sm.StateMedicationAskFrequency, medicationAskFrequencyHandler())
@@ -100,8 +106,9 @@ func medicationCheckExcelHandler(medRepo *local.MedicationPendingRepo) sm.StateH
 						"Te voy a comunicar con uno de nuestros agentes para coordinar tu cita. 🙏",
 					medDesc,
 				)).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonMedicationIntravenous).
 				WithEvent("medication_endovenosa_escalated", map[string]interface{}{
-					"doc":                sess.GetContext("patient_doc"),
+					"doc":                utils.MaskDocument(sess.GetContext("patient_doc")),
 					"medicamento":        rec.Medicamento,
 					"via_administracion": rec.ViaAdministracion,
 				}), nil

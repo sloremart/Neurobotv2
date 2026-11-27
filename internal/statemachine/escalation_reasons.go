@@ -61,8 +61,16 @@ const (
 	EscalationReasonEntityUnresolved = "entidad_no_resuelta"
 	// EscalationReasonParticularLiga: entidad «particular liga» (50001), la atiende una persona.
 	EscalationReasonParticularLiga = "particular_liga"
+	// EscalationReasonPolicy: el paciente eligió la categoría POLIZA (seguros y SOAT), que coordina a
+	// mano el área de seguros.
+	EscalationReasonPolicy = "poliza"
+	// EscalationReasonSoatEntity: la entidad elegida es un SOAT (autorización y facturación especiales).
+	EscalationReasonSoatEntity = "entidad_soat"
 	// EscalationReasonMedicationError: falló la preparación de la agenda de medicamentos.
 	EscalationReasonMedicationError = "medicamentos_error"
+	// EscalationReasonMedicationIntravenous: el medicamento pendiente del paciente es de vía
+	// endovenosa, que no se gestiona sola.
+	EscalationReasonMedicationIntravenous = "medicamento_endovenoso"
 	// EscalationReasonEmgConsolidationFailed: no se pudo consolidar el bloque EMG/NC.
 	EscalationReasonEmgConsolidationFailed = "consolidacion_emg_fallida"
 	// EscalationReasonEmgAskedForAgent: el paciente pidió el agente al subir la orden EMG.
@@ -95,7 +103,8 @@ func EscalationReasons() []string {
 		EscalationReasonOCRInvalidJSON, EscalationReasonSanitasBlock, EscalationReasonNoValidCups,
 		EscalationReasonEmptyGrouping, EscalationReasonNoCoverage, EscalationReasonSleepStudy,
 		EscalationReasonNoEntities, EscalationReasonEntityUnresolved, EscalationReasonParticularLiga,
-		EscalationReasonMedicationError, EscalationReasonEmgConsolidationFailed,
+		EscalationReasonPolicy, EscalationReasonSoatEntity,
+		EscalationReasonMedicationError, EscalationReasonMedicationIntravenous, EscalationReasonEmgConsolidationFailed,
 		EscalationReasonEmgAskedForAgent, EscalationReasonBotDisabled, EscalationReasonAgentInputRejected,
 		EscalationReasonRescheduleNoSlots, EscalationReasonQuantityOutOfRange, EscalationReasonOCRFailedReads,
 		EscalationReasonCupsPossibleMisread,
@@ -129,7 +138,10 @@ var escalationReasonFromPatient = map[string]bool{
 	EscalationReasonParticularLiga:         false,
 	EscalationReasonNoEntities:             false,
 	EscalationReasonEntityUnresolved:       false,
+	EscalationReasonPolicy:                 false,
+	EscalationReasonSoatEntity:             false,
 	EscalationReasonMedicationError:        false,
+	EscalationReasonMedicationIntravenous:  false,
 	EscalationReasonEmgConsolidationFailed: false,
 	EscalationReasonRescheduleNoSlots:      false,
 	EscalationReasonAgentInputRejected:     false,

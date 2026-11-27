@@ -160,7 +160,8 @@ La fuente de verdad del nivel y del desenlace de cada paso es `internal/observab
 - Validación de CUPS (VALIDATE_OCR): `cups_asignado_nombre` (MILESTONE; código asignado por nombre, reason: vía) y `cups_corregido`
   (MILESTONE; código leído corregido, reason: vía, attrs `leido`/`usado`) — el paciente aún confirma; `cups_duda` (OUTCOME, → agente;
   posible mala lectura, attrs `leido`/`candidatos`, reason cuando no hay candidatos).
-- Reglas: `coverage_particular` (MILESTONE), `bloqueo_sanitas_escalated` (OUTCOME, → agente), `age_restriction_blocked` (OUTCOME),
+- Reglas: `coverage_particular` (MILESTONE), `bloqueo_sanitas_escalated` (OUTCOME, → agente), `medication_order_redirected` (MILESTONE;
+  la orden es de aplicación de un medicamento —inyección, infusión, infiltración— y sigue por el flujo de medicamentos), `age_restriction_blocked` (OUTCOME),
   `mrc_limit_blocked` (OUTCOME; reason `emg_consolidation` cuando es la consolidación EMG) / `mrc_month_filtered` (MILESTONE),
   `reschedule_orphan` (ERROR; la cita vieja quedó sin cancelar tras reagendar).
 
@@ -189,7 +190,8 @@ La fuente de verdad del nivel y del desenlace de cada paso es `internal/observab
 `ocr_pidio_agente`, `emg_pidio_agente`, `sin_convenio` (eligió «agente»), `max_reintentos`, `ia_recuperacion_agotada` (un motivo vacío o nuevo sin
 clasificar también suma). Los que dispara el bot NO suman ni cortan: `ocr_sin_codigo`, `ocr_lecturas_fallidas` (3 lecturas fallidas seguidas),
 `cups_posible_mala_lectura`, `cantidad_fuera_de_rango` (CUPS > 100), `ocr_json_invalido`, `bloqueo_sanitas`, `cups_no_validos`, `agrupacion_vacia`,
-`estudio_sueno`, `particular_sin_orden`, `particular_liga`, `sin_entidades`, `entidad_no_resuelta`, `medicamentos_error`,
+`estudio_sueno`, `particular_sin_orden`, `particular_liga`, `poliza` (categoría POLIZA), `entidad_soat`, `sin_entidades`,
+`entidad_no_resuelta`, `medicamentos_error`, `medicamento_endovenoso` (vía endovenosa),
 `consolidacion_emg_fallida`, `reprogramar_sin_horarios`, `dato_agente_rechazado`, `bot_desactivado`. De las notificaciones:
 `notificacion_sin_respuesta`, `notificacion_fallo_sistema`, `confirmacion_texto_libre`, `reprogramar_sin_procedimiento` y
 `notificacion_siesa_pendiente` (caso en `notif_siesa_case`: confirm\|cancel\|changed).
@@ -248,6 +250,7 @@ estado genérica" NO es `flow_event`, solo los estados con significado de negoci
 | Contrato resuelto (`contract_resolved`, MRC vs Evento) | MILESTONE |
 | Sanitas sin municipio → captura forzada (`sanitas_muni_forced`) | MILESTONE |
 | Sin entidades / entidad no resuelta → escala | OUTCOME |
+| Categoría POLIZA o entidad SOAT → escala (`poliza_escalated`, `soat_escalated`) | OUTCOME |
 | Falla `UpdateEntity`/`UpdateContract` | ERROR |
 
 **Registro (`registro`, trace `sess`)**

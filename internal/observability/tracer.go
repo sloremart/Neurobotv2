@@ -98,14 +98,15 @@ var catalog = map[string]stepSpec{
 	// Auditoría 2026-08-01 (H131-1): steps que ya se emitían pero NUNCA estuvieron en el catálogo, así
 	// que caían en el default milestone/info. El nivel se asigna por lo que HACE cada uno en el código:
 	// terminal (LvOutcome) si cierra el flujo, milestone si el paciente sigue dentro.
-	"agendar/stashed_order_used":        {LvMilestone, "ok", ""},      // se consumió la orden guardada
-	"agendar/stashed_order_failed":      {LvMilestone, "retry", ""},   // no se pudo leer → se re-pide
-	"agendar/photo_first_message":       {LvMilestone, "info", ""},    // foto como 1er mensaje
-	"agendar/photo_intent_scheduling":   {LvMilestone, "info", ""},    // foto = intención de agendar
-	"agendar/ocr_page_appended":         {LvMilestone, "ok", ""},      // página adicional fusionada
-	"agendar/ocr_append_failed":         {LvMilestone, "retry", ""},   // no se pudo anexar → se re-pide
-	"agendar/ocr_no_cups_code":          {LvOutcome, "escalated", ""}, // sin CUPS válidos → agente
-	"agendar/bloqueo_sanitas_escalated": {LvOutcome, "escalated", ""}, // CUP de bloqueo SANITAS → agente
+	"agendar/stashed_order_used":          {LvMilestone, "ok", ""},      // se consumió la orden guardada
+	"agendar/stashed_order_failed":        {LvMilestone, "retry", ""},   // no se pudo leer → se re-pide
+	"agendar/photo_first_message":         {LvMilestone, "info", ""},    // foto como 1er mensaje
+	"agendar/photo_intent_scheduling":     {LvMilestone, "info", ""},    // foto = intención de agendar
+	"agendar/ocr_page_appended":           {LvMilestone, "ok", ""},      // página adicional fusionada
+	"agendar/ocr_append_failed":           {LvMilestone, "retry", ""},   // no se pudo anexar → se re-pide
+	"agendar/ocr_no_cups_code":            {LvOutcome, "escalated", ""}, // sin CUPS válidos → agente
+	"agendar/bloqueo_sanitas_escalated":   {LvOutcome, "escalated", ""}, // CUP de bloqueo SANITAS → agente
+	"agendar/medication_order_redirected": {LvMilestone, "info", ""},    // orden de aplicación de medicamento → flujo de medicamentos
 
 	// Auditoría de seguridad 2026-11-03: topes que pasan la orden a un agente.
 	"agendar/cups_quantity_out_of_range": {LvOutcome, "escalated", ""}, // cantidad por encima del tope → agente
@@ -162,6 +163,8 @@ var catalog = map[string]stepSpec{
 	"entidad/contract_resolved":    {LvMilestone, "ok", ""},
 	"entidad/sanitas_muni_forced":  {LvMilestone, "ok", ""},
 	"entidad/no_entities":          {LvOutcome, "escalated", ""},
+	"entidad/poliza_escalated":     {LvOutcome, "escalated", ""}, // categoría POLIZA → agente
+	"entidad/soat_escalated":       {LvOutcome, "escalated", ""}, // entidad SOAT → agente
 	"entidad/entity_update_failed": {LvError, "error", ""},
 
 	// Registro (§3A) — trace sess:<id>

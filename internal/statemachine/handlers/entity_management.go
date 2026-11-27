@@ -140,6 +140,7 @@ func askClientTypeHandler(entityRepo repository.EntityRepository) sm.StateHandle
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithContext("client_type", label).
 				WithContext("entity_category", category).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonPolicy).
 				WithText("Las citas con *póliza de seguro o SOAT* requieren coordinación especial con nuestra área de seguros. Te voy a comunicar con uno de nuestros agentes para ayudarte. 🙏").
 				WithEvent("poliza_category_escalated", map[string]interface{}{"category": category}), nil
 		}
@@ -404,6 +405,7 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 			return sm.NewResult(sm.StateEscalateToAgent).
 				WithContext("selected_entity_code", entityCode).
 				WithContext("selected_entity_name", entityName).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonSoatEntity).
 				WithText("Las citas con *SOAT* requieren gestión especial. Te voy a comunicar con uno de nuestros agentes para ayudarte. 🙏").
 				WithEvent("soat_entity_escalated", map[string]interface{}{"entity_code": entityCode, "entity_name": entityName}), nil
 		}
