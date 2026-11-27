@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -141,6 +142,55 @@ func TestNewLineAnnouncement_Trimmed(t *testing.T) {
 	t.Setenv("NEW_LINE_ANNOUNCEMENT", "   ")
 	if got := Load().NewLineAnnouncement; got != "" {
 		t.Errorf("solo espacios debe quedar vacía, got %q", got)
+	}
+}
+
+// --- Línea vieja de Néctar (NECTAR_LEGACY_*) ---
+
+// Sin secretos propios, la línea vieja usa los de la principal; con ellos, los suyos.
+func TestNectarLegacy_DefaultsSecretsToMain(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("NECTAR_REQUEST_SECRET", "req-main")
+	t.Setenv("NECTAR_NOTICE_SECRET", "notice-main")
+	cfg := Load()
+	if cfg.NectarLegacyRequestSecret != "req-main" || cfg.NectarLegacyNoticeSecret != "notice-main" {
+		t.Fatalf("defaults = %q / %q", cfg.NectarLegacyRequestSecret, cfg.NectarLegacyNoticeSecret)
+	}
+	t.Setenv("NECTAR_LEGACY_REQUEST_SECRET", "req-legacy")
+	t.Setenv("NECTAR_LEGACY_NOTICE_SECRET", "notice-legacy")
+	cfg = Load()
+	if cfg.NectarLegacyRequestSecret != "req-legacy" || cfg.NectarLegacyNoticeSecret != "notice-legacy" {
+		t.Fatalf("propios = %q / %q", cfg.NectarLegacyRequestSecret, cfg.NectarLegacyNoticeSecret)
+	}
+}
+
+func TestNectarLegacy_KeyWithoutChannelIsError(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("NECTAR_LEGACY_SERVICE_KEY", "k")
+	ok, err := Load().NectarLegacyConfigured()
+	if ok || err == nil || !strings.Contains(err.Error(), "NECTAR_LEGACY_CHANNEL_ID") {
+		t.Fatalf("= (%v, %v), want error que nombre NECTAR_LEGACY_CHANNEL_ID", ok, err)
+	}
+}
+
+func TestNectarLegacy_ChannelWithoutKeyIsError(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("NECTAR_LEGACY_CHANNEL_ID", "7")
+	ok, err := Load().NectarLegacyConfigured()
+	if ok || err == nil || !strings.Contains(err.Error(), "NECTAR_LEGACY_SERVICE_KEY") {
+		t.Fatalf("= (%v, %v), want error que nombre NECTAR_LEGACY_SERVICE_KEY", ok, err)
+	}
+}
+
+func TestNectarLegacy_EmptyIsOffNoError(t *testing.T) {
+	setRequiredEnv(t)
+	if ok, err := Load().NectarLegacyConfigured(); ok || err != nil {
+		t.Fatalf("vacía = (%v, %v), want (false, nil)", ok, err)
+	}
+	t.Setenv("NECTAR_LEGACY_SERVICE_KEY", "k")
+	t.Setenv("NECTAR_LEGACY_CHANNEL_ID", "7")
+	if ok, err := Load().NectarLegacyConfigured(); !ok || err != nil {
+		t.Fatalf("completa = (%v, %v), want (true, nil)", ok, err)
 	}
 }
 

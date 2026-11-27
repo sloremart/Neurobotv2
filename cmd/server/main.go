@@ -576,7 +576,7 @@ func main() {
 	if nectarBridge != nil {
 		nectarHealthURL = cfg.NectarBaseURL
 	}
-	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, nectarHealthURL))
+	mux.HandleFunc("GET /health", healthHandler(localDB, externalDB, nectarHealthURL, cfg.NectarLegacyArmed))
 	mux.HandleFunc("POST /api/webhooks/whatsapp", webhookHandler.HandleWhatsApp)
 	mux.HandleFunc("POST /api/webhooks/whatsapp/outbound", webhookHandler.HandleWhatsAppOutbound)
 	mux.HandleFunc("POST /api/webhooks/conversations", webhookHandler.HandleConversation)
@@ -798,9 +798,11 @@ func mountProtected(mux *http.ServeMux, guard func(http.Handler) http.Handler, d
 }
 
 // healthHandler responde el estado del bot. nectarBaseURL se publica como `nectar_host` (SOLO el host:
-// ni claves ni ruta), o "none".
-func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.HandlerFunc {
+// ni claves ni ruta), o "none". legacyArmed (opcional) publica `nectar_legacy: armed` solo cuando la
+// línea vieja de Néctar quedó armada; sin ella el cuerpo es el de siempre.
+func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string, legacyArmed ...bool) http.HandlerFunc {
 	cache := &healthCache{}
+	legacy := len(legacyArmed) > 0 && legacyArmed[0]
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		cache.mu.Lock()
@@ -842,6 +844,9 @@ func healthHandler(localDB, externalDB *sql.DB, nectarBaseURL string) http.Handl
 			}
 
 			health["nectar_host"] = nectarHealth(nectarBaseURL)
+			if legacy {
+				health["nectar_legacy"] = "armed"
+			}
 
 			cache.health = health
 			cache.critical = critical

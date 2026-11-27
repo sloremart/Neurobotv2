@@ -131,6 +131,27 @@ func TestHealth_CancelledRequestDoesNotPoisonCache(t *testing.T) {
 	}
 }
 
+// Con la línea vieja armada /health lo publica; apagada, la clave no existe (el otro cuerpo, byte a byte,
+// lo fijan los tests de arriba).
+func TestHealth_LegacyLineArmedIsPublished(t *testing.T) {
+	localDB := sql.OpenDB(pingConnector{})
+	externalDB := sql.OpenDB(pingConnector{})
+	t.Cleanup(func() { _ = localDB.Close(); _ = externalDB.Close() })
+
+	rec := httptest.NewRecorder()
+	healthHandler(localDB, externalDB, "", true).ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	want := `{"external_db":"ok","local_db":"ok","nectar_host":"none","nectar_legacy":"armed","status":"ok"}` + "\n"
+	if body := rec.Body.String(); body != want {
+		t.Errorf("armada: cuerpo = %s", body)
+	}
+
+	rec = httptest.NewRecorder()
+	healthHandler(localDB, externalDB, "", false).ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if strings.Contains(rec.Body.String(), "nectar_legacy") {
+		t.Errorf("apagada: no debe publicar nectar_legacy: %s", rec.Body.String())
+	}
+}
+
 // downConnector simula una BD caída: la conexión abre pero el Ping falla.
 type downConnector struct{}
 

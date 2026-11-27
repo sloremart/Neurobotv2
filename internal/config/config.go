@@ -116,6 +116,16 @@ type Config struct {
 	// con plantilla (recordatorios, lista de espera, avisos). 0 = la apertura no está configurada:
 	// con el puente puesto, esas plantillas fallan con un error permanente y nada sale.
 	NectarChannelID int64
+	// LA LÍNEA VIEJA (segundo canal de Néctar en el mismo bot). Todo vacío = apagada y el bot se
+	// comporta como siempre. La clave y el canal van juntos (NectarLegacyConfigured); los secretos de
+	// ida y de avisos, si no se definen, son los de la línea principal.
+	NectarLegacyServiceKey    string // NECTAR_LEGACY_SERVICE_KEY
+	NectarLegacyChannelID     int64  // NECTAR_LEGACY_CHANNEL_ID
+	NectarLegacyRequestSecret string // NECTAR_LEGACY_REQUEST_SECRET (por defecto NectarRequestSecret)
+	NectarLegacyNoticeSecret  string // NECTAR_LEGACY_NOTICE_SECRET (por defecto NectarNoticeSecret)
+	// NectarLegacyArmed dice si la línea vieja quedó armada al arrancar. NO sale de una variable:
+	// lo pone main, como NectarBridgeArmed.
+	NectarLegacyArmed bool
 	// EL HORARIO LEÍDO DE NÉCTAR (GET /api/bot/schedule). NectarScheduleEnabled
 	// (NECTAR_SCHEDULE_ENABLED) viene APAGADA: apagada rige la semana de siempre
 	// (DefaultBusinessHours) y, con puente, se leen solo los festivos de Néctar. El .env la enciende
@@ -500,6 +510,15 @@ func Load() *Config {
 		log.Fatalf("NECTAR_CHANNEL_ID inválida: %v", err)
 	}
 	cfg.NectarChannelID = channelID
+
+	legacyChannelID, err := parseNectarChannelID(os.Getenv("NECTAR_LEGACY_CHANNEL_ID"))
+	if err != nil {
+		log.Fatalf("NECTAR_LEGACY_CHANNEL_ID inválida: %v", err)
+	}
+	cfg.NectarLegacyChannelID = legacyChannelID
+	cfg.NectarLegacyServiceKey = strings.TrimSpace(os.Getenv("NECTAR_LEGACY_SERVICE_KEY"))
+	cfg.NectarLegacyRequestSecret = getEnv("NECTAR_LEGACY_REQUEST_SECRET", cfg.NectarRequestSecret)
+	cfg.NectarLegacyNoticeSecret = getEnv("NECTAR_LEGACY_NOTICE_SECRET", cfg.NectarNoticeSecret)
 
 	cfg.NectarScheduleEnabled = getEnvBool("NECTAR_SCHEDULE_ENABLED", false)
 	cfg.NectarScheduleRefreshMin = getEnvInt("NECTAR_SCHEDULE_REFRESH_MIN", DefaultScheduleRefreshMin)
@@ -916,6 +935,23 @@ func parseNectarCloseMin(raw string) (int, error) {
 		return 0, fmt.Errorf("cierre de Néctar %d debe ser positivo", minutes)
 	}
 	return minutes, nil
+}
+
+// NectarLegacyConfigured dice si la línea vieja está configurada: ok solo con clave Y canal. Uno sin
+// el otro es un error que nombra la variable que falta (arrancar a medias dejaría la línea muda);
+// los dos vacíos es simplemente apagada (false, nil).
+func (c *Config) NectarLegacyConfigured() (ok bool, err error) {
+	hasKey := c.NectarLegacyServiceKey != ""
+	hasChannel := c.NectarLegacyChannelID != 0
+	switch {
+	case hasKey && hasChannel:
+		return true, nil
+	case hasKey:
+		return false, fmt.Errorf("falta NECTAR_LEGACY_CHANNEL_ID")
+	case hasChannel:
+		return false, fmt.Errorf("falta NECTAR_LEGACY_SERVICE_KEY")
+	}
+	return false, nil
 }
 
 // parseNectarChannelID lee NECTAR_CHANNEL_ID: vacío = 0 (apertura sin configurar) y cualquier otra
