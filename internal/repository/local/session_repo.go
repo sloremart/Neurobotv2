@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -156,6 +157,15 @@ func (r *SessionRepo) Create(ctx context.Context, s *session.Session) error {
 		}
 		return fmt.Errorf("create session: %w", err)
 	}
+	// La línea la resolvió la subconsulta del INSERT: se lee de vuelta para que la sesión en memoria
+	// (la que usa el primer turno, sin releerla por ID) lleve la misma que la fila. Un fallo aquí deja
+	// la línea vacía (principal) y se avisa: la sesión ya existe y no debe fallar por esto.
+	var line sql.NullString
+	if err := r.db.QueryRowContext(ctx, `SELECT nectar_line FROM sessions WHERE id = ?`, s.ID).Scan(&line); err != nil {
+		slog.Warn("no se pudo leer la línea de la sesión recién creada", "session_id", s.ID, "error", err)
+		return nil
+	}
+	s.NectarLine = line.String
 	return nil
 }
 

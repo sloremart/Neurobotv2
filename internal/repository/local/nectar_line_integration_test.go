@@ -20,6 +20,13 @@ const lineSessConvID int64 = 990000042
 // lineSession crea una sesión con la clave dada (con o sin fila en el registro) y limpia al final.
 func lineSession(t *testing.T, db *sql.DB, key string, register bool) string {
 	t.Helper()
+	id, _ := lineSessionObj(t, db, key, register)
+	return id
+}
+
+// lineSessionObj es lineSession y además devuelve el objeto tal como lo dejó Create (sin releer por ID).
+func lineSessionObj(t *testing.T, db *sql.DB, key string, register bool) (string, *session.Session) {
+	t.Helper()
 	ctx := context.Background()
 	id := fmt.Sprintf("itest-line-%d", time.Now().UnixNano())
 	_, _ = db.ExecContext(ctx, "DELETE FROM nectar_conversation_line WHERE conversation_id = ?", lineSessConvID)
@@ -34,13 +41,14 @@ func lineSession(t *testing.T, db *sql.DB, key string, register bool) string {
 		_, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", id)
 		_, _ = db.ExecContext(ctx, "DELETE FROM nectar_conversation_line WHERE conversation_id = ?", lineSessConvID)
 	})
-	if err := NewSessionRepo(db).Create(ctx, &session.Session{
+	s := &session.Session{
 		ID: id, PhoneNumber: key, CurrentState: "X",
 		Status: session.StatusActive, ExpiresAt: time.Now().Add(time.Hour),
-	}); err != nil {
+	}
+	if err := NewSessionRepo(db).Create(ctx, s); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	return id
+	return id, s
 }
 
 func nullLine(t *testing.T, db *sql.DB, query string, args ...interface{}) sql.NullString {
@@ -62,6 +70,28 @@ func TestSessionCreate_CopiesLineFromRegistry(t *testing.T) {
 	got, err := NewSessionRepo(db).FindByID(context.Background(), id)
 	if err != nil || got == nil || got.NectarLine != "legacy" {
 		t.Fatalf("lectura: %+v err=%v", got, err)
+	}
+}
+
+// El primer turno trabaja con la sesión que devuelve Create, sin releerla: debe traer la línea.
+func TestSessionCreate_SetsLineOnReturnedStruct(t *testing.T) {
+	db := openLocalTestDB(t)
+	nectarKey := fmt.Sprintf("nectar:%d", lineSessConvID)
+	cases := []struct {
+		name, key string
+		register  bool
+		want      string
+	}{
+		{"registrada legacy", nectarKey, true, "legacy"},
+		{"sin registro", nectarKey, false, ""},
+		{"teléfono de Bird", "+573001234567", true, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { // cada caso limpia su sesión al terminar
+			if _, s := lineSessionObj(t, db, c.key, c.register); s.NectarLine != c.want {
+				t.Fatalf("NectarLine = %q, quería %q", s.NectarLine, c.want)
+			}
+		})
 	}
 }
 
