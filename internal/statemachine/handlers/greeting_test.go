@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
+	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
 )
 
@@ -868,13 +870,19 @@ func TestNewLineAnnouncement_BridgeOffNoAnnouncement(t *testing.T) {
 // runGreetingState corre GREETING u OUT_OF_HOURS con la sesión dada y devuelve sus mensajes.
 func runGreetingState(t *testing.T, cfg *config.Config, state, phone string, ctxKV ...string) []sm.OutboundMessage {
 	t.Helper()
-	m := sm.NewMachine()
-	RegisterGreetingHandlers(m, cfg, nil)
 	sess := testSess(state)
 	sess.PhoneNumber = phone
 	for i := 0; i+1 < len(ctxKV); i += 2 {
 		sess.Context[ctxKV[i]] = ctxKV[i+1]
 	}
+	return runGreetingSession(t, cfg, sess)
+}
+
+// runGreetingSession corre GREETING u OUT_OF_HOURS con una sesión ya armada (línea de Néctar incluida).
+func runGreetingSession(t *testing.T, cfg *config.Config, sess *session.Session) []sm.OutboundMessage {
+	t.Helper()
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, cfg, nil)
 	result, err := m.Process(context.Background(), sess, textM(""))
 	if err != nil {
 		t.Fatal(err)
@@ -916,6 +924,28 @@ func TestNewLineAnnouncement_NectarSessionUnchanged(t *testing.T) {
 	cfg := announcementConfig(testAnnouncement)
 	assertOnlyList(t, runGreetingState(t, cfg, sm.StateGreeting, "nectar:55"))
 	assertOnlyList(t, runGreetingState(t, cfg, sm.StateOutOfHours, "nectar:55"))
+}
+
+// La línea vieja de Néctar (NectarLine=legacy) sí anuncia el número nuevo en GREETING y OUT_OF_HOURS.
+func TestNewLineAnnouncement_NectarLegacySession(t *testing.T) {
+	cfg := announcementConfig(testAnnouncement)
+	for _, state := range []string{sm.StateGreeting, sm.StateOutOfHours} {
+		sess := testSess(state)
+		sess.PhoneNumber = "nectar:9"
+		sess.NectarLine = string(nectar.LineLegacy)
+		assertAnnouncementThenList(t, runGreetingSession(t, cfg, sess))
+	}
+}
+
+// La línea principal de Néctar ya es la línea nueva: sin anuncio.
+func TestNewLineAnnouncement_NectarMainSession(t *testing.T) {
+	cfg := announcementConfig(testAnnouncement)
+	for _, state := range []string{sm.StateGreeting, sm.StateOutOfHours} {
+		sess := testSess(state)
+		sess.PhoneNumber = "nectar:9"
+		sess.NectarLine = "main"
+		assertOnlyList(t, runGreetingSession(t, cfg, sess))
+	}
 }
 
 func TestNewLineAnnouncement_EmptyUnchanged(t *testing.T) {

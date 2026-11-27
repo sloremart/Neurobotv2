@@ -8,6 +8,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -310,12 +311,17 @@ func buildLocationsText(ctx context.Context, locationRepo LocationReader) string
 	return "Actualmente no tenemos sedes configuradas. Comunícate con un agente para más información."
 }
 
-// announcementFor es el anuncio de la línea nueva para el saludo de esta sesión: solo en la línea
-// de Bird (en la de Néctar el paciente ya está en la línea nueva), solo con NEW_LINE_ANNOUNCEMENT
-// puesta y solo con el puente de Néctar armado: volver a Bird (NECTAR_BASE_URL vacía) lo apaga sin
-// tocar la variable. Va como texto ANTES del menú; CoalesceMessages lo antepone al body si cabe.
+// announcementFor es el anuncio de la línea nueva para el saludo de esta sesión: en la de Bird, y en
+// las de Néctar que son de la línea vieja (el paciente conversó por el número viejo, así que se le
+// avisa del nuevo). Las de la línea principal de Néctar ya están en la línea nueva: sin anuncio.
+// Solo con NEW_LINE_ANNOUNCEMENT puesta y solo con el puente de Néctar armado: volver a Bird
+// (NECTAR_BASE_URL vacía) lo apaga sin tocar la variable. Va como texto ANTES del menú;
+// CoalesceMessages lo antepone al body si cabe.
 func announcementFor(cfg *config.Config, sess *session.Session) string {
-	if cfg.NewLineAnnouncement == "" || !cfg.NectarBridgeArmed || session.IsNectarSession(sess.PhoneNumber) {
+	if cfg.NewLineAnnouncement == "" || !cfg.NectarBridgeArmed {
+		return ""
+	}
+	if session.IsNectarSession(sess.PhoneNumber) && sess.NectarLine != string(nectar.LineLegacy) {
 		return ""
 	}
 	return cfg.NewLineAnnouncement
