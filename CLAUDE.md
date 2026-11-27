@@ -457,6 +457,9 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   intentos, o si no hay último mensaje.
 - «¿Es correcto?» (CONFIRM_OCR_RESULT): si la lista no cabe en el cuerpo de botones (1.024), sale COMPLETA antes en
   texto (trozos ≤4.096) y los botones llevan solo el aviso de omitidos y la pregunta; nunca se recorta con «…».
+- Vulnerabilidades: `govulncheck ./...` (en Docker con `-m 3g`; en Windows se queda sin memoria). El builder fija el
+  parche de Go (`golang:1.26.11-alpine`, GO-2026-6859: el bot usa `MaxBytesReader` en sus webhooks públicos): subirlo
+  cuando govulncheck marque otro de la stdlib. Indirectas viejas (`x/crypto`, `x/text`, `edwards25519`) actualizadas el 2026-11-27.
 - Imagen (`docker/Dockerfile`): `alpine:3.24.3`, `ghostscript~10.08` (gs en `community`: revisar la fijación, la
   de `bot-logs-init` y `GS_MIN_VERSION` del CI en cada versión de Alpine); el bot corre como `bot` (UID/GID
   10001), no root. El job `image` del CI falla si la imagen corre como root o gs < `GS_MIN_VERSION`. El servicio

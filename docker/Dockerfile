@@ -3,7 +3,9 @@
 # (verificado: 1.18 lo rechaza, 1.19 lo acepta). BuildKit lo baja de Docker Hub en el primer build.
 
 # === Stage 1: Build ===
-FROM golang:1.26-alpine AS builder
+# Parche fijado: 1.26.11 corrige GO-2026-6859 (caída del servidor HTTP/1 por MaxBytesReader, que el bot
+# usa en sus webhooks públicos). Subir el parche aquí cuando govulncheck marque otro de la stdlib.
+FROM golang:1.26.11-alpine AS builder
 
 RUN apk add --no-cache git
 WORKDIR /app
