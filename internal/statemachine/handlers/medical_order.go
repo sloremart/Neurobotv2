@@ -819,52 +819,6 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 		assignments = keptCorrections(sess, ctxCupsNameAssignments, freshAssigned, cups)
 		validated = true
 
-		// Redirección a flujo de medicamentos: si la orden contiene un procedimiento de
-		// inyección/infusión/infiltración, se redirige siempre a StateMedicationCheckExcel.
-		// Ese estado valida la autorización y, si es válida, conduce al paciente por el
-		// cuestionario clínico completo (fecha, dosis, frecuencia, síntomas, historia, orden).
-		// Esto evita que el flujo de orden médica eluda tanto la validación de autorización
-		// como la recopilación de datos clínicos obligatorios.
-		if medRepo != nil {
-			for _, cup := range cups {
-				if isMedicationApplicationProcedure(cup.Name) {
-					observability.Emit(observability.TraceSession(sess.ID), "agendar", "medication_order_redirected",
-						observability.EmitOpts{
-							Phone:  sess.PhoneNumber,
-							Reason: "orden_es_aplicacion_medicamento",
-							Attrs:  map[string]interface{}{"cups_code": cup.Code, "cups_name": cup.Name},
-						})
-					return sm.NewResult(sm.StateMedicationCheckExcel).
-						WithText("🔄 Detectamos que tu orden corresponde a la *aplicación de un medicamento*. "+
-							"Vamos a continuar por el proceso de medicamentos para recopilar la información necesaria.").
-						WithEvent("medication_order_redirected", map[string]interface{}{
-							"cups_code": cup.Code,
-							"cups_name": cup.Name,
-						}), nil
-				}
-			}
-		}
-
-		// Bloqueos SANITAS: por regla de negocio el bot NO agenda bloqueos (053101–053115, 048101) a
-		// pacientes SANITAS (contratos 4/5/6/7). Si la orden trae un bloqueo —aunque venga con otros
-		// procedimientos agendables— TODA la orden se deriva a un agente para gestión manual.
-		if services.IsSanitasContract(sess.GetContext("patient_contract")) {
-			for _, cup := range cups {
-				if services.IsBloqueoCups(cup.Code) {
-					observability.Emit(observability.TraceSession(sess.ID), "agendar", "bloqueo_sanitas_escalated",
-						observability.EmitOpts{
-							Phone:  sess.PhoneNumber,
-							Reason: "bloqueo_sanitas",
-							Attrs:  map[string]interface{}{"cups_code": cup.Code},
-						})
-					return sm.NewResult(sm.StateEscalateToAgent).
-						WithText("Tu orden incluye un *bloqueo*, que se agenda directamente con un asesor. Te comunico con un agente para gestionar tu cita.").
-						WithContext(sm.CtxEscalationReason, sm.EscalationReasonSanitasBlock).
-						WithEvent("bloqueo_sanitas_escalated", map[string]interface{}{"cups_code": cup.Code}), nil
-				}
-			}
-		}
-
 		// Tope de cantidad (B-10): VALIDATE_OCR es el embudo de toda orden leída (foto, orden guardada,
 		// páginas añadidas, orden de EMG, comandos del agente), así que se mira aquí, antes del
 		// resumen y de agendar. No se recorta: el agente ve qué CUPS y qué cantidad trajo la orden.
@@ -907,6 +861,55 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 				WithContext(sm.CtxEscalationReason, sm.EscalationReasonCupsPossibleMisread).
 				WithContext("escalation_note", strings.Join(doubts, " ")).
 				WithEvent("cups_possible_misread", map[string]interface{}{"doubts": len(doubts)}), nil
+		}
+
+		// Redirección a flujo de medicamentos: si la orden contiene un procedimiento de
+		// inyección/infusión/infiltración, se redirige siempre a StateMedicationCheckExcel.
+		// Ese estado valida la autorización y, si es válida, conduce al paciente por el
+		// cuestionario clínico completo (fecha, dosis, frecuencia, síntomas, historia, orden).
+		// Esto evita que el flujo de orden médica eluda tanto la validación de autorización
+		// como la recopilación de datos clínicos obligatorios.
+		// Va DESPUÉS del tope de cantidad, de lo sin código y de las dudas de lectura: una orden con
+		// una duda llega primero al agente (si no, se perdería en el flujo de medicamentos). Respecto
+		// del bloqueo SANITAS conserva el orden de main (la redirección va antes).
+		if medRepo != nil {
+			for _, cup := range cups {
+				if isMedicationApplicationProcedure(cup.Name) {
+					observability.Emit(observability.TraceSession(sess.ID), "agendar", "medication_order_redirected",
+						observability.EmitOpts{
+							Phone:  sess.PhoneNumber,
+							Reason: "orden_es_aplicacion_medicamento",
+							Attrs:  map[string]interface{}{"cups_code": cup.Code, "cups_name": cup.Name},
+						})
+					return sm.NewResult(sm.StateMedicationCheckExcel).
+						WithText("🔄 Detectamos que tu orden corresponde a la *aplicación de un medicamento*. "+
+							"Vamos a continuar por el proceso de medicamentos para recopilar la información necesaria.").
+						WithEvent("medication_order_redirected", map[string]interface{}{
+							"cups_code": cup.Code,
+							"cups_name": cup.Name,
+						}), nil
+				}
+			}
+		}
+
+		// Bloqueos SANITAS: por regla de negocio el bot NO agenda bloqueos (053101–053115, 048101) a
+		// pacientes SANITAS (contratos 4/5/6/7). Si la orden trae un bloqueo —aunque venga con otros
+		// procedimientos agendables— TODA la orden se deriva a un agente para gestión manual.
+		if services.IsSanitasContract(sess.GetContext("patient_contract")) {
+			for _, cup := range cups {
+				if services.IsBloqueoCups(cup.Code) {
+					observability.Emit(observability.TraceSession(sess.ID), "agendar", "bloqueo_sanitas_escalated",
+						observability.EmitOpts{
+							Phone:  sess.PhoneNumber,
+							Reason: "bloqueo_sanitas",
+							Attrs:  map[string]interface{}{"cups_code": cup.Code},
+						})
+					return sm.NewResult(sm.StateEscalateToAgent).
+						WithText("Tu orden incluye un *bloqueo*, que se agenda directamente con un asesor. Te comunico con un agente para gestionar tu cita.").
+						WithContext(sm.CtxEscalationReason, sm.EscalationReasonSanitasBlock).
+						WithEvent("bloqueo_sanitas_escalated", map[string]interface{}{"cups_code": cup.Code}), nil
+				}
+			}
 		}
 
 		if len(cups) == 0 {
