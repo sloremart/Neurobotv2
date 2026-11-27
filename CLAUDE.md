@@ -470,6 +470,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   (arrastra el init); 3) `docker compose exec bot id -u` = 10001 y `/api/internal/logs` con líneas de hoy. Tras un
   rollback a la imagen vieja (root), volver adelante con `docker compose up -d bot`, NUNCA `restart`: solo `up`
   corre el init y la vieja deja el log del día de root.
+- Migraciones (merge de main, 2026-11-26): la 044 es `044_add_via_administracion` de main; las de la rama son 045-048
+  (antes 044-047). Producción en la 44 de main (o en la 43) no necesita nada. Una BD que ya corrió las viejas 044-047 de la rama
+  (versión 47) se realinea a mano antes de arrancar: `ALTER TABLE medication_pending ADD COLUMN via_administracion VARCHAR(100)
+  NOT NULL DEFAULT '' AFTER numero_autorizacion;` y `UPDATE schema_migrations SET version = 48;` (si no, intentaría la 048 ya aplicada).
 - Ghostscript (OCR del PDF): `-dSAFER`, `-dMaxBitmap=10000000`, `-dLastPage=maxOCRPages`, toda la conversión
   de un documento (todos sus intentos) acotada a `pdfRenderBudget` (20 s; agotado = fallo de gs, el resto de
   `defaultAnalyzeTimeout` queda para Vision). Si un JPEG convertido pasa 10 MB, o el total 32 MB, se reconvierte a
