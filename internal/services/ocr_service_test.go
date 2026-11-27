@@ -565,3 +565,50 @@ func TestDownloadMedia_OtherHostRedirectStillFollowed(t *testing.T) {
 		t.Fatalf("data=%q err=%v", data, err)
 	}
 }
+
+// keyedTransport responde según la clave de servicio del request y guarda las claves vistas.
+type keyedTransport struct {
+	status map[string]int
+	seen   []string
+}
+
+func (c *keyedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	key := r.Header.Get("X-Bot-Service-Key")
+	c.seen = append(c.seen, key)
+	return &http.Response{StatusCode: c.status[key], Body: io.NopCloser(strings.NewReader("data")), Header: http.Header{}, Request: r}, nil
+}
+
+// Un 404 de la clave principal se reintenta con la de la línea vieja en el mismo intento, sin esperar.
+func TestNectarMedia_404WithMainRetriesWithLegacyInSameAttempt(t *testing.T) {
+	rt := &keyedTransport{status: map[string]int{"service-key": 404, "legacy-key": 200}}
+	s := newDownloadSvc(rt)
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
+	s.SetNectarFallbackCredentials("legacy-key", "legacy-secret")
+	s.mediaRetryDelays = []time.Duration{time.Hour}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.downloadMedia(ctx, "https://nectar.colibrixa.com/api/bot/attachments/7"); err != nil {
+		t.Fatalf("downloadMedia: %v", err)
+	}
+	if len(rt.seen) != 2 || rt.seen[0] != "service-key" || rt.seen[1] != "legacy-key" {
+		t.Errorf("claves vistas = %v", rt.seen)
+	}
+}
+
+// Sin respaldo configurado, un 404 sigue la espera de siempre con solo la clave principal.
+func TestNectarMedia_NoFallbackBehavesAsToday(t *testing.T) {
+	rt := &keyedTransport{status: map[string]int{"service-key": 404}}
+	s := newRetrySvc(rt)
+	if _, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7"); err == nil {
+		t.Fatal("esperaba error")
+	}
+	if len(rt.seen) != 4 {
+		t.Errorf("GET = %d, quería 4", len(rt.seen))
+	}
+	for _, k := range rt.seen {
+		if k != "service-key" {
+			t.Errorf("clave inesperada %q", k)
+		}
+	}
+}

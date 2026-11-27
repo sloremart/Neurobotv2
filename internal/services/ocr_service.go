@@ -88,6 +88,9 @@ type OCRService struct {
 	nectarScheme        string // el esquema también cuenta: http al mismo host no recibe credenciales
 	nectarServiceKey    string
 	nectarRequestSecret string
+	// Credenciales de la línea vieja (mismo Néctar, otra clave de canal): se prueban solo tras un 404 de la principal.
+	nectarFallbackKey    string
+	nectarFallbackSecret string
 	// analyzeTimeout es el techo de UN análisis completo (download + Vision + reintentos). 0 = default.
 	analyzeTimeout time.Duration
 	// mediaRetryDelays son las esperas entre reintentos de la descarga de un adjunto de Néctar ante
@@ -554,6 +557,14 @@ func (s *OCRService) SetNectarCredentials(baseURL, serviceKey, requestSecret str
 	s.nectarRequestSecret = requestSecret
 }
 
+// SetNectarFallbackCredentials registra la clave de la línea vieja. Néctar responde 404 cuando una clave de
+// canal pide el adjunto del otro canal; con esta clave, un 404 de la principal se reintenta en el mismo
+// intento con la vieja. Vacía = sin respaldo (comportamiento de siempre).
+func (s *OCRService) SetNectarFallbackCredentials(serviceKey, requestSecret string) {
+	s.nectarFallbackKey = serviceKey
+	s.nectarFallbackSecret = requestSecret
+}
+
 // defaultMediaRetryDelays son las esperas de producción entre reintentos ante un 404 o un 500 de un
 // adjunto de Néctar: ~2 s, ~5 s, ~10 s (≈17 s en total, 4 GET como máximo).
 var defaultMediaRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
@@ -583,9 +594,17 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 		}
 	}
 	for attempt := 0; ; attempt++ {
-		fileData, status, err := s.downloadMediaOnce(ctx, documentURL)
+		fileData, status, err := s.downloadMediaOnce(ctx, documentURL, false)
 		if err == nil {
 			return fileData, nil
+		}
+		// 404 de la clave principal: puede ser un adjunto de la línea vieja. Se prueba su clave en el
+		// mismo intento, sin esperar; solo si también falla rige la espera de siempre.
+		if status == http.StatusNotFound && s.nectarFallbackKey != "" && s.isNectarMediaURL(documentURL) {
+			fileData, status, err = s.downloadMediaOnce(ctx, documentURL, true)
+			if err == nil {
+				return fileData, nil
+			}
 		}
 		if !retryableMediaStatus(status) || attempt >= len(delays) {
 			return nil, err
@@ -598,6 +617,12 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 	}
 }
 
+// isNectarMediaURL dice si la URL (en texto) es del Néctar configurado.
+func (s *OCRService) isNectarMediaURL(documentURL string) bool {
+	u, err := url.Parse(documentURL)
+	return err == nil && s.isNectarURL(u)
+}
+
 // retryableMediaStatus dice si un código de la descarga de un adjunto de Néctar es transitorio
 // (ver downloadMedia).
 func retryableMediaStatus(status int) bool {
@@ -605,8 +630,9 @@ func retryableMediaStatus(status int) bool {
 }
 
 // downloadMediaOnce hace UN GET al adjunto. status queda en 0 cuando el error es previo a tener
-// una respuesta (armar el request, fallo de red): esos casos no se reintentan.
-func (s *OCRService) downloadMediaOnce(ctx context.Context, documentURL string) ([]byte, int, error) {
+// una respuesta (armar el request, fallo de red): esos casos no se reintentan. legacy firma con la clave de
+// la línea vieja en vez de la principal.
+func (s *OCRService) downloadMediaOnce(ctx context.Context, documentURL string, legacy bool) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", documentURL, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("create download request: %w", err)
@@ -620,8 +646,12 @@ func (s *OCRService) downloadMediaOnce(ctx context.Context, documentURL string) 
 		case s.isNectarURL(u):
 			// Néctar: SUS credenciales, nunca la de Bird. Se firma al enviar (ventana de 5 min del
 			// otro lado); un GET sin cuerpo firma SHA256("").
-			req.Header.Set(nectar.ServiceKeyHeader, s.nectarServiceKey)
-			nectar.SignRequest(req, s.nectarRequestSecret, time.Now(), nil)
+			key, secret := s.nectarServiceKey, s.nectarRequestSecret
+			if legacy {
+				key, secret = s.nectarFallbackKey, s.nectarFallbackSecret
+			}
+			req.Header.Set(nectar.ServiceKeyHeader, key)
+			nectar.SignRequest(req, secret, time.Now(), nil)
 		case s.birdAccessKey != "" && (host == "bird.com" || strings.HasSuffix(host, ".bird.com")):
 			req.Header.Set("Authorization", "AccessKey "+s.birdAccessKey)
 		case s.birdAccessKey != "":

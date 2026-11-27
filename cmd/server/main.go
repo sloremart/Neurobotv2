@@ -212,6 +212,10 @@ func main() {
 
 	if nectarBridge != nil {
 		ocrSvc.SetNectarCredentials(cfg.NectarBaseURL, cfg.NectarServiceKey, cfg.NectarRequestSecret)
+		// Línea vieja: su clave de canal para los adjuntos que la principal no ve (404).
+		if cfg.NectarLegacyArmed {
+			ocrSvc.SetNectarFallbackCredentials(cfg.NectarLegacyServiceKey, cfg.NectarLegacyRequestSecret)
+		}
 	}
 
 	if repos != nil {
