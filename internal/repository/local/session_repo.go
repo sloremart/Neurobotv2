@@ -41,7 +41,7 @@ func (r *SessionRepo) FindActiveByPhone(ctx context.Context, phone string) (*ses
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
+	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,''), COALESCE(nectar_line,'')
 	          FROM sessions
 	          WHERE phone_number = ? AND status IN ('active','escalated') AND expires_at > NOW()
 	          ORDER BY last_activity_at DESC LIMIT 1`
@@ -58,7 +58,7 @@ func (r *SessionRepo) FindCurrentByPhone(ctx context.Context, phone string) (*se
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
+	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,''), COALESCE(nectar_line,'')
 	          FROM sessions
 	          WHERE phone_number = ? AND status IN ('active','escalated')
 	          ORDER BY last_activity_at DESC LIMIT 1`
@@ -78,7 +78,7 @@ func (r *SessionRepo) scanSession(ctx context.Context, query string, args ...int
 		&s.ID, &s.PhoneNumber, &s.CurrentState, &s.Status, &menuOption,
 		&patientID, &patientDoc, &patientName, &patientAge, &patientGender, &patientEntity,
 		&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &agentID, &agentName, &resumedAt,
-		&s.LastActivity, &s.ExpiresAt, &s.CreatedAt, &s.ContactIdentifier,
+		&s.LastActivity, &s.ExpiresAt, &s.CreatedAt, &s.ContactIdentifier, &s.NectarLine,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -138,12 +138,14 @@ func (r *SessionRepo) ResumeSession(ctx context.Context, sessionID, newState str
 // Create inserta una nueva sesión
 func (r *SessionRepo) Create(ctx context.Context, s *session.Session) error {
 	query := `INSERT INTO sessions (id, phone_number, current_state, status, menu_option,
-	          retry_count, last_activity_at, expires_at, contact_identifier)
-	          VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?)`
+	          retry_count, last_activity_at, expires_at, contact_identifier, nectar_line)
+	          VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?,
+	          (SELECT l.line FROM nectar_conversation_line l
+	           WHERE l.conversation_id = CASE WHEN ? REGEXP '^nectar:[0-9]+$' THEN CAST(SUBSTRING(?, 8) AS UNSIGNED) END))`
 
 	_, err := r.db.ExecContext(ctx, query,
 		s.ID, s.PhoneNumber, s.CurrentState, s.Status, nullString(s.MenuOption),
-		s.RetryCount, s.ExpiresAt, nullString(s.ContactIdentifier),
+		s.RetryCount, s.ExpiresAt, nullString(s.ContactIdentifier), s.PhoneNumber, s.PhoneNumber,
 	)
 	if err != nil {
 		// M3: el índice único uq_active_phone (migración 032) rechazó una segunda sesión activa para el
@@ -555,7 +557,7 @@ func (r *SessionRepo) FindByID(ctx context.Context, sessionID string) (*session.
 	query := `SELECT id, phone_number, current_state, status, menu_option,
 	          patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 	          retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
+	          last_activity_at, expires_at, created_at, COALESCE(contact_identifier,''), COALESCE(nectar_line,'')
 	          FROM sessions WHERE id = ?`
 	return r.scanSession(ctx, query, sessionID)
 }
@@ -579,7 +581,7 @@ func (r *SessionRepo) FindRecentByPhone(ctx context.Context, phone string, limit
 		`SELECT id, phone_number, current_state, status, menu_option,
 		 patient_id, patient_doc, patient_name, patient_age, patient_gender, patient_entity,
 		 retry_count, conversation_id, escalated_at, escalated_team, agent_id, agent_name, resumed_at,
-		 last_activity_at, expires_at, created_at, COALESCE(contact_identifier,'')
+		 last_activity_at, expires_at, created_at, COALESCE(contact_identifier,''), COALESCE(nectar_line,'')
 		 FROM sessions WHERE phone_number = ? OR contact_identifier IN (?, ?)
 		 ORDER BY created_at DESC LIMIT ?`, args...)
 	if err != nil {
@@ -599,7 +601,7 @@ func (r *SessionRepo) FindRecentByPhone(ctx context.Context, phone string, limit
 			&s.ID, &s.PhoneNumber, &s.CurrentState, &s.Status, &menuOption,
 			&patientID, &patientDoc, &patientName, &patientAge, &patientGender, &patientEntity,
 			&s.RetryCount, &conversationID, &escalatedAt, &escalatedTeam, &agentID, &agentName, &resumedAt,
-			&s.LastActivity, &s.ExpiresAt, &s.CreatedAt, &s.ContactIdentifier,
+			&s.LastActivity, &s.ExpiresAt, &s.CreatedAt, &s.ContactIdentifier, &s.NectarLine,
 		); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}

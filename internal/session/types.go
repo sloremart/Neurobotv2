@@ -40,6 +40,9 @@ type Session struct {
 	ExpiresAt         time.Time
 	CreatedAt         time.Time
 
+	// NectarLine es la línea de Néctar de la conversación («main» o «legacy»); vacía = principal o Bird.
+	NectarLine string
+
 	// Context se carga lazy desde session_context
 	Context map[string]string
 }

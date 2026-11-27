@@ -329,6 +329,7 @@ func main() {
 
 	// Fase 14: Event Tracking
 	eventRepo := localrepo.NewEventRepo(localDB)
+	eventRepo.SetProactiveLineTagging(nectarBridge != nil)
 	tracker := tracking.NewEventTracker(eventRepo)
 
 	// Observabilidad de flujos (Fase 0): traza de negocio estructurada (flow_events).

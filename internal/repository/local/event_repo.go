@@ -24,11 +24,26 @@ type ChatEvent struct {
 // EventRepo handles persistence and querying of chat events.
 type EventRepo struct {
 	db *sql.DB
+	// tagProactiveMain: con el puente de Néctar encendido, los eventos proactivos sin sesión (lista
+	// cerrada en proactive_event_types.go) se etiquetan nectar_line='main'.
+	tagProactiveMain bool
 }
 
 // NewEventRepo creates a new EventRepo.
 func NewEventRepo(db *sql.DB) *EventRepo {
 	return &EventRepo{db: db}
+}
+
+// SetProactiveLineTagging enciende o apaga el etiquetado 'main' de los eventos proactivos (se llama
+// al armar, antes de atender). Sin puente queda apagado y esos eventos conservan NULL.
+func (r *EventRepo) SetProactiveLineTagging(on bool) { r.tagProactiveMain = on }
+
+// eventLine es el valor de respaldo de nectar_line cuando el evento no tiene sesión de la que copiarlo.
+func (r *EventRepo) eventLine(eventType string) interface{} {
+	if r.tagProactiveMain && isProactiveEventType(eventType) {
+		return "main"
+	}
+	return nil
 }
 
 // PhonesForMorningReengage devuelve telefonos que rebotaron FUERA DE HORARIO ayer desde las 17:00
@@ -79,10 +94,12 @@ func (r *EventRepo) WasAppointmentNotified(ctx context.Context, appointmentID st
 // chatEventInsertSQL inserta un chat_event copiando el contacto de Néctar de su sesión
 // (sessions.contact_identifier, migración 045): sin sesión o en Bird queda NULL. Se copia en el
 // INSERT, y no desde cada llamador, porque los eventos salen de decenas de sitios que solo
-// conocen el id de la sesión. El último parámetro es otra vez el session_id.
+// conocen el id de la sesión. Lo mismo con la línea (sessions.nectar_line, migración 049), con el
+// respaldo de eventLine si no hay sesión. Los dos últimos parámetros son el session_id y ese respaldo.
 const chatEventInsertSQL = `INSERT INTO chat_events
-	(session_id, phone_number, event_type, event_data, state_from, state_to, created_at, contact_identifier)
-	VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT s.contact_identifier FROM sessions s WHERE s.id = ?))`
+	(session_id, phone_number, event_type, event_data, state_from, state_to, created_at, contact_identifier, nectar_line)
+	VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT s.contact_identifier FROM sessions s WHERE s.id = ?),
+	COALESCE((SELECT s.nectar_line FROM sessions s WHERE s.id = ?), ?))`
 
 // Insert persists a single chat event.
 func (r *EventRepo) Insert(ctx context.Context, event *ChatEvent) error {
@@ -94,7 +111,8 @@ func (r *EventRepo) Insert(ctx context.Context, event *ChatEvent) error {
 	_, err = r.db.ExecContext(ctx,
 		chatEventInsertSQL,
 		event.SessionID, event.PhoneNumber, event.EventType, string(dataJSON),
-		nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt, event.SessionID)
+		nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt, event.SessionID,
+		event.SessionID, r.eventLine(event.EventType))
 	if err != nil {
 		return fmt.Errorf("insert chat event: %w", err)
 	}
@@ -122,6 +140,7 @@ func (r *EventRepo) InsertBatch(ctx context.Context, events []ChatEvent) error {
 			ctx,
 			event.SessionID, event.PhoneNumber, event.EventType, string(dataJSON),
 			nullString(event.StateFrom), nullString(event.StateTo), event.CreatedAt, event.SessionID,
+			event.SessionID, r.eventLine(event.EventType),
 		); err != nil {
 			return fmt.Errorf("insert event %s: %w", event.EventType, err)
 		}
