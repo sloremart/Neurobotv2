@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/google/uuid"
+
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 )
 
@@ -153,3 +155,14 @@ func (b *Bridge) ConversationState(ctx context.Context, conversationID int64) (s
 
 // IsNotMine reconoce el 404 «ya no es mía» (ErrNotMine): se suelta el caso, sin reintentar.
 func (b *Bridge) IsNotMine(err error) bool { return errors.Is(err, ErrNotMine) }
+
+// SendDocument sube el archivo con una clave UUID nueva y lo envía por la conversación; devuelve el id
+// del mensaje en Néctar como cadena. El nombre del archivo y el contenido no se registran.
+func (b *Bridge) SendDocument(ctx context.Context, conversationID int64, filename string, data []byte, caption string) (string, error) {
+	att, err := b.c.Upload(ctx, uuid.NewString(), filename, data)
+	if err != nil {
+		return "", err
+	}
+	id, err := b.c.SendAttachment(ctx, conversationID, att.ID, caption)
+	return id64(id), err
+}

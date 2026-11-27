@@ -53,6 +53,9 @@ type NectarBridge interface {
 	Contact(ctx context.Context, conversationID int64) (NectarContact, error)
 	// WindowOpen dice si la ventana de 24 h de la conversación está abierta.
 	WindowOpen(ctx context.Context, conversationID int64) (bool, error)
+	// SendDocument sube el archivo y lo envía como adjunto de la conversación; devuelve el id del
+	// mensaje. caption vacío = sin pie.
+	SendDocument(ctx context.Context, conversationID int64, filename string, data []byte, caption string) (string, error)
 }
 
 // NectarLines es la interfaz OPCIONAL de un puente que reparte por línea (nectar.LineRouter): quien
@@ -159,6 +162,10 @@ var ErrNoConversationState = errors.New("bird: el estado de la conversación sol
 // NECTAR_BASE_URL vacía). No hay por dónde contestarle y Bird no es su canal. Envuelve
 // ErrPermanentSend: reintentar no cambia nada mientras el puente siga apagado.
 var ErrNectarBridgeOff = fmt.Errorf("bird: conversación de Néctar con el puente apagado: %w", ErrPermanentSend)
+
+// ErrDocumentNotSupported es «esta conversación no admite adjuntos del bot»: solo las de Néctar los
+// envían; con un teléfono de Bird no hay por dónde. Envuelve ErrPermanentSend: reintentar no cambia nada.
+var ErrDocumentNotSupported = fmt.Errorf("bird: el envío de documentos solo existe en Néctar: %w", ErrPermanentSend)
 
 // SetNectar activa el desvío. nil lo desactiva (comportamiento previo al puente).
 func (c *Client) SetNectar(b NectarBridge) { c.nectar = b }

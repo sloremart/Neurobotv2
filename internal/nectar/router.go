@@ -161,6 +161,15 @@ func (r *LineRouter) WindowOpen(ctx context.Context, conversationID int64) (bool
 	return b.WindowOpen(ctx, conversationID)
 }
 
+// SendDocument sube y envía el documento por la línea de la conversación.
+func (r *LineRouter) SendDocument(ctx context.Context, conversationID int64, filename string, data []byte, caption string) (string, error) {
+	b, err := r.bridgeFor(ctx, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return b.SendDocument(ctx, conversationID, filename, data, caption)
+}
+
 // IsNotMine delega en la línea principal: el 404 «ya no es mía» es el mismo error en las dos.
 func (r *LineRouter) IsNotMine(err error) bool { return r.bridges[LineMain].IsNotMine(err) }
 

@@ -923,6 +923,20 @@ func (c *Client) SendTextCtx(ctx context.Context, to, conversationID, text strin
 	return c.sendMessage(c.messagesURL(), payload, to)
 }
 
+// SendDocumentCtx envía un archivo como adjunto. Solo las conversaciones de Néctar (clave "nectar:<id>")
+// los admiten: con una clave de Néctar y el puente apagado, ErrNectarBridgeOff; con un teléfono de
+// Bird, ErrDocumentNotSupported (sin tocar Bird).
+func (c *Client) SendDocumentCtx(ctx context.Context, phone, filename string, data []byte, caption string) (string, error) {
+	if c.nectarKeyWithoutBridge(phone) {
+		return "", ErrNectarBridgeOff
+	}
+	id, ok := c.nectarConversation(phone, "")
+	if !ok {
+		return "", ErrDocumentNotSupported
+	}
+	return c.nectar.SendDocument(ctx, id, filename, data, caption)
+}
+
 // SendButtons envía un mensaje con botones postback (máx 3).
 // Routes via Conversations API when conversationID is available.
 func (c *Client) SendButtons(to, conversationID, text string, buttons []Button) (string, error) {

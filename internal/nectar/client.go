@@ -205,12 +205,13 @@ type TemplateBody struct {
 // sendRequest es el cuerpo de POST …/messages. idempotency_key es OBLIGATORIA y UUID, y no
 // se reutiliza entre clases de mensaje: se acuña una por envío.
 type sendRequest struct {
-	IdempotencyKey string        `json:"idempotency_key"`
-	Type           string        `json:"type"`
-	Text           string        `json:"text,omitempty"`
-	Buttons        []ReplyButton `json:"buttons,omitempty"`
-	List           *ListBody     `json:"list,omitempty"`
-	Template       *TemplateBody `json:"template,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	Type           string         `json:"type"`
+	Text           string         `json:"text,omitempty"`
+	Buttons        []ReplyButton  `json:"buttons,omitempty"`
+	List           *ListBody      `json:"list,omitempty"`
+	Template       *TemplateBody  `json:"template,omitempty"`
+	Attachment     *attachmentRef `json:"attachment,omitempty"`
 }
 
 // Escalation es el sobre del escalado, entero y en un solo valor. Es un ALIAS de
@@ -581,22 +582,33 @@ func (c *Client) exchange(ctx context.Context, method, path string, in any) (rep
 func (c *Client) exchangeWithHeaders(ctx context.Context, method, path string, in any,
 	headers map[string]string,
 ) (reply, error) {
-	if !c.Configured() {
-		return reply{}, ErrNotConfiguredAPI
-	}
 	var body []byte
+	contentType := ""
 	if in != nil {
 		var err error
 		if body, err = json.Marshal(in); err != nil {
 			return reply{}, fmt.Errorf("nectar: serializar %s: %w", path, err)
 		}
+		contentType = "application/json"
+	}
+	return c.exchangeRaw(ctx, method, path, body, contentType, headers)
+}
+
+// exchangeRaw es el armado de exchangeWithHeaders con el cuerpo YA serializado y su Content-Type
+// (vacío = sin cuerpo): la firma cubre exactamente esos bytes, que es lo que exige el multipart de
+// la subida de adjuntos (el límite de partes va dentro del cuerpo y del Content-Type).
+func (c *Client) exchangeRaw(ctx context.Context, method, path string, body []byte, contentType string,
+	headers map[string]string,
+) (reply, error) {
+	if !c.Configured() {
+		return reply{}, ErrNotConfiguredAPI
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return reply{}, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -639,6 +651,12 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 	if err != nil {
 		return err
 	}
+	return interpretReply(resp, method, path, out)
+}
+
+// interpretReply traduce el código de una respuesta a los errores del contrato y, si salió bien,
+// lee el cuerpo en out.
+func interpretReply(resp reply, method, path string, out any) error {
 	raw := resp.body
 
 	switch {
@@ -659,8 +677,14 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		case "idempotency_key_reused":
 			return ErrIdempotencyReused
 		}
+		// La subida de adjuntos manda el código de la clave reutilizada en `error`, sin reason.
+		if errorCode(raw) == "idempotency_key_reused" {
+			return ErrIdempotencyReused
+		}
 		return newStatusError(resp,
 			fmt.Sprintf("nectar: %s %s: 409 %s", method, path, bodySnippet(raw)))
+	case resp.status == http.StatusUnprocessableEntity && errorCode(raw) == "attachment_unavailable":
+		return ErrAttachmentUnavailable
 	case resp.status < 200 || resp.status > 299:
 		return newStatusError(resp,
 			fmt.Sprintf("nectar: %s %s: status %d %s", method, path, resp.status, bodySnippet(raw)))
@@ -690,6 +714,15 @@ func replyReason(raw []byte) string {
 	}
 	_ = json.Unmarshal(raw, &e)
 	return e.Reason
+}
+
+// errorCode saca el `error` (código o frase) de un cuerpo de rechazo de Néctar ("" si no lo hay).
+func errorCode(raw []byte) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &e)
+	return e.Error
 }
 
 // ConversationIDFromSessionKey recupera el id de conversación de una clave de sesión

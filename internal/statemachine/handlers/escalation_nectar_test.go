@@ -90,6 +90,10 @@ func (b *fakeNectarBridge) Contact(context.Context, int64) (bird.NectarContact, 
 
 func (b *fakeNectarBridge) WindowOpen(context.Context, int64) (bool, error) { return false, nil }
 
+func (b *fakeNectarBridge) SendDocument(context.Context, int64, string, []byte, string) (string, error) {
+	return "", nil
+}
+
 // texts devuelve los textos que el puente sacó al paciente, en orden.
 func (b *fakeNectarBridge) texts() []string {
 	b.mu.Lock()

@@ -39,6 +39,18 @@ type Bridge struct {
 	WindowAsks  []int64  // por qué conversaciones se preguntó la ventana
 	CloseIDs    []int64  // qué conversaciones se cerraron
 	ContactAsks []int64  // por qué conversaciones se preguntó el contacto
+
+	// DocumentErr es lo que contesta SendDocument (nil = sale bien con el id «n-doc»).
+	DocumentErr error
+	Documents   []Document // los documentos enviados, en orden
+}
+
+// Document es un documento que se mandó por SendDocument.
+type Document struct {
+	ConversationID int64
+	Filename       string
+	Data           []byte
+	Caption        string
 }
 
 var _ bird.NectarBridge = (*Bridge)(nil)
@@ -143,6 +155,24 @@ func (f *Bridge) ConversationState(context.Context, int64) (string, error) {
 // IsNotMine reconoce como «ya no es mía» solo NotMineErr.
 func (f *Bridge) IsNotMine(err error) bool {
 	return f.NotMineErr != nil && errors.Is(err, f.NotMineErr)
+}
+
+// SendDocument anota el documento enviado y contesta DocumentErr.
+func (f *Bridge) SendDocument(_ context.Context, id int64, filename string, data []byte, caption string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Documents = append(f.Documents, Document{ConversationID: id, Filename: filename, Data: append([]byte(nil), data...), Caption: caption})
+	if f.DocumentErr != nil {
+		return "", f.DocumentErr
+	}
+	return "n-doc", nil
+}
+
+// SentDocuments devuelve una copia de los documentos enviados.
+func (f *Bridge) SentDocuments() []Document {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Document(nil), f.Documents...)
 }
 
 // Contact anota la conversación y contesta ContactValue / ContactErr.

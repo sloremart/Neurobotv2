@@ -32,6 +32,7 @@ type escalateCall struct {
 
 type fakeBridge struct {
 	texts, buttons, lists, templates int
+	documents                        []documentCall
 	textIDs                          []int64
 	templateIDs                      []int64
 	escalations                      []escalateCall
@@ -128,6 +129,16 @@ func (f *fakeBridge) Contact(context.Context, int64) (NectarContact, error) {
 }
 
 func (f *fakeBridge) WindowOpen(context.Context, int64) (bool, error) { return false, nil }
+
+func (f *fakeBridge) SendDocument(_ context.Context, id int64, filename string, _ []byte, caption string) (string, error) {
+	f.documents = append(f.documents, documentCall{id: id, filename: filename, caption: caption})
+	return "doc-1", nil
+}
+
+type documentCall struct {
+	id                int64
+	filename, caption string
+}
 
 // untouched dice si el puente no vio NINGUNA llamada.
 func (f *fakeBridge) untouched() bool {
@@ -742,6 +753,11 @@ func (b tripwireBridge) Contact(context.Context, int64) (NectarContact, error) {
 	return NectarContact{}, nil
 }
 
+func (b tripwireBridge) SendDocument(context.Context, int64, string, []byte, string) (string, error) {
+	b.trip("SendDocument")
+	return "", nil
+}
+
 func (b tripwireBridge) WindowOpen(context.Context, int64) (bool, error) {
 	b.trip("WindowOpen")
 	return false, nil
@@ -831,6 +847,10 @@ func keyRoutedCases(key string) []keyRoutedCase {
 			_, err := c.CreateConversationForPhone(context.Background(), key)
 			return err
 		}, route: map[string]string{"": "POST " + ws + "/conversations", uuid: "POST " + ws + "/conversations"}},
+		{name: "SendDocumentCtx", returnsErr: true, call: func(c *Client, _ string) error {
+			_, err := c.SendDocumentCtx(context.Background(), key, "r.pdf", []byte("x"), "pie")
+			return err
+		}, route: map[string]string{}},
 		{name: "FetchMessageText", keyless: true, call: func(c *Client, _ string) error {
 			_ = c.FetchMessageText("msg-1")
 			return nil
@@ -972,4 +992,30 @@ func TestNectarConversationNeverTouchesBirdWithBridgeOff(t *testing.T) {
 			t.Errorf("esperaba ErrNectarBridgeOff, got %v", err)
 		}
 	})
+}
+
+func TestBirdClient_SendDocumentCtx_BirdPhoneNotSupported(t *testing.T) {
+	fb := &fakeBridge{}
+	c := NewClientForTest("http://unused")
+	c.SetNectar(fb)
+	_, err := c.SendDocumentCtx(context.Background(), "+573001112233", "r.pdf", []byte("x"), "")
+	if !errors.Is(err, ErrDocumentNotSupported) || !IsPermanentSendError(err) {
+		t.Fatalf("esperaba ErrDocumentNotSupported permanente, got %v", err)
+	}
+	if len(fb.documents) != 0 {
+		t.Fatalf("un teléfono de Bird no llega al puente: %v", fb.documents)
+	}
+}
+
+func TestBirdClient_SendDocumentCtx_NectarKeyGoesToBridge(t *testing.T) {
+	fb := &fakeBridge{}
+	c := NewClientForTest("http://unused")
+	c.SetNectar(fb)
+	id, err := c.SendDocumentCtx(context.Background(), "nectar:42", "r.pdf", []byte("x"), "pie")
+	if err != nil || id != "doc-1" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+	if len(fb.documents) != 1 || fb.documents[0] != (documentCall{id: 42, filename: "r.pdf", caption: "pie"}) {
+		t.Fatalf("documentos: %+v", fb.documents)
+	}
 }

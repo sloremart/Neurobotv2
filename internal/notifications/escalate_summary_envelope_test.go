@@ -66,6 +66,10 @@ func (b *escalationBridge) Contact(context.Context, int64) (bird.NectarContact, 
 
 func (b *escalationBridge) WindowOpen(context.Context, int64) (bool, error) { return false, nil }
 
+func (b *escalationBridge) SendDocument(context.Context, int64, string, []byte, string) (string, error) {
+	return "", nil
+}
+
 func (b *escalationBridge) only(t *testing.T) bird.Escalation {
 	t.Helper()
 	b.mu.Lock()
