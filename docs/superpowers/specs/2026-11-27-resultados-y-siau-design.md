@@ -78,6 +78,10 @@ otro número (`phone_number_id` …4428) y lo dispara otra aplicación.
 - `GET {base}/api/buscar?cedula=<número>`: devuelve una lista de estudios, o un objeto suelto si hay uno. Campos que
   usaba n8n: `nombre`, `fecha` («dd/mm/aaaa hh:mm»), `admision`, `tipo_estudio`, `archivo`. Cualquier error o una
   lista vacía cuenta como «sin resultados».
+  - Comprobado el 2026-11-27 desde el contenedor `neuro_bot`: la API responde en `http://192.168.1.211:8095`
+    (contenedor `neurodx-frontend`, nginx delante del backend de resultados).
+  - Ante una cédula inválida responde `400 {"error":"Cédula inválida."}`, que el bot trata como «sin resultados»
+    con un log sin el número.
 - `GET {base}/api/pdf/<archivo>`: el PDF en binario.
 - La API no pide clave hoy. El cliente acepta una cabecera opcional (`RESULTS_API_KEY`, que viaja en
   `X-API-Key`) para cuando sistemas la agregue.
