@@ -162,7 +162,7 @@ func main() {
 
 	// Néctar: con NECTAR_BASE_URL puesta, las conversaciones nectar:* se desvían a las rutas
 	// /api/bot/*; lo demás sigue en Bird. Configurado a medias → se registra y el bot sigue como Bird.
-	nectarClient, nectarLegacyClient, nectarBridge, _, nectarErr := nectarBridgeFromConfig(cfg, localrepo.NewConversationLineRepo(localDB))
+	nectarClient, nectarLegacyClient, nectarBridge, nectarLines, nectarErr := nectarBridgeFromConfig(cfg, localrepo.NewConversationLineRepo(localDB))
 	if nectarErr != nil {
 		if nectarBridge != nil {
 			slog.Error("Néctar: la línea vieja queda APAGADA (la principal sigue activa)", "error", nectarErr)
@@ -422,6 +422,7 @@ func main() {
 	webhookHandler.SetInboxRepo(inboxRepo)
 	// Sin puente (vuelta a Bird), los avisos de Néctar se acusan y se descartan.
 	webhookHandler.SetNectarBridgeOn(nectarBridge != nil)
+	webhookHandler.SetNectarLines(nectarLines)
 
 	// WAL replay: re-process messages that weren't completed before last shutdown/crash.
 	//
@@ -593,6 +594,8 @@ func main() {
 	// NECTAR_BASE_URL vacío nadie los invoca y el tráfico de Bird no cambia. El patrón de las
 	// capacidades (con su método) lo comparten el mux y las pruebas.
 	mux.HandleFunc("POST /api/webhooks/nectar", webhookHandler.HandleNectarNotice)
+	// Avisos de la línea vieja: 404 mientras NECTAR_LEGACY_* no esté configurada.
+	mux.HandleFunc("POST /api/webhooks/nectar/legacy", webhookHandler.HandleNectarLegacyNotice)
 	mux.HandleFunc(api.NectarCapabilitiesPattern, webhookHandler.HandleNectarCapabilities)
 
 	var internalRoutes http.Handler

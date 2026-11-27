@@ -39,9 +39,16 @@ const (
 // se traga en silencio, por eso el rechazo deja traza.
 func (h *WebhookHandler) HandleNectarCapabilities(w http.ResponseWriter, r *http.Request) {
 	requestURL := reconstructFullURL(r)
-	if verr := nectar.VerifyNotice(h.cfg.NectarNoticeSecret,
-		r.Header.Get(nectar.SignatureHeader), r.Header.Get(nectar.TimestampHeader),
-		requestURL, []byte{}); verr != nil {
+	// Vale la firma de cualquiera de las dos líneas: cada una puede tener su secreto de avisos, y las
+	// capacidades son del bot, no de una línea.
+	sig, ts := r.Header.Get(nectar.SignatureHeader), r.Header.Get(nectar.TimestampHeader)
+	verr := nectar.VerifyNotice(h.cfg.NectarNoticeSecret, sig, ts, requestURL, []byte{})
+	if verr != nil && h.cfg.NectarLegacyNoticeSecret != "" && h.cfg.NectarLegacyNoticeSecret != h.cfg.NectarNoticeSecret {
+		if nectar.VerifyNotice(h.cfg.NectarLegacyNoticeSecret, sig, ts, requestURL, []byte{}) == nil {
+			verr = nil
+		}
+	}
+	if verr != nil {
 		// Un desajuste de cadena firmada no puede ser mudo. Va el sha256 del cuerpo vacío para
 		// que los dos lados comparen el valor fijo.
 		sum := sha256.Sum256([]byte{})

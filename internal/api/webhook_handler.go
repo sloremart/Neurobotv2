@@ -20,6 +20,7 @@ import (
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/notifications"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/utils"
@@ -100,6 +101,8 @@ type WebhookHandler struct {
 	// nectarBridgeOn: el puente de Néctar está armado (main lo marca). Apagado, los avisos se
 	// acusan y se descartan (HandleNectarNotice).
 	nectarBridgeOn bool
+	// nectarLines: registro de la línea (principal o vieja) de cada conversación; nil → no se registra.
+	nectarLines *nectar.LineRegistry
 	// authLog acota los WARN de las firmas rechazadas: cualquiera puede provocarlos (A-09).
 	authLog *logSampler
 }

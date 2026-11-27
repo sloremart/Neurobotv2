@@ -341,6 +341,44 @@ func (h *WebhookHandler) nectarNotifierOrNil() nectarNotifier {
 // reintentar tiene sentido (BD caída) y 4xx cuando el aviso es inutilizable de forma
 // permanente.
 func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Request) {
+	h.handleNectarNotice(w, r, nectar.LineMain)
+}
+
+// HandleNectarLegacyNotice atiende POST /api/webhooks/nectar/legacy: los mismos cuatro avisos, pero de
+// la línea vieja, firmados con su propio secreto. Sin la línea vieja configurada (NECTAR_LEGACY_*) la
+// ruta no existe para quien la sondee: 404. Configurada pero con el puente principal apagado (vuelta a
+// Bird), se comporta como la ruta principal apagada: verifica la firma y acusa con 200 sin guardar nada.
+func (h *WebhookHandler) HandleNectarLegacyNotice(w http.ResponseWriter, r *http.Request) {
+	if ok, _ := h.cfg.NectarLegacyConfigured(); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	h.handleNectarNotice(w, r, nectar.LineLegacy)
+}
+
+// SetNectarLines conecta el registro de línea por conversación: cada aviso deja registrada la línea de
+// su ruta ANTES de entrar al WAL. Sin registro (puente apagado, pruebas) no se registra nada.
+func (h *WebhookHandler) SetNectarLines(reg *nectar.LineRegistry) { h.nectarLines = reg }
+
+// noticeSecret es el secreto con el que Néctar firma los avisos de esa línea.
+func (h *WebhookHandler) noticeSecret(line nectar.Line) string {
+	if line == nectar.LineLegacy {
+		return h.cfg.NectarLegacyNoticeSecret
+	}
+	return h.cfg.NectarNoticeSecret
+}
+
+// registerNoticeLine deja registrada la línea de la conversación si aún no se conoce. Debe correr antes
+// de guardar el aviso en el WAL: el envío y el replay reparten por ese registro, y un aviso ya acusado
+// con 200 no se vuelve a pedir. Un fallo se devuelve: el llamador contesta 5xx para que Néctar reintente.
+func (h *WebhookHandler) registerNoticeLine(ctx context.Context, conversationID int64, line nectar.Line) error {
+	if h.nectarLines == nil || h.nectarLines.Known(conversationID) {
+		return nil
+	}
+	return h.nectarLines.Register(ctx, conversationID, line)
+}
+
+func (h *WebhookHandler) handleNectarNotice(w http.ResponseWriter, r *http.Request, line nectar.Line) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -352,7 +390,7 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 	// el puente está apagado. Sin NECTAR_NOTICE_SECRET no hay firma válida posible → 401, igual que
 	// antes de la transición (un bot que nunca tuvo Néctar no contesta otra cosa).
 	requestURL := reconstructFullURL(r)
-	if verr := nectar.VerifyNotice(h.cfg.NectarNoticeSecret,
+	if verr := nectar.VerifyNotice(h.noticeSecret(line),
 		r.Header.Get(nectar.SignatureHeader), r.Header.Get(nectar.TimestampHeader),
 		requestURL, body); verr != nil {
 		sum := sha256.Sum256(body)
@@ -406,6 +444,15 @@ func (h *WebhookHandler) HandleNectarNotice(w http.ResponseWriter, r *http.Reque
 			"protocolo", "version_desconocida", observability.EmitOpts{
 				Attrs: map[string]interface{}{"protocol": n.Protocol, "soportada": nectar.ProtocolMax},
 			})
+	}
+
+	// La línea de la conversación se registra ANTES de tocar el WAL (también el cuarto aviso): el envío
+	// y el replay reparten por ese registro. Si no se puede guardar, ni WAL ni 200: Néctar reintenta.
+	if rerr := h.registerNoticeLine(r.Context(), n.ConversationID, line); rerr != nil {
+		slog.Error("nectar: no se pudo registrar la línea de la conversación",
+			"conversation_id", n.ConversationID, "line", string(line), "error", rerr)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
 
 	// EL CUARTO AVISO se resuelve de forma SÍNCRONA, a diferencia de los otros tres —que se
