@@ -13,6 +13,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	"github.com/neuro-bot/neuro-bot/internal/statemachine"
+	"github.com/neuro-bot/neuro-bot/internal/testutil/fakenectar"
 )
 
 const testBusinessHours = "Lunes a Viernes de 7:00 a.m. a 6:00 p.m. y Sábados de 7:00 a.m. a 12:00 m."
@@ -242,5 +243,43 @@ func TestNotifyQueueExpired_NoHoursSkipsTemplate(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("el caso se cierra igual")
+	}
+}
+
+// legacyFake es un puente de Néctar que reparte por línea y dice que toda conversación es de la vieja.
+type legacyFake struct{ *fakenectar.Bridge }
+
+func (legacyFake) IsLegacy(context.Context, int64) bool { return true }
+
+// clientTemplateSender manda las plantillas con el *bird.Client real (el que desvía la línea vieja).
+type clientTemplateSender struct {
+	*mockMessageSender
+	client *bird.Client
+}
+
+func (s *clientTemplateSender) SendTemplate(phone string, tmpl bird.TemplateConfig) (string, error) {
+	return s.client.SendTemplate(phone, tmpl)
+}
+
+// Una sesión de la línea vieja con la ventana cerrada: la plantilla de cola vencida no existe allí;
+// sale reabriendo por la línea nueva al teléfono del contacto.
+func TestQueueExpired_LegacySessionTemplateOpensMain(t *testing.T) {
+	pool, sm, base, sess := queueExpiredPool(t)
+	base.sendErr = nectar.ErrWindowClosed
+	fb := &fakenectar.Bridge{OpenID: 90, OpenMsg: "m1", ContactValue: bird.NectarContact{Identifier: "573001112233"}}
+	client := bird.NewClientForTest("http://127.0.0.1:0")
+	client.SetNectar(legacyFake{fb})
+	pool.SetDependencies(sm, &clientTemplateSender{mockMessageSender: base, client: client}, &mockMessageProcessor{})
+	sm.completeFn = func(_ context.Context, s *session.Session) error { s.Status = session.StatusCompleted; return nil }
+
+	pool.processAgentCommand(context.Background(), AgentCommand{
+		Action: "resume", Phone: sess.PhoneNumber, ReturnValue: statemachine.ReturnValueQueueExpired,
+	})
+
+	if opens := fb.Opens(); len(opens) != 1 || opens[0] != "+573001112233" {
+		t.Fatalf("la plantilla debe abrir por la línea nueva: %v", opens)
+	}
+	if len(fb.TemplateIDs) != 0 {
+		t.Fatalf("nada a la conversación vieja: %v", fb.TemplateIDs)
 	}
 }

@@ -1150,7 +1150,11 @@ func (c *Client) SendTemplate(to string, tmpl TemplateConfig) (string, error) {
 		return "", ErrSendRateLimited
 	}
 	if id, ok := c.nectarConversation(to, ""); ok {
-		return c.nectar.SendTemplate(context.Background(), id, tmpl)
+		ctx := context.Background()
+		if handled, msgID, err := c.reopenOnMainIfLegacy(ctx, id, tmpl); handled {
+			return msgID, err
+		}
+		return c.nectar.SendTemplate(ctx, id, tmpl)
 	}
 
 	params := make([]map[string]string, len(tmpl.Params))

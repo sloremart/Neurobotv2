@@ -157,6 +157,42 @@ func (c *Client) SendProactiveTemplate(ctx context.Context, phone string, tmpl T
 	return ProactiveSend{MessageID: msgID, Key: nectarKey(convID)}, nil
 }
 
+// reopenOnMainIfLegacy manda por la línea nueva una plantilla destinada a una conversación de la línea
+// vieja (sus plantillas no existen allí): abre una conversación en la principal al contacto de la
+// vieja. handled=false = la conversación no es de la línea vieja (o el puente no reparte por línea) y
+// quien llama sigue su camino de siempre. handled=true = ya está resuelto, con su id de mensaje o su
+// error; ante un contacto ilegible o sin número no se envía nada.
+//
+// Lo usan SendTemplate y, a través de él, la rama `nectar:` de SendProactiveTemplate.
+func (c *Client) reopenOnMainIfLegacy(ctx context.Context, convID int64, tmpl TemplateConfig) (handled bool, messageID string, err error) {
+	lines, ok := c.nectar.(NectarLines)
+	if !ok || !lines.IsLegacy(ctx, convID) {
+		return false, "", nil
+	}
+	contact, err := c.nectar.Contact(ctx, convID)
+	if err != nil {
+		return true, "", fmt.Errorf("nectar: contacto de la conversación vieja %d: %w", convID, err)
+	}
+	// El identificador viene sin «+»; igual que la adopción de pendings por contacto.
+	phone := "+" + contact.Identifier
+	if contact.Identifier == "" || !utils.IsE164(phone) {
+		return true, "", fmt.Errorf("nectar: la conversación vieja %d no publica un teléfono contactable: %w", convID, ErrNonContactable)
+	}
+
+	_, msgID, err := c.nectar.OpenWithTemplate(ctx, phone, tmpl)
+	var already *AlreadyOpenError
+	if errors.As(err, &already) {
+		if !already.Mine {
+			return true, "", fmt.Errorf("%w (conversation_id=%d)", ErrConversationWithAgent, already.ConversationID)
+		}
+		if already.ConversationID <= 0 {
+			return true, "", fmt.Errorf("nectar: already_open sin conversation_id: %w", err)
+		}
+		msgID, err = c.nectar.SendTemplate(ctx, already.ConversationID, tmpl)
+	}
+	return true, msgID, err
+}
+
 // nectarKey arma la clave de sesión "nectar:<id>" (la misma que nectar.SessionKey).
 func nectarKey(conversationID int64) string {
 	return nectarPhonePrefix + strconv.FormatInt(conversationID, 10)

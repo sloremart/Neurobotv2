@@ -231,3 +231,74 @@ func TestReportProactiveConfigStop_LogsOnceAndFires(t *testing.T) {
 		t.Fatalf("sin aviso cableado sigue el Error: %s", logged.String())
 	}
 }
+
+// legacyBridge es un puente que reparte por línea: legacy dice si IsLegacy contesta sí, y contact es
+// lo que publica Contact.
+type legacyBridge struct {
+	*fakeBridge
+	legacy  bool
+	contact NectarContact
+	asks    int
+}
+
+func (l *legacyBridge) IsLegacy(context.Context, int64) bool { l.asks++; return l.legacy }
+
+func (l *legacyBridge) Contact(context.Context, int64) (NectarContact, error) {
+	return l.contact, nil
+}
+
+func newLegacyClient(t *testing.T, legacy bool, identifier string) (*Client, *legacyBridge) {
+	t.Helper()
+	srv, _ := newBirdStub(t)
+	c := NewClientForTest(srv.URL)
+	lb := &legacyBridge{
+		fakeBridge: &fakeBridge{openID: 90, openMsg: "902"}, legacy: legacy,
+		contact: NectarContact{Identifier: identifier},
+	}
+	c.SetNectar(lb)
+	return c, lb
+}
+
+func TestSendTemplate_LegacyConversationReopensOnMain(t *testing.T) {
+	c, lb := newLegacyClient(t, true, "573001112233")
+	id, err := c.SendTemplate("nectar:42", proactiveTmpl)
+	if err != nil || id != "902" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+	if len(lb.openPhones) != 1 || lb.openPhones[0] != "+573001112233" {
+		t.Fatalf("se abre por la nueva al teléfono con +: %v", lb.openPhones)
+	}
+	if lb.templates != 0 {
+		t.Fatalf("no se manda la plantilla a la conversación vieja: %v", lb.templateIDs)
+	}
+}
+
+func TestSendTemplate_LegacyWithoutContactFailsNoSend(t *testing.T) {
+	c, lb := newLegacyClient(t, true, "")
+	if _, err := c.SendTemplate("nectar:42", proactiveTmpl); !errors.Is(err, ErrNonContactable) {
+		t.Fatalf("sin teléfono no hay envío: %v", err)
+	}
+	if !lb.untouched() {
+		t.Fatalf("ninguna llamada de envío: %+v", lb.fakeBridge)
+	}
+}
+
+func TestSendTemplate_MainConversationUnchanged(t *testing.T) {
+	c, lb := newLegacyClient(t, false, "573001112233")
+	if _, err := c.SendTemplate("nectar:42", proactiveTmpl); err != nil {
+		t.Fatal(err)
+	}
+	if len(lb.templateIDs) != 1 || lb.templateIDs[0] != 42 || len(lb.openPhones) != 0 {
+		t.Fatalf("la principal sigue igual: %+v", lb.fakeBridge)
+	}
+}
+
+func TestSendProactiveTemplate_LegacySessionKeyReopensOnMain(t *testing.T) {
+	c, lb := newLegacyClient(t, true, "573001112233")
+	if _, err := c.SendProactiveTemplate(context.Background(), "nectar:42", proactiveTmpl); err != nil {
+		t.Fatal(err)
+	}
+	if len(lb.openPhones) != 1 || lb.templates != 0 {
+		t.Fatalf("la rama nectar: también reabre por la principal: %+v", lb.fakeBridge)
+	}
+}
