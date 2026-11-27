@@ -789,9 +789,8 @@ func regMunicipalityHandler(municipalityRepo repository.MunicipalityRepository) 
 		}
 
 		if len(results) == 0 {
-			sess.RetryCount++
-			return sm.NewResult(sess.CurrentState).
-				WithText("No encontré ese municipio. Escribe el municipio y departamento (ej: *Villavicencio - Meta*, *Acacías - Meta*) o escribe *0* para usar Villavicencio por defecto:"), nil
+			// Mismo tope que el resto de pasos: al tercer municipio sin resultados, agente.
+			return sm.RetryOrEscalate(sess, "No encontré ese municipio. Escribe el municipio y departamento (ej: *Villavicencio - Meta*, *Acacías - Meta*) o escribe *0* para usar Villavicencio por defecto:"), nil
 		}
 
 		outcome, errResult := sm.ValidateSearchCount(sess, len(results), 5,
@@ -942,9 +941,8 @@ func confirmMunicipalityHandler(municipalityRepo repository.MunicipalityReposito
 				WithText("No pudimos buscar el municipio en este momento. Intenta de nuevo:"), nil
 		}
 		if len(results) == 0 {
-			sess.RetryCount++
-			return sm.NewResult(sm.StateConfirmMunicipality).
-				WithText("No encontré ese municipio. Escribe el municipio y departamento (ej: *Acacías - Meta*):"), nil
+			// Mismo tope que el resto de pasos: al tercer municipio sin resultados, agente.
+			return sm.RetryOrEscalate(sess, "No encontré ese municipio. Escribe el municipio y departamento (ej: *Acacías - Meta*):"), nil
 		}
 
 		outcome, errResult := sm.ValidateSearchCount(sess, len(results), 5,

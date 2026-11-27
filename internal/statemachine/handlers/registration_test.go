@@ -848,6 +848,52 @@ func TestRegMunicipality_NoResults(t *testing.T) {
 	}
 }
 
+// Un municipio que nunca aparece no puede dejar al paciente en el paso para siempre: al tercer
+// intento sin resultados escala al agente (motivo max_reintentos), en el registro y en la
+// confirmación de SANITAS. Antes el contador subía sin tope.
+func TestMunicipality_NoResults_EscalatesAtMaxRetries(t *testing.T) {
+	repo := &mockMunicipalityRepo{
+		searchFn: func(_ context.Context, _ string) ([]domain.Municipality, error) {
+			return nil, nil
+		},
+	}
+	cases := []struct {
+		name    string
+		state   string
+		handler sm.StateHandler
+	}{
+		{"registro", sm.StateRegMunicipality, regMunicipalityHandler(repo)},
+		{"confirmación SANITAS", sm.StateConfirmMunicipality, confirmMunicipalityHandler(repo, nil)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := sm.NewMachine()
+			m.Register(tc.state, tc.handler)
+			sess := testSess(tc.state)
+
+			for i := 1; i <= 2; i++ {
+				result, err := m.Process(context.Background(), sess, textM("xyz"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.NextState != tc.state {
+					t.Fatalf("intento %d: esperaba seguir en %s, quedó en %s", i, tc.state, result.NextState)
+				}
+			}
+			result, err := m.Process(context.Background(), sess, textM("xyz"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.NextState != sm.StateEscalateToAgent {
+				t.Fatalf("intento 3: esperaba ESCALATE_TO_AGENT, quedó en %s", result.NextState)
+			}
+			if got := result.UpdateCtx[sm.CtxEscalationReason]; got != sm.EscalationReasonMaxRetries {
+				t.Errorf("motivo de escalación = %q, esperaba %q", got, sm.EscalationReasonMaxRetries)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Tests for regZoneHandler
 // =============================================================================
