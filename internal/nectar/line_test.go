@@ -80,3 +80,14 @@ func TestLineRegistry_KnownOnlyAfterRegisterOrLookup(t *testing.T) {
 		t.Fatal("99 no es conocida")
 	}
 }
+
+func TestLineRegistry_LookupDistinguishesMissingFromError(t *testing.T) {
+	r := NewLineRegistry(&fakeLineStore{lines: map[int64]Line{}})
+	if l, err := r.Lookup(context.Background(), 1); err != nil || l != LineMain {
+		t.Fatalf("sin registro: %q %v", l, err)
+	}
+	r = NewLineRegistry(&fakeLineStore{lines: map[int64]Line{}, err: errors.New("boom")})
+	if _, err := r.Lookup(context.Background(), 1); err == nil {
+		t.Fatal("el error de lectura debe salir")
+	}
+}

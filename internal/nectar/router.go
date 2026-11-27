@@ -3,6 +3,7 @@ package nectar
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -34,21 +35,37 @@ func NewLineRouter(reg *LineRegistry, bridges map[Line]*Bridge) *LineRouter {
 	return &LineRouter{reg: reg, bridges: bridges}
 }
 
-// IsLegacy dice si la conversación es de la línea vieja.
+// IsLegacy dice si la conversación es de la línea vieja. Sin puente de línea vieja no hay nada que
+// consultar: es siempre falso, sin tocar el registro.
 func (r *LineRouter) IsLegacy(ctx context.Context, conversationID int64) bool {
+	if r.bridges[LineLegacy] == nil {
+		return false
+	}
 	return r.reg.Line(ctx, conversationID) == LineLegacy
 }
 
-// bridgeFor devuelve el puente de la línea de la conversación. Registrada en una línea sin puente
-// (la vieja se apagó tras haber recibido conversaciones): no hay por dónde contestarle y mandarla
-// por la principal solo daría un 404 que se confundiría con «ya no es mía».
-func (r *LineRouter) bridgeFor(ctx context.Context, conversationID int64) (*Bridge, error) {
-	line := r.reg.Line(ctx, conversationID)
+// resolve devuelve la línea y el puente de la conversación. Sin puente de línea vieja todo es main y
+// no se consulta el registro (el bot se comporta como sin línea vieja). Con ella, un fallo al leer el
+// registro es un error: suponer main enviaría una conversación vieja con la clave principal. Registrada
+// en una línea sin puente: no hay por dónde contestarle (ErrNectarBridgeOff).
+func (r *LineRouter) resolve(ctx context.Context, conversationID int64) (Line, *Bridge, error) {
+	if r.bridges[LineLegacy] == nil {
+		return LineMain, r.bridges[LineMain], nil
+	}
+	line, err := r.reg.Lookup(ctx, conversationID)
+	if err != nil {
+		return "", nil, fmt.Errorf("nectar: no se pudo leer la línea de la conversación %d: %w", conversationID, err)
+	}
 	b := r.bridges[line]
 	if b == nil {
-		return nil, bird.ErrNectarBridgeOff
+		return line, nil, bird.ErrNectarBridgeOff
 	}
-	return b, nil
+	return line, b, nil
+}
+
+func (r *LineRouter) bridgeFor(ctx context.Context, conversationID int64) (*Bridge, error) {
+	_, b, err := r.resolve(ctx, conversationID)
+	return b, err
 }
 
 // SendText envía un texto por la línea de la conversación.
@@ -80,10 +97,10 @@ func (r *LineRouter) SendList(ctx context.Context, conversationID int64, body, b
 
 // SendTemplate rechaza la línea vieja sin llamar a nadie: sus plantillas no existen allí.
 func (r *LineRouter) SendTemplate(ctx context.Context, conversationID int64, tmpl bird.TemplateConfig) (string, error) {
-	if r.IsLegacy(ctx, conversationID) {
+	line, b, err := r.resolve(ctx, conversationID)
+	if line == LineLegacy {
 		return "", ErrTemplateOnLegacy
 	}
-	b, err := r.bridgeFor(ctx, conversationID)
 	if err != nil {
 		return "", err
 	}

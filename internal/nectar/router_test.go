@@ -111,15 +111,16 @@ func TestLineRouter_IsNotMineDelegates(t *testing.T) {
 	}
 }
 
-func TestLineRouter_LegacyLineWithoutBridgeIsOff(t *testing.T) {
+// Sin puente de línea vieja todo es main, aunque el registro guarde filas legacy de antes.
+func TestLineRouter_NoLegacyBridgeAlwaysMain(t *testing.T) {
 	f := newFakeNectar(t)
-	reg := NewLineRegistry(&fakeLineStore{lines: map[int64]Line{1234: LineLegacy}})
-	router := NewLineRouter(reg, map[Line]*Bridge{LineMain: NewBridge(newTestClient(f), nil)})
-	if _, err := router.SendText(context.Background(), 1234, "x"); !errors.Is(err, bird.ErrNectarBridgeOff) {
+	st := &fakeLineStore{lines: map[int64]Line{1234: LineLegacy}}
+	router := NewLineRouter(NewLineRegistry(st), map[Line]*Bridge{LineMain: NewBridge(newTestClient(f), nil)})
+	if _, err := router.SendText(context.Background(), 1234, "x"); err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if len(f.calls) != 0 {
-		t.Fatalf("no debe tocar la línea principal: %v", f.calls)
+	if len(f.calls) != 1 || st.reads != 0 {
+		t.Fatalf("calls=%v reads=%d", f.calls, st.reads)
 	}
 }
 
@@ -164,5 +165,39 @@ func TestLineRouter_OnlyMainBehavesAsBridge(t *testing.T) {
 	_, e2 := router.SendText(ctx, 1234, "x")
 	if direct.IsNotMine(e1) != router.IsNotMine(e2) || !router.IsNotMine(e2) {
 		t.Fatalf("IsNotMine difiere: %v %v", e1, e2)
+	}
+}
+
+// Línea vieja armada y el registro sin responder: error y NINGÚN envío (ni con la clave principal).
+func TestLineRouter_LegacyArmedStoreErrorSendsNothing(t *testing.T) {
+	r := newRouterRig(t)
+	r.reg = NewLineRegistry(&fakeLineStore{lines: map[int64]Line{}, err: errors.New("mysql caído")})
+	r.router = NewLineRouter(r.reg, map[Line]*Bridge{
+		LineMain:   NewBridge(newTestClient(r.main), nil),
+		LineLegacy: NewBridge(newTestClient(r.legacy), nil),
+	})
+	if _, err := r.router.SendText(context.Background(), 1234, "hola"); err == nil {
+		t.Fatal("debía fallar")
+	}
+	if _, err := r.router.SendTemplate(context.Background(), 1234, bird.TemplateConfig{ProjectID: "p"}); err == nil || errors.Is(err, ErrTemplateOnLegacy) {
+		t.Fatalf("err = %v", err)
+	}
+	if m, l := r.callCounts(); m != 0 || l != 0 {
+		t.Fatalf("no debe llamar a ningún stub: main=%d legacy=%d", m, l)
+	}
+}
+
+// Sin línea vieja el router no consulta el registro en ningún envío.
+func TestLineRouter_LegacyOffNeverReadsStore(t *testing.T) {
+	f := newFakeNectar(t)
+	st := &fakeLineStore{lines: map[int64]Line{}}
+	router := NewLineRouter(NewLineRegistry(st), map[Line]*Bridge{LineMain: NewBridge(newTestClient(f), map[string]string{"p": "x"})})
+	ctx := context.Background()
+	_, _ = router.SendText(ctx, 1234, "a")
+	_, _ = router.SendTemplate(ctx, 1234, bird.TemplateConfig{ProjectID: "p"})
+	_, _, _ = router.Available(ctx, 1234)
+	_ = router.IsLegacy(ctx, 1234)
+	if st.reads != 0 {
+		t.Fatalf("lecturas del store = %d, quiero 0", st.reads)
 	}
 }

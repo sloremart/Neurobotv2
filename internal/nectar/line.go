@@ -35,21 +35,32 @@ func NewLineRegistry(store LineStore) *LineRegistry {
 	return &LineRegistry{store: store}
 }
 
-// Line devuelve la línea de la conversación; sin registro o ante un error de lectura, LineMain.
-func (r *LineRegistry) Line(ctx context.Context, id int64) Line {
+// Lookup devuelve la línea de la conversación: sin registro, LineMain; si el store no responde,
+// el error (quien reparte envíos no debe suponer main: una conversación vieja saldría con la clave
+// equivocada).
+func (r *LineRegistry) Lookup(ctx context.Context, id int64) (Line, error) {
 	if v, ok := r.cache.Load(id); ok {
-		return v.(Line)
+		return v.(Line), nil
 	}
 	l, found, err := r.store.LineOf(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return LineMain, nil
+	}
+	r.cache.Store(id, l)
+	return l, nil
+}
+
+// Line devuelve la línea de la conversación; sin registro o ante un error de lectura, LineMain.
+func (r *LineRegistry) Line(ctx context.Context, id int64) Line {
+	l, err := r.Lookup(ctx, id)
 	if err != nil {
 		slog.Warn("nectar: no se pudo leer la línea de la conversación, se asume main",
 			"conversation_id", id, "error", err)
 		return LineMain
 	}
-	if !found {
-		return LineMain
-	}
-	r.cache.Store(id, l)
 	return l
 }
 
