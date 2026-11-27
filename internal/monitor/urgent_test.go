@@ -247,3 +247,22 @@ func TestUrgentFire_QueueFullDoesNotSpendCooldown(t *testing.T) {
 		t.Fatalf("el último encolado debe ser el reintento: %+v", last)
 	}
 }
+
+// Con la línea vieja armada, volver a Bird ya no devuelve ninguna línea de WhatsApp: el aviso pide el
+// rescate a los supervisores de Néctar y no menciona Bird.
+func TestUrgent_LegacyArmedTextDoesNotSayBird(t *testing.T) {
+	r := newUrgentRig(t, time.Hour)
+	r.a.SetLegacyLineArmed(true)
+	r.a.Fire(context.Background(), TriggerNectarDown, "5 fallos seguidos")
+	r.expectSent(t, 1, "el aviso sale igual")
+	got := r.text(0)
+	if strings.Contains(got, "volver a Bird") || strings.Contains(got, "GUIA-VOLVER-A-BIRD") {
+		t.Fatalf("no debe mandar volver a Bird: %q", got)
+	}
+	if !strings.Contains(got, "Pide a un supervisor de Néctar que rescate las conversaciones del bot (motivo bot_down).") {
+		t.Fatalf("falta la instrucción de rescate: %q", got)
+	}
+	if !strings.Contains(got, string(TriggerNectarDown)) || !strings.Contains(got, "5 fallos seguidos") {
+		t.Fatalf("faltan disparador o detalle: %q", got)
+	}
+}

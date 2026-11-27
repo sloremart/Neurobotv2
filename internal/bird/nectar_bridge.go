@@ -55,6 +55,13 @@ type NectarBridge interface {
 	WindowOpen(ctx context.Context, conversationID int64) (bool, error)
 }
 
+// NectarLines es la interfaz OPCIONAL de un puente que reparte por línea (nectar.LineRouter): quien
+// necesita saber si una conversación es de la línea vieja la pide con una aserción de tipo; un
+// puente sin ella (un Bridge suelto) solo tiene la línea principal.
+type NectarLines interface {
+	IsLegacy(ctx context.Context, conversationID int64) bool
+}
+
 // NectarContact es el contacto de una conversación de Néctar (GET …/state, bloque `contact`).
 // Se declara aquí y no en internal/nectar por la misma razón que Escalation: la interfaz que lo
 // transporta vive en este paquete. Identifier es el E.164 sin «+» ("" si el número es oculto).

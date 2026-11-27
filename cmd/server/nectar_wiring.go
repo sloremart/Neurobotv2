@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
@@ -15,31 +16,85 @@ import (
 	tg "github.com/neuro-bot/neuro-bot/internal/telegram"
 )
 
-// nectarBridgeFromConfig arma el cliente y el puente de Néctar desde la configuración.
-// NECTAR_BASE_URL vacía → (nil, nil, nil): el bot sigue exactamente como con Bird. URL puesta pero
+// nectarBridgeFromConfig arma los clientes y el puente de Néctar desde la configuración.
+// NECTAR_BASE_URL vacía → todo nil: el bot sigue exactamente como con Bird. URL puesta pero
 // sin clave de servicio, sin secreto de ida o sin secreto de avisos → error y sin puente: main lo registra y sigue como
 // Bird, en vez de arrancar con un desvío que fallaría en cada envío. Igual con una URL sin https que no
 // sea de un stub local: la clave de servicio viajaría en claro.
-func nectarBridgeFromConfig(cfg *config.Config) (*nectar.Client, bird.NectarBridge, error) {
+//
+// La línea vieja (NECTAR_LEGACY_*) es un segundo cliente contra el MISMO Néctar con su propia clave.
+// Solo se arma con el puente principal armado y con clave Y canal; a medias devuelve su error con
+// legacyClient nil, pero la línea principal sigue armada (un descuido en la vieja no la apaga).
+// El puente que se devuelve es el LineRouter: reparte por conversación según el registro (reg).
+func nectarBridgeFromConfig(cfg *config.Config, store nectar.LineStore) (mainClient, legacyClient *nectar.Client,
+	bridge bird.NectarBridge, reg *nectar.LineRegistry, err error,
+) {
 	if cfg.NectarBaseURL == "" {
-		return nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	if !nectar.SafeBaseURL(cfg.NectarBaseURL) {
-		return nil, nil, errors.New("NECTAR_BASE_URL tiene que usar https (en claro solo un host de pruebas local)")
+		return nil, nil, nil, nil, errors.New("NECTAR_BASE_URL tiene que usar https (en claro solo un host de pruebas local)")
 	}
 	client := nectar.NewClient(cfg.NectarBaseURL, cfg.NectarServiceKey, cfg.NectarRequestSecret)
 	// Sin NECTAR_NOTICE_SECRET todos los avisos de Néctar darían 401 sin que nadie se enterara.
 	if !client.Configured() || cfg.NectarNoticeSecret == "" {
-		return nil, nil, errors.New("NECTAR_BASE_URL puesta pero faltan NECTAR_SERVICE_KEY, NECTAR_REQUEST_SECRET o NECTAR_NOTICE_SECRET")
+		return nil, nil, nil, nil, errors.New("NECTAR_BASE_URL puesta pero faltan NECTAR_SERVICE_KEY, NECTAR_REQUEST_SECRET o NECTAR_NOTICE_SECRET")
 	}
-	bridge := nectar.NewBridge(client, cfg.NectarTemplateNames)
-	bridge.ChannelID = cfg.NectarChannelID
-	if bridge.ChannelID == 0 {
+	mainBridge := nectar.NewBridge(client, cfg.NectarTemplateNames)
+	mainBridge.ChannelID = cfg.NectarChannelID
+	if mainBridge.ChannelID == 0 {
 		// El resto de Néctar funciona, pero sin canal de apertura el bot no puede iniciar
 		// conversaciones: cada plantilla proactiva fallaría en silencio. Que se vea al arrancar.
 		slog.Error("nectar: NECTAR_CHANNEL_ID sin configurar — los recordatorios, la lista de espera y los avisos administrativos NO van a salir")
 	}
-	return client, bridge, nil
+	bridges := map[nectar.Line]*nectar.Bridge{nectar.LineMain: mainBridge}
+
+	legacyOK, legacyErr := cfg.NectarLegacyConfigured()
+	if legacyOK {
+		legacyClient = nectar.NewClient(cfg.NectarBaseURL, cfg.NectarLegacyServiceKey, cfg.NectarLegacyRequestSecret)
+		if !legacyClient.Configured() {
+			legacyClient = nil
+			legacyErr = errors.New("la línea vieja necesita NECTAR_LEGACY_REQUEST_SECRET (o NECTAR_REQUEST_SECRET de la principal)")
+		}
+	}
+	if legacyClient != nil {
+		legacyClient.SetUrgentReporter(newLegacyLineReporter(time.Now), nectar.UrgentLimits{
+			DownCount:            cfg.UrgentNectarDownCount,
+			DownWindow:           time.Duration(cfg.UrgentNectarDownWindowMin) * time.Minute,
+			EscalationFailCount:  cfg.UrgentEscalationFailCount,
+			EscalationFailWindow: time.Duration(cfg.UrgentEscalationFailWindowMin) * time.Minute,
+		})
+		// No abre conversaciones (ChannelID 0): las de esta línea las abre quien escribe al número viejo.
+		bridges[nectar.LineLegacy] = nectar.NewBridge(legacyClient, cfg.NectarTemplateNames)
+	}
+	reg = nectar.NewLineRegistry(store)
+	return client, legacyClient, nectar.NewLineRouter(reg, bridges), reg, legacyErr
+}
+
+// legacyLineReporter es el UrgentReporter de la línea vieja: sus fallos no disparan el URGENTE de
+// volver a Bird (la línea vieja caída no deja muda a la principal); van a un ERROR del log, que
+// llega a Telegram, a lo sumo una vez por disparador y ventana.
+type legacyLineReporter struct {
+	now  func() time.Time
+	mu   sync.Mutex
+	last map[monitor.UrgentTrigger]time.Time
+}
+
+func newLegacyLineReporter(now func() time.Time) *legacyLineReporter {
+	return &legacyLineReporter{now: now, last: map[monitor.UrgentTrigger]time.Time{}}
+}
+
+func (r *legacyLineReporter) Count(_ context.Context, trigger monitor.UrgentTrigger, _ int, window time.Duration, detail string) {
+	now := r.now()
+	r.mu.Lock()
+	prev, seen := r.last[trigger]
+	if seen && now.Sub(prev) < window {
+		r.mu.Unlock()
+		return
+	}
+	r.last[trigger] = now
+	r.mu.Unlock()
+	slog.Error("nectar línea vieja: fallos", "trigger", string(trigger), "detail", detail)
 }
 
 // nectarHealth es el valor de `nectar_host` en /health: SOLO el host (ni claves ni ruta), o "none".
@@ -71,6 +126,8 @@ func wireUrgentAlerter(cfg *config.Config, tgClient *tg.Client, bridgeClient *ne
 		EscalationFailCount:  cfg.UrgentEscalationFailCount,
 		EscalationFailWindow: time.Duration(cfg.UrgentEscalationFailWindowMin) * time.Minute,
 	})
+	// Con la línea vieja armada el texto del aviso ya no manda volver a Bird.
+	urgent.SetLegacyLineArmed(cfg.NectarLegacyArmed)
 	return urgent
 }
 

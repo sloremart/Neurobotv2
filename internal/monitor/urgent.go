@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,6 +58,9 @@ type UrgentAlerter struct {
 	cooldown  time.Duration
 	now       func() time.Time
 	queue     chan urgentMessage
+	// legacyArmed: con la línea vieja armada, volver a Bird ya no devuelve ninguna línea de
+	// WhatsApp; el aviso pide el rescate por los supervisores de Néctar.
+	legacyArmed atomic.Bool
 
 	mu        sync.Mutex
 	lastFired map[UrgentTrigger]time.Time
@@ -82,6 +86,14 @@ func NewUrgentAlerter(send func(ctx context.Context, text string) error, guidePa
 		queue:     make(chan urgentMessage, urgentQueueSize),
 		lastFired: map[UrgentTrigger]time.Time{},
 		hits:      map[UrgentTrigger][]time.Time{},
+	}
+}
+
+// SetLegacyLineArmed cambia el texto del aviso: con la línea vieja armada ya no manda volver a Bird
+// sino pedir a un supervisor de Néctar que rescate las conversaciones. Se llama al arrancar.
+func (a *UrgentAlerter) SetLegacyLineArmed(armed bool) {
+	if a != nil {
+		a.legacyArmed.Store(armed)
 	}
 }
 
@@ -201,6 +213,14 @@ func (a *UrgentAlerter) message(trigger UrgentTrigger, detail string, at time.Ti
 	label := urgentTriggerLabels[trigger]
 	if label == "" {
 		label = string(trigger)
+	}
+	if a.legacyArmed.Load() {
+		return fmt.Sprintf("🚨 <b>URGENTE — Néctar</b>\n\n"+
+			"Disparador: <b>%s</b> (<code>%s</code>)\n"+
+			"Detalle: %s\n"+
+			"Hora: %s\n\n"+
+			"Pide a un supervisor de Néctar que rescate las conversaciones del bot (motivo bot_down).",
+			html.EscapeString(label), trigger, html.EscapeString(detail), at.Format("2006-01-02 15:04:05"))
 	}
 	return fmt.Sprintf("🚨 <b>URGENTE — volver a Bird</b>\n\n"+
 		"Disparador: <b>%s</b> (<code>%s</code>)\n"+

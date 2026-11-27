@@ -6,34 +6,38 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/monitor"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	tg "github.com/neuro-bot/neuro-bot/internal/telegram"
 )
 
 func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
 	// Sin URL: Néctar apagado, sin error (el bot sigue exactamente como con Bird).
-	c, b, err := nectarBridgeFromConfig(&config.Config{})
+	c, _, b, _, err := nectarBridgeFromConfig(&config.Config{}, nil)
 	if c != nil || b != nil || err != nil {
 		t.Fatalf("sin URL: got %v %v %v", c, b, err)
 	}
 
 	// URL sin claves: configuración a medias → error, sin puente.
 	partial := &config.Config{NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k"}
-	c, b, err = nectarBridgeFromConfig(partial)
+	c, _, b, _, err = nectarBridgeFromConfig(partial, nil)
 	if c != nil || b != nil || err == nil {
 		t.Fatalf("a medias: got %v %v %v", c, b, err)
 	}
 
 	// Sin secreto de avisos: también a medias (todos los avisos darían 401).
 	noNotice := &config.Config{NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s"}
-	c, b, err = nectarBridgeFromConfig(noNotice)
+	c, _, b, _, err = nectarBridgeFromConfig(noNotice, nil)
 	if c != nil || b != nil || err == nil {
 		t.Fatalf("sin secreto de avisos: got %v %v %v", c, b, err)
 	}
@@ -43,13 +47,120 @@ func TestNectarWiring_PartialConfigDisablesBridge(t *testing.T) {
 		NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
 		NectarTemplateNames: map[string]string{"p": "n"}, NectarChannelID: 7,
 	}
-	c, b, err = nectarBridgeFromConfig(full)
+	c, _, b, _, err = nectarBridgeFromConfig(full, nil)
 	if c == nil || b == nil || err != nil {
 		t.Fatalf("completa: got %v %v %v", c, b, err)
 	}
-	// El canal de apertura llega al puente: sin él las plantillas proactivas no saldrían.
-	if nb, ok := b.(*nectar.Bridge); !ok || nb.ChannelID != 7 {
-		t.Fatalf("NECTAR_CHANNEL_ID no llegó al puente: %#v", b)
+	// El puente es el router por línea (con solo la principal se comporta como su Bridge).
+	if _, ok := b.(*nectar.LineRouter); !ok {
+		t.Fatalf("el puente debe ser el LineRouter: %#v", b)
+	}
+}
+
+// El canal de apertura llega al puente: sin él las plantillas proactivas no saldrían.
+func TestNectarWiring_ChannelReachesBridge(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"conversation_id":77,"channel_id":7,"message_id":901}`))
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		NectarBaseURL: srv.URL, NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
+		NectarTemplateNames: map[string]string{"p": "n"}, NectarChannelID: 7,
+	}
+	_, _, b, _, err := nectarBridgeFromConfig(cfg, &memLineStore{lines: map[int64]nectar.Line{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.OpenWithTemplate(context.Background(), "+573001112233", bird.TemplateConfig{ProjectID: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"channel_id":7`) {
+		t.Fatalf("NECTAR_CHANNEL_ID no llegó al puente: %s", body)
+	}
+}
+
+// memLineStore es un LineStore en memoria para las pruebas de cableado.
+type memLineStore struct{ lines map[int64]nectar.Line }
+
+func (m *memLineStore) LineOf(_ context.Context, id int64) (nectar.Line, bool, error) {
+	l, ok := m.lines[id]
+	return l, ok, nil
+}
+
+func (m *memLineStore) Register(_ context.Context, id int64, l nectar.Line) error {
+	m.lines[id] = l
+	return nil
+}
+
+func legacyCfg() *config.Config {
+	return &config.Config{
+		NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
+		NectarChannelID: 7,
+	}
+}
+
+func TestNectarWiring_LegacyArmedBuildsSecondClient(t *testing.T) {
+	cfg := legacyCfg()
+	cfg.NectarLegacyServiceKey, cfg.NectarLegacyChannelID = "kv", 9
+	cfg.NectarLegacyRequestSecret, cfg.NectarLegacyNoticeSecret = "s", "n"
+	c, lc, b, reg, err := nectarBridgeFromConfig(cfg, &memLineStore{lines: map[int64]nectar.Line{}})
+	if err != nil || c == nil || lc == nil || b == nil || reg == nil || c == lc {
+		t.Fatalf("got %v %v %v %v %v", c, lc, b, reg, err)
+	}
+}
+
+// Línea vieja a medias: sin segundo cliente y con el error que nombra la variable que falta; la
+// principal sigue armada.
+func TestNectarWiring_LegacyHalfConfigured(t *testing.T) {
+	cfg := legacyCfg()
+	cfg.NectarLegacyServiceKey = "kv"
+	c, lc, b, _, err := nectarBridgeFromConfig(cfg, &memLineStore{lines: map[int64]nectar.Line{}})
+	if lc != nil || err == nil || !strings.Contains(err.Error(), "NECTAR_LEGACY_CHANNEL_ID") {
+		t.Fatalf("falta el canal: lc=%v err=%v", lc, err)
+	}
+	if c == nil || b == nil {
+		t.Fatalf("la principal sigue armada: %v %v", c, b)
+	}
+	cfg = legacyCfg()
+	cfg.NectarLegacyChannelID = 9
+	_, lc, _, _, err = nectarBridgeFromConfig(cfg, &memLineStore{lines: map[int64]nectar.Line{}})
+	if lc != nil || err == nil || !strings.Contains(err.Error(), "NECTAR_LEGACY_SERVICE_KEY") {
+		t.Fatalf("falta la clave: lc=%v err=%v", lc, err)
+	}
+}
+
+// Con el puente principal apagado la línea vieja queda apagada aunque esté configurada.
+func TestNectarWiring_MainOffMeansLegacyOff(t *testing.T) {
+	cfg := &config.Config{NectarLegacyServiceKey: "kv", NectarLegacyChannelID: 9}
+	c, lc, b, reg, err := nectarBridgeFromConfig(cfg, &memLineStore{lines: map[int64]nectar.Line{}})
+	if c != nil || lc != nil || b != nil || reg != nil || err != nil {
+		t.Fatalf("got %v %v %v %v %v", c, lc, b, reg, err)
+	}
+}
+
+// Los fallos de la línea vieja no disparan el URGENTE: un ERROR en el log, una vez por ventana y disparador.
+func TestLegacyLineReporter_OncePerWindowAndTrigger(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	r := newLegacyLineReporter(func() time.Time { return now })
+	ctx := context.Background()
+	r.Count(ctx, monitor.TriggerNectarDown, 5, 5*time.Minute, "a")
+	r.Count(ctx, monitor.TriggerNectarDown, 5, 5*time.Minute, "b")
+	r.Count(ctx, monitor.TriggerEscalationFailing, 3, 5*time.Minute, "c")
+	if n := strings.Count(buf.String(), "level=ERROR"); n != 2 {
+		t.Fatalf("errores = %d, quiero 2: %s", n, buf.String())
+	}
+	now = now.Add(6 * time.Minute)
+	r.Count(ctx, monitor.TriggerNectarDown, 5, 5*time.Minute, "d")
+	if n := strings.Count(buf.String(), "level=ERROR"); n != 3 {
+		t.Fatalf("pasada la ventana vuelve a avisar: %d", n)
 	}
 }
 
@@ -66,7 +177,7 @@ func TestNectarWiring_InsecureURLDisablesBridge(t *testing.T) {
 		"nectar.colibrixa.com:443",
 		"https://",
 	} {
-		c, b, err := nectarBridgeFromConfig(complete(url))
+		c, _, b, _, err := nectarBridgeFromConfig(complete(url), nil)
 		if c != nil || b != nil || err == nil {
 			t.Errorf("%q: quería puente apagado y error: got %v %v %v", url, c, b, err)
 		}
@@ -79,7 +190,7 @@ func TestNectarWiring_InsecureURLDisablesBridge(t *testing.T) {
 		"http://[::1]:9999",
 		"http://nectar-stub:9999", // docs/PRUEBA-LOCAL-NECTAR.md
 	} {
-		c, b, err := nectarBridgeFromConfig(complete(url))
+		c, _, b, _, err := nectarBridgeFromConfig(complete(url), nil)
 		if c == nil || b == nil || err != nil {
 			t.Errorf("%q: quería puente encendido: got %v %v %v", url, c, b, err)
 		}
@@ -289,7 +400,7 @@ func TestNectarWiring_NoChannelLogsError(t *testing.T) {
 	cfg := &config.Config{
 		NectarBaseURL: "https://nectar.colibrixa.com", NectarServiceKey: "k", NectarRequestSecret: "s", NectarNoticeSecret: "n",
 	}
-	if _, b, err := nectarBridgeFromConfig(cfg); b == nil || err != nil {
+	if _, _, b, _, err := nectarBridgeFromConfig(cfg, nil); b == nil || err != nil {
 		t.Fatalf("sin canal el puente se arma igual: %v %v", b, err)
 	}
 	if out := buf.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "NECTAR_CHANNEL_ID") {
@@ -298,7 +409,7 @@ func TestNectarWiring_NoChannelLogsError(t *testing.T) {
 
 	buf.Reset()
 	cfg.NectarChannelID = 7
-	_, _, _ = nectarBridgeFromConfig(cfg)
+	_, _, _, _, _ = nectarBridgeFromConfig(cfg, nil)
 	if strings.Contains(buf.String(), "NECTAR_CHANNEL_ID") {
 		t.Fatalf("con canal no hay aviso: %q", buf.String())
 	}

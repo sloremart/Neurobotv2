@@ -162,15 +162,22 @@ func main() {
 
 	// Néctar: con NECTAR_BASE_URL puesta, las conversaciones nectar:* se desvían a las rutas
 	// /api/bot/*; lo demás sigue en Bird. Configurado a medias → se registra y el bot sigue como Bird.
-	nectarClient, nectarBridge, nectarErr := nectarBridgeFromConfig(cfg)
+	nectarClient, nectarLegacyClient, nectarBridge, _, nectarErr := nectarBridgeFromConfig(cfg, localrepo.NewConversationLineRepo(localDB))
 	if nectarErr != nil {
-		slog.Error("el desvío a Néctar queda APAGADO", "error", nectarErr)
+		if nectarBridge != nil {
+			slog.Error("Néctar: la línea vieja queda APAGADA (la principal sigue activa)", "error", nectarErr)
+		} else {
+			slog.Error("el desvío a Néctar queda APAGADO", "error", nectarErr)
+		}
 	}
 	// Los handlers (el anuncio de la línea nueva) preguntan por el puente a la configuración.
 	cfg.NectarBridgeArmed = nectarBridge != nil
+	// /health y el texto del aviso urgente leen esto: va ANTES de registrar las rutas y de cablear el aviso.
+	cfg.NectarLegacyArmed = nectarBridge != nil && nectarLegacyClient != nil
 	if nectarBridge != nil {
 		birdClient.SetNectar(nectarBridge)
-		slog.Info("Néctar activo", "host", nectar.HostOf(nectarClient.BaseURL()), "notice_secret", cfg.NectarNoticeSecret != "")
+		slog.Info("Néctar activo", "host", nectar.HostOf(nectarClient.BaseURL()), "notice_secret", cfg.NectarNoticeSecret != "",
+			"legacy_line", cfg.NectarLegacyArmed)
 	}
 
 	// El horario de atención y los festivos: todo el bot los pregunta por cfg.Hours(). Rige el de
