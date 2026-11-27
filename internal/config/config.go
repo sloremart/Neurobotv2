@@ -209,6 +209,12 @@ type Config struct {
 	BotName                    string
 	ResultsURL                 string
 	ResultsVideoURL            string
+	// Resultados de estudios (API de resultados, PDF por Néctar, portal de imágenes). Todo vacío o
+	// false = «Resultados» se comporta como hoy.
+	ResultsAPIURL     string // RESULTS_API_URL: base de la API de resultados, sin barra final. Vacía = apagada.
+	ResultsAPIKey     string // RESULTS_API_KEY: opcional.
+	ResultsPDFEnabled bool   // RESULTS_PDF_ENABLED=true: adjuntos PDF por Néctar. Por defecto false.
+	ImagingResultsURL string // IMAGING_RESULTS_URL: enlace al portal de imágenes. Vacía = la opción no aparece.
 
 	// Security
 	InternalAPIKey string
@@ -434,6 +440,10 @@ func Load() *Config {
 		BotName:                    getEnv("BOT_NAME", "Samuel"),
 		ResultsURL:                 getEnv("RESULTS_URL", ""),
 		ResultsVideoURL:            getEnv("RESULTS_VIDEO_URL", ""),
+		ResultsAPIURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("RESULTS_API_URL")), "/"),
+		ResultsAPIKey:              strings.TrimSpace(os.Getenv("RESULTS_API_KEY")),
+		ResultsPDFEnabled:          getEnvBool("RESULTS_PDF_ENABLED", false),
+		ImagingResultsURL:          strings.TrimSpace(os.Getenv("IMAGING_RESULTS_URL")),
 
 		// Security
 		InternalAPIKey: os.Getenv("INTERNAL_API_KEY"),
@@ -675,6 +685,10 @@ const (
 	CupsGroupCallCenter = "callcenter" // todo lo demás (genérico)
 )
 
+// NectarGroupSIAU es la clave de NECTAR_TEAM_BY_GROUP del equipo de Atención al usuario (SIAU). No es
+// un grupo de CUPS: CupsGroup nunca lo devuelve, así que SuggestedTeamForCups no lo usa.
+const NectarGroupSIAU = "siau"
+
 // CupsGroup devuelve el grupo de CUPS de un código de procedimiento: CupsGroupImaging,
 // CupsGroupNeuro o CupsGroupCallCenter (lo desconocido y lo demasiado corto). Es la única tabla
 // de prefijos: de ella cuelgan tanto ResolveTeamForCups (equipo de Bird) como
@@ -733,9 +747,22 @@ func (c *Config) SuggestedTeamForCups(cupsCode string) *int64 {
 	return &team
 }
 
-// parseNectarTeamByGroup lee "imagenes:7, neuro:8, callcenter:9" en un mapa grupo → id de
-// equipo de Néctar. Vacía (o solo espacios) da un mapa vacío. Las claves válidas son SOLO los
-// grupos de CupsGroup; todo lo que no se entienda (grupo desconocido o repetido, par sin ':',
+// SuggestedTeamForSIAU devuelve el equipo de Néctar de SIAU (clave siau de NECTAR_TEAM_BY_GROUP), o nil
+// si el mapa no trae esa clave. Devuelve una copia, como SuggestedTeamForCups.
+func (c *Config) SuggestedTeamForSIAU() *int64 {
+	if c == nil {
+		return nil
+	}
+	team, ok := c.NectarTeamByGroup[NectarGroupSIAU]
+	if !ok {
+		return nil
+	}
+	return &team
+}
+
+// parseNectarTeamByGroup lee "imagenes:7, neuro:8, callcenter:9, siau:12" en un mapa grupo → id de
+// equipo de Néctar. Vacía (o solo espacios) da un mapa vacío. Las claves válidas son los grupos de
+// CupsGroup y NectarGroupSIAU; todo lo que no se entienda (grupo desconocido o repetido, par sin ':',
 // id no numérico o <= 0) es ERROR de arranque, porque tragarse un par malo dejaría ese grupo
 // escalando sin equipo sugerido y nadie se enteraría. El grupo se normaliza a minúsculas y se
 // toleran espacios alrededor de cada pieza.
@@ -755,10 +782,10 @@ func parseNectarTeamByGroup(raw string) (map[string]int64, error) {
 		}
 		name = strings.ToLower(strings.TrimSpace(name))
 		switch name {
-		case CupsGroupImaging, CupsGroupNeuro, CupsGroupCallCenter:
+		case CupsGroupImaging, CupsGroupNeuro, CupsGroupCallCenter, NectarGroupSIAU:
 		default:
-			return nil, fmt.Errorf("grupo %q desconocido (válidos: %s, %s, %s)",
-				name, CupsGroupImaging, CupsGroupNeuro, CupsGroupCallCenter)
+			return nil, fmt.Errorf("grupo %q desconocido (válidos: %s, %s, %s, %s)",
+				name, CupsGroupImaging, CupsGroupNeuro, CupsGroupCallCenter, NectarGroupSIAU)
 		}
 		team, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
 		if err != nil {

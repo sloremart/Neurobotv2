@@ -230,3 +230,77 @@ func TestParsePositiveInt(t *testing.T) {
 		}
 	}
 }
+
+// --- Resultados de estudios, imágenes y SIAU (configuración) ---
+
+// Sin variables, las de resultados quedan apagadas: vacías y el PDF en false.
+func TestResultsConfig_Defaults(t *testing.T) {
+	setRequiredEnv(t)
+	for _, k := range []string{"RESULTS_API_URL", "RESULTS_API_KEY", "RESULTS_PDF_ENABLED", "IMAGING_RESULTS_URL"} {
+		t.Setenv(k, "")
+	}
+	cfg := Load()
+	if cfg.ResultsAPIURL != "" || cfg.ResultsAPIKey != "" || cfg.ImagingResultsURL != "" {
+		t.Errorf("sin variables: ResultsAPIURL=%q ResultsAPIKey=%q ImagingResultsURL=%q, want vacías",
+			cfg.ResultsAPIURL, cfg.ResultsAPIKey, cfg.ImagingResultsURL)
+	}
+	if cfg.ResultsPDFEnabled {
+		t.Errorf("ResultsPDFEnabled = true, want false por defecto")
+	}
+}
+
+// Las variables se leen; la URL de la API pierde la barra final y RESULTS_PDF_ENABLED=true enciende el PDF.
+func TestResultsConfig_Loaded(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("RESULTS_API_URL", "https://api.example.com/")
+	t.Setenv("RESULTS_API_KEY", "clave-de-prueba")
+	t.Setenv("RESULTS_PDF_ENABLED", "true")
+	t.Setenv("IMAGING_RESULTS_URL", "https://portal.example.com/imagenes")
+
+	cfg := Load()
+	if cfg.ResultsAPIURL != "https://api.example.com" {
+		t.Errorf("ResultsAPIURL = %q, want sin barra final", cfg.ResultsAPIURL)
+	}
+	if cfg.ResultsAPIKey != "clave-de-prueba" {
+		t.Errorf("ResultsAPIKey = %q", cfg.ResultsAPIKey)
+	}
+	if !cfg.ResultsPDFEnabled {
+		t.Errorf("ResultsPDFEnabled = false, want true con RESULTS_PDF_ENABLED=true")
+	}
+	if cfg.ImagingResultsURL != "https://portal.example.com/imagenes" {
+		t.Errorf("ImagingResultsURL = %q", cfg.ImagingResultsURL)
+	}
+}
+
+// El grupo siau se acepta en NECTAR_TEAM_BY_GROUP y da su equipo; el sugeridor de CUPS no lo usa.
+func TestNectarTeamByGroup_AcceptsSIAU(t *testing.T) {
+	teams, err := parseNectarTeamByGroup("imagenes:7,siau:12")
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	cfg := &Config{NectarTeamByGroup: teams}
+	if got := cfg.SuggestedTeamForSIAU(); got == nil || *got != 12 {
+		t.Errorf("SuggestedTeamForSIAU() = %v, want 12", got)
+	}
+	if got := cfg.SuggestedTeamForCups("883100"); got == nil || *got != 7 {
+		t.Errorf("SuggestedTeamForCups(883100) = %v, want 7 (imagenes)", got)
+	}
+	onlySIAU := &Config{NectarTeamByGroup: map[string]int64{"siau": 12}}
+	if got := onlySIAU.SuggestedTeamForCups("883100"); got != nil {
+		t.Errorf("SuggestedTeamForCups con solo siau = %d, want nil", *got)
+	}
+	if got := (&Config{}).SuggestedTeamForSIAU(); got != nil {
+		t.Errorf("sin mapa SuggestedTeamForSIAU() = %d, want nil", *got)
+	}
+}
+
+// Un grupo desconocido sigue tumbando el parseo, y el mensaje lista siau entre los válidos.
+func TestNectarTeamByGroup_UnknownStillFails(t *testing.T) {
+	_, err := parseNectarTeamByGroup("rx:1")
+	if err == nil {
+		t.Fatal("grupo desconocido debía fallar")
+	}
+	if !strings.Contains(err.Error(), "siau") {
+		t.Errorf("el error no lista siau entre los válidos: %v", err)
+	}
+}
