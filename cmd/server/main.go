@@ -199,7 +199,11 @@ func main() {
 	}
 	// Informes de asesores (D5): sincroniza tramos y roster de Néctar. Solo con el puente
 	// encendido, y después de wireNectarRuntime (el aviso urgente ya cableado en el cliente).
-	startNectarReports(ctx, cfg, scheduleClient, localrepo.NewNectarReportsRepo(localDB), escalationRepo)
+	var legacyReportsClient *nectar.Client
+	if cfg.NectarLegacyArmed {
+		legacyReportsClient = nectarLegacyClient
+	}
+	startNectarReports(ctx, cfg, scheduleClient, legacyReportsClient, localrepo.NewNectarReportsRepo(localDB), escalationRepo)
 
 	// Services (dependen de repos)
 	var patientSvc *services.PatientService

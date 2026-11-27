@@ -22,11 +22,12 @@ type readCall struct {
 }
 
 type fakeReader struct {
-	mu        sync.Mutex
-	calls     []readCall
-	pages     func(call readCall, n int) (nectar.WaitingCyclesPage, error)
-	agents    []nectar.ReportAgent
-	agentsErr error
+	mu         sync.Mutex
+	calls      []readCall
+	pages      func(call readCall, n int) (nectar.WaitingCyclesPage, error)
+	agents     []nectar.ReportAgent
+	agentsErr  error
+	agentCalls int
 }
 
 func (f *fakeReader) GetWaitingCycles(_ context.Context, since, until time.Time, cursor string) (nectar.WaitingCyclesPage, error) {
@@ -41,6 +42,7 @@ func (f *fakeReader) GetWaitingCycles(_ context.Context, since, until time.Time,
 }
 
 func (f *fakeReader) GetAgents(context.Context) ([]nectar.ReportAgent, error) {
+	f.agentCalls++
 	return f.agents, f.agentsErr
 }
 
@@ -61,14 +63,14 @@ func newFakeCycles() *fakeCycles {
 	return &fakeCycles{cycles: map[int64]nectar.WaitingCycle{}, marks: map[int64]uint64{}, state: map[string]string{}}
 }
 
-func (f *fakeCycles) UpsertCycles(_ context.Context, cs []nectar.WaitingCycle) error {
+func (f *fakeCycles) UpsertCycles(_ context.Context, _ nectar.Line, cs []nectar.WaitingCycle) error {
 	for _, c := range cs {
 		f.cycles[c.ID] = c
 	}
 	return nil
 }
 
-func (f *fakeCycles) OldestOpenCycleOpenedAt(context.Context) (*time.Time, error) {
+func (f *fakeCycles) OldestOpenCycleOpenedAt(context.Context, nectar.Line) (*time.Time, error) {
 	var oldest *time.Time
 	for _, c := range f.cycles {
 		if c.ClosedAt == nil && (oldest == nil || c.OpenedAt.Before(*oldest)) {
@@ -143,7 +145,7 @@ func (f *fakeEscalations) ApplyNectarAttention(_ context.Context, id uint64, a l
 func ptrS(s string) *string { return &s }
 
 func newTestSyncer(r *fakeReader, c *fakeCycles, e *fakeEscalations, now time.Time) *Syncer {
-	s := NewSyncer(r, c, e, time.Minute, DataFloor)
+	s := NewSyncer(r, c, e, time.Minute, DataFloor, nectar.LineMain)
 	s.now = func() time.Time { return now }
 	return s
 }
@@ -223,7 +225,7 @@ func TestRunOnce_SplitsLongRangeIntoWindows(t *testing.T) {
 	now := time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC)
 	floor := now.Add(-70 * 24 * time.Hour)
 	r := &fakeReader{}
-	s := NewSyncer(r, newFakeCycles(), &fakeEscalations{}, time.Minute, floor)
+	s := NewSyncer(r, newFakeCycles(), &fakeEscalations{}, time.Minute, floor, nectar.LineMain)
 	s.now = func() time.Time { return now }
 	if err := s.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -448,7 +450,7 @@ func TestRun_AccountKeyRequiredStopsAfterOneReadAndOneLog(t *testing.T) {
 	r := &fakeReader{pages: func(readCall, int) (nectar.WaitingCyclesPage, error) {
 		return nectar.WaitingCyclesPage{}, nectar.ErrAccountKeyRequired
 	}}
-	s := NewSyncer(r, newFakeCycles(), &fakeEscalations{}, time.Millisecond, DataFloor)
+	s := NewSyncer(r, newFakeCycles(), &fakeEscalations{}, time.Millisecond, DataFloor, nectar.LineMain)
 	s.now = func() time.Time { return DataFloor.Add(time.Hour) }
 
 	done := make(chan struct{})
@@ -474,7 +476,7 @@ func TestRun_OtherErrorsWarnAndRetry(t *testing.T) {
 	r := &fakeReader{pages: func(readCall, int) (nectar.WaitingCyclesPage, error) {
 		return nectar.WaitingCyclesPage{}, errors.New("nectar: GET: status 502")
 	}}
-	s := NewSyncer(r, newFakeCycles(), &fakeEscalations{}, time.Millisecond, DataFloor)
+	s := NewSyncer(r, newFakeCycles(), &fakeEscalations{}, time.Millisecond, DataFloor, nectar.LineMain)
 	s.now = func() time.Time { return DataFloor.Add(time.Hour) }
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -494,5 +496,68 @@ func TestRun_OtherErrorsWarnAndRetry(t *testing.T) {
 	out := logs.String()
 	if !strings.Contains(out, "level=WARN") || strings.Contains(out, "level=ERROR") {
 		t.Fatalf("logs = %q, want WARN y ningún ERROR", out)
+	}
+}
+
+// ─── línea vieja ──────────────────────────────────────────────────────────────
+
+// La línea vieja guarda su estado con el prefijo «legacy:» y no lee asesores ni empareja atenciones.
+func TestSyncer_LegacyUsesPrefixedStateAndSkipsAgentsAndAttentions(t *testing.T) {
+	now := DataFloor.Add(time.Hour)
+	hs := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	opened := DataFloor.Add(20 * time.Minute)
+	r := &fakeReader{pages: func(readCall, int) (nectar.WaitingCyclesPage, error) {
+		return nectar.WaitingCyclesPage{Cycles: []nectar.WaitingCycle{cyc(1, 10, opened)}, HistorySince: &hs}, nil
+	}}
+	c := newFakeCycles()
+	e := &fakeEscalations{}
+	s := NewSyncer(r, c, e, time.Minute, DataFloor, nectar.LineLegacy)
+	s.now = func() time.Time { return now }
+
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{stateLastSeenOpenedAt, stateHistorySince, stateLastSuccessAt} {
+		if c.state["legacy:"+name] == "" {
+			t.Errorf("falta el estado legacy:%s", name)
+		}
+		if c.state[name] != "" {
+			t.Errorf("la línea vieja escribió el estado de la principal %s", name)
+		}
+	}
+	if r.agentCalls != 0 || c.agents != nil {
+		t.Errorf("la línea vieja leyó asesores (%d llamadas)", r.agentCalls)
+	}
+	if len(e.since) != 0 {
+		t.Errorf("la línea vieja emparejó atenciones: %v", e.since)
+	}
+	if _, ok := c.cycles[1]; !ok {
+		t.Error("el tramo leído no se guardó")
+	}
+}
+
+// La principal conserva los nombres de estado de siempre (los lee el dashboard) y sí lee asesores.
+func TestSyncer_MainStateNamesUnchanged(t *testing.T) {
+	now := DataFloor.Add(time.Hour)
+	opened := DataFloor.Add(20 * time.Minute)
+	r := &fakeReader{pages: func(readCall, int) (nectar.WaitingCyclesPage, error) {
+		hs := DataFloor
+		return nectar.WaitingCyclesPage{Cycles: []nectar.WaitingCycle{cyc(1, 10, opened)}, HistorySince: &hs}, nil
+	}}
+	c := newFakeCycles()
+	s := newTestSyncer(r, c, &fakeEscalations{}, now)
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"last_seen_opened_at", "history_since", "last_success_at"} {
+		if c.state[name] == "" {
+			t.Errorf("falta el estado %s", name)
+		}
+	}
+	if len(c.state) != 3 {
+		t.Errorf("estados = %v, want solo los tres de siempre", c.state)
+	}
+	if r.agentCalls != 1 {
+		t.Errorf("la principal debe leer asesores una vez, got %d", r.agentCalls)
 	}
 }

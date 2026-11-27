@@ -72,7 +72,12 @@ func placeholders(n int) string {
 // UpsertCycles inserta los tramos o los actualiza si ya existen (mismo id de Néctar). Pisa todo lo
 // que Néctar publica y NUNCA toca escalation_id: ese lo pone el emparejamiento con las atenciones.
 // synced_at se fija a mano: si la fila queda igual MySQL no la toca y el ON UPDATE no avanzaría.
-func (r *NectarReportsRepo) UpsertCycles(ctx context.Context, cycles []nectar.WaitingCycle) error {
+// line es la línea que los leyó: la principal se guarda como NULL (como las filas anteriores a la 049).
+func (r *NectarReportsRepo) UpsertCycles(ctx context.Context, line nectar.Line, cycles []nectar.WaitingCycle) error {
+	var lineValue interface{}
+	if line == nectar.LineLegacy {
+		lineValue = string(nectar.LineLegacy)
+	}
 	for start := 0; start < len(cycles); start += reportsBatch {
 		end := start + reportsBatch
 		if end > len(cycles) {
@@ -80,19 +85,19 @@ func (r *NectarReportsRepo) UpsertCycles(ctx context.Context, cycles []nectar.Wa
 		}
 		chunk := cycles[start:end]
 		rows := make([]string, 0, len(chunk))
-		args := make([]interface{}, 0, len(chunk)*12)
+		args := make([]interface{}, 0, len(chunk)*13)
 		for _, c := range chunk {
 			opened := c.OpenedAt
-			rows = append(rows, "(?,?,?,?,?,?,?,?,?,?,?,?)")
+			rows = append(rows, "(?,?,?,?,?,?,?,?,?,?,?,?,?)")
 			args = append(args, c.ID, c.ConversationID, c.PreviousCycleID, c.TeamID, c.AgentID,
 				utcText(&opened), utcText(c.AssignedAt), utcText(c.FirstResponseAt), utcText(c.ClosedAt),
-				c.CloseReason, c.Backfilled, c.ContactMessagesBeforeFirstResponse)
+				c.CloseReason, c.Backfilled, c.ContactMessagesBeforeFirstResponse, lineValue)
 		}
 		//nolint:gosec // G202: `rows` es una tira de "(?,...)" armada con len(chunk); los valores viajan como parámetros.
 		_, err := r.db.ExecContext(ctx,
 			`INSERT INTO nectar_waiting_cycles
 			 (id, conversation_id, previous_cycle_id, team_id, agent_id, opened_at, assigned_at,
-			  first_response_at, closed_at, close_reason, backfilled, contact_msgs_before_response)
+			  first_response_at, closed_at, close_reason, backfilled, contact_msgs_before_response, line)
 			 VALUES `+strings.Join(rows, ",")+`
 			 ON DUPLICATE KEY UPDATE
 			  conversation_id = VALUES(conversation_id), previous_cycle_id = VALUES(previous_cycle_id),
@@ -110,11 +115,16 @@ func (r *NectarReportsRepo) UpsertCycles(ctx context.Context, cycles []nectar.Wa
 }
 
 // OldestOpenCycleOpenedAt devuelve la apertura del tramo sin cerrar más viejo, o nil si no hay
-// ninguno: desde ahí la sincronización vuelve a leer para ver cerrarse los tramos abiertos.
-func (r *NectarReportsRepo) OldestOpenCycleOpenedAt(ctx context.Context) (*time.Time, error) {
+// ninguno de esa línea: desde ahí la sincronización vuelve a leer para ver cerrarse los tramos
+// abiertos. La principal incluye las filas con line NULL.
+func (r *NectarReportsRepo) OldestOpenCycleOpenedAt(ctx context.Context, line nectar.Line) (*time.Time, error) {
+	lineFilter := `line IS NULL OR line = 'main'`
+	if line == nectar.LineLegacy {
+		lineFilter = `line = 'legacy'`
+	}
 	var t sql.NullTime
 	if err := r.db.QueryRowContext(ctx,
-		`SELECT MIN(opened_at) FROM nectar_waiting_cycles WHERE closed_at IS NULL`).Scan(&t); err != nil {
+		`SELECT MIN(opened_at) FROM nectar_waiting_cycles WHERE closed_at IS NULL AND (`+lineFilter+`)`).Scan(&t); err != nil {
 		return nil, fmt.Errorf("oldest open nectar cycle: %w", err)
 	}
 	return wallUTCPtr(t), nil

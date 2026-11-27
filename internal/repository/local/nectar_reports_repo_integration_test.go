@@ -40,7 +40,7 @@ func TestNectarReportsRepo_UpsertKeepsEscalationID(t *testing.T) {
 	opened := time.Date(2026, 10, 30, 23, 0, 0, 0, time.UTC)
 
 	c := nectar.WaitingCycle{ID: base, ConversationID: conv, TeamID: ptrI64(7), OpenedAt: opened}
-	if err := repo.UpsertCycles(ctx, []nectar.WaitingCycle{c}); err != nil {
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, []nectar.WaitingCycle{c}); err != nil {
 		t.Fatalf("upsert 1: %v", err)
 	}
 	if err := repo.SetCycleEscalation(ctx, []int64{base}, 42); err != nil {
@@ -55,7 +55,7 @@ func TestNectarReportsRepo_UpsertKeepsEscalationID(t *testing.T) {
 	c2.CloseReason = ptrStr("resolved")
 	c2.Backfilled = true
 	c2.ContactMessagesBeforeFirstResponse = 4
-	if err := repo.UpsertCycles(ctx, []nectar.WaitingCycle{c2}); err != nil {
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, []nectar.WaitingCycle{c2}); err != nil {
 		t.Fatalf("upsert 2: %v", err)
 	}
 
@@ -93,19 +93,19 @@ func TestNectarReportsRepo_OldestOpenCycle(t *testing.T) {
 		{ID: base + 1, ConversationID: base, OpenedAt: old},
 		{ID: base + 2, ConversationID: base, OpenedAt: old.Add(time.Hour)},
 	}
-	if err := repo.UpsertCycles(ctx, cycles); err != nil {
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, cycles); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	got, err := repo.OldestOpenCycleOpenedAt(ctx)
+	got, err := repo.OldestOpenCycleOpenedAt(ctx, nectar.LineMain)
 	if err != nil || got == nil || !got.Equal(old) {
 		t.Fatalf("el abierto más viejo es %v, got %v err=%v", old, got, err)
 	}
-	if err := repo.UpsertCycles(ctx, []nectar.WaitingCycle{
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, []nectar.WaitingCycle{
 		{ID: base + 1, ConversationID: base, OpenedAt: old, ClosedAt: ptrTime(old.Add(time.Minute))},
 	}); err != nil {
 		t.Fatalf("cerrar: %v", err)
 	}
-	got, _ = repo.OldestOpenCycleOpenedAt(ctx)
+	got, _ = repo.OldestOpenCycleOpenedAt(ctx, nectar.LineMain)
 	if got == nil || !got.Equal(old.Add(time.Hour)) {
 		t.Fatalf("tras cerrar, el más viejo es +1h, got %v", got)
 	}
@@ -123,7 +123,7 @@ func TestNectarReportsRepo_OldestOpenCycle_None(t *testing.T) {
 	if open > 0 {
 		t.Skipf("hay %d tramos abiertos ajenos al fixture", open)
 	}
-	got, err := repo.OldestOpenCycleOpenedAt(context.Background())
+	got, err := repo.OldestOpenCycleOpenedAt(context.Background(), nectar.LineMain)
 	if err != nil || got != nil {
 		t.Fatalf("sin abiertos: nil, got %v err=%v", got, err)
 	}
@@ -436,7 +436,7 @@ func TestNectarReportsRepo_IdenticalUpsertAdvancesSyncedAt(t *testing.T) {
 		ID: agentID, Name: "Ana", Active: true, Presence: "online",
 		Teams: []nectar.ReportTeam{{ID: 1, Name: "Neuro"}}, OpenConversations: 1,
 	}
-	if err := repo.UpsertCycles(ctx, []nectar.WaitingCycle{c}); err != nil {
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, []nectar.WaitingCycle{c}); err != nil {
 		t.Fatalf("upsert tramo 1: %v", err)
 	}
 	if err := repo.ReplaceAgents(ctx, []nectar.ReportAgent{a}); err != nil {
@@ -446,7 +446,7 @@ func TestNectarReportsRepo_IdenticalUpsertAdvancesSyncedAt(t *testing.T) {
 	agentBefore := syncedAt(t, db, "nectar_agents", agentID)
 
 	time.Sleep(1100 * time.Millisecond) // TIMESTAMP sin fracción: hace falta ≥1 s para verlo moverse
-	if err := repo.UpsertCycles(ctx, []nectar.WaitingCycle{c}); err != nil {
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, []nectar.WaitingCycle{c}); err != nil {
 		t.Fatalf("upsert tramo 2: %v", err)
 	}
 	if err := repo.ReplaceAgents(ctx, []nectar.ReportAgent{a}); err != nil {
@@ -457,5 +457,59 @@ func TestNectarReportsRepo_IdenticalUpsertAdvancesSyncedAt(t *testing.T) {
 	}
 	if got := syncedAt(t, db, "nectar_agents", agentID); !got.After(agentBefore) {
 		t.Errorf("synced_at del agente debe avanzar: antes %v, después %v", agentBefore, got)
+	}
+}
+
+func TestUpsertCycles_WritesLine(t *testing.T) {
+	db := openLocalTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	repo := NewNectarReportsRepo(db)
+	base := cycleFixture(t, db)
+	opened := time.Date(2000, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, []nectar.WaitingCycle{{ID: base, ConversationID: base, OpenedAt: opened}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertCycles(ctx, nectar.LineLegacy, []nectar.WaitingCycle{{ID: base + 1, ConversationID: base, OpenedAt: opened}}); err != nil {
+		t.Fatal(err)
+	}
+	var mainLine, legacyLine sql.NullString
+	if err := db.QueryRow("SELECT line FROM nectar_waiting_cycles WHERE id = ?", base).Scan(&mainLine); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT line FROM nectar_waiting_cycles WHERE id = ?", base+1).Scan(&legacyLine); err != nil {
+		t.Fatal(err)
+	}
+	if mainLine.Valid {
+		t.Errorf("la principal se guarda como NULL, got %q", mainLine.String)
+	}
+	if !legacyLine.Valid || legacyLine.String != "legacy" {
+		t.Errorf("la vieja se guarda como legacy, got %+v", legacyLine)
+	}
+}
+
+func TestOldestOpenCycle_PerLine(t *testing.T) {
+	db := openLocalTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	repo := NewNectarReportsRepo(db)
+	base := cycleFixture(t, db)
+	// Año 2000: más viejo que cualquier dato real; los ajenos más viejos no se esperan.
+	oldMain := time.Date(2000, 1, 1, 10, 0, 0, 0, time.UTC)
+	oldLegacy := oldMain.Add(time.Hour)
+	if err := repo.UpsertCycles(ctx, nectar.LineMain, []nectar.WaitingCycle{{ID: base, ConversationID: base, OpenedAt: oldMain}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertCycles(ctx, nectar.LineLegacy, []nectar.WaitingCycle{{ID: base + 1, ConversationID: base, OpenedAt: oldLegacy}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.OldestOpenCycleOpenedAt(ctx, nectar.LineMain)
+	if err != nil || got == nil || !got.Equal(oldMain) {
+		t.Errorf("main = %v err=%v, want %v", got, err, oldMain)
+	}
+	got, err = repo.OldestOpenCycleOpenedAt(ctx, nectar.LineLegacy)
+	if err != nil || got == nil || !got.Equal(oldLegacy) {
+		t.Errorf("legacy = %v err=%v, want %v", got, err, oldLegacy)
 	}
 }

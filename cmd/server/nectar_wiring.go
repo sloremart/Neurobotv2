@@ -149,8 +149,9 @@ func wireNectarRuntime(ctx context.Context, cfg *config.Config, tgClient *tg.Cli
 // newNectarReportsSyncer arma la sincronización de los informes de asesores (D5): tramos de espera
 // y roster de Néctar a las tablas locales, y las escalaciones nectar:* completadas. Solo con el
 // puente encendido (bridgeClient nil = apagado): sin puente devuelve nil y no se llama a Néctar.
+// Con line = LineLegacy y el cliente de la línea vieja solo copia los tramos de su canal.
 func newNectarReportsSyncer(cfg *config.Config, bridgeClient *nectar.Client, reports *localrepo.NectarReportsRepo,
-	escalations *localrepo.EscalationRepo,
+	escalations *localrepo.EscalationRepo, line nectar.Line,
 ) *nectarreports.Syncer {
 	if bridgeClient == nil || !bridgeClient.Configured() {
 		return nil
@@ -159,21 +160,27 @@ func newNectarReportsSyncer(cfg *config.Config, bridgeClient *nectar.Client, rep
 	if cfg.NectarReportsSyncMin <= 0 {
 		every = config.DefaultNectarReportsSyncMin * time.Minute
 	}
-	return nectarreports.NewSyncer(bridgeClient, reports, escalations, every, nectarreports.DataFloor)
+	return nectarreports.NewSyncer(bridgeClient, reports, escalations, every, nectarreports.DataFloor, line)
 }
 
 // startNectarReports arranca la sincronización de los informes si el puente está encendido y
 // dice si arrancó. main la llama DESPUÉS de wireNectarRuntime: el aviso urgente ya está cableado
-// en el cliente cuando sale la primera lectura (sin carrera con SetUrgentReporter).
-func startNectarReports(ctx context.Context, cfg *config.Config, bridgeClient *nectar.Client,
+// en el cliente cuando sale la primera lectura (sin carrera con SetUrgentReporter). Con la línea
+// vieja armada (legacyClient no nil) arranca una segunda sincronización con su clave: cada clave
+// de canal solo ve los tramos de su canal. Una clave de cuenta que falta detiene solo a su instancia.
+func startNectarReports(ctx context.Context, cfg *config.Config, bridgeClient, legacyClient *nectar.Client,
 	reports *localrepo.NectarReportsRepo, escalations *localrepo.EscalationRepo,
 ) bool {
-	s := newNectarReportsSyncer(cfg, bridgeClient, reports, escalations)
+	s := newNectarReportsSyncer(cfg, bridgeClient, reports, escalations, nectar.LineMain)
 	if s == nil {
 		return false
 	}
 	slog.Info("informes de Néctar: sincronización de tramos y asesores activa",
 		"cada_min", cfg.NectarReportsSyncMin, "desde", nectarreports.DataFloor.Format(time.RFC3339))
 	safeGo("nectar-reports", func() { s.Run(ctx) })
+	if legacy := newNectarReportsSyncer(cfg, legacyClient, reports, escalations, nectar.LineLegacy); legacy != nil {
+		slog.Info("informes de Néctar: sincronización de tramos de la línea vieja activa")
+		safeGo("nectar-reports-legacy", func() { legacy.Run(ctx) })
+	}
 	return true
 }

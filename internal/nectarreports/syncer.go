@@ -55,8 +55,8 @@ type reportsReader interface {
 
 // cyclesStore es la tabla local de tramos, asesores y estado (local.NectarReportsRepo).
 type cyclesStore interface {
-	UpsertCycles(ctx context.Context, cycles []nectar.WaitingCycle) error
-	OldestOpenCycleOpenedAt(ctx context.Context) (*time.Time, error)
+	UpsertCycles(ctx context.Context, line nectar.Line, cycles []nectar.WaitingCycle) error
+	OldestOpenCycleOpenedAt(ctx context.Context, line nectar.Line) (*time.Time, error)
 	CyclesForConversations(ctx context.Context, convIDs []int64) ([]nectar.WaitingCycle, map[int64]*int64, error)
 	SetCycleEscalation(ctx context.Context, cycleIDs []int64, escalationID uint64) error
 	ReplaceAgents(ctx context.Context, agents []nectar.ReportAgent) error
@@ -79,14 +79,29 @@ type Syncer struct {
 	floor       time.Time
 	now         func() time.Time
 	passTimeout time.Duration
+	line        nectar.Line
 }
 
-// NewSyncer arma la sincronización; floor es el piso de lectura (DataFloor en producción).
-func NewSyncer(r reportsReader, cycles cyclesStore, esc escalationsStore, every time.Duration, floor time.Time) *Syncer {
+// legacyStatePrefix antepone el estado de la línea vieja en nectar_sync_state; el de la principal
+// conserva sus nombres de siempre (el dashboard los lee).
+const legacyStatePrefix = "legacy:"
+
+// NewSyncer arma la sincronización; floor es el piso de lectura (DataFloor en producción). line es
+// la línea cuyos tramos lee r (su clave de canal): la vieja solo copia tramos, con su propio estado;
+// el roster (entidad completa) y las atenciones son de la principal.
+func NewSyncer(r reportsReader, cycles cyclesStore, esc escalationsStore, every time.Duration, floor time.Time, line nectar.Line) *Syncer {
 	return &Syncer{
 		reader: r, cycles: cycles, escalations: esc, every: every, floor: floor.UTC(), now: time.Now,
-		passTimeout: syncPassTimeout,
+		passTimeout: syncPassTimeout, line: line,
 	}
+}
+
+// stateName da el nombre en nectar_sync_state de un estado de esta línea.
+func (s *Syncer) stateName(base string) string {
+	if s.line == nectar.LineLegacy {
+		return legacyStatePrefix + base
+	}
+	return base
 }
 
 // Run hace una pasada al arrancar y luego una cada `every`, hasta que se cancele ctx. Con la
@@ -148,14 +163,19 @@ func (s *Syncer) RunOnce(ctx context.Context) error {
 		return err
 	}
 	if lastSeen != nil {
-		if err := s.cycles.SetState(ctx, stateLastSeenOpenedAt, formatUTC(*lastSeen)); err != nil {
+		if err := s.cycles.SetState(ctx, s.stateName(stateLastSeenOpenedAt), formatUTC(*lastSeen)); err != nil {
 			return err
 		}
 	}
 	if historySince != nil {
-		if err := s.cycles.SetState(ctx, stateHistorySince, formatUTC(*historySince)); err != nil {
+		if err := s.cycles.SetState(ctx, s.stateName(stateHistorySince), formatUTC(*historySince)); err != nil {
 			return err
 		}
+	}
+
+	// La línea vieja solo copia tramos: el roster es de la entidad y las atenciones las empareja la principal.
+	if s.line == nectar.LineLegacy {
+		return s.cycles.SetState(ctx, s.stateName(stateLastSuccessAt), formatUTC(now))
 	}
 
 	// 3. Roster.
@@ -177,7 +197,7 @@ func (s *Syncer) RunOnce(ctx context.Context) error {
 	}
 
 	// 5.
-	return s.cycles.SetState(ctx, stateLastSuccessAt, formatUTC(now))
+	return s.cycles.SetState(ctx, s.stateName(stateLastSuccessAt), formatUTC(now))
 }
 
 // since aplica la receta §3(a): el más viejo entre el tramo abierto guardado y la última hora
@@ -185,7 +205,7 @@ func (s *Syncer) RunOnce(ctx context.Context) error {
 // guardado (lo más reciente de los dos es desde cuándo valen los datos).
 func (s *Syncer) since(ctx context.Context) (time.Time, error) {
 	floor := s.floor
-	hs, err := s.stateTime(ctx, stateHistorySince)
+	hs, err := s.stateTime(ctx, s.stateName(stateHistorySince))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -194,14 +214,14 @@ func (s *Syncer) since(ctx context.Context) (time.Time, error) {
 	}
 
 	var candidates []time.Time
-	oldestOpen, err := s.cycles.OldestOpenCycleOpenedAt(ctx)
+	oldestOpen, err := s.cycles.OldestOpenCycleOpenedAt(ctx, s.line)
 	if err != nil {
 		return time.Time{}, err
 	}
 	if oldestOpen != nil {
 		candidates = append(candidates, oldestOpen.UTC())
 	}
-	lastSeen, err := s.stateTime(ctx, stateLastSeenOpenedAt)
+	lastSeen, err := s.stateTime(ctx, s.stateName(stateLastSeenOpenedAt))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -237,7 +257,7 @@ func (s *Syncer) readCycles(ctx context.Context, since, now time.Time) (lastSeen
 			if err != nil {
 				return nil, nil, fmt.Errorf("leer tramos de Néctar: %w", err)
 			}
-			if err := s.cycles.UpsertCycles(ctx, page.Cycles); err != nil {
+			if err := s.cycles.UpsertCycles(ctx, s.line, page.Cycles); err != nil {
 				return nil, nil, err
 			}
 			for _, c := range page.Cycles {

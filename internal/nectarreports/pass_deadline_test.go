@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 )
 
 // hungCycles cuelga la lectura del estado hasta que se cancele su ctx (MySQL que no responde).
@@ -25,7 +27,7 @@ func (h *hungCycles) GetState(ctx context.Context, _ string) (string, error) {
 func TestRun_HungStoreEndsPassAtDeadline(t *testing.T) {
 	logs := captureLogs(t)
 	c := &hungCycles{fakeCycles: newFakeCycles()}
-	s := NewSyncer(&fakeReader{}, c, &fakeEscalations{}, time.Millisecond, DataFloor)
+	s := NewSyncer(&fakeReader{}, c, &fakeEscalations{}, time.Millisecond, DataFloor, nectar.LineMain)
 	s.now = func() time.Time { return DataFloor.Add(time.Hour) }
 	s.passTimeout = 20 * time.Millisecond
 
