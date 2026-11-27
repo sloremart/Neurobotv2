@@ -143,7 +143,7 @@ type documentCall struct {
 // untouched dice si el puente no vio NINGUNA llamada.
 func (f *fakeBridge) untouched() bool {
 	return f.texts+f.buttons+f.lists+f.templates+f.availableAsks+len(f.escalations)+
-		len(f.closed)+len(f.stateAsks)+len(f.openPhones) == 0
+		len(f.closed)+len(f.stateAsks)+len(f.openPhones)+len(f.documents) == 0
 }
 
 // birdStub es el Bird de mentira: cuenta cada petición que le llega y contesta 404 a todo

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -69,6 +70,10 @@ func (c *Client) Upload(ctx context.Context, idempotencyKey, filename string, da
 		}
 	}
 	switch resp.status {
+	case http.StatusNotFound:
+		// La ruta de subida no tiene conversación: un 404 es Néctar sin el lote 11 o ruta equivocada,
+		// no «ya no es mía» (ErrNotMine soltaría el caso).
+		return Attachment{}, newStatusError(resp, "nectar: POST "+path+": status 404 (¿Néctar sin el lote 11?)")
 	case http.StatusRequestEntityTooLarge:
 		return Attachment{}, ErrTooLarge
 	case http.StatusUnsupportedMediaType:
@@ -92,7 +97,7 @@ func multipartBody(idempotencyKey, filename string, data []byte) ([]byte, string
 		return nil, "", err
 	}
 	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, filename))
+	h.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": filename}))
 	h.Set("Content-Type", http.DetectContentType(data))
 	part, err := w.CreatePart(h)
 	if err != nil {

@@ -2,6 +2,7 @@ package nectar
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strconv"
@@ -156,10 +157,21 @@ func (b *Bridge) ConversationState(ctx context.Context, conversationID int64) (s
 // IsNotMine reconoce el 404 «ya no es mía» (ErrNotMine): se suelta el caso, sin reintentar.
 func (b *Bridge) IsNotMine(err error) bool { return errors.Is(err, ErrNotMine) }
 
-// SendDocument sube el archivo con una clave UUID nueva y lo envía por la conversación; devuelve el id
+// uploadKeyNamespace es el espacio fijo de las claves de subida (UUID v5).
+var uploadKeyNamespace = uuid.MustParse("6b0f7a52-3c1e-4d7b-9a1f-5e2d8c4b7a10")
+
+// uploadKey deriva la clave de subida del contenido: conversación, nombre y SHA-256 de los bytes. Así el
+// reintento de un envío en duda sube con la MISMA clave, Néctar devuelve el mismo adjunto y el cuerpo del
+// mensaje (attachment.id) conserva su huella, de modo que send reutiliza su clave de idempotencia.
+func uploadKey(conversationID int64, filename string, data []byte) string {
+	sum := sha256.Sum256(data)
+	return uuid.NewSHA1(uploadKeyNamespace, []byte(id64(conversationID)+"|"+filename+"|"+string(sum[:]))).String()
+}
+
+// SendDocument sube el archivo con una clave derivada del contenido (uploadKey) y lo envía por la conversación; devuelve el id
 // del mensaje en Néctar como cadena. El nombre del archivo y el contenido no se registran.
 func (b *Bridge) SendDocument(ctx context.Context, conversationID int64, filename string, data []byte, caption string) (string, error) {
-	att, err := b.c.Upload(ctx, uuid.NewString(), filename, data)
+	att, err := b.c.Upload(ctx, uploadKey(conversationID, filename, data), filename, data)
 	if err != nil {
 		return "", err
 	}

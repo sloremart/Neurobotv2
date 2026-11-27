@@ -371,3 +371,38 @@ func TestLineRouter_SendDocumentRegistryErrorFailsWithoutSending(t *testing.T) {
 		t.Fatal("un error del registro no puede enviar")
 	}
 }
+
+func TestBridge_SendDocumentUploadKeyIsDeterministic(t *testing.T) {
+	s := newAttStub(t, func(path string, _ int, w http.ResponseWriter) {
+		if path == "/api/bot/uploads" {
+			writeJSON(w, http.StatusCreated, uploaded201)
+			return
+		}
+		writeJSON(w, http.StatusCreated, `{"id":1}`)
+	})
+	br := NewBridge(s.client(), nil)
+	for _, data := range []string{"uno", "uno", "dos"} {
+		if _, err := br.SendDocument(context.Background(), 77, "r.pdf", []byte(data), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var keys []string
+	for _, r := range s.requests() {
+		if r.path == "/api/bot/uploads" {
+			f, _, _ := parseMultipart(t, r)
+			keys = append(keys, f["idempotency_key"])
+		}
+	}
+	if len(keys) != 3 || keys[0] != keys[1] || keys[0] == keys[2] {
+		t.Fatalf("claves de subida: %v", keys)
+	}
+}
+
+func TestUpload_404IsNotNotMine(t *testing.T) {
+	s := newAttStub(t, func(_ string, _ int, w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) })
+	c := s.client()
+	_, err := c.Upload(context.Background(), "k", "r.pdf", []byte("x"))
+	if err == nil || errors.Is(err, ErrNotMine) || NewBridge(c, nil).IsNotMine(err) {
+		t.Fatalf("un 404 de la subida no es «ya no es mía»: %v", err)
+	}
+}
