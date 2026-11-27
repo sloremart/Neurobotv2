@@ -431,7 +431,11 @@ func main() {
 	webhookHandler.SetInboxRepo(inboxRepo)
 	// Sin puente (vuelta a Bird), los avisos de Néctar se acusan y se descartan.
 	webhookHandler.SetNectarBridgeOn(nectarBridge != nil)
-	webhookHandler.SetNectarLines(nectarLines)
+	// Sin línea vieja no hay registro que leer ni escribir: todo es la principal (nil), sin SELECT en el
+	// camino caliente del contacto.
+	if cfg.NectarLegacyArmed {
+		webhookHandler.SetNectarLines(nectarLines)
+	}
 
 	// WAL replay: re-process messages that weren't completed before last shutdown/crash.
 	//

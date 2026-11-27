@@ -90,6 +90,21 @@ func TestLineRouter_OpenWithTemplateAlwaysMainAndRegistersMain(t *testing.T) {
 	}
 }
 
+func TestLineRouter_OpenWithTemplateWithoutLegacyDoesNotTouchRegistry(t *testing.T) {
+	main := newFakeOpen(t, scriptedReply{status: http.StatusCreated, body: opened201})
+	st := &fakeLineStore{lines: map[int64]Line{}}
+	mb := NewBridge(NewClient(main.srv.URL, svcKey, reqSecret), map[string]string{"p": "plantilla_x"})
+	mb.ChannelID = 7
+	router := NewLineRouter(NewLineRegistry(st), map[Line]*Bridge{LineMain: mb})
+
+	if id, _, err := router.OpenWithTemplate(context.Background(), "+573001112233", bird.TemplateConfig{ProjectID: "p"}); err != nil || id != 77 {
+		t.Fatalf("id=%d err=%v", id, err)
+	}
+	if len(st.lines) != 0 || st.reads != 0 {
+		t.Fatalf("sin línea vieja el registro no se toca: lines=%v reads=%d", st.lines, st.reads)
+	}
+}
+
 func TestLineRouter_SendTemplateOnLegacyRefuses(t *testing.T) {
 	r := newRouterRig(t)
 	if err := r.reg.Register(context.Background(), 1234, LineLegacy); err != nil {

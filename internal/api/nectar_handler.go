@@ -163,7 +163,7 @@ func (o *nectarConvOrder) waiting(conversationID int64) int {
 // (conversación → contacto), para preguntarlo UNA vez y no en cada mensaje. Solo en memoria: no
 // va al WAL, y el replay tras una caída lo vuelve a pedir. Un fallo se recuerda poco
 // (nectarContactFailTTL); un fallo de transporte, además, corta las preguntas de todas las
-// conversaciones durante esa ventana.
+// conversaciones de su línea durante esa ventana.
 type nectarContactCache struct {
 	now              func() time.Time // reloj; nil = time.Now (las pruebas lo fijan)
 	entries          sync.Map         // int64 → nectarContactEntry
@@ -258,7 +258,8 @@ func (h *WebhookHandler) nectarContact(ctx context.Context, conversationID int64
 	if c, ok := cache.get(conversationID, now); ok {
 		return c
 	}
-	// Sin registro (puente apagado o sin línea vieja) todo es la principal: un solo corte, como siempre.
+	// Sin registro (sin línea vieja armada, main lo deja nil) todo es la principal: un solo corte, como
+	// siempre y sin leer la BD.
 	line := nectar.LineMain
 	if h.nectarLines != nil {
 		line = h.nectarLines.Line(ctx, conversationID)

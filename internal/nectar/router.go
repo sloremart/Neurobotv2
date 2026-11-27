@@ -165,11 +165,15 @@ func (r *LineRouter) WindowOpen(ctx context.Context, conversationID int64) (bool
 func (r *LineRouter) IsNotMine(err error) bool { return r.bridges[LineMain].IsNotMine(err) }
 
 // OpenWithTemplate abre SIEMPRE por la línea principal y registra la conversación abierta como
-// principal. Si el registro falla solo se avisa: una conversación sin registro ya es principal.
+// principal. Sin puente de la línea vieja no se toca el registro (todo es principal, sin escrituras ni
+// memoria que crezca). Si el registro falla solo se avisa: una conversación sin registro ya es principal.
 func (r *LineRouter) OpenWithTemplate(ctx context.Context, phone string, tmpl bird.TemplateConfig) (int64, string, error) {
 	id, msgID, err := r.bridges[LineMain].OpenWithTemplate(ctx, phone, tmpl)
 	if err != nil {
 		return id, msgID, err
+	}
+	if r.bridges[LineLegacy] == nil {
+		return id, msgID, nil
 	}
 	if regErr := r.reg.Register(ctx, id, LineMain); regErr != nil {
 		slog.Warn("nectar: no se pudo registrar la línea de la conversación abierta; se asume main",
