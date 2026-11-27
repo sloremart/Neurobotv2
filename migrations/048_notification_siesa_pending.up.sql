@@ -1,4 +1,4 @@
--- Migration 047: respuesta al recordatorio pendiente de aplicar en SIESA.
+-- Migration 048: respuesta al recordatorio pendiente de aplicar en SIESA.
 --
 -- Si el paciente pulsa «Confirmar» o «Cancelar» y SIESA no responde (lectura o escritura de la
 -- cita), la respuesta queda en su fila de notification_history marcada con la acción por aplicar,

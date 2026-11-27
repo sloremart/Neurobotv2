@@ -1,4 +1,4 @@
--- Migration 046: tablas locales de los informes de asesores con Néctar (D5).
+-- Migration 047: tablas locales de los informes de asesores con Néctar (D5).
 --
 -- La sincronización copia aquí los tramos de espera (waiting-cycles) y el roster de agentes de
 -- Néctar para que el dashboard los lea sin llamar a Néctar. Todo aditivo: con el puente apagado

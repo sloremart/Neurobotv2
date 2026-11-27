@@ -1,4 +1,4 @@
--- Migration 045: marca del pending de un recordatorio que no salió.
+-- Migration 046: marca del pending de un recordatorio que no salió.
 --
 -- Cuando el envío del recordatorio del día antes falla, el bot deja igual un pending de
 -- confirmación bajo el teléfono para que el IVR de las 13:00 llame al paciente. Con esa marca, el

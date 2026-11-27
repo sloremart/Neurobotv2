@@ -1,4 +1,4 @@
--- Migration 044: el teléfono real del paciente cuando la conversación va por Néctar.
+-- Migration 045: el teléfono real del paciente cuando la conversación va por Néctar.
 --
 -- Con Néctar la clave de la sesión y del pending es "nectar:<id>", no el teléfono. Estas columnas
 -- guardan el teléfono E.164 del paciente (contact.identifier del estado de Néctar) para que la
