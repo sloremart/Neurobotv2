@@ -42,21 +42,27 @@ func TestAskClientType_ValidSelection_EPS(t *testing.T) {
 	}
 }
 
-func TestAskClientType_Particular_SkipsListToDocument(t *testing.T) {
+// PARTICULAR muestra la opción genérica y las entidades especiales (PARTICULAR LIGA escala a agente),
+// en ese orden: desde d9f88a5 la lista especial es fija y ya no se salta al tipo de documento.
+func TestAskClientType_Particular_ShowsGenericAndSpecialList(t *testing.T) {
+	entityRepo := &testutil.MockEntityRepo{
+		FindActiveByCategoryFn: func(_ context.Context, _ string) ([]domain.Entity, error) {
+			return []domain.Entity{{Code: "PART02", Name: "PARTICULAR", Category: "PARTICULAR", IsActive: true}}, nil
+		},
+	}
 	m := sm.NewMachine()
-	RegisterEntityManagementHandlers(m, &testutil.MockEntityRepo{}, &testutil.MockPatientRepo{})
+	RegisterEntityManagementHandlers(m, entityRepo, &testutil.MockPatientRepo{})
 
 	sess := testSess(sm.StateAskClientType)
 	result, err := m.Process(context.Background(), sess, postbackM("ct_1")) // ct_1 = PARTICULAR
 	if err != nil {
 		t.Fatal(err)
 	}
-	// PARTICULAR skips the entity list and goes straight to document type.
-	if result.NextState != sm.StateAskDocumentType {
-		t.Errorf("expected ASK_DOCUMENT_TYPE, got %s", result.NextState)
+	if result.NextState != sm.StateAskEntityNumber {
+		t.Fatalf("expected ASK_ENTITY_NUMBER, got %s", result.NextState)
 	}
-	if result.UpdateCtx["selected_entity_code"] != "PART02" {
-		t.Errorf("expected selected_entity_code=PART02, got %s", result.UpdateCtx["selected_entity_code"])
+	if got := result.UpdateCtx["entity_list_codes"]; got != "PART02,50001" {
+		t.Errorf("expected entity_list_codes=PART02,50001 (genérica primero), got %q", got)
 	}
 }
 

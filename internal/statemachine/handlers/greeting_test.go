@@ -304,51 +304,55 @@ func TestMainMenu_Medicamentos(t *testing.T) {
 	}
 }
 
-// TestMedicationCheck_SanitasNoChannel_Escalates: SANITAS sin canal externo configurado → escala a
-// agente (como antes), tras validar el contrato real.
-func TestMedicationCheck_SanitasNoChannel_Escalates(t *testing.T) {
-	m := sm.NewMachine()
-	RegisterGreetingHandlers(m, sampleConfig(), nil) // sin MedicationExternalWANumber
+// TestMedicationCheck_AllowedContract_GoesToExcel: un contrato permitido (Sanitas, Capital Salud, FOMAG)
+// pide los documentos y sigue a MEDICATION_CHECK_EXCEL, sin escalar. Desde main (2026-11) la búsqueda en
+// el listado reemplazó la escalación y el link al canal externo.
+func TestMedicationCheck_AllowedContract_GoesToExcel(t *testing.T) {
+	for _, contract := range []string{"4", "6", "14", "21"} {
+		t.Run(contract, func(t *testing.T) {
+			m := sm.NewMachine()
+			RegisterGreetingHandlers(m, sampleConfig(), nil)
 
-	sess := testSess(sm.StateMedicationCheckSanitas)
-	sess.Context["patient_contract"] = "6" // SANITAS MRC contributivo
-	result, err := m.Process(context.Background(), sess, textM(""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.NextState != sm.StateEscalateToAgent {
-		t.Errorf("expected ESCALATE_TO_AGENT, got %s", result.NextState)
-	}
-	if result.UpdateCtx["escalation_reason"] != "medicamentos" {
-		t.Errorf("expected escalation_reason=medicamentos, got %s", result.UpdateCtx["escalation_reason"])
+			sess := testSess(sm.StateMedicationCheckSanitas)
+			sess.Context["patient_contract"] = contract
+			result, err := m.Process(context.Background(), sess, textM(""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.NextState != sm.StateMedicationCheckExcel {
+				t.Fatalf("expected MEDICATION_CHECK_EXCEL, got %s", result.NextState)
+			}
+			if len(result.Messages) < 1 {
+				t.Fatal("esperaba el mensaje con los documentos")
+			}
+			if txt := result.Messages[0].(*sm.TextMessage).Text; !strings.Contains(txt, "Autorización vigente") {
+				t.Errorf("esperaba la lista de documentos, got: %s", txt)
+			}
+		})
 	}
 }
 
-// TestMedicationCheck_SanitasWithChannel_SendsLink: SANITAS con canal externo → NO escala; cierra con
-// el link wa.me al canal (no pasa a ESCALATE_TO_AGENT).
-func TestMedicationCheck_SanitasWithChannel_SendsLink(t *testing.T) {
+// TestMedicationCheck_ExternalChannelNoLongerDiverts: con MEDICATION_EXTERNAL_WA_NUMBER configurado el flujo
+// es el mismo (listado de medicamentos); el link wa.me ya no se envía.
+func TestMedicationCheck_ExternalChannelNoLongerDiverts(t *testing.T) {
 	cfg := sampleConfig()
 	cfg.MedicationExternalWANumber = "573001234567"
 	m := sm.NewMachine()
 	RegisterGreetingHandlers(m, cfg, nil)
 
 	sess := testSess(sm.StateMedicationCheckSanitas)
-	sess.Context["patient_contract"] = "4" // SANITAS Evento contributivo
-	sess.Context["patient_name"] = "Juan Perez"
-	sess.Context["patient_doc"] = "123456"
+	sess.Context["patient_contract"] = "4"
 	result, err := m.Process(context.Background(), sess, textM(""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NextState == sm.StateEscalateToAgent {
-		t.Error("con canal externo NO debía escalar a agente")
+	if result.NextState != sm.StateMedicationCheckExcel {
+		t.Fatalf("expected MEDICATION_CHECK_EXCEL, got %s", result.NextState)
 	}
-	if len(result.Messages) < 1 {
-		t.Fatal("esperaba el mensaje con el link")
-	}
-	txt := result.Messages[0].(*sm.TextMessage).Text
-	if !strings.Contains(txt, "wa.me/573001234567") {
-		t.Errorf("esperaba el link wa.me al canal externo, got: %s", txt)
+	for _, msg := range result.Messages {
+		if tm, ok := msg.(*sm.TextMessage); ok && strings.Contains(tm.Text, "wa.me/") {
+			t.Errorf("no debía enviar el link al canal externo: %s", tm.Text)
+		}
 	}
 }
 

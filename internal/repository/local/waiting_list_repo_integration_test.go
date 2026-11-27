@@ -18,13 +18,24 @@ import (
 
 func sampleWLEntry(id, phone string) *domain.WaitingListEntry {
 	return &domain.WaitingListEntry{
-		ID: id, PhoneNumber: phone, PatientID: "PAT-" + id, PatientDoc: "1234567890",
+		ID: id, PhoneNumber: phone, PatientID: testPatientID(id), PatientDoc: "1234567890",
 		PatientName: "Test Paciente", PatientAge: 40, PatientGender: "M",
 		PatientEntity: "EPS-TEST", ContractCode: "4",
 		CupsCode: "890271", CupsName: "EMG", Espacios: 1,
 		ProceduresJSON: `[{"code":"890271","qty":1}]`, ProcedureType: "procedimiento",
 		Status: "waiting", ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
+}
+
+// testPatientID deriva del id un patient_id que cabe en la columna (VARCHAR(20), migración 006): en
+// producción es el autoid de SIESA. Los últimos dígitos del id lo mantienen distinto entre entradas.
+func testPatientID(id string) string {
+	const maxLen = 20
+	p := "PAT-" + id
+	if len(p) > maxLen {
+		p = "PAT-" + id[len(id)-(maxLen-4):]
+	}
+	return p
 }
 
 // TestWaitingListRepo_ClaimThenSend valida la semántica de MarkNotified (N-33): solo la PRIMERA

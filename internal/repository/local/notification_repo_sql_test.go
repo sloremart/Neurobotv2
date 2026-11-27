@@ -31,6 +31,15 @@ type recordingDriver struct {
 
 func (d *recordingDriver) Open(string) (driver.Conn, error) { return &recordingConn{d}, nil }
 
+// recordingConnector abre el driver sin registrarlo: sql.Register es global y un nombre repetido entra en
+// pánico, así que con `go test -count=2` la segunda pasada reventaba.
+type recordingConnector struct{ d *recordingDriver }
+
+func (c recordingConnector) Connect(context.Context) (driver.Conn, error) {
+	return &recordingConn{c.d}, nil
+}
+func (c recordingConnector) Driver() driver.Driver { return c.d }
+
 func (d *recordingDriver) find(prefix string) (recordedStatement, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -92,14 +101,10 @@ func (r *recordingRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-func markWithRecordingDriver(t *testing.T, name string, historyRow bool) *recordingDriver {
+func markWithRecordingDriver(t *testing.T, historyRow bool) *recordingDriver {
 	t.Helper()
 	d := &recordingDriver{historyRow: historyRow}
-	sql.Register(name, d)
-	db, err := sql.Open(name, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := sql.OpenDB(recordingConnector{d})
 	t.Cleanup(func() { _ = db.Close() })
 	row := notifications.SiesaPendingRow{Phone: "+570000000000", AppointmentID: "1", Action: "cancel"}
 	if _, err := NewNotificationRepo(db).MarkSiesaPending(context.Background(), row, "cancel_requested"); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -110,7 +115,7 @@ func markWithRecordingDriver(t *testing.T, name string, historyRow bool) *record
 
 // La marca sobre una fila existente deja la respuesta nueva en status: lo lee el SELECT para no repetir el acuse.
 func TestMarkSiesaPending_UpdateWritesStatus(t *testing.T) {
-	d := markWithRecordingDriver(t, "recording-update", true)
+	d := markWithRecordingDriver(t, true)
 	update, ok := d.find("UPDATE notification_history")
 	if !ok {
 		t.Fatal("debía actualizar la fila")
@@ -129,7 +134,7 @@ func TestMarkSiesaPending_UpdateWritesStatus(t *testing.T) {
 
 // Sin fila, la respuesta entra con su status.
 func TestMarkSiesaPending_InsertWritesStatus(t *testing.T) {
-	d := markWithRecordingDriver(t, "recording-insert", false)
+	d := markWithRecordingDriver(t, false)
 	insert, ok := d.find("INSERT INTO notification_history")
 	if !ok {
 		t.Fatal("debía insertar la fila")

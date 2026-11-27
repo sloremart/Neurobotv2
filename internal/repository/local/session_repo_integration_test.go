@@ -7,7 +7,9 @@
 //
 // Correr con: make test-integration   (requiere LOCAL_TEST_DSN, p.ej.
 //
-//	botuser:botpass@tcp(127.0.0.1:3306)/neuro_bot?parseTime=true )
+//	botuser:botpass@tcp(127.0.0.1:13308)/neuro_bot_test )
+//
+// Usar una base de pruebas, no la del bot: los tests insertan y borran filas.
 package local
 
 import (
@@ -18,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/neuro-bot/neuro-bot/internal/session"
 )
@@ -29,7 +31,21 @@ func openLocalTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("LOCAL_TEST_DSN not set")
 	}
-	db, err := sql.Open("mysql", dsn)
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parse LOCAL_TEST_DSN: %v", err)
+	}
+	// La misma sesión que el bot (database.localDSN): horas en America/Bogota. Con la zona por
+	// defecto del driver (UTC), una hora escrita desde Go queda 5 h adelante del NOW() del servidor y
+	// las consultas «más viejo que N minutos» no la ven.
+	loc, err := time.LoadLocation("America/Bogota")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	cfg.ParseTime = true
+	cfg.Loc = loc
+	cfg.Collation = "utf8mb4_unicode_ci"
+	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
