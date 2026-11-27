@@ -4,6 +4,11 @@
 > Ese número ya no está en Bird: vaciar `NECTAR_BASE_URL` no lo devuelve y dejaría esas conversaciones
 > sin atención. La contingencia es que los supervisores de Néctar rescaten las conversaciones del bot
 > («escalar», motivo `bot_down`). Con la línea vieja armada, el aviso URGENTE ya lo dice así.
+>
+> **Retirar la línea vieja:** antes de quitar las variables `NECTAR_LEGACY_*`, desactiva o repunta el
+> `channel_bot` de la línea vieja en Néctar: sin ellas la ruta `/api/webhooks/nectar/legacy` responde 404 y
+> Néctar reintenta sin fin. Para una vuelta atrás temporal deja las variables y vacía `NECTAR_BASE_URL`
+> (la ruta responde 200 y descarta los avisos).
 
 Para la persona de turno que recibe en Telegram el aviso **«🚨 URGENTE — volver a Bird»**. No hace
 falta saber programar: son cambios en el `.env` del servidor, un reinicio del bot y un rescate de
