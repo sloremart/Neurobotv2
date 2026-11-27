@@ -194,6 +194,17 @@ Los estados nuevos registran su menú de regreso para el asesor («Reanudar», �
     (string, error)`, que sube y envía.
   - `nectar.LineRouter` lo reparte por línea: sube y envía con la clave de la línea de la conversación.
   - El fake de pruebas lo implementa.
+- **Contrato confirmado por el dueño en Néctar (lote 11a, 2026-11-27)**, con tres cambios sobre la propuesta:
+  1. el mensaje con adjunto responde `201 {"id": <message_id>}`, igual que los demás tipos;
+  2. la ventana cerrada es el 409 de hoy, `{"error":"…","reason":"window_closed"}`, y se distingue por `reason`;
+  3. hay topes por tipo en la subida: imágenes hasta 5 MiB y PDF hasta 16 MiB (`413 {"error":"too_large","max_bytes":N}`).
+
+  Además:
+  - la subida puede responder `503` con `Retry-After: 5`, y se reintenta tras esa espera;
+  - un `caption` vacío va sin pie;
+  - si pasa de 1024 caracteres, 400 con `reason: caption_too_long`.
+
+  Está implementado en la rama de auditoría de Néctar, sin desplegar.
 - **Hasta que Néctar despliegue el lote 11** se prueba contra un stub HTTP que sigue el contrato. El contrato
   definitivo estará en `PARA-EL-EQUIPO-DEL-BOT.md` de Néctar. La propuesta está en la sesión de Néctar
   (`CONTRATO-ADJUNTOS-DEL-BOT.md`, con su §5). Si el contrato cambia al implementarse, Néctar avisa antes.

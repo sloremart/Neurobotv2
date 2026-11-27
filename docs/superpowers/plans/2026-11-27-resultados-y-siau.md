@@ -137,7 +137,18 @@
   - `TestUpload_MultipartSignedOverRawBody`: campos `idempotency_key`, `filename` y `file`; la firma HMAC es la de `exchange`, calculada sobre `timestamp + URL + SHA-256(cuerpo multipart ya serializado)`.
   - `TestUpload_ParsesAttachment`
   - `TestUpload_TypedErrors`: 415, 413 y 409 `idempotency_key_reused`.
-  - `TestSendAttachment_BodyAndErrors`: el cuerpo es `{"idempotency_key":…,"type":"attachment","attachment":{"id":…,"caption":…}}`; los 422 y 409 `window_closed` vienen tipados, y el 404 lo reconoce `IsNotMine`.
+  - `TestSendAttachment_BodyAndErrors`:
+    - el cuerpo es `{"idempotency_key":…,"type":"attachment","attachment":{"id":…,"caption":…}}`, y si el caption
+      está vacío no se envía;
+    - con éxito responde `201 {"id": <message_id>}`, igual que los demás tipos; un reintento con la misma clave
+      da 200 con el mismo `id`;
+    - la ventana cerrada es `409 {"error":"<frase>","reason":"window_closed"}` y se distingue por `reason`, no por
+      `error`;
+    - el 422 `attachment_unavailable` viene tipado, y el 404 lo reconoce `IsNotMine`.
+  - `TestUpload_413PerType`: `413 {"error":"too_large","max_bytes":16777216}` en un PDF y
+    `{"max_bytes":5242880}` en una imagen; los dos dan `ErrTooLarge`.
+  - `TestUpload_503RetryAfter`: un 503 con `Retry-After: 5` se reintenta una vez tras esa espera (inyectable en la
+    prueba), con la misma `idempotency_key`.
   - `TestLineRouter_SendDocumentUsesConversationLine`: una conversación legacy sube y envía con el stub legacy.
   - `TestBirdClient_SendDocumentCtx_BirdPhoneNotSupported`
 - [ ] **Step 2: Run them.** `go test ./internal/nectar/ ./internal/bird/`. Esperado: FAIL.
