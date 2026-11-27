@@ -1,6 +1,6 @@
 FROM ngrok/ngrok:latest AS ngrok
 
-FROM alpine:3.21
+FROM alpine:3.24.4
 RUN apk --no-cache add wget
 COPY --from=ngrok /bin/ngrok /bin/ngrok
 ENTRYPOINT ["/bin/ngrok"]

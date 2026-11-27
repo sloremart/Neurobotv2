@@ -44,7 +44,7 @@ RUN --mount=type=bind,source=.git,target=/app/.git \
 # en `community`, con soporte solo hasta la siguiente versión estable de Alpine: REVISAR esta fijación (y
 # la imagen de bot-logs-init en el compose) en cada versión nueva de Alpine. Una rama sin soporte sigue
 # sirviendo su gs viejo sin error; el CI comprueba la versión mínima de gs (GS_MIN_VERSION en ci.yml).
-FROM alpine:3.24.3
+FROM alpine:3.24.4
 
 RUN apk --no-cache add ca-certificates tzdata wget 'ghostscript~10.08'
 
