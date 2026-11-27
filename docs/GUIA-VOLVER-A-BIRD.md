@@ -1,5 +1,10 @@
 # Guía: volver a Bird
 
+> **Tras el traslado del número viejo a Néctar (línea vieja, `NECTAR_LEGACY_*`) esta guía NO aplica.**
+> Ese número ya no está en Bird: vaciar `NECTAR_BASE_URL` no lo devuelve y dejaría esas conversaciones
+> sin atención. La contingencia es que los supervisores de Néctar rescaten las conversaciones del bot
+> («escalar», motivo `bot_down`). Con la línea vieja armada, el aviso URGENTE ya lo dice así.
+
 Para la persona de turno que recibe en Telegram el aviso **«🚨 URGENTE — volver a Bird»**. No hace
 falta saber programar: son cambios en el `.env` del servidor, un reinicio del bot y un rescate de
 conversaciones en Néctar.

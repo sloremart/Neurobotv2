@@ -19,6 +19,8 @@ Cachea el resultado 5 s, así que pedirlo cada minuto no carga las BD.
 | BD local (`neuro_bot`) caída | 503 | `"status":"critical"` | unhealthy → avisa el watcher |
 | Bot, host, red o túnel caídos | sin respuesta, timeout o error de ngrok | — | según el caso |
 
+Con la línea vieja de Néctar armada (`NECTAR_LEGACY_*`) el cuerpo añade `"nectar_legacy":"armed"`; sin armar (o sin puente) la clave no aparece. No cambia `status` ni el HTTP: sirve para comprobar tras un despliegue que la línea vieja quedó encendida.
+
 SIESA caído **no** marca al contenedor `unhealthy`: reiniciar el bot no arregla SIESA, y el bot sigue
 atendiendo lo que no depende de él. Por eso el estado `degraded` solo lo distingue un monitor que lea
 el cuerpo.
