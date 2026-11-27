@@ -1409,7 +1409,7 @@ func freshTurnMsg() bird.InboundMessage {
 func TestAdvanceNextProcedure_NextGroupThatEscalatesReachesAnAgent(t *testing.T) {
 	m, nb := nectarMachine(t, testEscalationConfig(), nil)
 	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
-	RegisterMedicalValidationHandlers(m, services.NewGFRService(), services.NewAppointmentService(&mockApptRepo{}, nil), nil)
+	RegisterMedicalValidationHandlers(m, services.NewGFRService(), services.NewAppointmentService(&mockApptRepo{}, nil), nil, nil)
 
 	res, err := m.Process(context.Background(), groupSess("891901"), freshTurnMsg()) // polisomnografía
 	if err != nil {
@@ -1427,7 +1427,7 @@ func TestAdvanceNextProcedure_NextGroupThatEscalatesReachesAnAgent(t *testing.T)
 func TestAdvanceNextProcedure_NormalNextGroupReachesSlotSearch(t *testing.T) {
 	m, _ := nectarMachine(t, testEscalationConfig(), nil)
 	m.Register(sm.StateAdvanceNextProcedure, advanceNextProcedureHandler())
-	RegisterMedicalValidationHandlers(m, services.NewGFRService(), services.NewAppointmentService(&mockApptRepo{}, nil), nil)
+	RegisterMedicalValidationHandlers(m, services.NewGFRService(), services.NewAppointmentService(&mockApptRepo{}, nil), nil, nil)
 	var searched string
 	m.Register(sm.StateSearchSlots, func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
 		searched = sess.GetContext("cups_code")

@@ -22,28 +22,40 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 	m.Register(sm.StateCheckBusinessHours, checkBusinessHoursHandler(cfg))
 	m.Register(sm.StateOutOfHours, outOfHoursHandler(cfg))
 	m.Register(sm.StateOutOfHoursMenu, outOfHoursMenuHandler(cfg, locationRepo))
-	sm.RegisterStaticReturnMenu(sm.StateOutOfHoursMenu,
-		payloadOption("Consultar resultados", "ooh_resultados"),
+	// Las salidas ofrecidas son las filas del menú: la de imágenes solo existe con IMAGING_RESULTS_URL.
+	oohOptions := []sm.ReturnOption{payloadOption("Resultados de estudios", "ooh_resultados")}
+	if imagingEnabled(cfg) {
+		oohOptions = append(oohOptions, payloadOption("Resultados de imágenes", "ooh_imagenes"))
+	}
+	sm.RegisterStaticReturnMenu(sm.StateOutOfHoursMenu, append(oohOptions,
 		payloadOption("Ver ubicaciones", "ooh_ubicacion"),
 		payloadOption("Cómo usar el bot", "ooh_ayuda"),
-	)
+	)...)
 	m.Register(sm.StateGreeting, greetingHandler(cfg))
-	// Salidas del agente de Néctar desde el menú: las seis opciones del menú del paciente. Se
+	// Salidas del agente de Néctar desde el menú: las opciones del menú del paciente. Se
 	// retoma en MAIN_MENU con la opción como dato (igual que `/bot resume MAIN_MENU agendar`)
 	// para que mainMenuHandler fije el contexto de cada flujo.
-	sm.RegisterStaticReturnMenu(sm.StateMainMenu,
+	mainOptions := []sm.ReturnOption{
 		payloadOption("Agendar cita", "agendar"),
 		payloadOption("Citas programadas", "consultar"),
 		payloadOption("Medicamentos", "medicamentos"),
-		payloadOption("Resultados", "resultados"),
+		payloadOption("Resultados de estudios", "resultados"),
+	}
+	validIDs := []string{"medicamentos", "agendar", "consultar", "resultados"}
+	if imagingEnabled(cfg) {
+		mainOptions = append(mainOptions, payloadOption("Resultados de imágenes", "imagenes"))
+		validIDs = append(validIDs, "imagenes")
+	}
+	sm.RegisterStaticReturnMenu(sm.StateMainMenu, append(mainOptions,
+		payloadOption("Atención al usuario (SIAU)", "siau"),
 		payloadOption("Ubicación", "ubicacion"),
 		payloadOption("Ayuda", "ayuda"),
-	)
+	)...)
 	m.RegisterWithConfig(sm.StateMainMenu, sm.HandlerConfig{
 		InputType: sm.InputButton,
-		Options:   []string{"medicamentos", "agendar", "consultar", "resultados", "ubicacion", "ayuda"},
+		Options:   append(validIDs, "siau", "ubicacion", "ayuda"),
 		RetryPrompt: func(sess *session.Session, result *sm.StateResult) {
-			list := buildMainMenuList()
+			list := buildMainMenuList(cfg)
 			list.Body = "Por favor selecciona una opción del menú.\n\n" + list.Body
 			result.Messages = append(result.Messages, list)
 		},
@@ -221,11 +233,7 @@ func outOfHoursHandler(cfg *config.Config) sm.StateHandler {
 			WithList(welcomeText+"\n\n¿En qué puedo ayudarte hoy?", "Ver opciones",
 				sm.ListSection{
 					Title: "Opciones disponibles",
-					Rows: []sm.ListRow{
-						{ID: "ooh_resultados", Title: "Consultar Resultados", Description: "Si quieres descargar resultados de tus consultas"},
-						{ID: "ooh_ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
-						{ID: "ooh_ayuda", Title: "Cómo usar el bot", Description: "Guía rápida de cómo interactuar conmigo"},
-					},
+					Rows:  buildOutOfHoursRows(cfg),
 				}).
 			WithEvent("out_of_hours_menu_shown", nil), nil
 	}
@@ -235,7 +243,7 @@ func outOfHoursHandler(cfg *config.Config) sm.StateHandler {
 // Muestra resultados, ubicaciones o ayuda y termina la conversación (excepto ayuda que vuelve al menú OOH).
 func outOfHoursMenuHandler(cfg *config.Config, locationRepo LocationReader) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		result, selected := sm.ValidateButtonResponse(sess, msg, "ooh_resultados", "ooh_ubicacion", "ooh_ayuda")
+		result, selected := sm.ValidateButtonResponse(sess, msg, outOfHoursOptionIDs(cfg)...)
 		if result != nil {
 			if result.NextState == sm.StateEscalateToAgent {
 				return result, nil
@@ -247,11 +255,7 @@ func outOfHoursMenuHandler(cfg *config.Config, locationRepo LocationReader) sm.S
 				Title: "Ver opciones",
 				Sections: []sm.ListSection{{
 					Title: "Opciones disponibles",
-					Rows: []sm.ListRow{
-						{ID: "ooh_resultados", Title: "Consultar Resultados", Description: "Si quieres descargar resultados de tus consultas"},
-						{ID: "ooh_ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
-						{ID: "ooh_ayuda", Title: "Cómo usar el bot", Description: "Guía rápida de cómo interactuar conmigo"},
-					},
+					Rows:  buildOutOfHoursRows(cfg),
 				}},
 			})
 			return result, nil
@@ -271,6 +275,11 @@ func outOfHoursMenuHandler(cfg *config.Config, locationRepo LocationReader) sm.S
 				WithText(text).
 				WithEvent("ooh_results_shown", nil), nil
 
+		case "ooh_imagenes":
+			return sm.NewResult(sm.StateTerminated).
+				WithText(imagingResultsText(cfg.ImagingResultsURL)).
+				WithEvent("imaging_link_sent", map[string]interface{}{"source": "ooh"}), nil
+
 		case "ooh_ubicacion":
 			text := buildLocationsText(ctx, locationRepo)
 			return sm.NewResult(sm.StateTerminated).
@@ -285,6 +294,36 @@ func outOfHoursMenuHandler(cfg *config.Config, locationRepo LocationReader) sm.S
 
 		return nil, fmt.Errorf("unreachable: selected=%s", selected)
 	}
+}
+
+// buildOutOfHoursRows arma las filas del menú fuera de horario: los resultados no dependen del
+// horario. La de imágenes solo sale con IMAGING_RESULTS_URL.
+func buildOutOfHoursRows(cfg *config.Config) []sm.ListRow {
+	rows := []sm.ListRow{
+		{ID: "ooh_resultados", Title: "📋 Resultados de estudios", Description: "Si quieres descargar resultados de tus consultas"},
+	}
+	if imagingEnabled(cfg) {
+		rows = append(rows, sm.ListRow{ID: "ooh_imagenes", Title: "🩻 Resultados de imágenes", Description: "Resultados de imágenes diagnósticas"})
+	}
+	return append(rows,
+		sm.ListRow{ID: "ooh_ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
+		sm.ListRow{ID: "ooh_ayuda", Title: "Cómo usar el bot", Description: "Guía rápida de cómo interactuar conmigo"},
+	)
+}
+
+// outOfHoursOptionIDs son los IDs que el menú fuera de horario acepta, los mismos de sus filas.
+func outOfHoursOptionIDs(cfg *config.Config) []string {
+	rows := buildOutOfHoursRows(cfg)
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	return ids
+}
+
+// imagingEnabled dice si la opción de resultados de imágenes está activa (hay portal configurado).
+func imagingEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.ImagingResultsURL != ""
 }
 
 // buildLocationsText creates location text from DB or fallback.
@@ -335,7 +374,7 @@ func greetingHandler(cfg *config.Config) sm.StateHandler {
 		r := sm.NewResult(sm.StateMainMenu).
 			WithClearCtx("post_confirmed").
 			WithEvent("greeting_sent", nil)
-		list := buildMainMenuList()
+		list := buildMainMenuList(cfg)
 
 		if sess.GetContext("post_confirmed") != "1" {
 			welcomeText := fmt.Sprintf("Soy *%s*, tu asistente virtual de *%s*.\n\n"+
@@ -384,6 +423,17 @@ func mainMenuHandler() sm.StateHandler {
 		case "resultados":
 			return sm.NewResult(sm.StateShowResults).
 				WithEvent("menu_selected", map[string]interface{}{"option": "resultados"}), nil
+		case "imagenes":
+			return sm.NewResult(sm.StateShowImaging).
+				WithEvent("menu_selected", map[string]interface{}{"option": "imagenes"}), nil
+		case "siau":
+			// Escalación pedida por el paciente: el motivo `siau` cuenta para el tope y elige el equipo.
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithContext(sm.CtxEscalationReason, sm.EscalationReasonSIAU).
+				WithContext(sm.CtxPatientAskedForAgent, "1").
+				WithText(siauNoticeText).
+				WithEvent("siau_requested", nil).
+				WithEvent("menu_selected", map[string]interface{}{"option": "siau"}), nil
 		case "ubicacion":
 			return sm.NewResult(sm.StateShowLocations).
 				WithEvent("menu_selected", map[string]interface{}{"option": "ubicacion"}), nil
@@ -415,7 +465,7 @@ func startAgendarFlow(r *sm.StateResult) *sm.StateResult {
 func medicationCheckSanitasHandler(cfg *config.Config) sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
 		if !services.IsMedicationAllowedContract(sess.GetContext("patient_contract")) {
-			list := buildMainMenuList()
+			list := buildMainMenuList(cfg)
 			list.Body = "Por ahora el servicio de *Aplicación de medicamentos* está disponible para afiliados a *SANITAS*, *CAPITAL SALUD* y *FOMAG*.\n\n" + list.Body
 			r := sm.NewResult(sm.StateMainMenu).
 				WithClearCtx("medication_flow").
@@ -435,21 +485,32 @@ func medicationCheckSanitasHandler(cfg *config.Config) sm.StateHandler {
 	}
 }
 
-// buildMainMenuList creates the main menu list message with 7 options.
-func buildMainMenuList() *sm.ListMessage {
+// siauNoticeText es lo que ve el paciente al pedir Atención al usuario (SIAU).
+const siauNoticeText = "🧑‍💼 *Atención al usuario (SIAU)*\nTe comunico con nuestra área de atención al usuario. " +
+	"Escribe tu consulta, sugerencia o queja y un asesor te responderá en breve. ⏳"
+
+// buildMainMenuList arma el menú principal: 8 opciones, 7 sin IMAGING_RESULTS_URL (cfg nil = sin imágenes).
+func buildMainMenuList(cfg *config.Config) *sm.ListMessage {
+	rows := []sm.ListRow{
+		{ID: "medicamentos", Title: "💉 Aplicar medicamentos", Description: "Atención personalizada con un agente (SANITAS)"},
+		{ID: "agendar", Title: "Agendar cita", Description: "Si buscas una cita como particular o cuentas con una orden de tu IPS"},
+		{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
+		{ID: "resultados", Title: "📋 Resultados de estudios", Description: "Si quieres descargar resultados de tus consultas"},
+	}
+	if imagingEnabled(cfg) {
+		rows = append(rows, sm.ListRow{ID: "imagenes", Title: "🩻 Resultados de imágenes", Description: "Consulta tus resultados de imágenes diagnósticas"})
+	}
+	rows = append(rows,
+		sm.ListRow{ID: "siau", Title: "🧑‍💼 Atención al usuario (SIAU)", Description: "Consultas, sugerencias o quejas"},
+		sm.ListRow{ID: "ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
+		sm.ListRow{ID: "ayuda", Title: "Cómo usar el bot", Description: "Guía rápida de cómo interactuar conmigo"},
+	)
 	return &sm.ListMessage{
 		Body:  "¿En qué puedo ayudarte hoy?",
 		Title: "Ver opciones",
 		Sections: []sm.ListSection{{
 			Title: "Menú principal",
-			Rows: []sm.ListRow{
-				{ID: "medicamentos", Title: "💉 Aplicar medicamentos", Description: "Atención personalizada con un agente (SANITAS)"},
-				{ID: "agendar", Title: "Agendar cita", Description: "Si buscas una cita como particular o cuentas con una orden de tu IPS"},
-				{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
-				{ID: "resultados", Title: "Consultar Resultados", Description: "Si quieres descargar resultados de tus consultas"},
-				{ID: "ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
-				{ID: "ayuda", Title: "Cómo usar el bot", Description: "Guía rápida de cómo interactuar conmigo"},
-			},
+			Rows:  rows,
 		}},
 	}
 }

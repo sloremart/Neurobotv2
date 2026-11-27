@@ -18,6 +18,7 @@ const (
 	StateUpdateContactInfo  = "UPDATE_CONTACT_INFO"
 	StateShowResults        = "SHOW_RESULTS"
 	StateShowLocations      = "SHOW_LOCATIONS"
+	StateShowImaging        = "SHOW_IMAGING"
 	StateShowHelp           = "SHOW_HELP"
 	// Aplicación de medicamentos: valida contrato, consulta listado, recopila datos clínicos y agenda.
 	StateMedicationCheckSanitas    = "MEDICATION_CHECK_SANITAS"
@@ -197,6 +198,7 @@ var stateTypes = map[string]StateType{
 	StateUpdateContactInfo:         StateTypeAutomatic,
 	StateShowResults:               StateTypeAutomatic,
 	StateShowLocations:             StateTypeAutomatic,
+	StateShowImaging:               StateTypeAutomatic,
 	StateShowHelp:                  StateTypeAutomatic,
 	StateMedicationCheckSanitas:    StateTypeAutomatic,
 	StateMedicationCheckExcel:      StateTypeAutomatic,

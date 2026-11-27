@@ -22,7 +22,7 @@ import (
 func TestNotifRescheduleFallback_RescheduleEscalatesToAnAgent(t *testing.T) {
 	repo := newNotifApptRepo()
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 	sess := testSess(sm.StateNotifRescheduleFallback)
 	sess.Context["reschedule_appt_id"] = "APT-NOTIF"
 	sess.Context["cups_name"] = "Electromiografia"
@@ -54,7 +54,7 @@ func TestNotifRescheduleFallback_ConfirmAndCancelUnchanged(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			repo := newNotifApptRepo()
 			m := sm.NewMachine()
-			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 			sess := testSess(sm.StateNotifRescheduleFallback)
 			sess.Context["reschedule_appt_id"] = "APT-NOTIF"
 

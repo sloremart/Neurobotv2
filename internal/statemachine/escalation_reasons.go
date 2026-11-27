@@ -92,6 +92,9 @@ const (
 	// catálogo trae procedimientos de nombre parecido, ninguno a un dígito del leído; la nota para el
 	// agente dice qué se leyó y cuáles son los candidatos.
 	EscalationReasonCupsPossibleMisread = "cups_posible_mala_lectura"
+	// EscalationReasonSIAU: el paciente eligió «Atención al usuario (SIAU)» en el menú (consulta,
+	// sugerencia o queja); la atiende el equipo SIAU.
+	EscalationReasonSIAU = "siau"
 )
 
 // EscalationReasons lista TODOS los motivos de cable: las notificaciones y los del flujo.
@@ -107,7 +110,7 @@ func EscalationReasons() []string {
 		EscalationReasonMedicationError, EscalationReasonMedicationIntravenous, EscalationReasonEmgConsolidationFailed,
 		EscalationReasonEmgAskedForAgent, EscalationReasonBotDisabled, EscalationReasonAgentInputRejected,
 		EscalationReasonRescheduleNoSlots, EscalationReasonQuantityOutOfRange, EscalationReasonOCRFailedReads,
-		EscalationReasonCupsPossibleMisread,
+		EscalationReasonCupsPossibleMisread, EscalationReasonSIAU,
 	}
 }
 
@@ -124,6 +127,7 @@ var escalationReasonFromPatient = map[string]bool{
 	EscalationReasonNoCoverage:          true, // eligió «agente» ante el procedimiento sin convenio
 	EscalationReasonMaxRetries:          true,
 	EscalationReasonAIRecoveryExhausted: true,
+	EscalationReasonSIAU:                true, // lo pidió el paciente desde el menú
 
 	EscalationReasonOCRNoCode:              false,
 	EscalationReasonOCRFailedReads:         false,

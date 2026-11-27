@@ -142,7 +142,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			if nectarSession {
 				r.Messages = append(r.Messages, &sm.TextMessage{Text: resumeSuppressedNectarText})
 			}
-			r.Messages = append(r.Messages, buildMainMenuList())
+			r.Messages = append(r.Messages, buildMainMenuList(cfg))
 			return escalationDiverted(preState, r), nil
 		}
 		//
@@ -244,7 +244,7 @@ func escalateHandler(m *sm.Machine, birdClient *bird.Client, cfg *config.Config,
 			if countsTowardCap {
 				r.WithContext(sm.CtxEscalationCount, bumpEscalationCount(sess))
 			}
-			r.Messages = append(r.Messages, buildMainMenuList())
+			r.Messages = append(r.Messages, buildMainMenuList(cfg))
 			return escalationDiverted(preState, r), nil
 		}
 

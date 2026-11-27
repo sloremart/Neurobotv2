@@ -172,3 +172,23 @@ func extractText(result *sm.StateResult) string {
 	}
 	return sb.String()
 }
+
+// --- SHOW_IMAGING ---
+
+func TestShowImaging_SendsLinkAndAutoCloses(t *testing.T) {
+	url := "https://imagenes.example.com/portal"
+	m := sm.NewMachine()
+	m.Register(sm.StateShowImaging, showImagingHandler(&config.Config{ImagingResultsURL: url}))
+
+	result, err := m.Process(context.Background(), testSess(sm.StateShowImaging), textM(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateTerminated {
+		t.Errorf("esperaba TERMINATED, fue %s", result.NextState)
+	}
+	want := "🩻 *Resultados de imágenes*\n\nConsulta y descarga tus resultados de imágenes diagnósticas en el portal: " + url
+	if got := extractText(result); !strings.HasPrefix(got, want) {
+		t.Errorf("texto = %q", got)
+	}
+}

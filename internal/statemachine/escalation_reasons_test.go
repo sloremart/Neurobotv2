@@ -137,3 +137,9 @@ func TestEscalationReasons_EveryReasonIsClassifiedForTheCap(t *testing.T) {
 		}
 	}
 }
+
+func TestEscalationCountsTowardCap_SIAU(t *testing.T) {
+	if !EscalationCountsTowardCap(EscalationReasonSIAU) {
+		t.Error("SIAU lo pide el paciente: debe contar para el tope")
+	}
+}

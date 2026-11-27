@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
@@ -48,11 +49,11 @@ func notifyFreedSlots(ctx context.Context, onCancel CancellationCallback, block 
 }
 
 // RegisterAppointmentHandlers registra los handlers del flujo de consulta de citas.
-func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback) {
+func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, onCancel CancellationCallback, cfg *config.Config) {
 	m.Register(sm.StateFetchAppointments, fetchAppointmentsHandler(apptSvc, procRepo))
 	m.Register(sm.StateListAppointments, listAppointmentsHandler(apptSvc, procRepo))
 	sm.RegisterReturnMenu(sm.StateListAppointments, appointmentReturnOptions)
-	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper))
+	m.Register(sm.StateAppointmentAction, appointmentActionHandler(apptSvc, procRepo, addrMapper, cfg))
 	sm.RegisterStaticReturnMenu(sm.StateAppointmentAction,
 		payloadOption("Confirmar la cita", "appt_confirm"),
 		payloadOption("Cancelar la cita", "appt_cancel"),
@@ -71,7 +72,7 @@ func RegisterAppointmentHandlers(m *sm.Machine, apptSvc *services.AppointmentSer
 		payloadOption("Sí, cancelar la cita", "cancel_yes"),
 		payloadOption("No, mantener la cita", "cancel_no"),
 	)
-	m.Register(sm.StateNoAppointments, noAppointmentsHandler())
+	m.Register(sm.StateNoAppointments, noAppointmentsHandler(cfg))
 	sm.RegisterStaticReturnMenu(sm.StateNoAppointments,
 		payloadOption("Volver al menú principal", "no_appt_menu"),
 		payloadOption("Terminar el chat", "no_appt_end"),
@@ -304,7 +305,7 @@ func listAppointmentsHandler(apptSvc *services.AppointmentService, procRepo repo
 }
 
 // APPOINTMENT_ACTION (interactivo, lista) — procesa acción seleccionada sobre la cita
-func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper) sm.StateHandler {
+func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, addrMapper *services.AddressMapper, cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selectedID := sess.GetContext("selected_appointment_id")
 
@@ -494,7 +495,7 @@ func appointmentActionHandler(apptSvc *services.AppointmentService, procRepo rep
 		case "appt_menu":
 			r := sm.NewResult(sm.StateMainMenu).
 				WithClearCtx("selected_appointment_id", "appointments_json")
-			r.Messages = append(r.Messages, buildMainMenuList())
+			r.Messages = append(r.Messages, buildMainMenuList(cfg))
 			return r.WithEvent("appointment_back_to_menu", nil), nil
 		}
 
@@ -562,7 +563,7 @@ func cancelAppointmentHandler(apptSvc *services.AppointmentService, procRepo rep
 }
 
 // NO_APPOINTMENTS (interactivo) — menú cuando no hay citas
-func noAppointmentsHandler() sm.StateHandler {
+func noAppointmentsHandler(cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		result, selected := sm.ValidateButtonResponse(sess, msg, "no_appt_menu", "no_appt_end")
 		if result != nil {
@@ -581,7 +582,7 @@ func noAppointmentsHandler() sm.StateHandler {
 		switch selected {
 		case "no_appt_menu":
 			r := sm.NewResult(sm.StateMainMenu)
-			r.Messages = append(r.Messages, buildMainMenuList())
+			r.Messages = append(r.Messages, buildMainMenuList(cfg))
 			return r.WithEvent("no_appt_back_to_menu", nil), nil
 
 		case "no_appt_end":

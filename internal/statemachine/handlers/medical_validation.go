@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
+	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/services"
@@ -18,7 +19,7 @@ import (
 )
 
 // RegisterMedicalValidationHandlers registra los handlers de validaciones médicas (Fase 9).
-func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRService, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository) {
+func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRService, apptSvc *services.AppointmentService, procRepo repository.ProcedureRepository, cfg *config.Config) {
 	m.Register(sm.StateCheckSpecialCups, checkSpecialCupsHandler())
 	// CHECK_SPECIAL_CUPS es automático y escala de forma determinista con el mismo CUPS: la salida
 	// que reanuda lleva los CUPS que el agente escribió (C6), y si el agente ya gestionó este
@@ -71,7 +72,7 @@ func RegisterMedicalValidationHandlers(m *sm.Machine, gfrSvc *services.GFRServic
 	m.Register(sm.StateAppointmentExists, appointmentExistsHandler())
 	m.Register(sm.StateCheckPriorConsult, checkPriorConsultHandler(apptSvc))
 	m.Register(sm.StateCheckMRCLimit, checkMRCLimitHandler(apptSvc))
-	m.Register(sm.StateCheckAgeRestriction, checkAgeRestrictionHandler())
+	m.Register(sm.StateCheckAgeRestriction, checkAgeRestrictionHandler(cfg))
 
 	registerMedicalRecovery(m)
 	registerMedicalAgentFields()
@@ -738,7 +739,7 @@ var pediatricNeurologyCups = map[string]bool{
 }
 
 // CHECK_AGE_RESTRICTION (automático) — bloquea menores en neurología adultos y adultos en neurología pediátrica.
-func checkAgeRestrictionHandler() sm.StateHandler {
+func checkAgeRestrictionHandler(cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		cupsCode := sess.GetContext("cups_code")
 		age, _ := strconv.Atoi(sess.GetContext("patient_age"))
@@ -749,7 +750,7 @@ func checkAgeRestrictionHandler() sm.StateHandler {
 			r := sm.NewResult(sm.StateMainMenu).
 				WithText(fmt.Sprintf("El servicio de *Neurología* es exclusivo para pacientes mayores de 18 años. Según nuestros registros, tienes %d años.\n\nPuedes seleccionar el servicio de *Neurología Pediátrica* desde el menú.", age)).
 				WithEvent("age_restriction_blocked", map[string]interface{}{"cups": cupsCode, "age": age, "reason": "minor_in_adult_neuro"})
-			r.Messages = append(r.Messages, buildMainMenuList())
+			r.Messages = append(r.Messages, buildMainMenuList(cfg))
 			return r, nil
 		}
 
@@ -759,7 +760,7 @@ func checkAgeRestrictionHandler() sm.StateHandler {
 			r := sm.NewResult(sm.StateMainMenu).
 				WithText(fmt.Sprintf("El servicio de *Neurología Pediátrica* es exclusivo para pacientes menores de 18 años. Según nuestros registros, tienes %d años.\n\nPuedes seleccionar el servicio de *Neurología* desde el menú.", age)).
 				WithEvent("age_restriction_blocked", map[string]interface{}{"cups": cupsCode, "age": age, "reason": "adult_in_pediatric_neuro"})
-			r.Messages = append(r.Messages, buildMainMenuList())
+			r.Messages = append(r.Messages, buildMainMenuList(cfg))
 			return r, nil
 		}
 

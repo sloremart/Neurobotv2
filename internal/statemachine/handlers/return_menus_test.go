@@ -30,12 +30,12 @@ func returnMenuMachine() *sm.Machine {
 	RegisterGreetingHandlers(m, sampleConfig(), nil)
 	RegisterIdentificationHandlers(m, nil)
 	RegisterMedicalOrderHandlers(m, nil, nil, nil, nil, nil, nil)
-	RegisterAppointmentHandlers(m, nil, nil, nil, nil)
+	RegisterAppointmentHandlers(m, nil, nil, nil, nil, nil)
 	RegisterSlotHandlers(m, nil, nil, nil, nil, nil, nil, nil, nil)
 	// Los registros de estos handlers no tocan sus dependencias: se pasan nil.
 	RegisterRegistrationHandlers(m, nil, nil)
 	RegisterEntityManagementHandlers(m, nil, nil)
-	RegisterMedicalValidationHandlers(m, nil, nil, nil)
+	RegisterMedicalValidationHandlers(m, nil, nil, nil, nil)
 	RegisterPostActionHandlers(m, nil)
 	RegisterMedicationHandlers(m, nil, nil)
 	RegisterResultsAndLocationHandlers(m, sampleConfig(), nil)
@@ -560,7 +560,7 @@ func TestReturnMenus_CancelReasonIsUnreachable(t *testing.T) {
 
 func TestReturnMenus_MainMenuOffersEveryMenuOption(t *testing.T) {
 	returnMenuMachine()
-	want := []string{"medicamentos", "agendar", "consultar", "resultados", "ubicacion", "ayuda"}
+	want := []string{"medicamentos", "agendar", "consultar", "resultados", "siau", "ubicacion", "ayuda"}
 	if got := ownData(sm.StateMainMenu); !slices.Equal(got, sortedCopy(want)) {
 		t.Errorf("MAIN_MENU ofrece %v, quiero %v", got, sortedCopy(want))
 	}

@@ -82,7 +82,7 @@ const birdSelectOption = "Por favor selecciona una de las opciones disponibles."
 
 func TestNotifRescheduleFallback_NectarResumeShowsTheQuestionAndButtons(t *testing.T) {
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, services.NewAppointmentService(&testutil.MockAppointmentRepo{}, nil), nil, nil, nil)
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(&testutil.MockAppointmentRepo{}, nil), nil, nil, nil, nil)
 	sess := resumeTurnSess(sm.StateNotifRescheduleFallback, true)
 	sess.Context["cups_name"] = "Electromiografia"
 

@@ -98,7 +98,7 @@ func TestNotifPending_NectarPlainResumeShowsTheButtons(t *testing.T) {
 	for name, ctx := range escalatedNotifContexts() {
 		t.Run(name, func(t *testing.T) {
 			m := sm.NewMachine()
-			RegisterAppointmentHandlers(m, services.NewAppointmentService(newNotifApptRepo(), nil), nil, nil, nil)
+			RegisterAppointmentHandlers(m, services.NewAppointmentService(newNotifApptRepo(), nil), nil, nil, nil, nil)
 			sess := notifResumeSess(ctx)
 			sess.RetryCount = 1
 
@@ -136,7 +136,7 @@ func TestNotifPending_EscalatedSessionActsOnTheNotifiedAppointment(t *testing.T)
 		t.Run(name+"/confirm", func(t *testing.T) {
 			repo := newNotifApptRepo()
 			m := sm.NewMachine()
-			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 			sess := notifResumeSess(ctx)
 			delete(sess.Context, sm.CtxAgentResumeTurn)
 
@@ -153,7 +153,7 @@ func TestNotifPending_EscalatedSessionActsOnTheNotifiedAppointment(t *testing.T)
 			repo := newNotifApptRepo()
 			repo.FindUpcomingByPatientFn = nil
 			m := sm.NewMachine()
-			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 			sess := notifResumeSess(ctx)
 			delete(sess.Context, sm.CtxAgentResumeTurn)
 
@@ -168,7 +168,7 @@ func TestNotifPending_EscalatedSessionActsOnTheNotifiedAppointment(t *testing.T)
 		t.Run(name+"/cancel", func(t *testing.T) {
 			repo := newNotifApptRepo()
 			m := sm.NewMachine()
-			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+			RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 			sess := notifResumeSess(ctx)
 			delete(sess.Context, sm.CtxAgentResumeTurn)
 
@@ -197,7 +197,7 @@ func TestNotifPending_EscalatedSessionActsOnTheNotifiedAppointment(t *testing.T)
 func TestNotifPending_EscalatedCtxWinsOverAStaleConfirmationSession(t *testing.T) {
 	repo := newNotifApptRepo()
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 	sess := notifResumeSess(escalatedNotifContexts()["escalateNotifToAgent"])
 	delete(sess.Context, sm.CtxAgentResumeTurn)
 	sess.Context["notif_appt_id"] = "APT-OLD"
@@ -220,7 +220,7 @@ func TestNotifPending_EscalatedCtxWinsOverAStaleConfirmationSession(t *testing.T
 func TestNotifPending_ConfirmationSessionUnchanged(t *testing.T) {
 	repo := newNotifApptRepo()
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 	sess := testSess(sm.StateConfirmCancelNotif)
 	sess.Context["notif_appt_id"] = "APT-NOTIF"
 	sess.Context["notif_appt_ids"] = `["APT-NOTIF"]`
@@ -320,7 +320,7 @@ func TestNotifPending_RescheduleBuildsTheSearchFromTheNotifiedAppointment(t *tes
 					return a, err
 				}
 				m := sm.NewMachine()
-				RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+				RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 				sess := notifResumeSess(ctx)
 				delete(sess.Context, sm.CtxAgentResumeTurn)
 				for k, v := range extra {
@@ -372,7 +372,7 @@ func TestNotifPending_RescheduleBuildsTheSearchFromTheNotifiedAppointment(t *tes
 func TestNotifPending_RescheduleWithSeveralAppointmentsFixesThePatient(t *testing.T) {
 	repo := newNotifApptRepo()
 	m := sm.NewMachine()
-	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil)
+	RegisterAppointmentHandlers(m, services.NewAppointmentService(repo, nil), nil, nil, nil, nil)
 	sess := notifResumeSess(escalatedNotifContexts()["escalateNotifToAgent"])
 	delete(sess.Context, sm.CtxAgentResumeTurn)
 	sess.Context["patient_id"] = "OTRO-PACIENTE"

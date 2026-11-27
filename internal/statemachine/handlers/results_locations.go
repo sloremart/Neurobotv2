@@ -20,6 +20,7 @@ type LocationReader interface {
 // RegisterResultsAndLocationHandlers registers SHOW_RESULTS and SHOW_LOCATIONS handlers.
 func RegisterResultsAndLocationHandlers(m *sm.Machine, cfg *config.Config, locationRepo LocationReader) {
 	m.Register(sm.StateShowResults, showResultsHandler(cfg))
+	m.Register(sm.StateShowImaging, showImagingHandler(cfg))
 	m.Register(sm.StateShowLocations, showLocationsHandler(locationRepo))
 }
 
@@ -38,6 +39,19 @@ func showResultsHandler(cfg *config.Config) sm.StateHandler {
 
 		return buildAutoCloseResult(text).
 			WithEvent("results_shown", nil), nil
+	}
+}
+
+// imagingResultsText es el mensaje con el enlace al portal de resultados de imágenes.
+func imagingResultsText(url string) string {
+	return "🩻 *Resultados de imágenes*\n\nConsulta y descarga tus resultados de imágenes diagnósticas en el portal: " + url
+}
+
+// SHOW_IMAGING (automático) — envía el enlace al portal de resultados de imágenes y cierra.
+func showImagingHandler(cfg *config.Config) sm.StateHandler {
+	return func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		return buildAutoCloseResult(imagingResultsText(cfg.ImagingResultsURL)).
+			WithEvent("imaging_link_sent", nil), nil
 	}
 }
 

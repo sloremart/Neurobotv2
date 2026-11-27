@@ -1005,3 +1005,121 @@ func TestHolidaysOnly_DecidesButKeepsHelpText(t *testing.T) {
 		t.Errorf("próxima apertura = %v, want %v", got, want)
 	}
 }
+
+// ==================== Menú: imágenes y SIAU ====================
+
+func mainMenuRowIDs(l *sm.ListMessage) []string {
+	var ids []string
+	for _, s := range l.Sections {
+		for _, r := range s.Rows {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+func TestMainMenu_HasImagingAndSIAU(t *testing.T) {
+	cfg := &config.Config{ImagingResultsURL: "https://imagenes.example.com"}
+	list := buildMainMenuList(cfg)
+	got := mainMenuRowIDs(list)
+	want := []string{"medicamentos", "agendar", "consultar", "resultados", "imagenes", "siau", "ubicacion", "ayuda"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("filas = %v, quiero %v", got, want)
+	}
+	titles := map[string]string{}
+	for _, r := range list.Sections[0].Rows {
+		titles[r.ID] = r.Title
+	}
+	for id, title := range map[string]string{
+		"resultados": "📋 Resultados de estudios",
+		"imagenes":   "🩻 Resultados de imágenes",
+		"siau":       "🧑‍💼 Atención al usuario (SIAU)",
+	} {
+		if titles[id] != title {
+			t.Errorf("título de %s = %q, quiero %q", id, titles[id], title)
+		}
+	}
+}
+
+func TestMainMenu_NoImagingWithoutURL(t *testing.T) {
+	for _, cfg := range []*config.Config{{}, nil} {
+		got := mainMenuRowIDs(buildMainMenuList(cfg))
+		if len(got) != 7 {
+			t.Fatalf("filas = %v, quiero 7", got)
+		}
+		for _, id := range got {
+			if id == "imagenes" {
+				t.Error("sin IMAGING_RESULTS_URL no debe aparecer «imagenes»")
+			}
+		}
+	}
+}
+
+func TestMainMenu_ImagingGoesToShowImaging(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, &config.Config{ImagingResultsURL: "https://imagenes.example.com"}, nil)
+	result, err := m.Process(context.Background(), testSess(sm.StateMainMenu), postbackM("imagenes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateShowImaging {
+		t.Errorf("esperaba SHOW_IMAGING, fue %s", result.NextState)
+	}
+}
+
+func TestMainMenu_SIAUEscalatesWithReason(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, sampleConfig(), nil)
+	result, err := m.Process(context.Background(), testSess(sm.StateMainMenu), postbackM("siau"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateEscalateToAgent {
+		t.Fatalf("esperaba ESCALATE_TO_AGENT, fue %s", result.NextState)
+	}
+	if got := result.UpdateCtx[sm.CtxEscalationReason]; got != "siau" {
+		t.Errorf("motivo = %q, quiero siau", got)
+	}
+	if result.UpdateCtx[sm.CtxPatientAskedForAgent] != "1" {
+		t.Error("SIAU lo pide el paciente: debe llevar la marca de que pidió la persona")
+	}
+	want := "🧑‍💼 *Atención al usuario (SIAU)*\nTe comunico con nuestra área de atención al usuario. Escribe tu consulta, sugerencia o queja y un asesor te responderá en breve. ⏳"
+	if got := strings.TrimSpace(extractText(result)); got != want {
+		t.Errorf("texto = %q", got)
+	}
+}
+
+func TestOutOfHoursMenu_HasImagingAndResults(t *testing.T) {
+	ids := func(cfg *config.Config) string {
+		m := sm.NewMachine()
+		RegisterGreetingHandlers(m, cfg, nil)
+		result, err := m.Process(context.Background(), testSess(sm.StateOutOfHours), textM(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, msg := range result.Messages {
+			if l, ok := msg.(*sm.ListMessage); ok {
+				return strings.Join(mainMenuRowIDs(l), ",")
+			}
+		}
+		t.Fatal("sin lista")
+		return ""
+	}
+	if got := ids(&config.Config{ImagingResultsURL: "https://i.example.com"}); got != "ooh_resultados,ooh_imagenes,ooh_ubicacion,ooh_ayuda" {
+		t.Errorf("con URL: %s", got)
+	}
+	if got := ids(sampleConfig()); got != "ooh_resultados,ooh_ubicacion,ooh_ayuda" {
+		t.Errorf("sin URL: %s", got)
+	}
+
+	// La opción de imágenes manda el enlace y cierra.
+	m := sm.NewMachine()
+	RegisterGreetingHandlers(m, &config.Config{ImagingResultsURL: "https://i.example.com"}, nil)
+	result, err := m.Process(context.Background(), testSess(sm.StateOutOfHoursMenu), postbackM("ooh_imagenes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateTerminated || !strings.Contains(extractText(result), "https://i.example.com") {
+		t.Errorf("ooh_imagenes: %s %q", result.NextState, extractText(result))
+	}
+}

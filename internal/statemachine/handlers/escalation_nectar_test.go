@@ -847,7 +847,7 @@ func TestEscalate_BirdResumeSuppressionUnchanged(t *testing.T) {
 		t.Fatalf("Bird: solo el menú, fueron %d mensajes: %+v", len(res.Messages), res.Messages)
 	}
 	list, ok := res.Messages[0].(*sm.ListMessage)
-	if !ok || list.Body != buildMainMenuList().Body {
+	if !ok || list.Body != buildMainMenuList(nil).Body {
 		t.Errorf("Bird: el mensaje es el menú principal de hoy, fue %+v", res.Messages[0])
 	}
 }
@@ -979,5 +979,24 @@ func TestEscalate_OtherFailureKeepsTheUsualText(t *testing.T) {
 		if b, ok := msg.(*sm.ButtonMessage); ok && b.Text == escalationDisabledText {
 			t.Fatal("un fallo transitorio no dice «apagado»")
 		}
+	}
+}
+
+// SIAU no es un grupo de CUPS: su equipo sale de la clave `siau` de NECTAR_TEAM_BY_GROUP.
+func TestNectarEscalation_SIAUSuggestsSIAUTeam(t *testing.T) {
+	cfg := testEscalationConfig()
+	cfg.NectarTeamByGroup = map[string]int64{"siau": 12, "imagenes": 7}
+	m, nb := nectarMachine(t, cfg, nil)
+	sess := nectarSession(true)
+	sess.SetContext("cups_code", "883101") // un CUPS de imágenes en la sesión no debe ganar
+	sess.SetContext(sm.CtxEscalationReason, sm.EscalationReasonSIAU)
+
+	escalateOnce(t, m, sess)
+
+	if len(nb.escalations) != 1 {
+		t.Fatalf("se esperaba UNA escalación, hubo %d", len(nb.escalations))
+	}
+	if got := nb.escalations[0].SuggestedTeamID; got == nil || *got != 12 {
+		t.Errorf("SuggestedTeamID = %v, quiero 12 (grupo siau)", got)
 	}
 }

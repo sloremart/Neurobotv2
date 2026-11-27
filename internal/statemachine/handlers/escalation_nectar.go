@@ -90,6 +90,10 @@ func escalationEnvelope(cfg *config.Config, m *sm.Machine, sess *session.Session
 		ResolveLock:     resolveLock,
 		SuggestedTeamID: cfg.SuggestedTeamForCups(teamCupsCode(sess)),
 	}
+	// SIAU no es un grupo de CUPS: su equipo sale de la clave `siau` de NECTAR_TEAM_BY_GROUP.
+	if reason := sess.GetContext(sm.CtxEscalationReason); reason == sm.EscalationReasonSIAU {
+		esc.SuggestedTeamID = cfg.SuggestedTeamForSIAU()
+	}
 	if cfg == nil || !cfg.EmitsProtocolV1() {
 		// Menú de retornos: las salidas válidas DESDE ESTE PASO. Si no se puede serializar se
 		// escala sin él: quedarse sin menú degrada la vuelta, fallar aquí abandona al paciente.

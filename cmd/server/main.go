@@ -287,7 +287,7 @@ func main() {
 		if repos != nil {
 			procRepoForAppts = repos.Procedure
 		}
-		handlers.RegisterAppointmentHandlers(machine, appointmentSvc, procRepoForAppts, addrMapper, onCancel)
+		handlers.RegisterAppointmentHandlers(machine, appointmentSvc, procRepoForAppts, addrMapper, onCancel, cfg)
 	}
 	// Fase 8: Orden Médica y OCR
 	waitingListRepo := localrepo.NewWaitingListRepo(localDB)
@@ -301,7 +301,7 @@ func main() {
 		if repos != nil {
 			procRepoForGFR = repos.Procedure
 		}
-		handlers.RegisterMedicalValidationHandlers(machine, gfrSvc, appointmentSvc, procRepoForGFR)
+		handlers.RegisterMedicalValidationHandlers(machine, gfrSvc, appointmentSvc, procRepoForGFR, cfg)
 	}
 	// Fase 10 + 13: Búsqueda de Slots y Agendamiento + Lista de Espera
 	var slotSvc *services.SlotService
