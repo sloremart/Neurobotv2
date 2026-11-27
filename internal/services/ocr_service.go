@@ -601,9 +601,9 @@ func (s *OCRService) downloadMedia(ctx context.Context, documentURL string) ([]b
 		// 404 de la clave principal: puede ser un adjunto de la línea vieja. Se prueba su clave en el
 		// mismo intento, sin esperar; solo si también falla rige la espera de siempre.
 		if status == http.StatusNotFound && s.nectarFallbackKey != "" && s.isNectarMediaURL(documentURL) {
-			fileData, status, err = s.downloadMediaOnce(ctx, documentURL, true)
-			if err == nil {
-				return fileData, nil
+			// Si la vieja también falla, manda el 404 de la principal (su espera de siempre).
+			if legacyData, _, legacyErr := s.downloadMediaOnce(ctx, documentURL, true); legacyErr == nil {
+				return legacyData, nil
 			}
 		}
 		if !retryableMediaStatus(status) || attempt >= len(delays) {

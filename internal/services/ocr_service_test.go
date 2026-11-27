@@ -612,3 +612,30 @@ func TestNectarMedia_NoFallbackBehavesAsToday(t *testing.T) {
 		}
 	}
 }
+
+// Si la clave vieja falla con otro código, el 404 de la principal sigue mandando: las esperas corren
+// y el error final es el 404 de la principal.
+func TestNectarMedia_LegacyNon404KeepsMain404Retries(t *testing.T) {
+	rt := &keyedTransport{status: map[string]int{"service-key": 404, "legacy-key": 401}}
+	s := newDownloadSvc(rt)
+	s.SetNectarCredentials("https://nectar.colibrixa.com", "service-key", "req-secret")
+	s.SetNectarFallbackCredentials("legacy-key", "legacy-secret")
+	s.mediaRetryDelays = []time.Duration{0, 0, 0}
+
+	_, err := s.downloadMedia(context.Background(), "https://nectar.colibrixa.com/api/bot/attachments/7")
+	if err == nil || !strings.Contains(err.Error(), "status 404") {
+		t.Fatalf("error = %v, quería el 404 de la principal", err)
+	}
+	if len(rt.seen) != 8 {
+		t.Fatalf("GET = %d, quería 8 (4 principal + 4 legacy): %v", len(rt.seen), rt.seen)
+	}
+	for i, k := range rt.seen {
+		want := "service-key"
+		if i%2 == 1 {
+			want = "legacy-key"
+		}
+		if k != want {
+			t.Errorf("GET %d con %q, quería %q", i, k, want)
+		}
+	}
+}
