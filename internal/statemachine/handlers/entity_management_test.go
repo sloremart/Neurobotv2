@@ -60,6 +60,21 @@ func TestAskClientType_Particular_SkipsListToDocument(t *testing.T) {
 	}
 }
 
+func TestAskClientType_Poliza_EscalatesToAgent(t *testing.T) {
+	m := sm.NewMachine()
+	RegisterEntityManagementHandlers(m, &testutil.MockEntityRepo{}, &testutil.MockPatientRepo{})
+
+	sess := testSess(sm.StateAskClientType)
+	// ct_6 = POLIZA category
+	result, err := m.Process(context.Background(), sess, postbackM("ct_6"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateEscalateToAgent {
+		t.Errorf("expected ESCALATE_TO_AGENT for POLIZA, got %s", result.NextState)
+	}
+}
+
 func TestAskClientType_InvalidText(t *testing.T) {
 	m := sm.NewMachine()
 	RegisterEntityManagementHandlers(m, &testutil.MockEntityRepo{}, &testutil.MockPatientRepo{})
@@ -378,5 +393,29 @@ func TestChangeEntity_TextSearch_ExactMatch(t *testing.T) {
 	}
 	if result.NextState != sm.StateAskMedicalOrder {
 		t.Errorf("expected ASK_MEDICAL_ORDER (exact match), got %s", result.NextState)
+	}
+}
+
+func TestAskEntityNumber_SOATEntity_EscalatesToAgent(t *testing.T) {
+	entityRepo := &testutil.MockEntityRepo{
+		FindByCodeFn: func(_ context.Context, code string) (*domain.Entity, error) {
+			return &domain.Entity{Code: code, Name: "SEGUROS SOAT COLOMBIA", IsActive: true}, nil
+		},
+	}
+
+	m := sm.NewMachine()
+	m.Register(sm.StateAskEntityNumber, askEntityNumberHandler(entityRepo))
+
+	sess := testSess(sm.StateAskEntityNumber)
+	sess.Context["entity_list_count"] = "2"
+	sess.Context["entity_list_codes"] = "SOA001,POL002"
+	sess.Context["entity_category"] = "POLIZA"
+
+	result, err := m.Process(context.Background(), sess, textM("1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextState != sm.StateEscalateToAgent {
+		t.Errorf("expected ESCALATE_TO_AGENT for SOAT entity, got %s", result.NextState)
 	}
 }

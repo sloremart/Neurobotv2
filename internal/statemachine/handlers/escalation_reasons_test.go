@@ -59,7 +59,7 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 		{"ocr_json_invalido_validate", sm.EscalationReasonOCRInvalidJSON, false, func(t *testing.T) *sm.StateResult {
 			sess := testSess(sm.StateValidateOCR)
 			sess.SetContext("ocr_cups_json", "no-es-json")
-			return must(validateOCRHandler(&mockProcedureRepo{}, nil)(ctx, sess, textM("")))(t)
+			return must(validateOCRHandler(&mockProcedureRepo{}, nil, nil)(ctx, sess, textM("")))(t)
 		}},
 		{"ocr_json_invalido_confirm", sm.EscalationReasonOCRInvalidJSON, false, func(t *testing.T) *sm.StateResult {
 			sess := testSess(sm.StateConfirmOCRResult)
@@ -77,13 +77,13 @@ func TestEscalationSites_WriteTheirReason(t *testing.T) {
 			sess := testSess(sm.StateValidateOCR)
 			sess.SetContext("ocr_cups_json", string(raw))
 			sess.SetContext("patient_contract", "6")
-			return must(validateOCRHandler(repo, nil)(ctx, sess, textM("")))(t)
+			return must(validateOCRHandler(repo, nil, nil)(ctx, sess, textM("")))(t)
 		}},
 		{"cups_no_validos", sm.EscalationReasonNoValidCups, false, func(t *testing.T) *sm.StateResult {
 			raw, _ := json.Marshal([]services.CUPSEntry{{Code: "999999", Name: "No existe", Quantity: 1}})
 			sess := testSess(sm.StateValidateOCR)
 			sess.SetContext("ocr_cups_json", string(raw))
-			return must(validateOCRHandler(&mockProcedureRepo{}, nil)(ctx, sess, textM("")))(t)
+			return must(validateOCRHandler(&mockProcedureRepo{}, nil, nil)(ctx, sess, textM("")))(t)
 		}},
 		{"cups_posible_mala_lectura", sm.EscalationReasonCupsPossibleMisread, false, func(t *testing.T) *sm.StateResult {
 			res, _, _ := runValidate(t, []services.CUPSEntry{{Code: "890999", Name: "CONSULTA PRIMERA VEZ NEUROLOGIA", Quantity: 1}}, "", nil)

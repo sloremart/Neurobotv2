@@ -18,6 +18,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/domain"
 	"github.com/neuro-bot/neuro-bot/internal/observability"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
+	"github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
 	sm "github.com/neuro-bot/neuro-bot/internal/statemachine"
@@ -27,7 +28,9 @@ import (
 // RegisterMedicalOrderHandlers registra los handlers de Orden Médica y OCR (Fase 8).
 // apptSvc habilita la consolidación de órdenes EMG/NC (puede ser nil: en ese caso, ante una orden
 // dependiente-sola, el flujo pide la orden de la EMG en lugar de consolidar).
-func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, procedureRepo repository.ProcedureRepository, birdClient *bird.Client, wlRepo WaitingListCreator, apptSvc *services.AppointmentService) {
+// medRepo se usa para bloquear órdenes de inyección/infusión cuando el paciente no tiene
+// autorización en medication_pending (evita que el flujo de orden eluda la validación de medicamentos).
+func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, procedureRepo repository.ProcedureRepository, birdClient *bird.Client, wlRepo WaitingListCreator, apptSvc *services.AppointmentService, medRepo *local.MedicationPendingRepo) {
 	m.Register(sm.StateAskMedicalOrder, askMedicalOrderHandler(wlRepo, ocrSvc, birdClient))
 	m.Register(sm.StateSelectWaitingList, selectWaitingListHandler(wlRepo))
 	m.Register(sm.StateUploadMedicalOrder, uploadMedicalOrderHandler(ocrSvc, birdClient))
@@ -36,7 +39,7 @@ func RegisterMedicalOrderHandlers(m *sm.Machine, ocrSvc *services.OCRService, pr
 	if ocrSvc != nil {
 		cupsReader = ocrSvc
 	}
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procedureRepo, cupsReader))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procedureRepo, cupsReader, medRepo))
 	m.Register(sm.StateConfirmOCRResult, confirmOCRResultHandler(procedureRepo, birdClient))
 	m.Register(sm.StateOCRFailed, ocrFailedHandler(birdClient))
 	m.Register(sm.StateAskManualCups, askManualCupsHandler(procedureRepo))
@@ -640,8 +643,22 @@ func uploadNonMedia(sess *session.Session, birdClient *bird.Client, msg bird.Inb
 // agente porque lo leído no se puede agendar tal cual.
 const orderUnprocessableEscalationText = "No pudimos procesar los procedimientos de tu orden médica. Te voy a comunicar con un agente para que pueda ayudarte."
 
+// isMedicationApplicationProcedure devuelve true cuando el nombre del procedimiento corresponde
+// a un tipo de aplicación de medicamento (inyección, infusión, infiltración). Estas órdenes deben
+// pasar por el flujo de medication_pending con autorización vigente, no por el flujo de orden médica.
+func isMedicationApplicationProcedure(name string) bool {
+	upper := strings.ToUpper(name)
+	keywords := []string{"INYECCI", "INFUSI", "INFILTRACI"}
+	for _, kw := range keywords {
+		if strings.Contains(upper, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // VALIDATE_OCR (automático) — muestra resultados del OCR con verificación de documento
-func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader CupsCodeReader) sm.StateHandler {
+func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader CupsCodeReader, medRepo *local.MedicationPendingRepo) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, _ bird.InboundMessage) (res *sm.StateResult, _ error) {
 		// La URL de la orden es solo de ESTA validación (cups_resolve.go): se borra en toda salida.
 		// Las correcciones y las asignaciones por nombre se anotan, o se borran, una vez validada la lista.
@@ -801,6 +818,32 @@ func validateOCRHandler(procedureRepo repository.ProcedureRepository, cupsReader
 		corrections = keptCorrections(sess, ctxCupsCorrections, fresh, cups)
 		assignments = keptCorrections(sess, ctxCupsNameAssignments, freshAssigned, cups)
 		validated = true
+
+		// Redirección a flujo de medicamentos: si la orden contiene un procedimiento de
+		// inyección/infusión/infiltración, se redirige siempre a StateMedicationCheckExcel.
+		// Ese estado valida la autorización y, si es válida, conduce al paciente por el
+		// cuestionario clínico completo (fecha, dosis, frecuencia, síntomas, historia, orden).
+		// Esto evita que el flujo de orden médica eluda tanto la validación de autorización
+		// como la recopilación de datos clínicos obligatorios.
+		if medRepo != nil {
+			for _, cup := range cups {
+				if isMedicationApplicationProcedure(cup.Name) {
+					observability.Emit(observability.TraceSession(sess.ID), "agendar", "medication_order_redirected",
+						observability.EmitOpts{
+							Phone:  sess.PhoneNumber,
+							Reason: "orden_es_aplicacion_medicamento",
+							Attrs:  map[string]interface{}{"cups_code": cup.Code, "cups_name": cup.Name},
+						})
+					return sm.NewResult(sm.StateMedicationCheckExcel).
+						WithText("🔄 Detectamos que tu orden corresponde a la *aplicación de un medicamento*. "+
+							"Vamos a continuar por el proceso de medicamentos para recopilar la información necesaria.").
+						WithEvent("medication_order_redirected", map[string]interface{}{
+							"cups_code": cup.Code,
+							"cups_name": cup.Name,
+						}), nil
+				}
+			}
+		}
 
 		// Bloqueos SANITAS: por regla de negocio el bot NO agenda bloqueos (053101–053115, 048101) a
 		// pacientes SANITAS (contratos 4/5/6/7). Si la orden trae un bloqueo —aunque venga con otros

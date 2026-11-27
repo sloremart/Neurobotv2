@@ -20,12 +20,20 @@ type MedicationPendingRecord struct {
 	SaldoActual        int
 	FechaVencimiento   string
 	NumeroAutorizacion string // "SIN AUTORIZACION" si no tiene autorización vigente
+	ViaAdministracion  string // ej: "VIA ENDOVENOSO", "VIA SUBCUTANEO"
 }
 
 // HasAutorizacion retorna true cuando el registro tiene un número de autorización válido.
 func (r *MedicationPendingRecord) HasAutorizacion() bool {
 	v := strings.TrimSpace(strings.ToUpper(r.NumeroAutorizacion))
 	return v != "" && v != "SIN AUTORIZACION"
+}
+
+// IsEndovenoso retorna true cuando la vía de administración es endovenosa/intravenosa.
+// Estos casos requieren gestión manual (no se pueden agendar automáticamente).
+func (r *MedicationPendingRecord) IsEndovenoso() bool {
+	v := strings.ToUpper(strings.TrimSpace(r.ViaAdministracion))
+	return strings.Contains(v, "ENDOVENOSO") || strings.Contains(v, "INTRAVENOSO") || strings.Contains(v, "IV ")
 }
 
 // MedicationPendingRepo consulta la tabla medication_pending en MySQL.
@@ -48,7 +56,7 @@ func (r *MedicationPendingRepo) FindByDocument(ctx context.Context, cedula strin
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, cedula, paciente, eps, medicamento, nombre_comercial,
 		       concentracion, forma_farmaceutica, saldo_actual, fecha_vencimiento,
-		       COALESCE(numero_autorizacion, '')
+		       COALESCE(numero_autorizacion, ''), COALESCE(via_administracion, '')
 		FROM medication_pending
 		WHERE activo = 1 AND saldo_actual > 0 AND cedula = ?
 		ORDER BY id ASC
@@ -60,7 +68,7 @@ func (r *MedicationPendingRepo) FindByDocument(ctx context.Context, cedula strin
 		&rec.Medicamento, &rec.NombreComercial,
 		&rec.Concentracion, &rec.FormaFarmaceutica,
 		&rec.SaldoActual, &rec.FechaVencimiento,
-		&rec.NumeroAutorizacion,
+		&rec.NumeroAutorizacion, &rec.ViaAdministracion,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil

@@ -277,7 +277,7 @@ func main() {
 	// Fase 8: Orden Médica y OCR
 	waitingListRepo := localrepo.NewWaitingListRepo(localDB)
 	if repos != nil {
-		handlers.RegisterMedicalOrderHandlers(machine, ocrSvc, repos.Procedure, birdClient, waitingListRepo, appointmentSvc)
+		handlers.RegisterMedicalOrderHandlers(machine, ocrSvc, repos.Procedure, birdClient, waitingListRepo, appointmentSvc, medRepo)
 	}
 	// Fase 9: Validaciones Médicas
 	gfrSvc := services.NewGFRService()

@@ -653,7 +653,7 @@ func TestValidateOCR_EnrichesFromDB(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -690,7 +690,7 @@ func TestValidateOCR_BloqueoSanitas_Escalates(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -717,7 +717,7 @@ func TestValidateOCR_BloqueoNonSanitas_NoEscalate(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -743,7 +743,7 @@ func TestValidateOCR_DocumentMismatch_NoWarning(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)
@@ -778,7 +778,7 @@ func TestValidateOCR_DocumentMatch(t *testing.T) {
 	cupsJSON, _ := json.Marshal(cups)
 
 	m := sm.NewMachine()
-	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil))
+	m.Register(sm.StateValidateOCR, validateOCRHandler(procRepo, nil, nil))
 
 	sess := testSess(sm.StateValidateOCR)
 	sess.Context["ocr_cups_json"] = string(cupsJSON)

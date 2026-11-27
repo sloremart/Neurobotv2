@@ -106,7 +106,7 @@ func runValidateWith(t *testing.T, catalog []domain.Procedure, cups []services.C
 	allCalls := 0
 	sink := &observability.CaptureSink{}
 	stop := observability.StartCapture(sink)
-	res, err := validateOCRHandler(catalogRepo(catalog, &allCalls), reader)(context.Background(), sess, textM(""))
+	res, err := validateOCRHandler(catalogRepo(catalog, &allCalls), reader, nil)(context.Background(), sess, textM(""))
 	stop()
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +415,7 @@ func TestValidateOCR_KeepsPreviousCorrectionsOfCodesStillInOrder(t *testing.T) {
 	sess.SetContext("ocr_cups_json", string(raw))
 	sess.SetContext(ctxCupsCorrections, string(prev))
 	allCalls := 0
-	res, err := validateOCRHandler(catalogRepo(resolveCatalog, &allCalls), nil)(context.Background(), sess, textM(""))
+	res, err := validateOCRHandler(catalogRepo(resolveCatalog, &allCalls), nil, nil)(context.Background(), sess, textM(""))
 	if err != nil {
 		t.Fatal(err)
 	}

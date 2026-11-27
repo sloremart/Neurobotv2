@@ -90,6 +90,23 @@ func medicationCheckExcelHandler(medRepo *local.MedicationPendingRepo) sm.StateH
 			return backToMenuNoRecord(sess), nil
 		}
 
+		// Vía endovenosa/intravenosa: requiere gestión manual → escalar a agente.
+		if rec.IsEndovenoso() {
+			medDesc := buildMedDescription(rec)
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithText(fmt.Sprintf(
+					"Encontramos tu medicamento en nuestro listado:\n\n%s\n\n"+
+						"⚠️ Este medicamento requiere *administración endovenosa*, lo que necesita atención especializada y no puede gestionarse de forma automática.\n\n"+
+						"Te voy a comunicar con uno de nuestros agentes para coordinar tu cita. 🙏",
+					medDesc,
+				)).
+				WithEvent("medication_endovenosa_escalated", map[string]interface{}{
+					"doc":                sess.GetContext("patient_doc"),
+					"medicamento":        rec.Medicamento,
+					"via_administracion": rec.ViaAdministracion,
+				}), nil
+		}
+
 		// Verificar autorización antes de continuar
 		if !rec.HasAutorizacion() {
 			return medicationWithoutAuthorization(sess, rec), nil

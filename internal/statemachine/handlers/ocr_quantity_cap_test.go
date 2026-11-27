@@ -24,7 +24,7 @@ func validateCups(t *testing.T, cups []services.CUPSEntry) *sm.StateResult {
 	raw, _ := json.Marshal(cups)
 	sess := testSess(sm.StateValidateOCR)
 	sess.SetContext("ocr_cups_json", string(raw))
-	res, err := validateOCRHandler(activeCatalogRepo(), nil)(context.Background(), sess, textM(""))
+	res, err := validateOCRHandler(activeCatalogRepo(), nil, nil)(context.Background(), sess, textM(""))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,7 +44,7 @@ func runNameAssign(t *testing.T, cups []services.CUPSEntry, reader *fakeCupsRead
 	if reader != nil {
 		r = reader
 	}
-	res, err := validateOCRHandler(repo, r)(context.Background(), sess, textM(""))
+	res, err := validateOCRHandler(repo, r, nil)(context.Background(), sess, textM(""))
 	stop()
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestValidateOCR_LimbStudyWithSideIsAssignedNotSkipped(t *testing.T) {
 		sess := testSess(sm.StateValidateOCR)
 		sess.SetContext("ocr_cups_json", string(raw))
 		calls := 0
-		res, err := validateOCRHandler(catalogRepo(cat, &calls), &fakeCupsReader{choice: "930860"})(context.Background(), sess, textM(""))
+		res, err := validateOCRHandler(catalogRepo(cat, &calls), &fakeCupsReader{choice: "930860"}, nil)(context.Background(), sess, textM(""))
 		if err != nil {
 			t.Fatal(err)
 		}

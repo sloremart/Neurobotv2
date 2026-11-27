@@ -127,6 +127,23 @@ func askClientTypeHandler(entityRepo repository.EntityRepository) sm.StateHandle
 				WithEvent("client_type_selected", map[string]interface{}{"type": label, "category": category}), nil
 		}
 
+		// POLIZA (seguros y SOAT): toda la categoría requiere coordinación manual con el área
+		// de seguros — no se pueden agendar automáticamente independientemente de la entidad.
+		if category == "POLIZA" {
+			slog.Info("client_type: categoría POLIZA seleccionada, escalando a agente", "phone", sess.PhoneNumber)
+			observability.Emit(observability.TraceSession(sess.ID), "entidad", "poliza_escalated",
+				observability.EmitOpts{
+					Phone:  sess.PhoneNumber,
+					Reason: "poliza_requires_agent",
+					Attrs:  map[string]interface{}{"category": category},
+				})
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithContext("client_type", label).
+				WithContext("entity_category", category).
+				WithText("Las citas con *póliza de seguro o SOAT* requieren coordinación especial con nuestra área de seguros. Te voy a comunicar con uno de nuestros agentes para ayudarte. 🙏").
+				WithEvent("poliza_category_escalated", map[string]interface{}{"category": category}), nil
+		}
+
 		// EPS entities require the régimen (contributivo/subsidiado) before the
 		// entity list, since it selects the contract tariff. Ask it first.
 		if category == "EPS" {
@@ -373,6 +390,22 @@ func askEntityNumberHandler(entityRepo repository.EntityRepository) sm.StateHand
 				WithContext("selected_entity_name", entityName).
 				WithContext(sm.CtxEscalationReason, sm.EscalationReasonParticularLiga).
 				WithEvent("particular_liga_escalated", map[string]interface{}{"code": entityCode, "name": entityName}), nil
+		}
+
+		// SOAT: las citas con SOAT requieren gestión manual (autorización y facturación especial).
+		if strings.Contains(strings.ToUpper(entityName), "SOAT") {
+			slog.Info("entity_number: entidad SOAT detectada, escalando a agente", "phone", sess.PhoneNumber, "entity", entityName)
+			observability.Emit(observability.TraceSession(sess.ID), "entidad", "soat_escalated",
+				observability.EmitOpts{
+					Phone:  sess.PhoneNumber,
+					Reason: "soat_requires_agent",
+					Attrs:  map[string]interface{}{"entity_code": entityCode, "entity_name": entityName},
+				})
+			return sm.NewResult(sm.StateEscalateToAgent).
+				WithContext("selected_entity_code", entityCode).
+				WithContext("selected_entity_name", entityName).
+				WithText("Las citas con *SOAT* requieren gestión especial. Te voy a comunicar con uno de nuestros agentes para ayudarte. 🙏").
+				WithEvent("soat_entity_escalated", map[string]interface{}{"entity_code": entityCode, "entity_name": entityName}), nil
 		}
 
 		observability.Emit(observability.TraceSession(sess.ID), "entidad", "entity_selected",

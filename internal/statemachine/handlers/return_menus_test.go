@@ -29,7 +29,7 @@ func returnMenuMachine() *sm.Machine {
 	m := sm.NewMachine()
 	RegisterGreetingHandlers(m, sampleConfig(), nil)
 	RegisterIdentificationHandlers(m, nil)
-	RegisterMedicalOrderHandlers(m, nil, nil, nil, nil, nil)
+	RegisterMedicalOrderHandlers(m, nil, nil, nil, nil, nil, nil)
 	RegisterAppointmentHandlers(m, nil, nil, nil, nil)
 	RegisterSlotHandlers(m, nil, nil, nil, nil, nil, nil, nil, nil)
 	// Los registros de estos handlers no tocan sus dependencias: se pasan nil.
