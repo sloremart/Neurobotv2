@@ -140,12 +140,16 @@ func RegisterResultsFlowHandlers(m *sm.Machine, cfg *config.Config, patients rep
 	m.Register(sm.StateResultsStart, gate(resultsStartHandler(cfg, attempts)))
 
 	m.Register(sm.StateResultsAskDocType, gate(resultsDocTypeHandler()))
+	// La config declarativa queda registrada (el campo del agente aplica su TextValidate), pero el
+	// handler se re-registra con el gate PRIMERO: el validador del envoltorio correría antes que el
+	// gate y una sesión huérfana recibiría el reintento facturable en vez del enlace.
 	m.RegisterWithConfig(sm.StateResultsAskDocNumber, sm.HandlerConfig{
 		InputType:    sm.InputText,
 		TextValidate: validators.Document,
-		ErrorMsg:     "Por favor ingresa un número de documento válido (solo números, entre 5 y 15 dígitos).",
-		Handler:      gate(resultsDocNumberHandler(cfg, attempts)),
+		ErrorMsg:     resultsDocNumberError,
+		Handler:      resultsDocNumberHandler(cfg, attempts),
 	})
+	m.Register(sm.StateResultsAskDocNumber, gate(resultsDocNumberValidated(resultsDocNumberHandler(cfg, attempts))))
 	m.Register(sm.StateResultsAskBirthDate, gate(resultsBirthDateHandler(cfg, patients, attempts)))
 	// Pasos escalables: el agente reanuda (el paso vuelve a preguntar) o vuelve al menú.
 	for _, step := range []string{sm.StateResultsAskDocType, sm.StateResultsAskDocNumber, sm.StateResultsAskBirthDate} {
@@ -193,7 +197,25 @@ func resultsDocTypeHandler() sm.StateHandler {
 	}
 }
 
-// RESULTS_ASK_DOC_NUMBER (interactivo; validación declarativa) — guarda el número y su hash, y no
+// resultsDocNumberError es el reintento del número de documento inválido.
+const resultsDocNumberError = "Por favor ingresa un número de documento válido (solo números, entre 5 y 15 dígitos)."
+
+// resultsDocNumberValidated valida el número igual que el envoltorio declarativo (recorta, un
+// disparador interno no vale) pero DENTRO del gate, que ya decidió que el flujo sigue vivo.
+func resultsDocNumberValidated(next sm.StateHandler) sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		input := strings.TrimSpace(msg.Text)
+		if sm.IsReservedKeyword(input) {
+			input = ""
+		}
+		if retry := sm.ValidateWithRetry(sess, input, validators.Document, resultsDocNumberError); retry != nil {
+			return retry, nil
+		}
+		return next(ctx, sess, msg)
+	}
+}
+
+// RESULTS_ASK_DOC_NUMBER (interactivo; validación en resultsDocNumberValidated) — guarda el número y su hash, y no
 // pide la fecha si el documento ya está bloqueado.
 func resultsDocNumberHandler(cfg *config.Config, attempts resultsAttempts) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
@@ -299,6 +321,15 @@ func resultsRestart() *sm.StateResult {
 	return sm.NewResult(sm.StateResultsAskDocType).
 		WithClearCtx(ctxResultsDocType, ctxResultsDoc, ctxResultsDocHash).
 		WithText(docTypeMenuText())
+}
+
+// resultsContextLost reinicia la verificación cuando se perdió el contexto del flujo (p. ej. la
+// escalación lo borró por privacidad y el agente reanuda): no cuenta intento ni manda al portal.
+func resultsContextLost() *sm.StateResult {
+	return sm.NewResult(sm.StateResultsAskDocType).
+		WithClearCtx(resultsFlowKeys...).
+		WithText("Por seguridad, volvamos a verificar tus datos.\n\n"+docTypeMenuText()).
+		WithEvent("results_restarted", map[string]interface{}{"reason": "context_lost"})
 }
 
 // RESULTS_LOOKUP (automático) — consulta la API de resultados con el documento verificado y deja
@@ -407,8 +438,8 @@ func resultsListHandler(cfg *config.Config) sm.StateHandler {
 	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		studies := resultsStoredStudies(sess)
 		if len(studies) == 0 {
-			// La lista ya no está (no debería pasar): el portal, sin más.
-			return resultsSendFallback(cfg, "list_lost"), nil
+			// La lista ya no está (la escalación borró el flujo): se verifica de nuevo.
+			return resultsContextLost(), nil
 		}
 		// Retorno sin dato del agente: se repite la lista, no el aviso de error.
 		if sm.IsAgentResumeTurn(sess) {
@@ -495,6 +526,9 @@ func resultsUploadReason(err error) string {
 func resultsSendHandler(cfg *config.Config, searcher resultsSearcher, sender resultsSender, budget time.Duration) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
 		studies := resultsStoredStudies(sess)
+		if len(studies) == 0 {
+			return resultsContextLost(), nil
+		}
 		choice, convErr := strconv.Atoi(sess.GetContext(ctxResultsChoice))
 		if convErr != nil || choice < 0 || choice >= len(studies) {
 			return resultsSendFallback(cfg, "list_lost"), nil

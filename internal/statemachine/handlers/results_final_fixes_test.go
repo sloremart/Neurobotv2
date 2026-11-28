@@ -196,3 +196,42 @@ func TestResultsSend_NonPDFIsNotUploaded(t *testing.T) {
 		t.Fatalf("evento: %v %v", data, ok)
 	}
 }
+
+// Tras una escalación el flujo queda sin lista: «Reanudar» reinicia la verificación con un texto
+// honesto, sin intento, sin envío y sin el evento del portal.
+func TestResults_ListResumeAfterEscalationRestartsVerification(t *testing.T) {
+	rig := newResultsRig()
+	sess := nectarResultsSess(sm.StateResultsList)
+	sess.Context[sm.CtxAgentResumeTurn] = "1"
+	r := step(t, rig.m, sess, textM("__resume__"))
+	if r.NextState != sm.StateResultsAskDocType {
+		t.Fatalf("NextState = %s", r.NextState)
+	}
+	if got := texts(r); len(got) != 1 || got[0] != "Por seguridad, volvamos a verificar tus datos.\n\n"+docTypeMenuText() {
+		t.Fatalf("texto = %q", got)
+	}
+	if _, ok := eventData(r, "results_fallback_link"); ok {
+		t.Fatal("no debe emitir results_fallback_link")
+	}
+	if ev, ok := eventData(r, "results_restarted"); !ok || ev["reason"] != "context_lost" {
+		t.Fatalf("results_restarted = %v", ev)
+	}
+	if len(rig.sendLog.log) != 0 || len(rig.calls.log) != 0 {
+		t.Fatalf("sin envíos ni intentos: %v %v", rig.sendLog.log, rig.calls.log)
+	}
+}
+
+// Una sesión huérfana (función apagada) con texto no numérico en RESULTS_ASK_DOC_NUMBER recibe el
+// enlace, no el reintento del validador.
+func TestResults_DocNumberGateRunsBeforeValidator(t *testing.T) {
+	cfg := resultsCfg()
+	m := sm.NewMachine()
+	RegisterResultsFlowHandlers(m, cfg, nil, nil, nil, nil)
+	r, err := m.Process(context.Background(), nectarResultsSess(sm.StateResultsAskDocNumber), textM("hola"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.NextState != sm.StateShowResults || len(texts(r)) != 0 {
+		t.Fatalf("NextState = %s, textos %q", r.NextState, texts(r))
+	}
+}
