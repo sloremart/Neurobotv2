@@ -59,7 +59,9 @@ type Client struct {
 	serviceKey    string
 	requestSecret string
 	http          *http.Client
-	now           func() time.Time
+	// uploadHTTP es el cliente de la subida de adjuntos (plazo propio, más largo); nil = el de siempre.
+	uploadHTTP *http.Client
+	now        func() time.Time
 	// sleep es la espera entre reintentos de la apertura (503 con Retry-After). Inyectable para
 	// que las pruebas no duerman; respeta el contexto.
 	sleep func(ctx context.Context, d time.Duration) error
@@ -88,6 +90,10 @@ const MaxSendRetryAfter = 60 * time.Second
 // requestTimeout es lo que puede tardar una llamada a Néctar: el tope de cada intento de envío.
 const requestTimeout = 15 * time.Second
 
+// uploadTimeout es el tope de cada intento de subida de un adjunto (hasta 16 MiB): más largo que el
+// de una llamada normal, que no cambia. Lo acota además el ctx de quien llama.
+const uploadTimeout = 40 * time.Second
+
 // MaxSendRetryLife es lo más que puede durar un envío con sus reintentos: las esperas al tope y un
 // intento completo tras cada una, más el primero.
 const MaxSendRetryLife = MaxSendRetries*MaxSendRetryAfter + (MaxSendRetries+1)*requestTimeout
@@ -105,6 +111,7 @@ func NewClient(baseURL, serviceKey, requestSecret string) *Client {
 		serviceKey:    serviceKey,
 		requestSecret: requestSecret,
 		http:          &http.Client{Timeout: requestTimeout, CheckRedirect: noRedirects},
+		uploadHTTP:    &http.Client{Timeout: uploadTimeout, CheckRedirect: noRedirects},
 		now:           time.Now,
 		sleep:         sleepCtx,
 	}
@@ -600,8 +607,19 @@ func (c *Client) exchangeWithHeaders(ctx context.Context, method, path string, i
 func (c *Client) exchangeRaw(ctx context.Context, method, path string, body []byte, contentType string,
 	headers map[string]string,
 ) (reply, error) {
+	return c.exchangeVia(ctx, nil, method, path, body, contentType, headers)
+}
+
+// exchangeVia es exchangeRaw con el cliente HTTP a usar (la subida lleva el suyo, con otro plazo);
+// hc nil = el de siempre.
+func (c *Client) exchangeVia(ctx context.Context, hc *http.Client, method, path string, body []byte, contentType string,
+	headers map[string]string,
+) (reply, error) {
 	if !c.Configured() {
 		return reply{}, ErrNotConfiguredAPI
+	}
+	if hc == nil {
+		hc = c.http
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -618,7 +636,7 @@ func (c *Client) exchangeRaw(ctx context.Context, method, path string, body []by
 	SignRequest(req, c.requestSecret, c.now(), body)
 
 	started := time.Now()
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		if !abandonedByTurn(ctx) {
 			c.reportDown(ctx, transportClass(err))

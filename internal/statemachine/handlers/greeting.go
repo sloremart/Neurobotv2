@@ -263,6 +263,12 @@ func outOfHoursMenuHandler(cfg *config.Config, locationRepo LocationReader) sm.S
 
 		switch selected {
 		case "ooh_resultados":
+			// Los resultados no dependen del horario: con la función encendida entra al mismo flujo
+			// que el menú principal.
+			if resultsFeatureOn(cfg, sess) {
+				return sm.NewResult(sm.StateResultsStart).
+					WithEvent("ooh_results_flow", nil), nil
+			}
 			text := "Ingresa a nuestra página: https://neuroelectrodx.com/\n\n" +
 				"En el siguiente video encontrarás el paso a paso para descargar tus resultados.\n" +
 				"https://www.youtube.com/watch?v=kEx51t6OlyQ"

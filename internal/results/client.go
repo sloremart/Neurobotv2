@@ -44,11 +44,16 @@ func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL:         strings.TrimRight(baseURL, "/"),
 		apiKey:          apiKey,
-		http:            &http.Client{},
+		http:            &http.Client{CheckRedirect: noRedirects},
 		searchTimeout:   searchTimeout,
 		downloadTimeout: downloadTimeout,
 	}
 }
+
+// noRedirects devuelve el 3xx tal cual: seguirlo reenviaría X-API-Key a otro anfitrión (Go solo
+// quita Authorization y Cookie) y podría servir un PDF de una URL sin validar. El 3xx cae en el
+// manejo de «código fuera de lo esperado» (error, nunca datos).
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 type studyJSON struct {
 	Name      string `json:"nombre"`

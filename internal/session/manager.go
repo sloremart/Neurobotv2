@@ -514,6 +514,10 @@ func (m *SessionManager) checkInactiveSession(ctx context.Context, deps Inactivi
 			slog.Error("inactivity close failed", "session_id", s.ID, "error", err)
 			return
 		}
+		// Privacidad: el documento y los estudios del flujo de resultados no quedan en una sesión cerrada.
+		if err := m.repo.ClearContext(ctx, s.ID, ResultsFlowKeys...); err != nil {
+			slog.Warn("clear results context on inactivity close failed", "session_id", s.ID, "error", err)
+		}
 		if s.ConversationID != "" {
 			_ = deps.BirdClient.CloseFeedItems(s.PhoneNumber, s.ConversationID)
 		}

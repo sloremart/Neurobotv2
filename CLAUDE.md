@@ -628,10 +628,11 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   y `NECTAR_TEAM_BY_GROUP` acepta además `siau:<id>` (`NectarGroupSIAU`; no es un grupo de CUPS, `SuggestedTeamForCups` no lo usa;
   grupo desconocido sigue tumbando el arranque).
 - Bandera (`resultsFeatureOn`): «Resultados de estudios» entra al flujo nuevo SOLO con `RESULTS_API_URL` + `RESULTS_PDF_ENABLED=true` + sesión de
-  Néctar (`nectar:*`); si falta cualquiera, el enlace de siempre (`SHOW_RESULTS`/`RESULTS_URL`). Con los valores por defecto nada cambia.
+  Néctar (`nectar:*`); si falta cualquiera, el enlace de siempre (`SHOW_RESULTS`/`RESULTS_URL`). Con los valores por defecto el flujo de resultados no cambia (el menú sí gana la fila SIAU). Los handlers `RESULTS_*` se registran SIEMPRE y cada paso re-revisa la bandera (`resultsGated`): una sesión huérfana en un paso `RESULTS_*` (función apagada después, sesión de Bird, sin cliente) recibe el enlace de siempre sin ningún envío facturable.
 - Menú principal: 8 filas (7 sin `IMAGING_RESULTS_URL`): «Resultados estudios» (`resultados`), «Resultados imágenes» (`imagenes`, solo con URL;
   `SHOW_IMAGING` envía el enlace y cierra) y «Atención al usuario» (`siau`). El menú fuera de horario también ofrece resultados e imágenes
-  (`ooh_resultados`, `ooh_imagenes`; los resultados no dependen del horario). Títulos de fila ≤ 24 caracteres (WhatsApp rechaza más;
+  (`ooh_resultados`, `ooh_imagenes`; los resultados no dependen del horario): `ooh_resultados` entra al mismo flujo (`RESULTS_START`) con la
+  bandera encendida y, si no, manda el enlace. Títulos de fila ≤ 24 caracteres (WhatsApp rechaza más;
   lo impone un test en `greeting_test.go`). Los menús del agente (`RegisterStaticReturnMenu`) siguen las mismas filas.
 - Verificación (`handlers/results_flow.go`): `RESULTS_START` (mira el tope del teléfono) → tipo de documento → número (ya bloqueado: no
   pide fecha) → fecha de nacimiento, contra `FindByDocument` de SIESA, comparando solo la fecha. Paciente inexistente y fecha distinta dan
@@ -647,16 +648,16 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   verifica sin tope). Eventos sin PII: `results_verification_failed` (solo `attempt`), `results_verified`, `results_fallback_link`
   (`locked`, `siesa_down`, `attempts_down`…).
 - Lista y envío: `RESULTS_LOOKUP` busca por número en la API (`internal/results`: 400 y 404 = vacío, error = «sin resultados»; búsqueda 10 s,
-  descarga 20 s, PDF ≤ 16 MiB, valida que el archivo sea PDF). Filtra por nombre ANTES de listar (`results.NameMatches`: primer nombre y
+  descarga 20 s, PDF ≤ 16 MiB; no sigue redirecciones: un 3xx es error y `X-API-Key` no sale del anfitrión). Filtra por nombre ANTES de listar (`results.NameMatches`: primer nombre y
   primer apellido de SIESA como palabras completas; el mismo número con otro tipo de documento es otra persona) y ordena/deduplica
   (`SortAndDedupe`); sin coincidencias da el mismo texto que sin resultados (solo cambia el evento `results_name_mismatch`). Máx. 10 más
   recientes (si hay más, enlace al portal para los anteriores); 1 → se envía directo; varios → lista (`result_N`, título = tipo de estudio ≤24).
   `RESULTS_SEND`: texto de espera directo, baja el PDF a memoria y lo envía por Néctar (`bird.Client.SendDocumentCtx` → `Bridge.SendDocument`:
   `POST /api/bot/uploads` multipart con clave determinista UUID v5 de conversación+nombre+SHA-256, luego mensaje `type=attachment`, contrato
-  del lote 11a; 503 con Retry-After ≤30 s se reintenta una vez), con presupuesto de turno de 45 s (`resultsSendBudget`). Cualquier falla
+  del lote 11a; el 503 con Retry-After ≤30 s se reintenta una vez, solo la subida; esta lleva su propio plazo de 40 s, el resto de las llamadas a Néctar siguen en 15 s; antes de subir, el bot exige que los bytes empiecen por `%PDF`, si no cierra con `results_fallback_link` reason `not_pdf`), con presupuesto de turno de 45 s (`resultsSendBudget`). Cualquier falla
   (descarga, 413/415, `attachment_unavailable`, ventana cerrada, plazo, Bird sin soporte de adjuntos) cierra con el enlace al portal y
   `results_fallback_link` con el motivo; un fallo en duda no se reintenta en el turno. Al terminar (envío o fallback) se borra todo el
-  contexto del flujo (`resultsFlowKeys`). El PDF vive solo en memoria; nunca van a logs ni a `chat_events` el documento, la fecha, el
+  contexto del flujo (`resultsFlowKeys`, que vive en `session.ResultsFlowKeys`); también se borra al escalar (`escalationExit`), al cerrar la sesión (`TERMINATED`) y en el cierre por inactividad. El PDF vive solo en memoria; nunca van a logs ni a `chat_events` el documento, la fecha, el
   nombre, `archivo` ni el contenido (`results_sent` solo lleva el tipo de estudio).
 - SIAU: la opción escala con motivo `siau` (`EscalationReasonSIAU`), que SÍ suma al tope de 3 escalaciones (pedido por el paciente, como pedir
   asesor), y la escalación a Néctar sugiere el equipo `siau` de `NECTAR_TEAM_BY_GROUP` (`SuggestedTeamForSIAU`; sin la clave, sin equipo sugerido).

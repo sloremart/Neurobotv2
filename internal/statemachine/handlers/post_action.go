@@ -155,7 +155,9 @@ func farewellHandler() sm.StateHandler {
 func terminatedHandler() sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		sess.Status = session.StatusCompleted
+		// Fin de sesión: los datos del flujo de resultados no se quedan en ella.
 		return sm.NewResult(sm.StateTerminated).
+			WithClearCtx(resultsFlowKeys...).
 			WithEvent("session_completed", nil), nil
 	}
 }

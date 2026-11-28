@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,20 +33,18 @@ import (
 // salir del flujo. results_studies guarda solo los estudios listados (ya filtrados por nombre) y
 // results_choice el índice del elegido.
 const (
-	ctxResultsDocType      = "results_doc_type"
-	ctxResultsDoc          = "results_doc"
-	ctxResultsDocHash      = "results_doc_hash"
-	ctxResultsFirstName    = "results_first_name"
-	ctxResultsFirstSurname = "results_first_surname"
-	ctxResultsStudies      = "results_studies"
-	ctxResultsChoice       = "results_choice"
+	ctxResultsDocType      = session.CtxResultsDocType
+	ctxResultsDoc          = session.CtxResultsDoc
+	ctxResultsDocHash      = session.CtxResultsDocHash
+	ctxResultsFirstName    = session.CtxResultsFirstName
+	ctxResultsFirstSurname = session.CtxResultsFirstSurname
+	ctxResultsStudies      = session.CtxResultsStudies
+	ctxResultsChoice       = session.CtxResultsChoice
 )
 
-// resultsFlowKeys son todas las claves del flujo: se borran al salir de él.
-var resultsFlowKeys = []string{
-	ctxResultsDocType, ctxResultsDoc, ctxResultsDocHash,
-	ctxResultsFirstName, ctxResultsFirstSurname, ctxResultsStudies, ctxResultsChoice,
-}
+// resultsFlowKeys son todas las claves del flujo: se borran al salir de él, al escalar y al cerrar
+// la sesión (la lista vive en session porque el cierre por inactividad también la usa).
+var resultsFlowKeys = session.ResultsFlowKeys
 
 // resultsSearcher es la API de resultados (results.Client).
 type resultsSearcher interface {
@@ -80,12 +79,13 @@ func resultsPhone(sess *session.Session) string {
 const resultsMismatchText = "Los datos no coinciden. Volvamos a intentarlo.\n\n"
 
 func resultsLockedText(cfg *config.Config) string {
-	return "Por seguridad, la consulta está bloqueada por hoy. Puedes consultar tus resultados en " +
-		cfg.ResultsURL + " o escribir *menú* y elegir Atención al usuario (SIAU)."
+	return "Por seguridad, la consulta está bloqueada por hoy. " +
+		resultsPortalText(cfg, "Puedes consultar tus resultados en %s o escribir *menú* y elegir Atención al usuario (SIAU).")
 }
 
 func resultsUnavailableText(cfg *config.Config) string {
-	return "No pude verificar tus datos en este momento. 🙏 Puedes consultar tus resultados en " + cfg.ResultsURL
+	return "No pude verificar tus datos en este momento. 🙏 " +
+		resultsPortalText(cfg, "Puedes consultar tus resultados en %s")
 }
 
 // resultsMaxAttempts es el tope de fallos de verificación (el mismo del repo del tope).
@@ -111,32 +111,49 @@ func resultsBackToMenu() sm.ReturnOption {
 	return sm.ReturnOption{Label: "Volver al menú", Value: "results_menu", Target: sm.StateMainMenu, Clear: resultsFlowKeys}
 }
 
+// resultsGated envuelve el handler de un paso del flujo: si la función ya no está encendida (sin
+// URL, bandera apagada, sesión de Bird) o falta el cliente o el tope, no ejecuta el paso, que no
+// debe tocar nada ni enviar nada facturable, y manda el enlace de siempre. Cubre las sesiones que
+// quedaron en un paso RESULTS_* antes de apagar la función o que cambiaron de canal.
+func resultsGated(cfg *config.Config, enabled bool, h sm.StateHandler) sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		if !enabled || !resultsFeatureOn(cfg, sess) {
+			return sm.NewResult(sm.StateShowResults).WithClearCtx(resultsFlowKeys...), nil
+		}
+		return h(ctx, sess, msg)
+	}
+}
+
 // RegisterResultsFlowHandlers registra la verificación de «Resultados de estudios», la lista y el
-// envío del PDF. patients nil se trata como SIESA caída (enlace al portal).
+// envío del PDF. Se registra SIEMPRE (una sesión huérfana en un paso RESULTS_* no debe quedar sin
+// handler): con la función apagada cada paso manda el enlace de siempre. patients nil se trata
+// como SIESA caída (enlace al portal); searcher o attempts nil = función apagada.
 func RegisterResultsFlowHandlers(m *sm.Machine, cfg *config.Config, patients repository.PatientRepository,
 	searcher resultsSearcher, sender resultsSender, attempts resultsAttempts,
 ) {
-	m.Register(sm.StateResultsStart, resultsStartHandler(cfg, attempts))
+	on := searcher != nil && attempts != nil
+	gate := func(h sm.StateHandler) sm.StateHandler { return resultsGated(cfg, on, h) }
+	m.Register(sm.StateResultsStart, gate(resultsStartHandler(cfg, attempts)))
 
-	m.Register(sm.StateResultsAskDocType, resultsDocTypeHandler())
+	m.Register(sm.StateResultsAskDocType, gate(resultsDocTypeHandler()))
 	m.RegisterWithConfig(sm.StateResultsAskDocNumber, sm.HandlerConfig{
 		InputType:    sm.InputText,
 		TextValidate: validators.Document,
 		ErrorMsg:     "Por favor ingresa un número de documento válido (solo números, entre 5 y 15 dígitos).",
-		Handler:      resultsDocNumberHandler(cfg, attempts),
+		Handler:      gate(resultsDocNumberHandler(cfg, attempts)),
 	})
-	m.Register(sm.StateResultsAskBirthDate, resultsBirthDateHandler(cfg, patients, attempts))
+	m.Register(sm.StateResultsAskBirthDate, gate(resultsBirthDateHandler(cfg, patients, attempts)))
 	// Pasos escalables: el agente reanuda (el paso vuelve a preguntar) o vuelve al menú.
 	for _, step := range []string{sm.StateResultsAskDocType, sm.StateResultsAskDocNumber, sm.StateResultsAskBirthDate} {
 		sm.RegisterResumeLabel(step, "Reanudar")
 		sm.RegisterStaticReturnMenu(step, resultsBackToMenu())
 	}
 
-	m.Register(sm.StateResultsLookup, resultsLookupHandler(cfg, searcher))
-	m.Register(sm.StateResultsList, resultsListHandler(cfg))
+	m.Register(sm.StateResultsLookup, gate(resultsLookupHandler(cfg, searcher)))
+	m.Register(sm.StateResultsList, gate(resultsListHandler(cfg)))
 	// La lista se resuelve eligiendo: el agente reanuda (se repite la lista) o vuelve al menú.
 	sm.RegisterStaticReturnMenu(sm.StateResultsList, resultsBackToMenu())
-	m.Register(sm.StateResultsSend, resultsSendHandler(cfg, searcher, sender, resultsSendBudget))
+	m.Register(sm.StateResultsSend, gate(resultsSendHandler(cfg, searcher, sender, resultsSendBudget)))
 }
 
 // RESULTS_START (automático) — revisa el tope del teléfono antes de pedir nada.
@@ -323,7 +340,7 @@ func resultsLookupHandler(cfg *config.Config, searcher resultsSearcher) sm.State
 			WithClearCtx(ctxResultsDoc).
 			WithContext(ctxResultsStudies, string(raw))
 		if len(matching) > resultsListMax {
-			r.WithText("Para resultados anteriores ingresa a " + cfg.ResultsURL)
+			r.WithText(resultsPortalText(cfg, "Para resultados anteriores ingresa a %s"))
 		}
 		return r, nil
 	}
@@ -335,7 +352,7 @@ const resultsListMax = 10
 // resultsNoneText es el mensaje de n8n cuando no hay resultados (o ninguno es del paciente).
 func resultsNoneText(cfg *config.Config) string {
 	return "No encontramos resultados para ese documento. 🔍\nPuede que aún no estén disponibles; intenta mañana.\n\n" +
-		"También puedes consultarlos en " + cfg.ResultsURL
+		resultsPortalText(cfg, "También puedes consultarlos en %s")
 }
 
 // resultsNoneResult cierra sin resultados. El sin-coincidencia de nombre da el mismo texto que el
@@ -424,7 +441,8 @@ const (
 )
 
 func resultsSendFailedText(cfg *config.Config) string {
-	return "No pude enviarte el archivo en este momento. 🙏 Puedes descargarlo en " + cfg.ResultsURL
+	return "No pude enviarte el archivo en este momento. 🙏 " +
+		resultsPortalText(cfg, "Puedes descargarlo en %s")
 }
 
 // resultsSendFallback cierra el envío fallido con el enlace al portal y borra el contexto.
@@ -498,6 +516,10 @@ func resultsSendHandler(cfg *config.Config, searcher resultsSearcher, sender res
 		if err != nil {
 			slog.Warn("results_download_failed", "error", err)
 			return resultsSendFallback(cfg, resultsDownloadReason(err)), nil
+		}
+		// Guarda barata: no se sube lo que no es un PDF (Néctar lo rechazaría con 415 tras subirlo).
+		if !bytes.HasPrefix(data, []byte("%PDF")) {
+			return resultsSendFallback(cfg, "not_pdf"), nil
 		}
 		if _, err := sender.SendDocumentCtx(sendCtx, sess.PhoneNumber, resultsFilename(study),
 			data, resultsCaption(firstName, study.StudyType)); err != nil {

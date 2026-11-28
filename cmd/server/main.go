@@ -264,16 +264,22 @@ func main() {
 	// Fase 5: Saludo e Identificación + Results/Locations
 	handlers.RegisterGreetingHandlers(machine, cfg, locationRepo)
 	handlers.RegisterResultsAndLocationHandlers(machine, cfg, locationRepo)
-	// Resultados de estudios (verificación + PDF): solo con la API configurada, que es también la
-	// condición de resultsFeatureOn. Sin SIESA (patients nil) la verificación manda el portal.
-	if cfg.ResultsAPIURL != "" {
-		var patients repository.PatientRepository
-		if repos != nil {
-			patients = repos.Patient
-		}
-		handlers.RegisterResultsFlowHandlers(machine, cfg, patients,
-			results.NewClient(cfg.ResultsAPIURL, cfg.ResultsAPIKey), birdClient, localrepo.NewResultsAttemptsRepo(localDB))
+	// Resultados de estudios (verificación + PDF): los handlers se registran SIEMPRE, para que una
+	// sesión que quedó en un paso RESULTS_* no encuentre «no handler registered»; sin la API
+	// configurada (cliente nil) cada paso manda el enlace de siempre. Sin SIESA (patients nil) la
+	// verificación manda el portal.
+	var patients repository.PatientRepository
+	if repos != nil {
+		patients = repos.Patient
 	}
+	var resultsClient interface {
+		Search(ctx context.Context, documentNumber string) ([]results.Study, error)
+		DownloadPDF(ctx context.Context, file string) ([]byte, error)
+	}
+	if cfg.ResultsAPIURL != "" {
+		resultsClient = results.NewClient(cfg.ResultsAPIURL, cfg.ResultsAPIKey)
+	}
+	handlers.RegisterResultsFlowHandlers(machine, cfg, patients, resultsClient, birdClient, localrepo.NewResultsAttemptsRepo(localDB))
 	if patientSvc != nil {
 		handlers.RegisterIdentificationHandlers(machine, patientSvc)
 	}

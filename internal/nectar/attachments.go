@@ -47,14 +47,19 @@ type attachmentRef struct {
 // Upload sube un archivo a POST /api/bot/uploads (multipart: idempotency_key, filename, file). Con la
 // misma clave y el mismo contenido Néctar contesta lo mismo (200); con otro contenido, 409
 // idempotency_key_reused. Un 503 con Retry-After se reintenta UNA vez tras esa espera, con la misma
-// clave. El cuerpo se serializa antes y la firma cubre esos bytes exactos.
+// clave (este reintento es solo de la subida, no del envío). Lleva su propio plazo (uploadTimeout). El cuerpo se serializa antes y la firma cubre esos bytes exactos.
 func (c *Client) Upload(ctx context.Context, idempotencyKey, filename string, data []byte) (Attachment, error) {
 	body, contentType, err := multipartBody(idempotencyKey, filename, data)
 	if err != nil {
 		return Attachment{}, err
 	}
 	const path = "/api/bot/uploads"
-	resp, err := c.exchangeRaw(ctx, http.MethodPost, path, body, contentType, nil)
+	// Cliente propio de la subida (nil = el de siempre; con c nil falla cerrado en exchangeVia).
+	var hc *http.Client
+	if c != nil {
+		hc = c.uploadHTTP
+	}
+	resp, err := c.exchangeVia(ctx, hc, http.MethodPost, path, body, contentType, nil)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -64,7 +69,7 @@ func (c *Client) Upload(ctx context.Context, idempotencyKey, filename string, da
 			if err := c.sleep(ctx, wait); err != nil {
 				return Attachment{}, err
 			}
-			if resp, err = c.exchangeRaw(ctx, http.MethodPost, path, body, contentType, nil); err != nil {
+			if resp, err = c.exchangeVia(ctx, hc, http.MethodPost, path, body, contentType, nil); err != nil {
 				return Attachment{}, err
 			}
 		}

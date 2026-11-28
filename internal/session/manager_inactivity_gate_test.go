@@ -139,3 +139,25 @@ func TestInactivityClose_UnchangedForMenuStates(t *testing.T) {
 		t.Errorf("el cierre es silencioso, hubo %d envíos", birdMock.sentCount())
 	}
 }
+
+// Al cerrar por inactividad se borran los datos del flujo de resultados.
+func TestInactivityClose_ClearsResultsFlowKeys(t *testing.T) {
+	var cleared []string
+	repo := &mockRepo{}
+	repo.findInactiveFn = func(_ context.Context, _ int) ([]InactiveSession, error) {
+		s := inactiveSess("s-results", "RESULTS_ASK_BIRTH_DATE", 200)
+		s.Reminders = 1
+		return []InactiveSession{s}, nil
+	}
+	repo.clearContextFn = func(_ context.Context, _ string, keys ...string) error {
+		cleared = append(cleared, keys...)
+		return nil
+	}
+	m := NewSessionManager(repo, 30)
+	m.checkInactiveSessions(context.Background(), InactivityDeps{
+		BirdClient: &inactivityBirdMock{}, ReminderMin: 10, CloseMin: 30,
+	})
+	if len(cleared) != len(ResultsFlowKeys) {
+		t.Fatalf("claves borradas: %v, quiero %v", cleared, ResultsFlowKeys)
+	}
+}

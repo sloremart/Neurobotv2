@@ -406,3 +406,32 @@ func TestUpload_404IsNotNotMine(t *testing.T) {
 		t.Fatalf("un 404 de la subida no es «ya no es mía»: %v", err)
 	}
 }
+
+// La subida lleva su propio plazo (más largo); el del resto de las llamadas no cambia.
+func TestUpload_HasItsOwnLongerTimeout(t *testing.T) {
+	c := NewClient("http://nectar.test", svcKey, reqSecret)
+	if c.http.Timeout != requestTimeout {
+		t.Errorf("el plazo normal cambió: %v", c.http.Timeout)
+	}
+	if c.uploadHTTP == nil || c.uploadHTTP.Timeout != uploadTimeout || uploadTimeout <= requestTimeout {
+		t.Errorf("plazo de subida: %+v (uploadTimeout=%v)", c.uploadHTTP, uploadTimeout)
+	}
+	if c.uploadHTTP.CheckRedirect == nil {
+		t.Error("la subida debe seguir sin seguir redirecciones")
+	}
+
+	// Comportamiento: una subida lenta pasa con su plazo aunque el normal ya habría vencido.
+	s := newAttStub(t, func(path string, attempt int, w http.ResponseWriter) {
+		time.Sleep(300 * time.Millisecond)
+		uploadOK(path, attempt, w)
+	})
+	cl := s.client()
+	cl.http.Timeout = 50 * time.Millisecond
+	cl.uploadHTTP.Timeout = 5 * time.Second
+	if _, err := cl.Upload(context.Background(), "k", "r.pdf", []byte("%PDF")); err != nil {
+		t.Fatalf("la subida debía usar su plazo: %v", err)
+	}
+	if _, err := cl.GetState(context.Background(), 1); err == nil {
+		t.Error("el resto de las llamadas sigue con el plazo corto")
+	}
+}

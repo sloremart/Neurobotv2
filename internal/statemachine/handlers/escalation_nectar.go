@@ -167,7 +167,9 @@ func escalationExit(r *sm.StateResult) *sm.StateResult {
 	}
 	return r.WithClearCtx(sm.CtxAgentInputRejection, sm.CtxPatientAskedForAgent, sm.CtxEscalationReason,
 		sm.CtxEscalationLastInput, sm.CtxEscalationWaitingListID, sm.CtxOCRFailureCause, sm.CtxOCRUnreadNames,
-		sm.CtxOCRFailedReads, sm.CtxEscalationCapped)
+		sm.CtxOCRFailedReads, sm.CtxEscalationCapped).
+		// Datos personales del flujo de resultados: no deben sobrevivir a una escalación.
+		WithClearCtx(resultsFlowKeys...)
 }
 
 // escalationDiverted es escalationExit para las salidas en que la escalación NO llegó a un agente

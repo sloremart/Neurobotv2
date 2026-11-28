@@ -24,17 +24,24 @@ func RegisterResultsAndLocationHandlers(m *sm.Machine, cfg *config.Config, locat
 	m.Register(sm.StateShowLocations, showLocationsHandler(locationRepo))
 }
 
+// resultsNoPortalText es lo que se dice cuando no hay RESULTS_URL: sin enlace que dar.
+const resultsNoPortalText = "Para consultar tus resultados médicos, por favor comunícate con nuestra línea de atención o acércate a nuestras instalaciones."
+
+// resultsPortalText arma un texto con el enlace al portal (format lleva un %s para la URL); sin
+// RESULTS_URL da el mismo texto de siempre sin enlace, nunca una frase cortada en «…en ».
+func resultsPortalText(cfg *config.Config, format string) string {
+	if cfg.ResultsURL == "" {
+		return resultsNoPortalText
+	}
+	return fmt.Sprintf(format, cfg.ResultsURL)
+}
+
 // SHOW_RESULTS (automático) — muestra enlace para consultar resultados + video instructivo.
 func showResultsHandler(cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
-		var text string
-		if cfg.ResultsURL != "" {
-			text = fmt.Sprintf("Ingresa a nuestra página: %s", cfg.ResultsURL)
-			if cfg.ResultsVideoURL != "" {
-				text += fmt.Sprintf("\n\nEn el siguiente video encontrarás el paso a paso para descargar tus resultados. 👇\n%s", cfg.ResultsVideoURL)
-			}
-		} else {
-			text = "Para consultar tus resultados médicos, por favor comunícate con nuestra línea de atención o acércate a nuestras instalaciones."
+		text := resultsPortalText(cfg, "Ingresa a nuestra página: %s")
+		if cfg.ResultsURL != "" && cfg.ResultsVideoURL != "" {
+			text += fmt.Sprintf("\n\nEn el siguiente video encontrarás el paso a paso para descargar tus resultados. 👇\n%s", cfg.ResultsVideoURL)
 		}
 
 		return buildAutoCloseResult(text).

@@ -150,3 +150,31 @@ func TestDownloadPDF_Timeout20s(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// Un 3xx no se sigue: la clave no viaja a otro anfitrión y no se sirve nada de una URL sin validar.
+func TestClient_DoesNotFollowRedirects(t *testing.T) {
+	var hits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.Header.Get("X-API-Key") != "" {
+			t.Error("la clave llegó al destino de la redirección")
+		}
+		_, _ = w.Write([]byte("%PDF-1.4 ajeno"))
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/x", http.StatusFound)
+	}))
+	defer origin.Close()
+	c := NewClient(origin.URL, "secreta")
+
+	if _, err := c.DownloadPDF(context.Background(), "a.pdf"); err == nil {
+		t.Error("DownloadPDF: un 302 debe ser error")
+	}
+	if got, err := c.Search(context.Background(), "123"); err == nil || got != nil {
+		t.Errorf("Search: un 302 debe ser error sin datos, fue %v, %v", got, err)
+	}
+	if hits != 0 {
+		t.Errorf("el destino recibió %d peticiones", hits)
+	}
+}

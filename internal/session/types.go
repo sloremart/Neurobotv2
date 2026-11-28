@@ -118,6 +118,26 @@ func escalationExempt(s EscalatedSession, now time.Time, nextOpen func(time.Time
 // reexporta como CtxContactIdentifier). Se repite aquí porque este paquete no importa statemachine.
 const CtxContactIdentifier = "contact_identifier"
 
+// Claves de contexto del flujo «Resultados de estudios» (datos personales del paciente). Viven aquí
+// y no en statemachine/handlers porque el cierre por inactividad también las borra y este paquete
+// no puede importar a statemachine (ciclo).
+const (
+	CtxResultsDocType      = "results_doc_type"
+	CtxResultsDoc          = "results_doc"
+	CtxResultsDocHash      = "results_doc_hash"
+	CtxResultsFirstName    = "results_first_name"
+	CtxResultsFirstSurname = "results_first_surname"
+	CtxResultsStudies      = "results_studies"
+	CtxResultsChoice       = "results_choice"
+)
+
+// ResultsFlowKeys son todas las claves del flujo de resultados: se borran al salir de él, al
+// escalar y al cerrar la sesión.
+var ResultsFlowKeys = []string{
+	CtxResultsDocType, CtxResultsDoc, CtxResultsDocHash,
+	CtxResultsFirstName, CtxResultsFirstSurname, CtxResultsStudies, CtxResultsChoice,
+}
+
 // ContactPhoneOf devuelve el teléfono del paciente de una sesión de Néctar en la forma de
 // utils.ParseColombianPhone («+57…»), o "" si el contacto es un BSUID, está oculto o no se conoce.
 //
