@@ -300,10 +300,10 @@ func outOfHoursMenuHandler(cfg *config.Config, locationRepo LocationReader) sm.S
 // horario. La de imágenes solo sale con IMAGING_RESULTS_URL.
 func buildOutOfHoursRows(cfg *config.Config) []sm.ListRow {
 	rows := []sm.ListRow{
-		{ID: "ooh_resultados", Title: "📋 Resultados de estudios", Description: "Si quieres descargar resultados de tus consultas"},
+		{ID: "ooh_resultados", Title: "📋 Resultados estudios", Description: "Electromiografías, EEG, polisomnografías y más"},
 	}
 	if imagingEnabled(cfg) {
-		rows = append(rows, sm.ListRow{ID: "ooh_imagenes", Title: "🩻 Resultados de imágenes", Description: "Resultados de imágenes diagnósticas"})
+		rows = append(rows, sm.ListRow{ID: "ooh_imagenes", Title: "🩻 Resultados imágenes", Description: "TAC, resonancia, rayos X y más"})
 	}
 	return append(rows,
 		sm.ListRow{ID: "ooh_ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
@@ -495,13 +495,13 @@ func buildMainMenuList(cfg *config.Config) *sm.ListMessage {
 		{ID: "medicamentos", Title: "💉 Aplicar medicamentos", Description: "Atención personalizada con un agente (SANITAS)"},
 		{ID: "agendar", Title: "Agendar cita", Description: "Si buscas una cita como particular o cuentas con una orden de tu IPS"},
 		{ID: "consultar", Title: "Citas Programadas", Description: "Consulta, confirma o cancela tus citas"},
-		{ID: "resultados", Title: "📋 Resultados de estudios", Description: "Si quieres descargar resultados de tus consultas"},
+		{ID: "resultados", Title: "📋 Resultados estudios", Description: "Electromiografías, EEG, polisomnografías y más"},
 	}
 	if imagingEnabled(cfg) {
-		rows = append(rows, sm.ListRow{ID: "imagenes", Title: "🩻 Resultados de imágenes", Description: "Consulta tus resultados de imágenes diagnósticas"})
+		rows = append(rows, sm.ListRow{ID: "imagenes", Title: "🩻 Resultados imágenes", Description: "TAC, resonancia, rayos X y más"})
 	}
 	rows = append(rows,
-		sm.ListRow{ID: "siau", Title: "🧑‍💼 Atención al usuario (SIAU)", Description: "Consultas, sugerencias o quejas"},
+		sm.ListRow{ID: "siau", Title: "🙋 Atención al usuario", Description: "SIAU: consultas, sugerencias y quejas"},
 		sm.ListRow{ID: "ubicacion", Title: "Ubicación", Description: "Conoce nuestras sedes"},
 		sm.ListRow{ID: "ayuda", Title: "Cómo usar el bot", Description: "Guía rápida de cómo interactuar conmigo"},
 	)

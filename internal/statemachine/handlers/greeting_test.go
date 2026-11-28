@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/neuro-bot/neuro-bot/internal/config"
 	"github.com/neuro-bot/neuro-bot/internal/nectar"
@@ -1031,9 +1032,9 @@ func TestMainMenu_HasImagingAndSIAU(t *testing.T) {
 		titles[r.ID] = r.Title
 	}
 	for id, title := range map[string]string{
-		"resultados": "📋 Resultados de estudios",
-		"imagenes":   "🩻 Resultados de imágenes",
-		"siau":       "🧑‍💼 Atención al usuario (SIAU)",
+		"resultados": "📋 Resultados estudios",
+		"imagenes":   "🩻 Resultados imágenes",
+		"siau":       "🙋 Atención al usuario",
 	} {
 		if titles[id] != title {
 			t.Errorf("título de %s = %q, quiero %q", id, titles[id], title)
@@ -1121,5 +1122,23 @@ func TestOutOfHoursMenu_HasImagingAndResults(t *testing.T) {
 	}
 	if result.NextState != sm.StateTerminated || !strings.Contains(extractText(result), "https://i.example.com") {
 		t.Errorf("ooh_imagenes: %s %q", result.NextState, extractText(result))
+	}
+}
+
+// WhatsApp rechaza TODA la lista si una fila pasa de 24 caracteres de título o 72 de descripción.
+func TestMenus_RowsFitWhatsAppLimits(t *testing.T) {
+	check := func(name string, rows []sm.ListRow) {
+		for _, r := range rows {
+			if n := utf8.RuneCountInString(r.Title); n > 24 {
+				t.Errorf("%s/%s: título de %d caracteres (máx. 24): %q", name, r.ID, n, r.Title)
+			}
+			if n := utf8.RuneCountInString(r.Description); n > 72 {
+				t.Errorf("%s/%s: descripción de %d caracteres (máx. 72)", name, r.ID, n)
+			}
+		}
+	}
+	for _, cfg := range []*config.Config{{}, {ImagingResultsURL: "https://i.example.com"}} {
+		check("main", buildMainMenuList(cfg).Sections[0].Rows)
+		check("ooh", buildOutOfHoursRows(cfg))
 	}
 }
