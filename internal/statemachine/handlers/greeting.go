@@ -499,7 +499,7 @@ func medicationCheckSanitasHandler(cfg *config.Config) sm.StateHandler {
 
 // siauNoticeText es lo que ve el paciente al pedir Atención al usuario (SIAU).
 const siauNoticeText = "🧑‍💼 *Atención al usuario (SIAU)*\nTe comunico con nuestra área de atención al usuario. " +
-	"Escribe tu consulta, sugerencia o queja y un asesor te responderá en breve. ⏳"
+	"Escribe tu consulta, sugerencia o queja."
 
 // buildMainMenuList arma el menú principal: 8 opciones, 7 sin IMAGING_RESULTS_URL (cfg nil = sin imágenes).
 func buildMainMenuList(cfg *config.Config) *sm.ListMessage {

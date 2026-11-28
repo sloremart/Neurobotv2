@@ -185,8 +185,12 @@ func TestAttempts_ReleaseDecrementsAndUnlocksPhone(t *testing.T) {
 }
 
 func TestHashDocument_NoClearNumber(t *testing.T) {
-	h := HashDocument("CC", "123456")
+	h := HashDocument("s3cret", "CC", "123456")
 	if len(h) != 64 || h == "CC:123456" {
 		t.Fatalf("hash inesperado: %s", h)
+	}
+	if h != HashDocument("s3cret", "CC", "123456") || h == HashDocument("otra", "CC", "123456") ||
+		h == HashDocument("s3cret", "TI", "123456") {
+		t.Fatal("el hash debe depender de la clave y del tipo, y ser estable")
 	}
 }

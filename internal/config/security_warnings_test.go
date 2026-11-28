@@ -125,3 +125,19 @@ func TestExamplePasswords_MatchEnvExample(t *testing.T) {
 		}
 	}
 }
+
+func TestSecurityWarnings_ResultsHashSecret(t *testing.T) {
+	cfg := safeConfig()
+	cfg.ResultsAPIURL = "http://results.test"
+	if w := cfg.SecurityWarnings(); !hasWarning(w, "RESULTS_HASH_SECRET") {
+		t.Errorf("con API y sin clave debe avisar: %v", w)
+	}
+	cfg.ResultsHashSecret = "x"
+	if w := cfg.SecurityWarnings(); hasWarning(w, "RESULTS_HASH_SECRET") {
+		t.Errorf("con clave no debe avisar: %v", w)
+	}
+	cfg.ResultsAPIURL, cfg.ResultsHashSecret = "", ""
+	if w := cfg.SecurityWarnings(); hasWarning(w, "RESULTS_HASH_SECRET") {
+		t.Errorf("sin API no debe avisar: %v", w)
+	}
+}

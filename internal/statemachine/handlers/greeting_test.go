@@ -1084,7 +1084,7 @@ func TestMainMenu_SIAUEscalatesWithReason(t *testing.T) {
 	if result.UpdateCtx[sm.CtxPatientAskedForAgent] != "1" {
 		t.Error("SIAU lo pide el paciente: debe llevar la marca de que pidió la persona")
 	}
-	want := "🧑‍💼 *Atención al usuario (SIAU)*\nTe comunico con nuestra área de atención al usuario. Escribe tu consulta, sugerencia o queja y un asesor te responderá en breve. ⏳"
+	want := "🧑‍💼 *Atención al usuario (SIAU)*\nTe comunico con nuestra área de atención al usuario. Escribe tu consulta, sugerencia o queja."
 	if got := strings.TrimSpace(extractText(result)); got != want {
 		t.Errorf("texto = %q", got)
 	}

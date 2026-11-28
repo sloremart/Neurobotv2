@@ -214,6 +214,7 @@ type Config struct {
 	ResultsAPIURL     string // RESULTS_API_URL: base de la API de resultados, sin barra final. Vacía = apagada.
 	ResultsAPIKey     string // RESULTS_API_KEY: opcional.
 	ResultsPDFEnabled bool   // RESULTS_PDF_ENABLED=true: adjuntos PDF por Néctar. Por defecto false.
+	ResultsHashSecret string // RESULTS_HASH_SECRET: clave HMAC del hash del documento en el tope de intentos. Vacía = flujo apagado.
 	ImagingResultsURL string // IMAGING_RESULTS_URL: enlace al portal de imágenes. Vacía = la opción no aparece.
 
 	// Security
@@ -443,6 +444,7 @@ func Load() *Config {
 		ResultsAPIURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("RESULTS_API_URL")), "/"),
 		ResultsAPIKey:              strings.TrimSpace(os.Getenv("RESULTS_API_KEY")),
 		ResultsPDFEnabled:          getEnvBool("RESULTS_PDF_ENABLED", false),
+		ResultsHashSecret:          strings.TrimSpace(os.Getenv("RESULTS_HASH_SECRET")),
 		ImagingResultsURL:          strings.TrimSpace(os.Getenv("IMAGING_RESULTS_URL")),
 
 		// Security

@@ -624,10 +624,10 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
 ## RESULTADOS Y SIAU (2026-11-27; spec `docs/superpowers/specs/2026-11-27-resultados-y-siau-design.md`)
 
 - Variables (`.env.example` ya las trae): `RESULTS_API_URL` (base sin barra final; vacía = apagada), `RESULTS_API_KEY` (opcional, va en el
-  encabezado `X-API-Key`), `RESULTS_PDF_ENABLED` (por defecto false), `IMAGING_RESULTS_URL` (portal de imágenes; vacía = la opción no aparece)
+  encabezado `X-API-Key`), `RESULTS_PDF_ENABLED` (por defecto false), `RESULTS_HASH_SECRET` (clave HMAC del hash del documento; `openssl rand -hex 32`; vacía = el flujo queda APAGADO y, con `RESULTS_API_URL` definida, el arranque da un WARN que nombra la variable, sin valor, en `SecurityWarnings`), `IMAGING_RESULTS_URL` (portal de imágenes; vacía = la opción no aparece)
   y `NECTAR_TEAM_BY_GROUP` acepta además `siau:<id>` (`NectarGroupSIAU`; no es un grupo de CUPS, `SuggestedTeamForCups` no lo usa;
   grupo desconocido sigue tumbando el arranque).
-- Bandera (`resultsFeatureOn`): «Resultados de estudios» entra al flujo nuevo SOLO con `RESULTS_API_URL` + `RESULTS_PDF_ENABLED=true` + sesión de
+- Bandera (`resultsFeatureOn`): «Resultados de estudios» entra al flujo nuevo SOLO con `RESULTS_API_URL` + `RESULTS_HASH_SECRET` + `RESULTS_PDF_ENABLED=true` + sesión de
   Néctar (`nectar:*`); si falta cualquiera, el enlace de siempre (`SHOW_RESULTS`/`RESULTS_URL`). Con los valores por defecto el flujo de resultados no cambia (el menú sí gana la fila SIAU). Los handlers `RESULTS_*` se registran SIEMPRE y cada paso re-revisa la bandera (`resultsGated`): una sesión huérfana en un paso `RESULTS_*` (función apagada después, sesión de Bird, sin cliente) recibe el enlace de siempre sin ningún envío facturable.
 - Menú principal: 8 filas (7 sin `IMAGING_RESULTS_URL`): «Resultados estudios» (`resultados`), «Resultados imágenes» (`imagenes`, solo con URL;
   `SHOW_IMAGING` envía el enlace y cierra) y «Atención al usuario» (`siau`). El menú fuera de horario también ofrece resultados e imágenes
@@ -639,7 +639,7 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   el MISMO mensaje («Los datos no coinciden…»). SIESA caída (o `patients` nil) → portal, sin gastar intento. Un contexto sin
   documento (p. ej. retorno del agente) vuelve al tipo de documento sin contar intento.
 - Tope (migración 050, `results_verification_attempts`, `local.ResultsAttemptsRepo`): 3 fallos en 24 h bloquean 24 h POR documento
-  (clave `doc:` = SHA-256 de «tipo:número», nunca en claro) Y por teléfono (`phone:`: el contacto de Néctar, `session.ContactPhoneOf`, o la clave
+  (clave `doc:` = HMAC-SHA256 con `RESULTS_HASH_SECRET` de «tipo:número» en hex, `local.HashDocument(secret, tipo, número)`, nunca en claro; cambiar la clave reinicia los topes por documento) Y por teléfono (`phone:`: el contacto de Néctar, `session.ContactPhoneOf`, o la clave
   de la sesión). El intento se RESERVA antes de comparar: `RecordFailure` suma a las dos filas en una transacción y devuelve el
   número de intento (el mayor de las dos); solo se compara si es ≤3 (4.º o más, también el de una sesión concurrente, se rechaza sin
   comparar), así que son exactamente 3 fallos. Acierto → `Reset` del documento y `Release` del teléfono (el acierto no deja intento

@@ -61,9 +61,11 @@ type resultsAttempts interface {
 }
 
 // resultsFeatureOn dice si «Resultados de estudios» entra a la verificación (y luego al PDF): hay
-// API, Néctar ya tiene los adjuntos y la conversación es de Néctar. Si no, el enlace de siempre.
+// API, clave del hash del documento (RESULTS_HASH_SECRET), Néctar ya tiene los adjuntos y la
+// conversación es de Néctar. Si no, el enlace de siempre.
 func resultsFeatureOn(cfg *config.Config, sess *session.Session) bool {
-	return cfg != nil && cfg.ResultsAPIURL != "" && cfg.ResultsPDFEnabled && session.IsNectarSession(sess.PhoneNumber)
+	return cfg != nil && cfg.ResultsAPIURL != "" && cfg.ResultsHashSecret != "" && cfg.ResultsPDFEnabled &&
+		session.IsNectarSession(sess.PhoneNumber)
 }
 
 // resultsPhone es el teléfono con que se cuenta el tope: el del contacto de Néctar si se conoce;
@@ -79,8 +81,10 @@ func resultsPhone(sess *session.Session) string {
 const resultsMismatchText = "Los datos no coinciden. Volvamos a intentarlo.\n\n"
 
 func resultsLockedText(cfg *config.Config) string {
+	// Sin RESULTS_URL solo cae la parte del portal: SIAU se menciona siempre.
 	return "Por seguridad, la consulta está bloqueada por hoy. " +
-		resultsPortalText(cfg, "Puedes consultar tus resultados en %s o escribir *menú* y elegir Atención al usuario (SIAU).")
+		resultsPortalText(cfg, "Puedes consultar tus resultados en %s.") +
+		" También puedes escribir *menú* y elegir Atención al usuario (SIAU)."
 }
 
 func resultsUnavailableText(cfg *config.Config) string {
@@ -194,7 +198,7 @@ func resultsDocTypeHandler() sm.StateHandler {
 func resultsDocNumberHandler(cfg *config.Config, attempts resultsAttempts) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		doc := strings.TrimSpace(msg.Text)
-		docHash := local.HashDocument(sess.GetContext(ctxResultsDocType), doc)
+		docHash := local.HashDocument(cfg.ResultsHashSecret, sess.GetContext(ctxResultsDocType), doc)
 		locked, err := attempts.IsLocked(ctx, docHash, resultsPhone(sess), nowFunc())
 		if err != nil {
 			slog.Error("results_attempts_check_failed", "error", err)

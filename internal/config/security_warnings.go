@@ -35,6 +35,11 @@ func (c *Config) SecurityWarnings() []string {
 		warnings = append(warnings, "EXTERNAL_DB_ENCRYPT no cifra el canal a SIESA: los datos clínicos viajan en claro (ver .env.example)")
 	}
 
+	// Sin la clave el flujo de resultados por API queda apagado (enlace de siempre).
+	if c.ResultsAPIURL != "" && c.ResultsHashSecret == "" {
+		warnings = append(warnings, "RESULTS_API_URL está definida pero RESULTS_HASH_SECRET está vacía: «Resultados» sigue con el enlace de siempre; genera la clave con `openssl rand -hex 32`")
+	}
+
 	return warnings
 }
 

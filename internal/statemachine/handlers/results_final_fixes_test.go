@@ -23,9 +23,10 @@ func TestOutOfHoursResults_EntersFlowOnlyWhenFeatureOn(t *testing.T) {
 	}
 
 	cases := map[string]func(*config.Config, *session.Session){
-		"sin URL":       func(c *config.Config, _ *session.Session) { c.ResultsAPIURL = "" },
-		"bandera false": func(c *config.Config, _ *session.Session) { c.ResultsPDFEnabled = false },
-		"sesión Bird":   func(_ *config.Config, s *session.Session) { s.PhoneNumber = "+573001234567" },
+		"sin URL":        func(c *config.Config, _ *session.Session) { c.ResultsAPIURL = "" },
+		"bandera false":  func(c *config.Config, _ *session.Session) { c.ResultsPDFEnabled = false },
+		"sesión Bird":    func(_ *config.Config, s *session.Session) { s.PhoneNumber = "+573001234567" },
+		"sin clave hash": func(c *config.Config, _ *session.Session) { c.ResultsHashSecret = "" },
 	}
 	for name, tweak := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -116,6 +117,10 @@ func TestResultsTexts_EmptyPortalURLHasNoDanglingLink(t *testing.T) {
 			strings.HasSuffix(text, " en ") || !strings.Contains(text, resultsNoPortalText) {
 			t.Errorf("%s: %q", name, text)
 		}
+	}
+	// El bloqueo sigue mencionando SIAU aunque no haya portal.
+	if got := resultsLockedText(cfg); !strings.Contains(got, "Atención al usuario (SIAU)") {
+		t.Errorf("locked sin URL no menciona SIAU: %q", got)
 	}
 	// El texto de SHOW_RESULTS sin URL es el mismo que usan los nuevos.
 	m := sm.NewMachine()

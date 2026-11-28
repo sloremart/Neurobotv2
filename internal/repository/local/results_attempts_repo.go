@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -26,10 +27,12 @@ func NewResultsAttemptsRepo(db *sql.DB) *ResultsAttemptsRepo {
 	return &ResultsAttemptsRepo{db: db}
 }
 
-// HashDocument devuelve el SHA-256 en hex de «tipo:número»; el número nunca se guarda en claro.
-func HashDocument(docType, number string) string {
-	sum := sha256.Sum256([]byte(docType + ":" + number))
-	return hex.EncodeToString(sum[:])
+// HashDocument devuelve el HMAC-SHA256 en hex de «tipo:número» con la clave del servidor; el número
+// nunca se guarda en claro y, sin la clave, la tabla no permite recuperarlo por fuerza bruta.
+func HashDocument(secret, docType, number string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(docType + ":" + number))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // attemptSubjects devuelve las claves a mirar; un teléfono vacío no cuenta.

@@ -145,6 +145,7 @@ func resultsCfg() *config.Config {
 	c.ResultsAPIURL = "http://results.test"
 	c.ResultsPDFEnabled = true
 	c.ResultsURL = "https://portal.test/resultados"
+	c.ResultsHashSecret = "test-secret"
 	return c
 }
 
@@ -199,7 +200,7 @@ func birthDateSess() *session.Session {
 	s := nectarResultsSess(sm.StateResultsAskBirthDate)
 	s.Context[ctxResultsDocType] = "CC"
 	s.Context[ctxResultsDoc] = resultsTestDoc
-	s.Context[ctxResultsDocHash] = local.HashDocument("CC", resultsTestDoc)
+	s.Context[ctxResultsDocHash] = local.HashDocument("test-secret", "CC", resultsTestDoc)
 	return s
 }
 
@@ -294,7 +295,7 @@ func TestResults_DocTypeThenNumberThenBirthDate(t *testing.T) {
 	if r.NextState != sm.StateResultsAskBirthDate || !slices.Contains(texts(r), birthDateHelp) {
 		t.Fatalf("número: %s %v", r.NextState, texts(r))
 	}
-	if sess.Context[ctxResultsDoc] != resultsTestDoc || sess.Context[ctxResultsDocHash] != local.HashDocument("CC", resultsTestDoc) {
+	if sess.Context[ctxResultsDoc] != resultsTestDoc || sess.Context[ctxResultsDocHash] != local.HashDocument("test-secret", "CC", resultsTestDoc) {
 		t.Fatalf("contexto del número: %v", sess.Context)
 	}
 	// El tope se mira con el teléfono del contacto de Néctar, no con la clave de la sesión.
@@ -400,7 +401,7 @@ func TestResults_ThirdFailureLocksAndOffersPortalAndSIAU(t *testing.T) {
 	rig := newResultsRig()
 	sess := birthDateSess()
 	wantText := "Por seguridad, la consulta está bloqueada por hoy. Puedes consultar tus resultados en " +
-		rig.cfg.ResultsURL + " o escribir *menú* y elegir Atención al usuario (SIAU)."
+		rig.cfg.ResultsURL + ". También puedes escribir *menú* y elegir Atención al usuario (SIAU)."
 	for i := 1; i <= 3; i++ {
 		r := failOnce(t, rig, sess, i == 1)
 		failed, ok := eventData(r, "results_verification_failed")
@@ -458,7 +459,7 @@ func TestResults_LockedUpFront(t *testing.T) {
 	rig.attempts.lockedUp = true
 	r := step(t, rig.m, nectarResultsSess(sm.StateMainMenu), postbackM("resultados"))
 	want := "Por seguridad, la consulta está bloqueada por hoy. Puedes consultar tus resultados en " +
-		rig.cfg.ResultsURL + " o escribir *menú* y elegir Atención al usuario (SIAU)."
+		rig.cfg.ResultsURL + ". También puedes escribir *menú* y elegir Atención al usuario (SIAU)."
 	if got := texts(r); len(got) != 1 || got[0] != want {
 		t.Fatalf("texto = %q", got)
 	}
