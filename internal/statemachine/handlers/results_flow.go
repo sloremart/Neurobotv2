@@ -3,12 +3,17 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/neuro-bot/neuro-bot/internal/bird"
 	"github.com/neuro-bot/neuro-bot/internal/config"
+	"github.com/neuro-bot/neuro-bot/internal/nectar"
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	"github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/results"
@@ -24,7 +29,8 @@ import (
 // la fecha ni el nombre.
 
 // Claves de contexto del flujo. results_doc (el número en claro) y results_studies se borran al
-// salir del flujo.
+// salir del flujo. results_studies guarda solo los estudios listados (ya filtrados por nombre) y
+// results_choice el índice del elegido.
 const (
 	ctxResultsDocType      = "results_doc_type"
 	ctxResultsDoc          = "results_doc"
@@ -32,12 +38,13 @@ const (
 	ctxResultsFirstName    = "results_first_name"
 	ctxResultsFirstSurname = "results_first_surname"
 	ctxResultsStudies      = "results_studies"
+	ctxResultsChoice       = "results_choice"
 )
 
 // resultsFlowKeys son todas las claves del flujo: se borran al salir de él.
 var resultsFlowKeys = []string{
 	ctxResultsDocType, ctxResultsDoc, ctxResultsDocHash,
-	ctxResultsFirstName, ctxResultsFirstSurname, ctxResultsStudies,
+	ctxResultsFirstName, ctxResultsFirstSurname, ctxResultsStudies, ctxResultsChoice,
 }
 
 // resultsSearcher es la API de resultados (results.Client).
@@ -104,10 +111,10 @@ func resultsBackToMenu() sm.ReturnOption {
 	return sm.ReturnOption{Label: "Volver al menú", Value: "results_menu", Target: sm.StateMainMenu, Clear: resultsFlowKeys}
 }
 
-// RegisterResultsFlowHandlers registra la verificación de «Resultados de estudios». patients nil
-// se trata como SIESA caída (enlace al portal).
+// RegisterResultsFlowHandlers registra la verificación de «Resultados de estudios», la lista y el
+// envío del PDF. patients nil se trata como SIESA caída (enlace al portal).
 func RegisterResultsFlowHandlers(m *sm.Machine, cfg *config.Config, patients repository.PatientRepository,
-	searcher resultsSearcher, attempts resultsAttempts,
+	searcher resultsSearcher, sender resultsSender, attempts resultsAttempts,
 ) {
 	m.Register(sm.StateResultsStart, resultsStartHandler(cfg, attempts))
 
@@ -125,8 +132,11 @@ func RegisterResultsFlowHandlers(m *sm.Machine, cfg *config.Config, patients rep
 		sm.RegisterStaticReturnMenu(step, resultsBackToMenu())
 	}
 
-	m.Register(sm.StateResultsLookup, resultsLookupHandler(searcher))
-	m.Register(sm.StateResultsList, resultsListPlaceholderHandler(cfg))
+	m.Register(sm.StateResultsLookup, resultsLookupHandler(cfg, searcher))
+	m.Register(sm.StateResultsList, resultsListHandler(cfg))
+	// La lista se resuelve eligiendo: el agente reanuda (se repite la lista) o vuelve al menú.
+	sm.RegisterStaticReturnMenu(sm.StateResultsList, resultsBackToMenu())
+	m.Register(sm.StateResultsSend, resultsSendHandler(cfg, searcher, sender, resultsSendBudget))
 }
 
 // RESULTS_START (automático) — revisa el tope del teléfono antes de pedir nada.
@@ -193,6 +203,9 @@ func resultsDocNumberHandler(cfg *config.Config, attempts resultsAttempts) sm.St
 // el mismo mensaje.
 func resultsBirthDateHandler(cfg *config.Config, patients repository.PatientRepository, attempts resultsAttempts) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		if resultsMissingDoc(sess) {
+			return resultsRestart(), nil
+		}
 		birthDate, verdict := judgeBirthDate(msg.Text)
 		switch verdict {
 		case birthDateUnreadable:
@@ -252,33 +265,299 @@ func resultsBirthDateHandler(cfg *config.Config, patients repository.PatientRepo
 	}
 }
 
-// RESULTS_LOOKUP (automático) — consulta la API de resultados con el documento verificado. Un
-// error cuenta como «sin resultados» (lista vacía). El número deja el contexto aquí.
-func resultsLookupHandler(searcher resultsSearcher) sm.StateHandler {
+// resultsMissingDoc dice si a la sesión le falta el documento ya pedido (tipo, número o hash):
+// p. ej. un retorno del agente que la dejó en un paso posterior sin esos datos. Sin ellos no se
+// verifica ni se consulta nada.
+func resultsMissingDoc(sess *session.Session) bool {
+	return sess.GetContext(ctxResultsDocType) == "" || sess.GetContext(ctxResultsDoc) == "" ||
+		sess.GetContext(ctxResultsDocHash) == ""
+}
+
+// resultsRestart vuelve a pedir el documento desde el tipo, sin contar intento.
+func resultsRestart() *sm.StateResult {
+	return sm.NewResult(sm.StateResultsAskDocType).
+		WithClearCtx(ctxResultsDocType, ctxResultsDoc, ctxResultsDocHash).
+		WithText(docTypeMenuText())
+}
+
+// RESULTS_LOOKUP (automático) — consulta la API de resultados con el documento verificado y deja
+// solo los estudios cuyo nombre coincide con el paciente de SIESA (el número puede ser de otra
+// persona con otro tipo de documento). Un error de la API cuenta como «sin resultados». Ninguno →
+// cierra; uno → se envía directo; varios → lista. El número deja el contexto aquí.
+func resultsLookupHandler(cfg *config.Config, searcher resultsSearcher) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
-		studies, err := searcher.Search(ctx, sess.GetContext(ctxResultsDoc))
+		if resultsMissingDoc(sess) {
+			return resultsRestart(), nil
+		}
+		found, err := searcher.Search(ctx, sess.GetContext(ctxResultsDoc))
 		if err != nil {
 			slog.Warn("results_search_failed", "error", err)
-			studies = nil
+			found = nil
 		}
-		if studies == nil {
-			studies = []results.Study{}
+		if len(found) == 0 {
+			return resultsNoneResult(cfg, "results_none"), nil
 		}
-		raw, err := json.Marshal(studies)
+		firstName, firstSurname := sess.GetContext(ctxResultsFirstName), sess.GetContext(ctxResultsFirstSurname)
+		var matching []results.Study
+		for _, st := range results.SortAndDedupe(found) {
+			if results.NameMatches(firstName, firstSurname, st.PatientName) {
+				matching = append(matching, st)
+			}
+		}
+		if len(matching) == 0 {
+			return resultsNoneResult(cfg, "results_name_mismatch"), nil
+		}
+
+		listed := matching[:min(len(matching), resultsListMax)]
+		raw, err := json.Marshal(listed)
 		if err != nil {
 			return nil, err
 		}
-		return sm.NewResult(sm.StateResultsList).
+		if len(listed) == 1 {
+			return sm.NewResult(sm.StateResultsSend).
+				WithClearCtx(ctxResultsDoc).
+				WithContext(ctxResultsStudies, string(raw)).
+				WithContext(ctxResultsChoice, "0"), nil
+		}
+		r := resultsListResult(listed).
 			WithClearCtx(ctxResultsDoc).
-			WithContext(ctxResultsStudies, string(raw)), nil
+			WithContext(ctxResultsStudies, string(raw))
+		if len(matching) > resultsListMax {
+			r.WithText("Para resultados anteriores ingresa a " + cfg.ResultsURL)
+		}
+		return r, nil
 	}
 }
 
-// RESULTS_LIST — PROVISIONAL hasta la Tarea 7 (lista y envío del PDF): manda el enlace al portal
-// y cierra, borrando el contexto del flujo.
-func resultsListPlaceholderHandler(cfg *config.Config) sm.StateHandler {
-	return func(_ context.Context, _ *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
-		return buildAutoCloseResult("Puedes consultar tus resultados en " + cfg.ResultsURL).
-			WithClearCtx(resultsFlowKeys...), nil
+// resultsListMax es el tope de filas de una lista de WhatsApp.
+const resultsListMax = 10
+
+// resultsNoneText es el mensaje de n8n cuando no hay resultados (o ninguno es del paciente).
+func resultsNoneText(cfg *config.Config) string {
+	return "No encontramos resultados para ese documento. 🔍\nPuede que aún no estén disponibles; intenta mañana.\n\n" +
+		"También puedes consultarlos en " + cfg.ResultsURL
+}
+
+// resultsNoneResult cierra sin resultados. El sin-coincidencia de nombre da el mismo texto que el
+// sin-resultados: solo el evento los distingue.
+func resultsNoneResult(cfg *config.Config, event string) *sm.StateResult {
+	return buildAutoCloseResult(resultsNoneText(cfg)).
+		WithClearCtx(resultsFlowKeys...).
+		WithEvent(event, nil)
+}
+
+// resultsRowID es el id de la fila i (desde 0) de la lista: result_1, result_2…
+func resultsRowID(i int) string { return "result_" + strconv.Itoa(i+1) }
+
+// resultsListResult muestra la lista de estudios (ya ordenada, máx. 10) y espera la elección.
+func resultsListResult(listed []results.Study) *sm.StateResult {
+	rows := make([]sm.ListRow, len(listed))
+	for i, st := range listed {
+		date := "sin fecha"
+		if !st.Date.IsZero() {
+			date = st.Date.Format("02/01/2006")
+		}
+		title := st.StudyType
+		if strings.TrimSpace(title) == "" {
+			title = "Estudio"
+		}
+		rows[i] = sm.ListRow{
+			ID:          resultsRowID(i),
+			Title:       truncate(title, 24),
+			Description: truncate("Fecha: "+date+" | Adm: "+st.Admission, 72),
+		}
 	}
+	return sm.NewResult(sm.StateResultsList).
+		WithList("Tienes estos resultados disponibles. Elige el que quieres recibir 👇", "Ver resultados",
+			sm.ListSection{Title: "Resultados", Rows: rows})
+}
+
+// resultsStoredStudies lee los estudios listados del contexto; ilegibles o ausentes, ninguno.
+func resultsStoredStudies(sess *session.Session) []results.Study {
+	var studies []results.Study
+	if json.Unmarshal([]byte(sess.GetContext(ctxResultsStudies)), &studies) != nil {
+		return nil
+	}
+	return studies
+}
+
+// RESULTS_LIST (interactivo) — el paciente elige un estudio de la lista.
+func resultsListHandler(cfg *config.Config) sm.StateHandler {
+	return func(_ context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
+		studies := resultsStoredStudies(sess)
+		if len(studies) == 0 {
+			// La lista ya no está (no debería pasar): el portal, sin más.
+			return resultsSendFallback(cfg, "list_lost"), nil
+		}
+		// Retorno sin dato del agente: se repite la lista, no el aviso de error.
+		if sm.IsAgentResumeTurn(sess) {
+			return resultsListResult(studies), nil
+		}
+		ids := make([]string, len(studies))
+		for i := range studies {
+			ids[i] = resultsRowID(i)
+		}
+		retry, selected := sm.ValidateButtonResponse(sess, msg, ids...)
+		if retry != nil {
+			return retry, nil
+		}
+		return sm.NewResult(sm.StateResultsSend).
+			WithContext(ctxResultsChoice, strconv.Itoa(slices.Index(ids, selected))), nil
+	}
+}
+
+// resultsSendBudget es el presupuesto del turno para bajar, subir y enviar el PDF: como el OCR
+// (defaultAnalyzeTimeout), holgadamente por debajo de processMsgTimeout (2 min), no el plazo
+// corto de los envíos.
+const resultsSendBudget = 45 * time.Second
+
+// resultsSender envía al paciente por la conversación (bird.Client, que desvía a Néctar).
+type resultsSender interface {
+	SendTextCtx(ctx context.Context, to, conversationID, text string) (string, error)
+	SendDocumentCtx(ctx context.Context, phone, filename string, data []byte, caption string) (string, error)
+}
+
+// Textos del envío.
+const (
+	resultsWaitText = "Un momento, estoy preparando tu resultado… ⏳"
+	resultsSentText = "¡Listo! Te envié tu resultado. ✅"
+)
+
+func resultsSendFailedText(cfg *config.Config) string {
+	return "No pude enviarte el archivo en este momento. 🙏 Puedes descargarlo en " + cfg.ResultsURL
+}
+
+// resultsSendFallback cierra el envío fallido con el enlace al portal y borra el contexto.
+func resultsSendFallback(cfg *config.Config, reason string) *sm.StateResult {
+	slog.Warn("results_send_fallback", "reason", reason)
+	return buildAutoCloseResult(resultsSendFailedText(cfg)).
+		WithClearCtx(resultsFlowKeys...).
+		WithEvent("results_fallback_link", map[string]interface{}{"reason": reason})
+}
+
+// resultsDownloadReason es el motivo de results_fallback_link de una descarga fallida.
+func resultsDownloadReason(err error) string {
+	switch {
+	case errors.Is(err, results.ErrInvalidFile):
+		return "invalid_file"
+	case errors.Is(err, results.ErrTooLarge):
+		return "pdf_too_large"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "api_down"
+	}
+}
+
+// resultsUploadReason es el motivo de results_fallback_link de una subida o envío fallido.
+func resultsUploadReason(err error) string {
+	switch {
+	case errors.Is(err, nectar.ErrUnsupportedMedia):
+		return "unsupported_media"
+	case errors.Is(err, nectar.ErrTooLarge):
+		return "attachment_too_large"
+	case errors.Is(err, nectar.ErrAttachmentUnavailable):
+		return "attachment_unavailable"
+	case errors.Is(err, nectar.ErrWindowClosed):
+		return "window_closed"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "send_failed"
+	}
+}
+
+// RESULTS_SEND (automático) — avisa que se prepara, baja el PDF a memoria y lo envía como adjunto
+// dentro del presupuesto. Cualquier falla cierra con el enlace al portal. En duda (5xx, sin
+// respuesta) no se reintenta en el turno. Nunca se registran el nombre, el archivo ni el PDF.
+func resultsSendHandler(cfg *config.Config, searcher resultsSearcher, sender resultsSender, budget time.Duration) sm.StateHandler {
+	return func(ctx context.Context, sess *session.Session, _ bird.InboundMessage) (*sm.StateResult, error) {
+		studies := resultsStoredStudies(sess)
+		choice, convErr := strconv.Atoi(sess.GetContext(ctxResultsChoice))
+		if convErr != nil || choice < 0 || choice >= len(studies) {
+			return resultsSendFallback(cfg, "list_lost"), nil
+		}
+		study := studies[choice]
+		firstName := sess.GetContext(ctxResultsFirstName)
+		// Defensa: nunca sale un estudio cuyo nombre no es el del paciente verificado.
+		if !results.NameMatches(firstName, sess.GetContext(ctxResultsFirstSurname), study.PatientName) {
+			return resultsSendFallback(cfg, "name_mismatch"), nil
+		}
+		if sender == nil {
+			return resultsSendFallback(cfg, "send_failed"), nil
+		}
+
+		// Directo y antes de la descarga: llega mientras se baja el PDF, no al final del turno.
+		if _, err := sender.SendTextCtx(ctx, sess.PhoneNumber, "", resultsWaitText); err != nil {
+			slog.Warn("results_wait_text_failed", "error", err)
+		}
+
+		sendCtx, cancel := context.WithTimeout(ctx, budget)
+		defer cancel()
+		data, err := searcher.DownloadPDF(sendCtx, study.File)
+		if err != nil {
+			slog.Warn("results_download_failed", "error", err)
+			return resultsSendFallback(cfg, resultsDownloadReason(err)), nil
+		}
+		if _, err := sender.SendDocumentCtx(sendCtx, sess.PhoneNumber, resultsFilename(study),
+			data, resultsCaption(firstName, study.StudyType)); err != nil {
+			slog.Warn("results_document_send_failed", "error", err)
+			return resultsSendFallback(cfg, resultsUploadReason(err)), nil
+		}
+		return buildAutoCloseResult(resultsSentText).
+			WithClearCtx(resultsFlowKeys...).
+			WithEvent("results_sent", map[string]interface{}{"study_type": study.StudyType}), nil
+	}
+}
+
+// resultsFilenameMax y resultsCaptionMax son los topes del adjunto (contrato del lote 11).
+const (
+	resultsFilenameMax = 200
+	resultsCaptionMax  = 1024
+)
+
+// resultsAccents quita las tildes antes de sanear el nombre del archivo.
+var resultsAccents = strings.NewReplacer(
+	"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u", "ñ", "n",
+	"Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U", "Ü", "U", "Ñ", "N",
+)
+
+// resultsFilename es «Resultado-<tipo saneado>-<aaaa-mm-dd>.pdf», máx. 200: el tipo queda en
+// letras, números y guiones (cada tramo de otros caracteres es un guion), sin tildes.
+func resultsFilename(st results.Study) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range resultsAccents.Replace(st.StudyType) {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			dash = false
+		} else if !dash && b.Len() > 0 {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	kind := strings.TrimRight(b.String(), "-")
+	if kind == "" {
+		kind = "Estudio"
+	}
+	date := "sin-fecha"
+	if !st.Date.IsZero() {
+		date = st.Date.Format("2006-01-02")
+	}
+	const prefix, ext = "Resultado-", ".pdf"
+	// Todo es ASCII: bytes = caracteres.
+	if room := resultsFilenameMax - len(prefix) - len("-"+date) - len(ext); len(kind) > room {
+		kind = strings.TrimRight(kind[:room], "-")
+	}
+	return prefix + kind + "-" + date + ext
+}
+
+// resultsCaption es «📄 Hola <nombre>, tu resultado de *<tipo>*.», máx. 1024 caracteres: si no
+// cabe se recorta el tipo.
+func resultsCaption(firstName, studyType string) string {
+	head, tail := "📄 Hola "+firstName+", tu resultado de *", "*."
+	if room := resultsCaptionMax - utf8.RuneCountInString(head+tail); utf8.RuneCountInString(studyType) > room {
+		studyType = truncate(studyType, max(room, 1))
+	}
+	return head + studyType + tail
 }

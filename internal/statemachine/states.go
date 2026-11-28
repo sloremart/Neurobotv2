@@ -41,6 +41,7 @@ const (
 	StateResultsAskBirthDate = "RESULTS_ASK_BIRTH_DATE"
 	StateResultsLookup       = "RESULTS_LOOKUP"
 	StateResultsList         = "RESULTS_LIST"
+	StateResultsSend         = "RESULTS_SEND"
 )
 
 // === Entity Management ===
@@ -227,8 +228,8 @@ var stateTypes = map[string]StateType{
 	StateResultsAskDocNumber: StateTypeInteractive,
 	StateResultsAskBirthDate: StateTypeInteractive,
 	StateResultsLookup:       StateTypeAutomatic,
-	// Provisional: la Tarea 7 lo vuelve interactivo (la lista de estudios espera la elección).
-	StateResultsList: StateTypeAutomatic,
+	StateResultsList:         StateTypeInteractive,
+	StateResultsSend:         StateTypeAutomatic,
 
 	// Entity Management
 	StateCheckEntity:         StateTypeAutomatic,

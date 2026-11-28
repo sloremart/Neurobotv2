@@ -272,7 +272,7 @@ func main() {
 			patients = repos.Patient
 		}
 		handlers.RegisterResultsFlowHandlers(machine, cfg, patients,
-			results.NewClient(cfg.ResultsAPIURL, cfg.ResultsAPIKey), localrepo.NewResultsAttemptsRepo(localDB))
+			results.NewClient(cfg.ResultsAPIURL, cfg.ResultsAPIKey), birdClient, localrepo.NewResultsAttemptsRepo(localDB))
 	}
 	if patientSvc != nil {
 		handlers.RegisterIdentificationHandlers(machine, patientSvc)
