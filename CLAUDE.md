@@ -620,3 +620,47 @@ Solo necesario si el bot debe crear agendas nuevas (normalmente las crea el admi
   `testdata/cups_one_digit_conflicts.txt` (regenerar con `CUPS_SWEEP_WRITE=1`, que falla si algún par del oro se
   perdería y solo con `CUPS_SWEEP_WRITE=force` los borra, diciendo cuáles) sobre el catálogo activo
   `testdata/cups_catalog_active.tsv`.
+
+## RESULTADOS Y SIAU (2026-11-27; spec `docs/superpowers/specs/2026-11-27-resultados-y-siau-design.md`)
+
+- Variables (`.env.example` ya las trae): `RESULTS_API_URL` (base sin barra final; vacía = apagada), `RESULTS_API_KEY` (opcional, va en el
+  encabezado `X-API-Key`), `RESULTS_PDF_ENABLED` (por defecto false), `IMAGING_RESULTS_URL` (portal de imágenes; vacía = la opción no aparece)
+  y `NECTAR_TEAM_BY_GROUP` acepta además `siau:<id>` (`NectarGroupSIAU`; no es un grupo de CUPS, `SuggestedTeamForCups` no lo usa;
+  grupo desconocido sigue tumbando el arranque).
+- Bandera (`resultsFeatureOn`): «Resultados de estudios» entra al flujo nuevo SOLO con `RESULTS_API_URL` + `RESULTS_PDF_ENABLED=true` + sesión de
+  Néctar (`nectar:*`); si falta cualquiera, el enlace de siempre (`SHOW_RESULTS`/`RESULTS_URL`). Con los valores por defecto nada cambia.
+- Menú principal: 8 filas (7 sin `IMAGING_RESULTS_URL`): «Resultados estudios» (`resultados`), «Resultados imágenes» (`imagenes`, solo con URL;
+  `SHOW_IMAGING` envía el enlace y cierra) y «Atención al usuario» (`siau`). El menú fuera de horario también ofrece resultados e imágenes
+  (`ooh_resultados`, `ooh_imagenes`; los resultados no dependen del horario). Títulos de fila ≤ 24 caracteres (WhatsApp rechaza más;
+  lo impone un test en `greeting_test.go`). Los menús del agente (`RegisterStaticReturnMenu`) siguen las mismas filas.
+- Verificación (`handlers/results_flow.go`): `RESULTS_START` (mira el tope del teléfono) → tipo de documento → número (ya bloqueado: no
+  pide fecha) → fecha de nacimiento, contra `FindByDocument` de SIESA, comparando solo la fecha. Paciente inexistente y fecha distinta dan
+  el MISMO mensaje («Los datos no coinciden…»). SIESA caída (o `patients` nil) → portal, sin gastar intento. Un contexto sin
+  documento (p. ej. retorno del agente) vuelve al tipo de documento sin contar intento.
+- Tope (migración 050, `results_verification_attempts`, `local.ResultsAttemptsRepo`): 3 fallos en 24 h bloquean 24 h POR documento
+  (clave `doc:` = SHA-256 de «tipo:número», nunca en claro) Y por teléfono (`phone:`: el contacto de Néctar, `session.ContactPhoneOf`, o la clave
+  de la sesión). El intento se RESERVA antes de comparar: `RecordFailure` suma a las dos filas en una transacción y devuelve el
+  número de intento (el mayor de las dos); solo se compara si es ≤3 (4.º o más, también el de una sesión concurrente, se rechaza sin
+  comparar), así que son exactamente 3 fallos. Acierto → `Reset` del documento y `Release` del teléfono (el acierto no deja intento
+  gastado; la spec solo decía borrar el del documento). El 3.º fallo cierra con portal + SIAU, sin escalar a un asesor. Ni «menú» ni una
+  sesión nueva reinician el tope. Falla la BD local → cierra con el portal (`results_fallback_link` reason `attempts_down`, no se
+  verifica sin tope). Eventos sin PII: `results_verification_failed` (solo `attempt`), `results_verified`, `results_fallback_link`
+  (`locked`, `siesa_down`, `attempts_down`…).
+- Lista y envío: `RESULTS_LOOKUP` busca por número en la API (`internal/results`: 400 y 404 = vacío, error = «sin resultados»; búsqueda 10 s,
+  descarga 20 s, PDF ≤ 16 MiB, valida que el archivo sea PDF). Filtra por nombre ANTES de listar (`results.NameMatches`: primer nombre y
+  primer apellido de SIESA como palabras completas; el mismo número con otro tipo de documento es otra persona) y ordena/deduplica
+  (`SortAndDedupe`); sin coincidencias da el mismo texto que sin resultados (solo cambia el evento `results_name_mismatch`). Máx. 10 más
+  recientes (si hay más, enlace al portal para los anteriores); 1 → se envía directo; varios → lista (`result_N`, título = tipo de estudio ≤24).
+  `RESULTS_SEND`: texto de espera directo, baja el PDF a memoria y lo envía por Néctar (`bird.Client.SendDocumentCtx` → `Bridge.SendDocument`:
+  `POST /api/bot/uploads` multipart con clave determinista UUID v5 de conversación+nombre+SHA-256, luego mensaje `type=attachment`, contrato
+  del lote 11a; 503 con Retry-After ≤30 s se reintenta una vez), con presupuesto de turno de 45 s (`resultsSendBudget`). Cualquier falla
+  (descarga, 413/415, `attachment_unavailable`, ventana cerrada, plazo, Bird sin soporte de adjuntos) cierra con el enlace al portal y
+  `results_fallback_link` con el motivo; un fallo en duda no se reintenta en el turno. Al terminar (envío o fallback) se borra todo el
+  contexto del flujo (`resultsFlowKeys`). El PDF vive solo en memoria; nunca van a logs ni a `chat_events` el documento, la fecha, el
+  nombre, `archivo` ni el contenido (`results_sent` solo lleva el tipo de estudio).
+- SIAU: la opción escala con motivo `siau` (`EscalationReasonSIAU`), que SÍ suma al tope de 3 escalaciones (pedido por el paciente, como pedir
+  asesor), y la escalación a Néctar sugiere el equipo `siau` de `NECTAR_TEAM_BY_GROUP` (`SuggestedTeamForSIAU`; sin la clave, sin equipo sugerido).
+- Operación: 1) crear el equipo SIAU en Néctar y poner su id en `NECTAR_TEAM_BY_GROUP` (`siau:<id>`); 2) `RESULTS_PDF_ENABLED=true` solo
+  cuando Néctar tenga desplegado el lote 11 (adjuntos del bot; una bandera sirve a las dos líneas); 3) al mover el número del chatbot de
+  resultados a Néctar, en n8n desactivar el chatbot de resultados («Samuel Bot - Solo Resultados v2 prod»), «Re-engagement 24h» y «SIAU -
+  Finalizar sesión»; ENVIOAUTO (`neurodx-wa-send`) y el cierre de tickets de GLPI se quedan en n8n. Recargar la BD de integración tras la 050.
