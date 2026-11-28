@@ -25,16 +25,16 @@ type resultsCalls struct{ log []string }
 
 func (c *resultsCalls) add(s string) { c.log = append(c.log, s) }
 
-// fakeAttempts es el tope: bloquea al llegar a lockAt fallos (0 = nunca). recordLocked fuerza
-// la respuesta de RecordFailure.
+// fakeAttempts imita el tope del repo: cuenta documento y teléfono por separado, el intento es
+// el mayor de los dos y bloquea al llegar a 3. forcedAttempt fuerza el número que devuelve
+// RecordFailure (p. ej. 4: otra sesión ya gastó el tope).
 type fakeAttempts struct {
-	calls        *resultsCalls
-	lockedUp     bool
-	lockAt       int
-	failures     int
-	recordLocked bool
-	phones       []string
-	isLockedErr  error
+	calls         *resultsCalls
+	lockedUp      bool
+	docF, phoneF  int
+	forcedAttempt int
+	phones        []string
+	isLockedErr   error
 }
 
 func (f *fakeAttempts) IsLocked(_ context.Context, _, phone string, _ time.Time) (bool, error) {
@@ -43,19 +43,31 @@ func (f *fakeAttempts) IsLocked(_ context.Context, _, phone string, _ time.Time)
 	if f.isLockedErr != nil {
 		return false, f.isLockedErr
 	}
-	return f.lockedUp || (f.lockAt > 0 && f.failures >= f.lockAt), nil
+	return f.lockedUp || max(f.docF, f.phoneF) >= 3, nil
 }
 
-func (f *fakeAttempts) RecordFailure(_ context.Context, _, phone string, _ time.Time) (bool, error) {
+func (f *fakeAttempts) RecordFailure(_ context.Context, _, phone string, _ time.Time) (int, bool, error) {
 	f.calls.add("RecordFailure")
 	f.phones = append(f.phones, phone)
-	f.failures++
-	return f.recordLocked || (f.lockAt > 0 && f.failures >= f.lockAt), nil
+	f.docF++
+	f.phoneF++
+	attempt := max(f.docF, f.phoneF)
+	if f.forcedAttempt > 0 {
+		attempt = f.forcedAttempt
+	}
+	return attempt, attempt >= 3, nil
 }
 
 func (f *fakeAttempts) Reset(context.Context, string) error {
 	f.calls.add("Reset")
-	f.failures = 0
+	f.docF = 0
+	return nil
+}
+
+func (f *fakeAttempts) Release(_ context.Context, phone string, _ time.Time) error {
+	f.calls.add("Release")
+	f.phones = append(f.phones, phone)
+	f.phoneF = max(f.phoneF-1, 0)
 	return nil
 }
 
@@ -274,7 +286,7 @@ func TestResults_VerifiedGoesToLookup(t *testing.T) {
 	if _, ok := seen[ctxResultsDoc]; ok {
 		t.Fatal("el número sigue en el contexto tras la consulta")
 	}
-	if !slices.Equal(rig.calls.log, []string{"FindByDocument", "RecordFailure", "Reset"}) {
+	if !slices.Equal(rig.calls.log, []string{"FindByDocument", "RecordFailure", "Reset", "Release"}) {
 		t.Fatalf("llamadas = %v", rig.calls.log)
 	}
 }
@@ -322,17 +334,23 @@ func TestResults_MismatchSameMessageAsNotFound(t *testing.T) {
 	}
 }
 
+// fail lleva la sesión por tipo y número (si no es la primera vuelta) y una fecha distinta.
+func failOnce(t *testing.T, rig *resultsRig, sess *session.Session, first bool) *sm.StateResult {
+	t.Helper()
+	if !first {
+		step(t, rig.m, sess, textM("1"))
+		step(t, rig.m, sess, textM(resultsTestDoc))
+	}
+	return step(t, rig.m, sess, textM("01/01/1990"))
+}
+
 func TestResults_ThirdFailureLocksAndOffersPortalAndSIAU(t *testing.T) {
 	rig := newResultsRig()
-	rig.attempts.lockAt = 3
 	sess := birthDateSess()
+	wantText := "Por seguridad, la consulta está bloqueada por hoy. Puedes consultar tus resultados en " +
+		rig.cfg.ResultsURL + " o escribir *menú* y elegir Atención al usuario (SIAU)."
 	for i := 1; i <= 3; i++ {
-		// Cada vuelta empieza desde el tipo de documento, como el paciente.
-		if i > 1 {
-			step(t, rig.m, sess, textM("1"))
-			step(t, rig.m, sess, textM(resultsTestDoc))
-		}
-		r := step(t, rig.m, sess, textM("01/01/1990"))
+		r := failOnce(t, rig, sess, i == 1)
 		failed, ok := eventData(r, "results_verification_failed")
 		if !ok || failed["attempt"] != i {
 			t.Fatalf("intento %d: evento = %v", i, failed)
@@ -340,8 +358,6 @@ func TestResults_ThirdFailureLocksAndOffersPortalAndSIAU(t *testing.T) {
 		if i < 3 {
 			continue
 		}
-		wantText := "Por seguridad, la consulta está bloqueada por hoy. Puedes consultar tus resultados en " +
-			rig.cfg.ResultsURL + " o escribir *menú* y elegir Atención al usuario (SIAU)."
 		if got := texts(r); len(got) != 1 || got[0] != wantText {
 			t.Fatalf("texto al tercero = %q", got)
 		}
@@ -352,8 +368,36 @@ func TestResults_ThirdFailureLocksAndOffersPortalAndSIAU(t *testing.T) {
 			t.Fatalf("NextState = %s: cierra el flujo sin escalar", r.NextState)
 		}
 	}
+	// Un 4.º intento, aun con la fecha CORRECTA, se rechaza sin comparar.
+	rig.calls.log = nil
+	r := step(t, rig.m, birthDateSess(), textM(resultsTestDate))
+	if _, ok := eventData(r, "results_verified"); ok {
+		t.Fatal("el 4.º intento verificó")
+	}
+	if got := texts(r); len(got) != 1 || got[0] != wantText {
+		t.Fatalf("texto al 4.º = %q", got)
+	}
+	if slices.Contains(rig.calls.log, "Reset") || slices.Contains(rig.calls.log, "Release") {
+		t.Fatalf("llamadas = %v", rig.calls.log)
+	}
 	if len(rig.searcher.docs) != 0 {
 		t.Fatal("se consultó la API sin verificar")
+	}
+}
+
+func TestResults_TwoFailuresThenCorrectDateVerifies(t *testing.T) {
+	rig := newResultsRig()
+	sess := birthDateSess()
+	failOnce(t, rig, sess, true)
+	failOnce(t, rig, sess, false)
+	step(t, rig.m, sess, textM("1"))
+	step(t, rig.m, sess, textM(resultsTestDoc))
+	r := step(t, rig.m, sess, textM(resultsTestDate))
+	if _, ok := eventData(r, "results_verified"); !ok {
+		t.Fatalf("el 3.er intento con la fecha correcta debe verificar: %+v %q", r.Events, texts(r))
+	}
+	if rig.attempts.docF != 0 || rig.attempts.phoneF != 2 {
+		t.Fatalf("tras el acierto: doc=%d teléfono=%d, quiero 0 y 2 (Reset y Release)", rig.attempts.docF, rig.attempts.phoneF)
 	}
 }
 
@@ -415,23 +459,32 @@ func TestResults_SIESADownSendsPortalNoAttempt(t *testing.T) {
 // Ruling 2: el intento se reserva ANTES de usar la comparación. Si la reserva bloquea, ni una
 // fecha correcta verifica; si coincide, Reset va después.
 func TestResults_ReservesAttemptBeforeComparing(t *testing.T) {
+	// Otra sesión (otro teléfono) ya gastó el tope: la reserva devuelve el 4.º y la fecha
+	// CORRECTA no llega a compararse.
 	rig := newResultsRig()
-	rig.attempts.recordLocked = true
-	r := step(t, rig.m, birthDateSess(), textM(resultsTestDate)) // fecha CORRECTA
+	rig.attempts.forcedAttempt = 4
+	r := step(t, rig.m, birthDateSess(), textM(resultsTestDate))
 	if _, ok := eventData(r, "results_verified"); ok {
-		t.Fatal("verificó pese a que la reserva dejó el tope bloqueado")
+		t.Fatal("verificó pese a que la reserva pasó el tope")
 	}
 	if !slices.Equal(rig.calls.log, []string{"FindByDocument", "RecordFailure"}) {
-		t.Fatalf("llamadas = %v: sin Reset ni nada después de la reserva bloqueada", rig.calls.log)
+		t.Fatalf("llamadas = %v: nada después de la reserva rechazada", rig.calls.log)
 	}
 	if len(rig.searcher.docs) != 0 || r.NextState != sm.StateTerminated {
 		t.Fatalf("no debe consultar la API: docs=%v state=%s", rig.searcher.docs, r.NextState)
 	}
+	if fb, _ := eventData(r, "results_fallback_link"); fb["reason"] != "locked" {
+		t.Fatalf("results_fallback_link = %v", fb)
+	}
 
+	// Al coincidir: la reserva va antes, y Reset y Release después.
 	ok := newResultsRig()
 	step(t, ok.m, birthDateSess(), textM(resultsTestDate))
-	if !slices.Equal(ok.calls.log, []string{"FindByDocument", "RecordFailure", "Reset"}) {
+	if !slices.Equal(ok.calls.log, []string{"FindByDocument", "RecordFailure", "Reset", "Release"}) {
 		t.Fatalf("llamadas al coincidir = %v", ok.calls.log)
+	}
+	if ok.attempts.phones[len(ok.attempts.phones)-1] != "+573001234567" {
+		t.Fatalf("Release con el teléfono %q", ok.attempts.phones[len(ok.attempts.phones)-1])
 	}
 }
 

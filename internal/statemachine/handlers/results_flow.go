@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -30,7 +29,6 @@ const (
 	ctxResultsDocType      = "results_doc_type"
 	ctxResultsDoc          = "results_doc"
 	ctxResultsDocHash      = "results_doc_hash"
-	ctxResultsAttempts     = "results_attempts"
 	ctxResultsFirstName    = "results_first_name"
 	ctxResultsFirstSurname = "results_first_surname"
 	ctxResultsStudies      = "results_studies"
@@ -38,7 +36,7 @@ const (
 
 // resultsFlowKeys son todas las claves del flujo: se borran al salir de él.
 var resultsFlowKeys = []string{
-	ctxResultsDocType, ctxResultsDoc, ctxResultsDocHash, ctxResultsAttempts,
+	ctxResultsDocType, ctxResultsDoc, ctxResultsDocHash,
 	ctxResultsFirstName, ctxResultsFirstSurname, ctxResultsStudies,
 }
 
@@ -51,8 +49,9 @@ type resultsSearcher interface {
 // resultsAttempts es el tope persistente de intentos (local.ResultsAttemptsRepo).
 type resultsAttempts interface {
 	IsLocked(ctx context.Context, docHash, phone string, now time.Time) (bool, error)
-	RecordFailure(ctx context.Context, docHash, phone string, now time.Time) (bool, error)
+	RecordFailure(ctx context.Context, docHash, phone string, now time.Time) (attempt int, locked bool, err error)
 	Reset(ctx context.Context, docHash string) error
+	Release(ctx context.Context, phone string, now time.Time) error
 }
 
 // resultsFeatureOn dice si «Resultados de estudios» entra a la verificación (y luego al PDF): hay
@@ -81,6 +80,9 @@ func resultsLockedText(cfg *config.Config) string {
 func resultsUnavailableText(cfg *config.Config) string {
 	return "No pude verificar tus datos en este momento. 🙏 Puedes consultar tus resultados en " + cfg.ResultsURL
 }
+
+// resultsMaxAttempts es el tope de fallos de verificación (el mismo del repo del tope).
+const resultsMaxAttempts = 3
 
 // Motivos de results_fallback_link.
 const (
@@ -183,9 +185,12 @@ func resultsDocNumberHandler(cfg *config.Config, attempts resultsAttempts) sm.St
 
 // RESULTS_ASK_BIRTH_DATE (interactivo) — verifica contra SIESA.
 //
-// Orden (Ruling 2): 1) SIESA, que si falla no gasta intento; 2) se RESERVA el intento
-// (RecordFailure) y, si con él queda bloqueado, no se verifica; 3) se compara; 4) si coincide,
-// Reset del documento. El paciente inexistente y la fecha distinta dan el mismo mensaje.
+// Orden (Ruling 4): 1) SIESA, que si falla no gasta intento; 2) se RESERVA el intento
+// (RecordFailure, que devuelve su número): pasado el tope (4.º o más, también el de una sesión
+// concurrente) se rechaza sin comparar; 3) se compara; 4) si coincide, Reset del documento y
+// Release del teléfono (el acierto no deja intento gastado); si no, el 3.º cierra con el portal y
+// SIAU. El tope es así de exactamente 3 fallos. El paciente inexistente y la fecha distinta dan
+// el mismo mensaje.
 func resultsBirthDateHandler(cfg *config.Config, patients repository.PatientRepository, attempts resultsAttempts) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		birthDate, verdict := judgeBirthDate(msg.Text)
@@ -210,35 +215,37 @@ func resultsBirthDateHandler(cfg *config.Config, patients repository.PatientRepo
 			return resultsFallback(resultsUnavailableText(cfg), resultsFallbackSIESADown), nil
 		}
 
-		attempt := 1
-		if n, convErr := strconv.Atoi(sess.GetContext(ctxResultsAttempts)); convErr == nil {
-			attempt = n + 1
-		}
-		locked, err := attempts.RecordFailure(ctx, docHash, resultsPhone(sess), nowFunc())
+		phone := resultsPhone(sess)
+		attempt, locked, err := attempts.RecordFailure(ctx, docHash, phone, nowFunc())
 		if err != nil {
 			// Sin reserva no hay tope que haga cumplir: no se verifica.
 			slog.Error("results_attempts_record_failed", "error", err)
 			return resultsFallback(resultsUnavailableText(cfg), resultsFallbackAttemptsDB), nil
 		}
-		if locked {
-			return resultsFallback(resultsLockedText(cfg), resultsFallbackLocked).
-				WithEvent("results_verification_failed", map[string]interface{}{"attempt": attempt}), nil
+		if attempt > resultsMaxAttempts {
+			return resultsFallback(resultsLockedText(cfg), resultsFallbackLocked), nil
 		}
 
 		if patient == nil || patient.BirthDate.Format("2006-01-02") != birthDate.Format("2006-01-02") {
+			failed := map[string]interface{}{"attempt": attempt}
+			if locked {
+				return resultsFallback(resultsLockedText(cfg), resultsFallbackLocked).
+					WithEvent("results_verification_failed", failed), nil
+			}
 			return sm.NewResult(sm.StateResultsAskDocType).
 				WithClearCtx(ctxResultsDocType, ctxResultsDoc, ctxResultsDocHash).
-				WithContext(ctxResultsAttempts, strconv.Itoa(attempt)).
 				WithText(resultsMismatchText+docTypeMenuText()).
-				WithEvent("results_verification_failed", map[string]interface{}{"attempt": attempt}), nil
+				WithEvent("results_verification_failed", failed), nil
 		}
 
+		// La verificación vale aunque falle la limpieza: el contador queda hasta que venza su ventana.
 		if err := attempts.Reset(ctx, docHash); err != nil {
-			// La verificación vale; el contador del documento queda hasta que venza su ventana.
 			slog.Warn("results_attempts_reset_failed", "error", err)
 		}
+		if err := attempts.Release(ctx, phone, nowFunc()); err != nil {
+			slog.Warn("results_attempts_release_failed", "error", err)
+		}
 		return sm.NewResult(sm.StateResultsLookup).
-			WithClearCtx(ctxResultsAttempts).
 			WithContext(ctxResultsFirstName, patient.FirstName).
 			WithContext(ctxResultsFirstSurname, patient.FirstSurname).
 			WithEvent("results_verified", nil), nil
