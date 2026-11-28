@@ -22,6 +22,9 @@ var sensitiveInputStates = map[string]bool{
 	StateAskDocument:     true,
 	StateAskDocumentType: true,
 	StateRegDocumentType: true,
+	// Resultados de estudios: el tipo y el número de documento.
+	StateResultsAskDocType:   true,
+	StateResultsAskDocNumber: true,
 }
 
 // maskInputForLog enmascara el input si el estado actual es sensible; si no, lo deja igual.
@@ -41,6 +44,8 @@ var freeTextInputStates = map[string]bool{
 	StateRegBirthDate: true, StateRegOccupation: true, StateRegAddress: true,
 	StateRegPhone: true, StateRegPhone2: true, StateRegEmail: true, StateRegBarrio: true,
 	StateAskUpdatePhone: true, StateAskUpdateEmail: true,
+	// Resultados de estudios: el número y la fecha de nacimiento solo dejan su largo.
+	StateResultsAskDocNumber: true, StateResultsAskBirthDate: true,
 }
 
 // digitContentStates: pasos donde un número largo es la respuesta esperada (el código CUPS): ahí el

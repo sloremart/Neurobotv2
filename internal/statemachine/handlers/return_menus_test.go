@@ -39,6 +39,7 @@ func returnMenuMachine() *sm.Machine {
 	RegisterPostActionHandlers(m, nil)
 	RegisterMedicationHandlers(m, nil, nil)
 	RegisterResultsAndLocationHandlers(m, sampleConfig(), nil)
+	RegisterResultsFlowHandlers(m, sampleConfig(), nil, nil, nil)
 	// BOT_DISABLED registra su menú aquí: sin él, que figurara o no en RegisteredReturnSteps
 	// dependería del orden de las pruebas.
 	RegisterEscalationHandlers(m, nil, nil, nil)

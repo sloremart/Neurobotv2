@@ -33,6 +33,16 @@ const (
 	StateMedicationPrepareSchedule = "MEDICATION_PREPARE_SCHEDULE"
 )
 
+// === Resultados de estudios (verificación por documento y fecha de nacimiento) ===
+const (
+	StateResultsStart        = "RESULTS_START"
+	StateResultsAskDocType   = "RESULTS_ASK_DOC_TYPE"
+	StateResultsAskDocNumber = "RESULTS_ASK_DOC_NUMBER"
+	StateResultsAskBirthDate = "RESULTS_ASK_BIRTH_DATE"
+	StateResultsLookup       = "RESULTS_LOOKUP"
+	StateResultsList         = "RESULTS_LIST"
+)
+
 // === Entity Management ===
 const (
 	StateCheckEntity     = "CHECK_ENTITY"
@@ -210,6 +220,15 @@ var stateTypes = map[string]StateType{
 	StateMedicationReceiveOrden:    StateTypeInteractive,
 	StateMedicationConfirmOrden:    StateTypeInteractive,
 	StateMedicationPrepareSchedule: StateTypeAutomatic,
+
+	// Resultados de estudios
+	StateResultsStart:        StateTypeAutomatic,
+	StateResultsAskDocType:   StateTypeInteractive,
+	StateResultsAskDocNumber: StateTypeInteractive,
+	StateResultsAskBirthDate: StateTypeInteractive,
+	StateResultsLookup:       StateTypeAutomatic,
+	// Provisional: la Tarea 7 lo vuelve interactivo (la lista de estudios espera la elección).
+	StateResultsList: StateTypeAutomatic,
 
 	// Entity Management
 	StateCheckEntity:         StateTypeAutomatic,

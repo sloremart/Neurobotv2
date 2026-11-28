@@ -31,6 +31,7 @@ import (
 	"github.com/neuro-bot/neuro-bot/internal/repository"
 	localrepo "github.com/neuro-bot/neuro-bot/internal/repository/local"
 	"github.com/neuro-bot/neuro-bot/internal/repository/siesa"
+	"github.com/neuro-bot/neuro-bot/internal/results"
 	"github.com/neuro-bot/neuro-bot/internal/scheduler"
 	"github.com/neuro-bot/neuro-bot/internal/services"
 	"github.com/neuro-bot/neuro-bot/internal/session"
@@ -263,6 +264,16 @@ func main() {
 	// Fase 5: Saludo e Identificación + Results/Locations
 	handlers.RegisterGreetingHandlers(machine, cfg, locationRepo)
 	handlers.RegisterResultsAndLocationHandlers(machine, cfg, locationRepo)
+	// Resultados de estudios (verificación + PDF): solo con la API configurada, que es también la
+	// condición de resultsFeatureOn. Sin SIESA (patients nil) la verificación manda el portal.
+	if cfg.ResultsAPIURL != "" {
+		var patients repository.PatientRepository
+		if repos != nil {
+			patients = repos.Patient
+		}
+		handlers.RegisterResultsFlowHandlers(machine, cfg, patients,
+			results.NewClient(cfg.ResultsAPIURL, cfg.ResultsAPIKey), localrepo.NewResultsAttemptsRepo(localDB))
+	}
 	if patientSvc != nil {
 		handlers.RegisterIdentificationHandlers(machine, patientSvc)
 	}

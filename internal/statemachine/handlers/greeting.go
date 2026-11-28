@@ -59,7 +59,7 @@ func RegisterGreetingHandlers(m *sm.Machine, cfg *config.Config, locationRepo Lo
 			list.Body = "Por favor selecciona una opción del menú.\n\n" + list.Body
 			result.Messages = append(result.Messages, list)
 		},
-		Handler: mainMenuHandler(),
+		Handler: mainMenuHandler(cfg),
 	})
 	// Automático: valida el contrato SANITAS REAL del paciente ya identificado (no autodeclarado) y
 	// bifurca a canal externo (link wa.me) o escalación a agente.
@@ -396,7 +396,7 @@ func greetingHandler(cfg *config.Config) sm.StateHandler {
 }
 
 // MAIN_MENU — solo lógica de negocio (validación declarativa en RegisterWithConfig).
-func mainMenuHandler() sm.StateHandler {
+func mainMenuHandler(cfg *config.Config) sm.StateHandler {
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		selected := sm.ValidatedPayload(ctx)
 
@@ -421,6 +421,12 @@ func mainMenuHandler() sm.StateHandler {
 				WithClearCtx("medication_flow").
 				WithEvent("menu_selected", map[string]interface{}{"option": "agendar"}), nil
 		case "resultados":
+			// Con la función encendida, la verificación por documento y fecha de nacimiento; si no,
+			// el enlace de siempre.
+			if resultsFeatureOn(cfg, sess) {
+				return sm.NewResult(sm.StateResultsStart).
+					WithEvent("menu_selected", map[string]interface{}{"option": "resultados"}), nil
+			}
 			return sm.NewResult(sm.StateShowResults).
 				WithEvent("menu_selected", map[string]interface{}{"option": "resultados"}), nil
 		case "imagenes":

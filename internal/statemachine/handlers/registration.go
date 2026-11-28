@@ -555,8 +555,12 @@ func parseBirthDate(input string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// birthDateHelp es la pregunta de la fecha de nacimiento; la comparten el registro y la
+// verificación de resultados.
+const birthDateHelp = "Ingresa tu *fecha de nacimiento*, por ejemplo *17/04/1992* (día/mes/año)."
+
 func regBirthDateHandler() sm.StateHandler {
-	const dateHelp = "Ingresa tu *fecha de nacimiento*, por ejemplo *17/04/1992* (día/mes/año)."
+	const dateHelp = birthDateHelp
 
 	return func(ctx context.Context, sess *session.Session, msg bird.InboundMessage) (*sm.StateResult, error) {
 		parsedDate, verdict := judgeBirthDate(msg.Text)
